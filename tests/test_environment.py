@@ -384,7 +384,10 @@ class TestWasmTargets:
         # Real check
         if shutil.which("rustup") is None:
             pytest.skip("rustup not in PATH")
-        result = subprocess.run(["rustup", "target", "list", "--installed"], capture_output=True, text=True, timeout=10)
+        try:
+            result = subprocess.run(["rustup", "target", "list", "--installed"], capture_output=True, text=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            pytest.skip("rustup target list timed out (network sync)")
         if result.returncode != 0:
             pytest.skip(f"rustup failed: {result.stderr[:200]}")
         assert "wasm32-wasip" in result.stdout, f"no wasip target in {result.stdout!r}"
@@ -450,7 +453,10 @@ class TestCargoCheck:
         # If wasm targets not installed, skip real check
         if shutil.which("rustup") is None:
             pytest.skip("rustup not in PATH")
-        tr = subprocess.run(["rustup", "target", "list", "--installed"], capture_output=True, text=True, timeout=10)
+        try:
+            tr = subprocess.run(["rustup", "target", "list", "--installed"], capture_output=True, text=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            pytest.skip("rustup target list timed out (network sync)")
         if "wasm32-wasip2" not in tr.stdout:
             pytest.skip("wasm targets not installed")
         # Real cargo check is heavy; only run when explicitly requested.

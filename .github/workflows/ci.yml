@@ -82,8 +82,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Checkout
+      - name: Checkout (with submodules)
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
 
       - name: Setup Python 3.12
         uses: actions/setup-python@v5 # pin: v5.6.0
