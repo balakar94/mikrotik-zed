@@ -137,7 +137,7 @@ jobs:
           sha256sum extension.wasm > SHA256SUMS 2>/dev/null || shasum -a 256 extension.wasm > SHA256SUMS
 
       - name: Attest WASM provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         if: hashFiles('extension.wasm') != ''
         with:
           subject-path: extension.wasm
@@ -251,7 +251,7 @@ jobs:
           cat SHA256SUMS
 
       - name: Attest binary provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: ${{ matrix.binary }}
 
