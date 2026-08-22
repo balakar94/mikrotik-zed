@@ -89,7 +89,7 @@ jobs:
           fetch-depth: 1
 
       - name: Setup Python 3.12
-        uses: actions/setup-python@v5 # pin: v5.6.0
+        uses: actions/setup-python@v7 # pin: v5.6.0
         with:
           python-version: "3.12"
           # No pip cache: repo has no requirements.txt/pyproject.toml, so the default
