@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4 # pin: v4.2.2
+        uses: actions/checkout@v7 # pin: v4.2.2
 
       # MSRV 1.94 — required by icu 2.2.0 (transitive). Keep in sync with
       # rust-toolchain.toml, Cargo.toml/rust-version, and release.yml.
@@ -83,7 +83,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout (with submodules)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 1
@@ -175,7 +175,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout (with submodules)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
           # Full history not needed, but ensure submodule pointer is present.

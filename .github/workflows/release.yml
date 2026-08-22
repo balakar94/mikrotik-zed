@@ -33,7 +33,7 @@ jobs:
       version: ${{ steps.tag.outputs.version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
@@ -96,7 +96,7 @@ jobs:
       attestations: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # MSRV 1.94 — required by icu 2.2.0 (transitive). Keep in sync with
       # rust-toolchain.toml and Cargo.toml rust-version.
@@ -185,7 +185,7 @@ jobs:
             binary: rsc-ls-x86_64-apple-darwin
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # MSRV 1.94 — required by icu 2.2.0 (transitive). Keep in sync with
       # rust-toolchain.toml and Cargo.toml rust-version.
@@ -287,7 +287,7 @@ jobs:
       attestations: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # Need tags for generate_release_notes and to verify tag existence.
           fetch-depth: 0
@@ -405,7 +405,7 @@ jobs:
     needs: [meta, wasm]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Validate extension.toml
         run: |
