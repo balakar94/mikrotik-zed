@@ -1,0 +1,21 @@
+id = "mikrotik-rsc"
+name = "MikroTik RouterOS Script"
+description = "MikroTik language support for RouterOS (v7.0+) with syntax highlighting and command autocompletion."
+version = "0.1.5"
+schema_version = 1
+authors = ["balakar94"]
+repository = "https://github.com/balakar94/mikrotik-zed"
+homepage = "https://github.com/balakar94/mikrotik-zed"
+categories = ["languages"]
+languages = ["languages/rsc"]
+
+# Grammar source — public repo for portable installs and publishing.
+# rev MUST be a real commit SHA from https://github.com/balakar94/tree-sitter-rsc
+# Update after pushing grammars/rsc: `git -C grammars/rsc rev-parse HEAD`
+[grammars.rsc]
+repository = "https://github.com/balakar94/tree-sitter-rsc"
+rev = "5c552f608e3d8a5a93032f84b6093ebe5e5e72c2"
+
+[language_servers.rsc-ls]
+name = "MikroTik Language Server"
+languages = ["MikroTik Script"]

@@ -1,0 +1,3 @@
+[submodule "grammars/rsc"]
+	path = grammars/rsc
+	url = https://github.com/balakar94/tree-sitter-rsc

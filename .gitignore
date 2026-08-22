@@ -1,0 +1,67 @@
+# Rust build artifacts
+target/
+# Cargo.lock MUST be committed for binary workspaces (contains rsc-ls binary)
+# Do NOT ignore Cargo.lock — committed for reproducible builds
+
+# Grammar is a git submodule (grammars/rsc -> balakar94/tree-sitter-rsc).
+# It manages its own .gitignore (target/, build/, node_modules/).
+
+# WASM outputs (built, not source)
+extension.wasm
+*.wasm
+
+# Local bare git repo for grammar dev (not portable, not published)
+grammar-bare.git/
+
+# RouterOS upstream docs — fetched on demand via `make sync`, not tracked
+/llms.txt
+/llms-full.txt
+
+# IDE / editor
+.zed/*
+!.zed/tasks.json
+.vscode/
+.idea/
+*.swp
+*.swo
+*.tmp
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.pytest_cache/
+.venv/
+venv/
+.coverage
+coverage.xml
+htmlcov/
+
+# Secrets / env — never commit
+.env
+.env.*
+*.pem
+*.key
+.npmrc
+
+# Node (root, grammar has its own)
+node_modules/
+
+# Playwright / MCP artifacts
+blob/
+
+# Compiled C artifacts
+*.o
+*.dylib
+
+# Direnv / backups
+.direnv/
+*.orig
+*.bak
+*~

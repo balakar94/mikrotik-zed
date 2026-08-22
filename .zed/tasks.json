@@ -1,0 +1,48 @@
+[
+  {
+    "label": "MikroTik: Deploy current file (REST)",
+    "command": "python3",
+    "args": ["scripts/mikrotik-deploy.py", "$ZED_FILE", "--method", "rest"],
+    "env": {},
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": true,
+    "allow_concurrent_runs": false,
+    "reveal": "always",
+    "hide": "on_success",
+    "shell": "system",
+    "tags": ["mikrotik-deploy", "mikrotik-rest"]
+  },
+  {
+    "label": "MikroTik: Deploy current file (SSH)",
+    "command": "python3",
+    "args": ["scripts/mikrotik-deploy.py", "$ZED_FILE", "--method", "ssh"],
+    "env": {},
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": true,
+    "allow_concurrent_runs": false,
+    "reveal": "always",
+    "hide": "on_success",
+    "tags": ["mikrotik-deploy", "mikrotik-ssh"]
+  },
+  {
+    "label": "MikroTik: Dry-run deploy (preview)",
+    "command": "python3",
+    "args": ["scripts/mikrotik-deploy.py", "$ZED_FILE", "--dry-run"],
+    "env": {},
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": true,
+    "reveal": "always",
+    "tags": ["mikrotik-deploy", "mikrotik-dry-run"]
+  },
+  {
+    "label": "MikroTik: Validate RSC syntax",
+    "command": "python3",
+    "args": ["scripts/mikrotik-deploy.py", "$ZED_FILE", "--dry-run"],
+    "env": { "MIKROTIK_HOST": "dry-run-only" },
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "reveal": "never",
+    "tags": ["mikrotik-validate"]
+  }
+]

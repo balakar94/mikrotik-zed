@@ -1,0 +1,432 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g., v0.1.0) — leave empty to use version from Cargo.toml"
+        required: false
+        type: string
+
+# Default minimal permissions; release job escalates to write + id-token for attestations.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}-${{ github.event_name }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Meta: resolve and validate tag once, share via outputs ─────────
+  meta:
+    name: Resolve tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Determine tag
+        id: tag
+        run: |
+          set -eu
+          TAG=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            VER=$(grep '^version' Cargo.toml | head -n1 | sed -E 's/.*"(.*)"/\1/')
+            TAG="v${VER}"
+            echo "::notice::No tag ref — derived TAG=$TAG from Cargo.toml"
+          fi
+          # Validate semver tag vMAJOR.MINOR.PATCH (allow prerelease/build suffix but warn)
+          if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Tag '$TAG' does not match vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag=$TAG version=$VERSION"
+          cat "$GITHUB_OUTPUT"
+
+      - name: Validate Cargo.toml version matches tag
+        run: |
+          set -eu
+          TAG="${{ steps.tag.outputs.tag }}"
+          VERSION="${{ steps.tag.outputs.version }}"
+          CARGO_VER=$(grep '^version' Cargo.toml | head -n1 | sed -E 's/.*"(.*)"/\1/')
+          LSP_VER=$(grep '^version' lsp/Cargo.toml | head -n1 | sed -E 's/.*"(.*)"/\1/')
+          EXT_VER=$(grep '^version' extension.toml | head -n1 | sed -E 's/.*"(.*)"/\1/')
+          echo "tag version=$VERSION cargo=$CARGO_VER lsp=$LSP_VER extension=$EXT_VER"
+          # Enforce Cargo.toml matches tag; extension.toml should too but warn if not.
+          if [ "$CARGO_VER" != "$VERSION" ]; then
+            echo "::error::Cargo.toml version $CARGO_VER != tag $TAG — bump via 'make bump VERSION=$VERSION'"
+            exit 1
+          fi
+          if [ "$LSP_VER" != "$VERSION" ]; then
+            echo "::error::lsp/Cargo.toml version $LSP_VER != $VERSION"
+            exit 1
+          fi
+          if [ "$EXT_VER" != "$VERSION" ]; then
+            echo "::warning::extension.toml version $EXT_VER != $VERSION — should be bumped together"
+          fi
+
+  # ── Build WASM extension (single artifact, any runner) ─────────────
+  wasm:
+    name: Build WASM (wasm32-wasip2)
+    needs: [meta]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # MSRV 1.94 — required by icu 2.2.0 (transitive). Keep in sync with
+      # rust-toolchain.toml and Cargo.toml rust-version.
+      - name: Install Rust 1.94 (MSRV)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94"
+          targets: wasm32-wasip2
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+
+      - name: Build WASM
+        run: cargo build --target wasm32-wasip2 --release
+
+      - name: Prepare artifact (extension.wasm + checksums)
+        run: |
+          set -eu
+          SRC="target/wasm32-wasip2/release/mikrotik_zed.wasm"
+          if [ ! -f "$SRC" ]; then
+            echo "::error::WASM not found at $SRC"
+            ls -R target/wasm32-wasip2/release || true
+            exit 1
+          fi
+          ls -lh "$SRC"
+          file "$SRC" || true
+          # Prefer wasm-tools component encoding if available; fallback to raw module.
+          # Zed's extension_builder does component encoding on 'Install Dev Extension',
+          # but for the release artifact we ship the raw wasm (Zed handles it).
+          # Keep naming stable: extension.wasm
+          if command -v wasm-tools >/dev/null 2>&1; then
+            echo "wasm-tools found — verifying module"
+            wasm-tools validate "$SRC" 2>&1 || echo "::warning::wasm-tools validate failed"
+          fi
+          cp "$SRC" extension.wasm
+          ls -lh extension.wasm
+          sha256sum extension.wasm > extension.wasm.sha256 2>/dev/null || shasum -a 256 extension.wasm > extension.wasm.sha256
+          cat extension.wasm.sha256
+          # Combined manifest
+          sha256sum extension.wasm > SHA256SUMS 2>/dev/null || shasum -a 256 extension.wasm > SHA256SUMS
+
+      - name: Attest WASM provenance
+        uses: actions/attest-build-provenance@v2
+        if: hashFiles('extension.wasm') != ''
+        with:
+          subject-path: extension.wasm
+
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@v4 # pin: v4.6.2
+        with:
+          name: wasm
+          path: |
+            extension.wasm
+            extension.wasm.sha256
+            SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+  # ── Build rsc-ls for 4 native targets ──────────────────────────────
+  build:
+    name: Build ${{ matrix.binary }} (${{ matrix.target }})
+    needs: [meta]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: rsc-ls-x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            binary: rsc-ls-aarch64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary: rsc-ls-aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary: rsc-ls-x86_64-apple-darwin
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # MSRV 1.94 — required by icu 2.2.0 (transitive). Keep in sync with
+      # rust-toolchain.toml and Cargo.toml rust-version.
+      - name: Install Rust 1.94 (MSRV)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94"
+          targets: ${{ matrix.target }}
+
+      - name: Install zig (for aarch64 linux cross)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        uses: mlugg/setup-zig@v2 # pin: v2.0.5
+        with:
+          version: 0.13.0
+
+      - name: Install cargo-zigbuild (for aarch64 linux cross)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          if ! command -v cargo-zigbuild >/dev/null 2>&1; then
+            cargo install cargo-zigbuild --locked
+          else
+            echo "cargo-zigbuild already installed: $(cargo zigbuild --version 2>&1 | head -n1)"
+          fi
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          # Save only on main/tag to avoid PR cache poisoning (shared for release).
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Build rsc-ls (native)
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
+        run: cargo build -p rsc-ls --release --target ${{ matrix.target }}
+
+      - name: Build rsc-ls (zig cross)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: cargo zigbuild -p rsc-ls --release --target ${{ matrix.target }}
+
+      - name: Prepare binary + checksums
+        shell: bash
+        run: |
+          set -eu
+          SRC="target/${{ matrix.target }}/release/rsc-ls"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            SRC="${SRC}.exe"
+          fi
+          if [ ! -f "$SRC" ]; then
+            echo "::error::Binary not found at $SRC"
+            ls -lh "target/${{ matrix.target }}/release/" || true
+            exit 1
+          fi
+          ls -lh "$SRC"
+          file "$SRC" || true
+          # Strip for smaller upload (allow failure on macOS where strip behaves differently).
+          if command -v strip >/dev/null 2>&1; then
+            strip "$SRC" 2>/dev/null || echo "::notice::strip failed (ignored)"
+          fi
+          cp "$SRC" "${{ matrix.binary }}"
+          chmod +x "${{ matrix.binary }}"
+          ls -lh "${{ matrix.binary }}"
+          # Checksums: both per-file and for combined manifest.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ matrix.binary }}" > "${{ matrix.binary }}.sha256"
+            sha256sum "${{ matrix.binary }}" >> SHA256SUMS
+          else
+            shasum -a 256 "${{ matrix.binary }}" > "${{ matrix.binary }}.sha256"
+            shasum -a 256 "${{ matrix.binary }}" >> SHA256SUMS
+          fi
+          cat "${{ matrix.binary }}.sha256"
+          cat SHA256SUMS
+
+      - name: Attest binary provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ matrix.binary }}
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary }}
+          path: |
+            ${{ matrix.binary }}
+            ${{ matrix.binary }}.sha256
+            SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+  # ── Create GitHub Release with all binaries ────────────────────────
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [meta, wasm, build]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Need tags for generate_release_notes and to verify tag existence.
+          fetch-depth: 0
+
+      - name: Guard — tag must not already have a release (idempotency)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          TAG="${{ needs.meta.outputs.tag }}"
+          echo "Checking if release $TAG already exists..."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::warning::Release $TAG already exists — softprops/action-gh-release will update it (idempotent). Continuing."
+            gh release view "$TAG" --json tagName,createdAt,url --jq '{tag:.tagName, url:.url, createdAt}'
+          else
+            echo "No existing release for $TAG — will create new."
+          fi
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Build combined SHA256SUMS
+        run: |
+          set -eu
+          echo "Artifacts in dist/:"
+          ls -R dist
+          # Rebuild a single combined SHA256SUMS at top-level for convenience.
+          # Prefer pre-generated per-job SHA256SUMS, then supplement with per-file checksums.
+          echo "# SHA256 checksums for ${{ needs.meta.outputs.tag }}" > SHA256SUMS
+          echo "# Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> SHA256SUMS
+          if ls dist/*.sha256 >/dev/null 2>&1; then
+            cat dist/*.sha256 >> SHA256SUMS
+          fi
+          # Ensure every binary has an entry even if per-file sha missing.
+          for f in dist/rsc-ls-* dist/extension.wasm; do
+            [ -e "$f" ] || continue
+            base=$(basename "$f")
+            if ! grep -q "$base" SHA256SUMS 2>/dev/null; then
+              if command -v sha256sum >/dev/null 2>&1; then
+                (cd dist && sha256sum "$base") >> SHA256SUMS
+              else
+                (cd dist && shasum -a 256 "$base") >> SHA256SUMS
+              fi
+            fi
+          done
+          sort -u SHA256SUMS -o SHA256SUMS || true
+          cat SHA256SUMS
+          # Also produce sorted checksums file in dist for upload.
+          cp SHA256SUMS dist/SHA256SUMS
+          echo "Final dist contents:"
+          ls -lh dist/
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum dist/* 2>/dev/null | head -n 20
+          else
+            shasum -a 256 dist/* | head -n 20
+          fi
+
+      - name: Generate release notes
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## MikroTik RSC ${{ needs.meta.outputs.tag }}
+
+          ### Binaries
+          - `rsc-ls-aarch64-apple-darwin` – macOS Apple Silicon
+          - `rsc-ls-x86_64-apple-darwin` – macOS Intel
+          - `rsc-ls-aarch64-unknown-linux-gnu` – Linux ARM64
+          - `rsc-ls-x86_64-unknown-linux-gnu` – Linux x64
+
+          SHA256 checksums in `SHA256SUMS` and per-file `*.sha256`. Attestations are attached as build provenance.
+
+          ### WASM
+          - `extension.wasm` – Zed extension (wasm32-wasip2, `mikrotik_zed.wasm`)
+
+          The Zed extension auto-downloads the correct binary on first use via `zed::download_file`.
+          Manual install:
+          ```bash
+          cargo build -p rsc-ls --release
+          # or download the matching binary and put it in PATH as `rsc-ls`
+          # verify: sha256sum -c SHA256SUMS
+          ```
+
+          ### Zed Marketplace
+          To publish the extension update, open a PR to https://github.com/zed-industries/extensions
+          with updated `extensions.toml` and submodule pointer. See README.md.
+
+          ### Observability
+          Set `RSC_LS_LOG=debug` and run `zed --foreground` for verbose LSP logs.
+          EOF
+          echo "--- release-notes.md ---"
+          cat release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2 # pin: v2.3.2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag }}
+          name: ${{ needs.meta.outputs.tag }}
+          body_path: release-notes.md
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            dist/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Validate extension.toml for marketplace publish ────────────────
+  publish-info:
+    name: Extension publish check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [meta, wasm]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate extension.toml
+        run: |
+          set -eu
+          echo "Checking extension.toml..."
+          cat extension.toml
+          # Basic validation: id, name, version, grammars rev, language_servers
+          grep -q '^id = "mikrotik-rsc"' extension.toml || { echo "::error::id must be mikrotik-rsc"; exit 1; }
+          grep -q '^\[grammars.rsc\]' extension.toml || { echo "::error::missing [grammars.rsc]"; exit 1; }
+          grep -q '^\[language_servers.rsc-ls\]' extension.toml || { echo "::error::missing [language_servers.rsc-ls]"; exit 1; }
+          if grep -q 'rev = "000' extension.toml; then echo "::error::rev placeholder 000... found — run scripts/publish_grammar.py --push"; exit 1; fi
+          # Version should match release tag (warn, not fail, for manual runs without tag).
+          TAG="${{ needs.meta.outputs.tag }}"
+          VERSION="${{ needs.meta.outputs.version }}"
+          EXT_VER=$(grep '^version' extension.toml | head -n1 | sed -E 's/.*"(.*)"/\1/')
+          echo "extension.toml version=$EXT_VER tag=$TAG"
+          if [ -n "$VERSION" ] && [ "$EXT_VER" != "$VERSION" ]; then
+            echo "::warning::extension.toml version $EXT_VER != tag $TAG"
+          fi
+          # Schema and required keys
+          grep -q '^version = ' extension.toml || { echo "::error::version missing"; exit 1; }
+          grep -q '^schema_version' extension.toml || { echo "::error::schema_version missing"; exit 1; }
+          echo "extension.toml OK"
+
+      - name: WASM artifact info
+        run: |
+          echo "WASM artifact from build job will be included in the Release."
+          echo "Publish checklist:"
+          echo "  1. Ensure grammar rev is pushed: python scripts/publish_grammar.py --push"
+          echo "  2. Bump version: make bump VERSION=${{ needs.meta.outputs.version }} && cargo check && git diff"
+          echo "  3. Tag: git tag ${{ needs.meta.outputs.tag }} && git push origin --tags"
+          echo "  4. Wait for Release workflow to publish assets, then PR to https://github.com/zed-industries/extensions (submodule + extensions.toml + pnpm sort-extensions)"

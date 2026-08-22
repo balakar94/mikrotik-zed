@@ -1,0 +1,234 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Minimal default permissions — jobs escalate only if needed.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref (PR updates, force-pushes).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Rust: mirrors `make fmt && make clippy && make test-rust && make build*` ──
+  rust:
+    name: Rust (fmt, clippy, test, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4 # pin: v4.2.2
+
+      # MSRV 1.94 — required by icu 2.2.0 (transitive). Keep in sync with
+      # rust-toolchain.toml, Cargo.toml/rust-version, and release.yml.
+      - name: Install Rust 1.94 (MSRV)
+        uses: dtolnay/rust-toolchain@stable # pin: stable
+        with:
+          toolchain: "1.94"
+          components: rustfmt, clippy
+          targets: wasm32-wasip2
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2 # pin: v2.8.1
+        with:
+          # Only save on main to avoid PR cache poisoning.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Format check (make fmt)
+        run: make fmt
+
+      - name: Clippy (wasm + lsp, -D warnings)
+        run: make clippy
+
+      - name: Unit tests (make test-rust, 156 tests)
+        run: make test-rust
+
+      - name: Build WASM (wasm32-wasip2)
+        run: cargo build --target wasm32-wasip2 --release
+
+      - name: Build LSP (rsc-ls)
+        run: cargo build -p rsc-ls --release
+
+      - name: Smoke — artifact sizes
+        run: |
+          echo "WASM:"
+          ls -lh target/wasm32-wasip2/release/mikrotik_zed.wasm 2>/dev/null || echo "wasm missing"
+          echo "LSP:"
+          ls -lh target/release/rsc-ls 2>/dev/null || echo "rsc-ls missing"
+
+      - name: Upload CI binaries (PR preview, 7 days)
+        uses: actions/upload-artifact@v4 # pin: v4.6.2
+        if: always()
+        with:
+          name: ci-binaries-${{ github.sha }}
+          path: |
+            target/wasm32-wasip2/release/mikrotik_zed.wasm
+            target/release/rsc-ls
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ── Python: mirrors `make test-python && make sync-check && make extract` ──
+  python:
+    name: Python extraction
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5 # pin: v5.6.0
+        with:
+          python-version: "3.12"
+          # No pip cache: repo has no requirements.txt/pyproject.toml, so the default
+          # cache-dependency-path (**/requirements.txt) would fail with "No file matched".
+          # pip install is just pytest+tomli (tiny), so caching is not worth the complexity.
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          # tomli needed for Python <3.11; pytest for tests/
+          pip install pytest tomli 2>/dev/null || pip install pytest
+          pip freeze | grep -E "pytest|tomli" || true
+
+      - name: Run Python tests (make test-python, 77 tests)
+        run: make test-python
+
+      # llms.txt / llms-full.txt are gitignored and fetched from manual.mikrotik.com.
+      # On clean checkout they don't exist, so sync-check --check would always report
+      # "new file" (exit 2) and fail. Instead, fetch here (with retries) then let the
+      # next step verify data/commands.toml determinism. Network failure is a warning,
+      # not a hard fail — local extract determinism still guards drift.
+      - name: Fetch upstream docs (make sync)
+        run: |
+          set +e
+          if [ -f llms.txt ] && [ -f llms-full.txt ]; then
+            echo "llms files already present — checking if stale (make sync-check)"
+            make sync-check
+            ec=$?
+            if [ $ec -eq 0 ]; then
+              echo "Upstream docs unchanged."
+            elif [ $ec -eq 2 ]; then
+              echo "::notice::Upstream docs changed — fetching fresh via make sync"
+              make sync || echo "::warning::make sync failed, using existing files"
+            elif [ $ec -eq 1 ]; then
+              echo "::warning::sync-check network failed, using existing files"
+            fi
+          else
+            echo "llms files missing (gitignored on clean checkout) — fetching via make sync"
+            make sync
+            ec=$?
+            if [ $ec -ne 0 ]; then
+              echo "::warning::make sync failed (exit $ec) — Verify step will check local determinism only"
+              # Don't fail; Verify step will still check data/commands.toml exists
+            else
+              echo "Fetched llms.txt/llms-full.txt"
+              ls -lh llms*.txt
+            fi
+          fi
+          exit 0
+
+      - name: Verify commands.toml is up-to-date (deterministic)
+        run: |
+          # Regenerate from current llms-full.txt (either cached from previous step or stale local).
+          # If sync-check above fetched fresh docs, they are on disk (unless --check); if it
+          # warned on network failure, this checks local determinism only.
+          # Ignore the non-deterministic '# Generated:' timestamp so only real content drift fails.
+          python scripts/extract_commands.py
+          echo "Checking data/commands.toml drift (timestamp-agnostic)..."
+          if [ -f data/commands.toml ]; then
+            # Compare against HEAD, but handle history rewrite / shallow clones where HEAD file may be missing.
+            if git cat-file -e HEAD:data/commands.toml 2>/dev/null; then
+              diff -u <(git show HEAD:data/commands.toml | grep -v '^# Generated:') \
+                    <(grep -v '^# Generated:' data/commands.toml) \
+                || { echo "::error::data/commands.toml stale vs llms-full.txt — run 'make extract' and commit (see make validate)"; exit 1; }
+            else
+              echo "::warning::HEAD:data/commands.toml not found (shallow/history rewrite) — checking file exists and is non-empty"
+              test -s data/commands.toml || { echo "::error::data/commands.toml empty"; exit 1; }
+              # Also guard basic structure: must contain [[menus]]
+              grep -q '^\[\[menus\]\]' data/commands.toml || { echo "::error::data/commands.toml missing [[menus]]"; exit 1; }
+            fi
+          else
+            echo "::error::data/commands.toml not generated"
+            exit 1
+          fi
+          echo "commands.toml OK (timestamps ignored)"
+          # Restore file to avoid polluting cache/upload — we only cared about the diff.
+          git checkout -- data/commands.toml 2>/dev/null || true
+
+  # ── Grammar: mirrors `make generate-check && make test-grammar` ──
+  grammar:
+    name: Tree-sitter grammar
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          # Full history not needed, but ensure submodule pointer is present.
+          fetch-depth: 1
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4 # pin: v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: grammars/rsc/package.json
+
+      - name: Install tree-sitter-cli
+        working-directory: grammars/rsc
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+          npx tree-sitter --version
+
+      - name: Check parser is up-to-date (make generate-check)
+        run: make generate-check
+
+      - name: Run corpus tests (make test-grammar, 59 tests)
+        run: make test-grammar
+
+      - name: Check extension.toml rev matches submodule pointer
+        run: |
+          set -eu
+          # Parse [grammars.rsc] rev from extension.toml (TOML, not JSON).
+          REV=$(awk '/^\[grammars\.rsc\]/{f=1;next} f&&/^rev/{gsub(/"/,"",$3);print $3;exit}' extension.toml)
+          # Submodule pointer at HEAD (works even with shallow fetch).
+          if git rev-parse --git-dir >/dev/null 2>&1; then
+            SHA=$(git rev-parse HEAD:grammars/rsc 2>/dev/null || git -C grammars/rsc rev-parse HEAD 2>/dev/null || echo "")
+          else
+            SHA=""
+          fi
+          echo "extension.toml rev=$REV"
+          echo "submodule  sha=$SHA"
+          if [ -z "$REV" ]; then
+            echo "::error::[grammars.rsc].rev missing in extension.toml"
+            exit 1
+          fi
+          if [ -z "$SHA" ]; then
+            echo "::warning::Could not resolve submodule SHA (shallow clone?) — skipping strict check"
+            exit 0
+          fi
+          if [ "$REV" != "$SHA" ]; then
+            echo "::error::[grammars.rsc].rev ($REV) != submodule pointer ($SHA) — bump via 'python scripts/publish_grammar.py --push' or 'make generate' + commit + push grammar repo"
+            exit 1
+          fi
+          # Guard placeholder rev.
+          if echo "$REV" | grep -q "0000"; then
+            echo "::error::rev placeholder 000... found — run scripts/publish_grammar.py"
+            exit 1
+          fi
+          echo "rev OK"
