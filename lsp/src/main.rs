@@ -431,8 +431,12 @@ impl Server {
                                 "openClose": true,
                                 "change": 2
                             },
+                            // ':' opens script-word completions (statement
+                            // snippets / script globals);
+                            // compute_completions filters that context to
+                            // ':'-prefixed labels only.
                             "completionProvider": {
-                                "triggerCharacters": ["/", " ", "="],
+                                "triggerCharacters": ["/", " ", "=", ":"],
                             },
                             "hoverProvider": true,
                             "documentSymbolProvider": true,
@@ -3042,7 +3046,7 @@ type = "enum (input | forward | output)"
         assert_eq!(caps["hoverProvider"], true);
         assert_eq!(
             caps["completionProvider"]["triggerCharacters"],
-            serde_json::json!(["/", " ", "="])
+            serde_json::json!(["/", " ", "=", ":"])
         );
         assert_eq!(caps["diagnosticProvider"]["interFileDependencies"], false);
     }
@@ -3067,7 +3071,7 @@ type = "enum (input | forward | output)"
         let caps = &resp["result"]["capabilities"];
         assert_eq!(
             caps["completionProvider"]["triggerCharacters"],
-            serde_json::json!(["/", " ", "="])
+            serde_json::json!(["/", " ", "=", ":"])
         );
         assert_eq!(caps["hoverProvider"], true);
         assert_eq!(

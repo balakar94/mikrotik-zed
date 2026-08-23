@@ -6,6 +6,10 @@
 // - Exception: when the cursor sits inside a "property=value" token,
 //   switch to value suggestions (enum values, booleans, type hints) with
 //   a case-insensitive prefix pre-filter over the typed suffix.
+// - Exception: when the cursor sits inside a `:`-prefixed token (`:` is a
+//   completion trigger character), keep only candidates whose label starts
+//   with that typed token — script globals and statement snippets. Menu
+//   paths and property names make no sense after a colon.
 
 use crate::menus::{ArgEntry, LineContext, MenuData};
 
@@ -65,14 +69,35 @@ pub fn compute_completions(data: &MenuData, before_cursor: &str) -> Vec<Completi
 
     let mut items = match_context(data, &context, before_cursor);
 
+    // The partially typed `:`-prefixed token under the cursor, if any.
+    // `:` fires completion requests; detecting it here (instead of earlier)
+    // keeps every non-colon context byte-for-byte unchanged.
+    let colon_token = colon_typed_token(before_cursor);
+
     // Statement-start snippets: structural `:if` / `:foreach` / `:for` /
-    // `:do` templates offered ONLY where a new statement may begin. NOTE:
-    // ':' is not a completion trigger character (see the advertised
-    // triggerCharacters in main.rs), so these surface when a SPACE fires
-    // the request at a statement start — an empty line or right after `{`.
-    if context.path.is_empty() && !before_cursor.ends_with('/') && at_statement_start(before_cursor)
-    {
+    // `:do` templates offered ONLY where a new statement may begin. Two
+    // trigger paths reach them:
+    // - a SPACE-fired request at a statement start — an empty line or right
+    //   after `{` (the historical path);
+    // - a `:`-fired request while the script word itself is being typed
+    //   (`:`, `:i`, …) — the statement-start question then applies to
+    //   whatever precedes the partial token.
+    let at_start = if colon_token.is_some() {
+        at_statement_start_before_last_token(before_cursor)
+    } else {
+        at_statement_start(before_cursor)
+    };
+    if context.path.is_empty() && !before_cursor.ends_with('/') && at_start {
         items.extend(statement_snippet_items());
+    }
+
+    // Colon filtering: keep only candidates whose label starts with the
+    // typed `:`-token (`:` → every script item; `:i` → just `:if`). Unlike
+    // the value-completion prefix filter there is deliberately NO fallback
+    // to the unfiltered set — menu paths and property names are noise after
+    // a colon, so an unknown script word completes to nothing.
+    if let Some(typed) = colon_token {
+        items.retain(|item| item.label.starts_with(&typed));
     }
 
     items
@@ -136,6 +161,41 @@ pub(crate) fn at_statement_start(before_cursor: &str) -> bool {
         None => true,
         Some(last) => last.text == "{" || last.text == ";",
     }
+}
+
+/// [`at_statement_start`] evaluated on everything BEFORE the final partial
+/// token.
+///
+/// Used while a `:`-prefixed word is being typed (`:`, `:i`, `:foreach`):
+/// the word itself IS the statement being written, so "may a new statement
+/// begin here?" applies to the tokens preceding it. Same strict token
+/// equality rule as [`at_statement_start`] — only a bare `{` or `;` opens a
+/// statement slot (`x=1; :put` stays mid-command, exactly like `x=1; `
+/// does for the space-fired path).
+fn at_statement_start_before_last_token(before_cursor: &str) -> bool {
+    match crate::tokenize_with_spans(before_cursor).split_last() {
+        None => true,
+        Some((_, head)) => match head.last() {
+            None => true,
+            Some(prev) => prev.text == "{" || prev.text == ";",
+        },
+    }
+}
+
+/// The partial token under the cursor when it starts with `':'`.
+///
+/// "Under the cursor" means the request fired MID-token: trailing
+/// whitespace says the previous token finished and a new one is starting,
+/// which must stay an unfiltered completion case. Quote-aware tokenization
+/// keeps quoted colons (`"a:b`) out of script-word territory.
+fn colon_typed_token(before_cursor: &str) -> Option<String> {
+    if before_cursor.ends_with(char::is_whitespace) {
+        return None;
+    }
+    crate::tokenize_with_spans(before_cursor)
+        .last()
+        .filter(|t| t.text.starts_with(':'))
+        .map(|t| t.text.clone())
 }
 
 /// One statement template: label, snippet body, one-line markdown docs.
@@ -1698,5 +1758,119 @@ type = "string"
         // Statement start inside a script block.
         let items = compute_completions(&data, "{ ");
         assert_eq!(snippet_items(&items).len(), 4);
+    }
+
+    // ── ':' trigger character ──────────────────────────────────────
+
+    #[test]
+    fn test_colon_bare_at_statement_start_returns_only_colon_items() {
+        let data = synthetic();
+        // ':' alone at a fresh statement fires mid-token: the four
+        // statement snippets are the colon-prefixed candidates today, and
+        // NOTHING else (no root menus, no verbs) may leak into the menu.
+        let items = compute_completions(&data, ":");
+        assert_eq!(
+            items.len(),
+            4,
+            "got {:?}",
+            items.iter().map(|i| &i.label).collect::<Vec<_>>()
+        );
+        for i in &items {
+            assert!(
+                i.label.starts_with(':'),
+                "only ':'-prefixed labels allowed, got {}",
+                i.label
+            );
+        }
+        assert_eq!(snippet_items(&items).len(), 4);
+    }
+
+    #[test]
+    fn test_colon_prefix_filters_to_matching_script_items() {
+        let data = synthetic();
+        // ':i' narrows to :if …
+        let items = compute_completions(&data, ":i");
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, vec![":if"]);
+        // …':fo' keeps :foreach and :for in offer-table order…
+        let items = compute_completions(&data, ":fo");
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, vec![":foreach", ":for"]);
+        // …and a fully typed unknown script word completes to NOTHING — no
+        // fallback to menu noise after a colon.
+        let items = compute_completions(&data, ":put");
+        assert!(
+            items.is_empty(),
+            "no fallback after ':put', got {:?}",
+            items.iter().map(|i| &i.label).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_colon_after_block_opener_still_offers_snippets() {
+        let data = synthetic();
+        // '{ :' — the brace opened the block; the colon word begins the
+        // next statement inside it.
+        let items = compute_completions(&data, "{ :");
+        assert_eq!(snippet_items(&items).len(), 4);
+        for i in &items {
+            assert!(i.label.starts_with(':'), "colon context leaked {}", i.label);
+        }
+    }
+
+    #[test]
+    fn test_colon_mid_statement_returns_no_menu_noise() {
+        let data = synthetic();
+        // A colon word after a verb is NOT a statement start: no snippets,
+        // and filtering the argument names leaves an intentionally quiet
+        // (empty) result instead of irrelevant property suggestions.
+        let items = compute_completions(&data, "/ip/address print :");
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_trailing_space_after_colon_not_filtered() {
+        let data = synthetic();
+        // ':' finished with a space starts a NEW (empty) token — that
+        // request is not a script-word completion and must behave exactly
+        // as before the ':' trigger existed: plain root completions, no
+        // snippets (a lone ':' is not a `{`/`;` opener).
+        let items = compute_completions(&data, ": ");
+        assert!(
+            items.iter().any(|i| i.label == "/ip"),
+            "finished ':' token keeps ordinary root completions"
+        );
+        assert_eq!(snippet_items(&items).len(), 0);
+    }
+
+    #[test]
+    fn test_quoted_colon_is_not_script_word_context() {
+        let data = synthetic();
+        // A quote opens this token, so it never enters the ':' branch:
+        // root menus flow through unfiltered.
+        let items = compute_completions(&data, "\"a:b");
+        assert!(
+            items.iter().any(|i| i.label == "/ip"),
+            "quoted colon must not trigger script-word filtering"
+        );
+    }
+
+    #[test]
+    fn test_non_colon_contexts_unchanged_by_colon_trigger() {
+        let data = synthetic();
+        // Roots + snippets at a plain statement start…
+        let empty = compute_completions(&data, "");
+        assert!(empty.iter().any(|i| i.label == "/ip"));
+        assert_eq!(snippet_items(&empty).len(), 4);
+        // …arguments after a verb…
+        let args = compute_completions(&data, "/ip/address add ");
+        assert!(args.iter().any(|i| i.label == "address"));
+        assert!(!args.is_empty());
+        // …values after '='…
+        let vals = compute_completions(&data, "/ip/firewall/filter add chain=in");
+        assert_eq!(vals.len(), 1);
+        // …and root navigation via '/'.
+        let slash = compute_completions(&data, "/");
+        assert!(slash.iter().any(|i| i.label == "/ip"));
     }
 }

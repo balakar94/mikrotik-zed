@@ -49,7 +49,7 @@ language_server_command(id, worktree) called per worktree
          rsc-ls --stdio JSON-RPC 2.0
            ├─ initialize → capabilities (completion, hover, diagnostic, sync Full)
            ├─ textDocument/didOpen|didChange → publishDiagnostics (5 rules, capped)
-           ├─ textDocument/completion (triggers: /  space  =)
+           ├─ textDocument/completion (triggers: /  space  =  :)
            ├─ textDocument/hover
            └─ textDocument/diagnostic (pull)
 Windows → auto-download error; instruct manual build.

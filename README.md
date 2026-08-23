@@ -21,9 +21,13 @@
 | Area | What you get |
 |------|--------------|
 | **Highlighting** | Tree-sitter grammar (`grammars/rsc/`) — menus, globals, control flow, variables, arrays, menu continuation |
-| **Completion** | Root menus, sub-menus, verbs (`add`/`print`…), args with snippets (`address=$1`), enum/bool/`iface_enum`/`ipAddr` values — `triggerCharacters: /,  , =` |
+| **Completion** | Root menus, sub-menus, verbs, properties with snippets (`address=$1`), enum/bool values with embedded docs, `:` script words + statement snippets (`:if`, `:foreach`, `:for`, `:do`) — `triggerCharacters: / space = :` |
 | **Hover** | Menu docs (`Type` + `Arguments` + `Flags`), property types, standard verbs |
-| **Diagnostics** | `unknown-menu` · `unknown-property` · `missing-required` · `duplicate-property` · `invalid-enum-value` (capped, `source: rsc-ls`) |
+| **Diagnostics** | Menu semantics (`unknown-menu` · `unknown-property` · `missing-required` · `duplicate-property` · `invalid-enum-value`) and syntax errors (`unclosed-brace` · `unmatched-brace` · `unclosed-quote`) — capped, `source: rsc-ls` |
+| **Outline & folding** | Document symbols (menus + `:local`/`:global` variables), folding ranges (braces + `\` continuations) |
+| **Signature help** | Required-first parameter popup for menu verbs |
+| **Navigation** | Go-to-definition / find references for script variables (`:local`/`:global` ↔ `$name`) |
+| **Quick fixes** | "Did you mean …?" for typos in properties, menus, and enum values |
 | **Tasks & Deploy** | Zed tasks (`REST`/`SSH`/`Dry-run`/`Validate`) + `scripts/mikrotik-deploy.py` (`requests`/`paramiko`) |
 | **Sync** | `scripts/sync_llms.py` fetches latest `llms-full.txt` from `manual.mikrotik.com` |
 | **Grammar** | In-tree + published to [`balakar94/tree-sitter-rsc`](https://github.com/balakar94/tree-sitter-rsc) (rev pinned in `extension.toml`) |
@@ -167,6 +171,8 @@ cp target/release/rsc-ls /opt/homebrew/bin/rsc-ls  # macOS
 
 Uses `zed::download_file` + `make_file_executable` with `LanguageServerInstallationStatus` UI. On 404, shows manual install instructions.
 
+**Supply-chain check:** every download is SHA-256–verified against its `<asset>.sha256` release companion *before* it is made executable or run. Any mismatch (or missing companion) fails the install and deletes the unverified binary — fail closed, never execute unverified.
+
 > **404 after fresh Release?** GitHub CDN takes ~1-2 min to propagate `releases/download`. Use the PATH copy above meanwhile; `gh release download` via API works immediately.
 
 ---
@@ -184,7 +190,7 @@ RSC
 open -a Zed /tmp/demo.rsc
 ```
 
-- **Trigger completion:** type `/`, ` `, or `=` — Zed fuzzy-filters the full candidate list
+- **Trigger completion:** type `/`, ` `, `=`, or `:` (script words like `:if`) — the server pre-filters; Zed fuzzy-filters on top
 - **Hover:** over `/ip/address` or `chain`
 - **Diagnostics:** delete `address=` → `Info: missing-required`
 
@@ -244,16 +250,19 @@ mkdir -p .zed && cp languages/rsc/tasks.json .zed/tasks.json
 
 ## 🧠 Language Server
 
-**Pure Rust, no Node.** `lsp/` embeds `data/commands.toml` (1038 menus) via `include_str!()` — 293 Rust tests.
+**Pure Rust, no Node.** `lsp/` embeds `data/commands.toml` (1038 menus) via `include_str!()` — 555 Rust tests.
 
 - `menus.rs` — loads TOML, validates paths (`..`, control chars, charset, length ≤256), builds `menu_by_path` + `child_names_by_parent` (implicit parents)
-- `completion.rs` — `compute_completions(before_cursor)` — root / sub-menu / verb / arg / value (enum/bool/iface/ipAddr)
+- `completion.rs` — `compute_completions(before_cursor)` — root / sub-menu / verb / arg / value (enums, bools, IP placeholders), statement snippets, `:`-triggered script-word filtering
 - `hover.rs` — `compute_hover(line, character, full_doc, cursor_line)` — UTF-8 safe, `find_word_start/end`
-- `diagnostics.rs` — 5 rules (`unknown-menu`/`unknown-property`/`missing-required`/`duplicate-property`/`invalid-enum-value`), `MAX_DIAG_LINES 3000` / `MAX_DIAG_BYTES 500KB`, handles incremental edits + RouterOS backslash line continuation (`\` → logical lines, ranges mapped to physical lines)
+- `diagnostics.rs` — 5 semantic rules (`unknown-menu`/`unknown-property`/`missing-required`/`duplicate-property`/`invalid-enum-value`) + 3 syntax rules (`unclosed-brace`/`unmatched-brace`/`unclosed-quote`), `MAX_DIAG_LINES 3000` / `MAX_DIAG_BYTES 500KB`, handles incremental edits + RouterOS backslash line continuation (`\` → logical lines, ranges mapped to physical lines)
+- `symbols.rs` / `folding.rs` — document symbols (menus + script variables) and folding ranges
+- `signature.rs` / `suggest.rs` — signature help; did-you-mean candidates behind quick fixes
+- `navigation.rs` — go-to-definition / find-references for script variables
 
 Protocol: `stdio` JSON-RPC 2.0, `Content-Length` framing, `MAX_MESSAGE_SIZE 10MiB`, `MAX_HEADER_SIZE 32KiB`, `MAX_DOCS 100`, `MAX_DOC_SIZE 5MiB`, `file://` URI validation (rejects `..`, `\0`, non-`file://`).
 
-Capabilities: `textDocumentSync: 1` (Full, incremental fallback), `completionProvider`, `hoverProvider`, `diagnosticProvider`.
+Capabilities: incremental sync (`change: 2`), completion (`triggerCharacters: / space = :`), hover, document symbols, folding ranges, signature help, code actions (quick fixes), definition, references, pull diagnostics.
 
 ---
 
@@ -265,7 +274,7 @@ After cloning this repo: `git submodule update --init`.
 ```bash
 cd grammars/rsc
 npx tree-sitter generate          # grammar.js → src/parser.c
-npx tree-sitter test              # 59 corpus tests
+npx tree-sitter test              # 67 corpus tests
 npx tree-sitter parse test/example.rsc
 npx tree-sitter highlight test/example.rsc
 ```
@@ -301,7 +310,7 @@ Header in `commands.toml` includes `RouterOS version`, `Generated` UTC, `Source 
 ```bash
 make help
 make generate          # parser.c (tree-sitter)
-make test-all          # 542 tests: grammar (59) + rust (293) + python (190)
+make test-all          # 835 tests: grammar (67) + rust (555) + python (213)
 make extract           # commands.toml (1038 menus)
 make build             # WASM (Zed builds as component on install)
 make build-lsp         # native rsc-ls
@@ -318,9 +327,9 @@ cargo check -p rsc-ls
 cargo fmt --all -- --check
 cargo clippy --target wasm32-wasip2 -- -D warnings
 cargo clippy -p rsc-ls -- -D warnings
-cargo test -p rsc-ls                 # 293 tests
-python -m pytest tests/ -v           # 190 tests
-npx --prefix grammars/rsc tree-sitter test  # 59 tests
+cargo test -p rsc-ls                 # 555 tests (537 unit + 4 cli + 14 e2e)
+python -m pytest tests/ -v           # 213 tests
+npx tree-sitter test                 # 67 tests (run inside grammars/rsc/)
 make generate-check
 make validate
 ```
