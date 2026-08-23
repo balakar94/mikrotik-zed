@@ -26,6 +26,7 @@ mod framing;
 mod hover;
 mod logging;
 mod menus;
+mod navigation;
 mod parser;
 mod server;
 mod signature;
@@ -172,6 +173,135 @@ fn wire_position(v: Option<&serde_json::Value>) -> Option<(usize, usize)> {
     Some((line as usize, character as usize))
 }
 
+// ── Variable navigation adapters ────────────────────────────────────
+//
+// Thin protocol-boundary wrappers around the pure `navigation` module.
+// Free functions over plain data so they are testable without a Server;
+// every wire→byte conversion goes through encoding.rs and every logical→
+// physical mapping through `LogicalLine::map_range`.
+
+/// Serialize one indexed occurrence as an LSP `Location` for `uri`,
+/// converting its physical byte range into the negotiated wire encoding.
+fn navigation_location_value(
+    uri: &str,
+    lines: &[&str],
+    logicals: &[diagnostics::LogicalLine],
+    hit: &navigation::VariableHit,
+    enc: PositionEncoding,
+) -> serde_json::Value {
+    let mut range = logicals[hit.logical_line].map_range(hit.start, hit.end);
+    crate::convert_position(&mut range.start, lines, enc);
+    crate::convert_position(&mut range.end, lines, enc);
+    serde_json::json!({ "uri": uri, "range": range })
+}
+
+/// Everything both navigation requests need after resolving a position.
+///
+/// `logical_line`/`cursor` locate the request inside the caller's joined
+/// logical lines; `name` is the variable identifier under the cursor
+/// (usage or declaration — never a mere same-spelling property).
+struct CursorOccurrence {
+    logical_line: usize,
+    cursor: usize,
+    name: String,
+}
+
+/// Shared resolution step of both navigation requests.
+///
+/// `logicals` is the ONE continuation-aware join per request (owned by the
+/// caller) and `index` was built from that same join, so cursor mapping and
+/// occurrence lookup can never disagree about document coordinates.
+/// Wire character → byte offset via [`lsp_character_to_byte_offset`];
+/// cursor mapped into logical coordinates via
+/// [`diagnostics::LogicalLine::logical_offset_from_physical`]; word
+/// extracted with hover's helpers ([`navigation::word_at`]); the word must
+/// overlap a real indexed occurrence of itself or resolution fails.
+///
+/// Returns `None` when no variable sits under this position — callers
+/// answer with their shape's empty result (definition → null result,
+/// references → empty list).
+fn resolve_cursor_occurrence(
+    doc: &str,
+    logicals: &[diagnostics::LogicalLine],
+    index: &[navigation::VariableHit],
+    enc: PositionEncoding,
+    line: usize,
+    character: usize,
+) -> Option<CursorOccurrence> {
+    let ll_idx = diagnostics::covering_logical_line_index(logicals, line)?;
+    let ll = &logicals[ll_idx];
+    let phys_text = doc.lines().nth(line).unwrap_or("");
+    let char_byte = lsp_character_to_byte_offset(phys_text, character, enc);
+    let cursor = ll.logical_offset_from_physical(line, char_byte)?;
+    let word = navigation::word_at(ll.text(), cursor);
+    let hit = navigation::hit_at_cursor(index, word, ll_idx, cursor)?;
+    Some(CursorOccurrence {
+        logical_line: ll_idx,
+        cursor,
+        name: hit.name.clone(),
+    })
+}
+
+/// Compute the `textDocument/definition` RESULT for an already-validated
+/// request: `null`, or one `Location` at the exact name-token span of the
+/// declaration chosen by `navigation::choose_definition`'s deterministic
+/// rule (closest preceding same-name declaration; first one if none
+/// precedes).
+fn goto_definition_result(
+    doc: &str,
+    enc: PositionEncoding,
+    uri: &str,
+    line: usize,
+    character: usize,
+) -> serde_json::Value {
+    // ONE continuation-aware join per request, feeding both the index and
+    // the cursor resolution below.
+    let logicals = diagnostics::logical_lines(doc);
+    let index = navigation::build_variable_index(&logicals);
+    let Some(occ) = resolve_cursor_occurrence(doc, &logicals, &index, enc, line, character) else {
+        return serde_json::Value::Null;
+    };
+    let Some(decl) =
+        navigation::choose_definition(&index, &occ.name, (occ.logical_line, occ.cursor))
+    else {
+        // A usage exists but no declaration shares its name — nothing
+        // honest to point at.
+        return serde_json::Value::Null;
+    };
+    let lines: Vec<&str> = doc.lines().collect();
+    navigation_location_value(uri, &lines, &logicals, decl, enc)
+}
+
+/// Compute the `textDocument/references` RESULT: the chosen declaration
+/// first when `include_declaration` is set, then every `$usage` of the
+/// name in document order, capped at `navigation::MAX_REFERENCES` total.
+fn references_result(
+    doc: &str,
+    enc: PositionEncoding,
+    uri: &str,
+    line: usize,
+    character: usize,
+    include_declaration: bool,
+) -> Vec<serde_json::Value> {
+    // ONE continuation-aware join per request, feeding both the index and
+    // the cursor resolution below.
+    let logicals = diagnostics::logical_lines(doc);
+    let index = navigation::build_variable_index(&logicals);
+    let Some(occ) = resolve_cursor_occurrence(doc, &logicals, &index, enc, line, character) else {
+        return Vec::new();
+    };
+    let declaration = if include_declaration {
+        navigation::choose_definition(&index, &occ.name, (occ.logical_line, occ.cursor))
+    } else {
+        None
+    };
+    let refs = navigation::collect_references(&index, &occ.name, declaration);
+    let lines: Vec<&str> = doc.lines().collect();
+    refs.iter()
+        .map(|h| navigation_location_value(uri, &lines, &logicals, h, enc))
+        .collect()
+}
+
 // ── Server state ────────────────────────────────────────────────
 struct Server {
     data: MenuData,
@@ -307,6 +437,12 @@ impl Server {
                             "hoverProvider": true,
                             "documentSymbolProvider": true,
                             "foldingRangeProvider": true,
+                            // Variable navigation: go-to-definition and
+                            // find-references for `:local`/`:global`
+                            // declarations vs `$name` usages — pure logic
+                            // lives in navigation.rs.
+                            "definitionProvider": true,
+                            "referencesProvider": true,
                             // Quick-fixes ("Did you mean …?") for
                             // unknown-property / unknown-menu /
                             // invalid-enum-value diagnostics.
@@ -726,6 +862,94 @@ impl Server {
                         serde_json::Value::Array(Vec::new())
                     }
                 };
+
+                Some(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": result,
+                }))
+            }
+
+            "textDocument/definition" => {
+                // Same response guarantees as hover: -32602 for malformed
+                // params (echoed id), null result for untracked URIs. Null
+                // is ALSO the answer when the cursor does not sit on a
+                // RouterOS script variable — a definition must never be
+                // invented that cannot be grounded in an indexed
+                // `:local`/`:global` declaration.
+                let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
+                    return invalid_params_response(&id, "missing textDocument.uri");
+                };
+                let pos = &params["params"]["position"];
+                let Some(line) = pos["line"].as_u64() else {
+                    return invalid_params_response(&id, "missing position.line");
+                };
+                let Some(character) = pos["character"].as_u64() else {
+                    return invalid_params_response(&id, "missing position.character");
+                };
+                let Some(doc) = self.docs.get(uri) else {
+                    log_debug!("definition for untracked URI, returning null result: {uri:?}");
+                    return Some(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": null,
+                    }));
+                };
+
+                let result = goto_definition_result(
+                    doc,
+                    self.position_encoding,
+                    uri,
+                    line as usize,
+                    character as usize,
+                );
+
+                Some(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": result,
+                }))
+            }
+
+            "textDocument/references" => {
+                // List-shaped like codeAction: -32602 for malformed params,
+                // empty array (a valid Location[] result) for untracked
+                // URIs and variable-less positions. `context.includeDeclaration`
+                // is REQUIRED by LSP ReferenceParams, so an absent or
+                // non-bool context mirrors the sibling handlers' -32602
+                // strictness instead of silently guessing false.
+                let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
+                    return invalid_params_response(&id, "missing textDocument.uri");
+                };
+                let pos = &params["params"]["position"];
+                let Some(line) = pos["line"].as_u64() else {
+                    return invalid_params_response(&id, "missing position.line");
+                };
+                let Some(character) = pos["character"].as_u64() else {
+                    return invalid_params_response(&id, "missing position.character");
+                };
+                let Some(include_declaration) =
+                    params["params"]["context"]["includeDeclaration"].as_bool()
+                else {
+                    return invalid_params_response(&id, "missing context.includeDeclaration");
+                };
+                let Some(doc) = self.docs.get(uri) else {
+                    log_debug!("references for untracked URI, returning empty list: {uri:?}");
+                    return Some(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": [],
+                    }));
+                };
+
+                let result = references_result(
+                    doc,
+                    self.position_encoding,
+                    uri,
+                    line as usize,
+                    character as usize,
+                    include_declaration,
+                );
 
                 Some(serde_json::json!({
                     "jsonrpc": "2.0",
@@ -2067,6 +2291,318 @@ type = "Directory"
         let items = resp["result"]["items"].as_array().unwrap();
         // Might be value completions (0.0.0.0/0) or empty if not correctly resolved, but should be Some array
         assert!(items.is_empty() || items.iter().any(|i| i["label"] == "0.0.0.0/0"));
+    }
+
+    // ── Variable navigation (textDocument/definition + references) ──
+    //
+    // Wire-contract coverage for the navigation handlers: -32602 /
+    // null / [] shapes per sibling-handler strictness, exact declaration
+    // ranges, includeDeclaration toggling, and UTF-16 inbound positions.
+    // The pure semantics behind these live in navigation.rs's own suite;
+    // end-to-end wire variants live in tests/e2e.rs.
+
+    /// `:local counter 0` / `:put $counter` / `/ip/address add
+    /// interface=$counter`. Declaration name spans bytes 7..14 of line 0;
+    /// usages sit at line 1 bytes 6..13 and line 2 bytes 27..34.
+    const NAV_DOC: &str = ":local counter 0\n:put $counter\n/ip/address add interface=$counter\n";
+
+    fn nav_request(id: i64, uri: &str, extra: serde_json::Value) -> serde_json::Value {
+        let mut params = serde_json::json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": 1, "character": 8}, // inside `$counter`
+        });
+        if let (Some(dst), Some(src)) = (params.as_object_mut(), extra.as_object()) {
+            for (k, v) in src {
+                dst.insert(k.clone(), v.clone());
+            }
+        }
+        serde_json::json!({"id": id, "params": params})
+    }
+
+    #[test]
+    fn test_server_initialize_advertises_navigation_providers() {
+        let mut s = make_server();
+        let resp = s
+            .handle_message("initialize", &serde_json::json!({"id": 1, "params": {}}))
+            .unwrap();
+        assert_eq!(resp["result"]["capabilities"]["definitionProvider"], true);
+        assert_eq!(resp["result"]["capabilities"]["referencesProvider"], true);
+    }
+
+    #[test]
+    fn test_server_definition_untracked_uri_returns_null_result() {
+        let mut s = make_server();
+        let req = nav_request(61, "file:///never-opened.rsc", serde_json::json!({}));
+        let resp = s.handle_message("textDocument/definition", &req).unwrap();
+        assert_eq!(resp["id"], 61, "id must be echoed");
+        assert!(resp["result"].is_null(), "untracked URI → null result");
+    }
+
+    #[test]
+    fn test_server_definition_malformed_params_return_32602() {
+        let mut s = make_server();
+        // Missing URI entirely…
+        let resp = s
+            .handle_message(
+                "textDocument/definition",
+                &serde_json::json!({"id": 62, "params": {"position": {"line": 0, "character": 0}}}),
+            )
+            .unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        assert_eq!(resp["id"], 62, "id must be echoed on error responses");
+        // …missing position entirely…
+        let resp = s
+            .handle_message(
+                "textDocument/definition",
+                &serde_json::json!({"id": 63, "params": {"textDocument": {"uri": "file:///a.rsc"}}}),
+            )
+            .unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        // …and a mistyped position component.
+        let resp = s
+            .handle_message(
+                "textDocument/definition",
+                &serde_json::json!({"id": 64, "params": {
+                    "textDocument": {"uri": "file:///a.rsc"},
+                    "position": {"line": 0, "character": "eight"}
+                }}),
+            )
+            .unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn test_server_definition_jumps_to_exact_declaration_span() {
+        let mut s = make_server();
+        s.handle_message(
+            "textDocument/didOpen",
+            &serde_json::json!({"params": {"textDocument": {"uri": "file:///nav.rsc", "text": NAV_DOC}}}),
+        );
+        let req = nav_request(65, "file:///nav.rsc", serde_json::json!({}));
+        let resp = s.handle_message("textDocument/definition", &req).unwrap();
+        let loc = &resp["result"];
+        assert!(loc.is_object(), "usage must resolve, got {loc}");
+        assert_eq!(loc["uri"], "file:///nav.rsc");
+        // Exact name-token span of `counter` in `:local counter 0` — not
+        // the command token, not the initializer.
+        assert_eq!(loc["range"]["start"]["line"], 0);
+        assert_eq!(loc["range"]["start"]["character"], 7);
+        assert_eq!(loc["range"]["end"]["line"], 0);
+        assert_eq!(loc["range"]["end"]["character"], 14);
+
+        // Same answer when invoked ON the declaration itself.
+        let req = serde_json::json!({
+            "id": 66,
+            "params": {
+                "textDocument": {"uri": "file:///nav.rsc"},
+                "position": {"line": 0, "character": 8},
+            }
+        });
+        let resp = s.handle_message("textDocument/definition", &req).unwrap();
+        assert_eq!(
+            resp["result"]["range"]["start"]["character"], 7,
+            "requesting from the declaration returns its own span"
+        );
+    }
+
+    #[test]
+    fn test_server_definition_non_variable_word_returns_null() {
+        let mut s = make_server();
+        s.handle_message(
+            "textDocument/didOpen",
+            &serde_json::json!({"params": {"textDocument": {"uri": "file:///nv.rsc", "text": NAV_DOC}}}),
+        );
+        // Cursor over the property `interface` — a real word that merely
+        // shares the document with variables must NOT resolve.
+        let req = serde_json::json!({
+            "id": 67,
+            "params": {
+                "textDocument": {"uri": "file:///nv.rsc"},
+                "position": {"line": 2, "character": 20},
+            }
+        });
+        let resp = s.handle_message("textDocument/definition", &req).unwrap();
+        assert!(resp["result"].is_null(), "property word → null, got {resp}");
+        // …and so does a cursor on the `:local` keyword itself.
+        let req = serde_json::json!({
+            "id": 68,
+            "params": {
+                "textDocument": {"uri": "file:///nv.rsc"},
+                "position": {"line": 0, "character": 3},
+            }
+        });
+        let resp = s.handle_message("textDocument/definition", &req).unwrap();
+        assert!(resp["result"].is_null());
+    }
+
+    #[test]
+    fn test_server_references_untracked_uri_returns_empty_list() {
+        let mut s = make_server();
+        let req = serde_json::json!({
+            "id": 69,
+            "params": {
+                "textDocument": {"uri": "file:///never-opened.rsc"},
+                "position": {"line": 0, "character": 0},
+                "context": {"includeDeclaration": true},
+            }
+        });
+        let resp = s.handle_message("textDocument/references", &req).unwrap();
+        assert_eq!(resp["id"], 69, "id must be echoed");
+        assert!(
+            resp["result"].is_array(),
+            "list endpoint answers an array even untracked"
+        );
+        assert!(resp["result"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_server_references_missing_context_returns_32602() {
+        let mut s = make_server();
+        // Context object absent entirely…
+        let resp = s
+            .handle_message(
+                "textDocument/references",
+                &serde_json::json!({"id": 70, "params": {
+                    "textDocument": {"uri": "file:///a.rsc"},
+                    "position": {"line": 0, "character": 0}
+                }}),
+            )
+            .unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        assert_eq!(resp["id"], 70);
+        // …context present but includeDeclaration missing…
+        let resp = s
+            .handle_message(
+                "textDocument/references",
+                &serde_json::json!({"id": 71, "params": {
+                    "textDocument": {"uri": "file:///a.rsc"},
+                    "position": {"line": 0, "character": 0},
+                    "context": {}
+                }}),
+            )
+            .unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        // …and includeDeclaration mistyped (LSP requires a boolean).
+        let resp = s
+            .handle_message(
+                "textDocument/references",
+                &serde_json::json!({"id": 72, "params": {
+                    "textDocument": {"uri": "file:///a.rsc"},
+                    "position": {"line": 0, "character": 0},
+                    "context": {"includeDeclaration": "yes"}
+                }}),
+            )
+            .unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn test_server_references_include_declaration_toggles_list() {
+        let mut s = make_server();
+        s.handle_message(
+            "textDocument/didOpen",
+            &serde_json::json!({"params": {"textDocument": {"uri": "file:///ref.rsc", "text": NAV_DOC}}}),
+        );
+
+        let with = s
+            .handle_message(
+                "textDocument/references",
+                &nav_request(
+                    73,
+                    "file:///ref.rsc",
+                    serde_json::json!({"context": {"includeDeclaration": true}}),
+                ),
+            )
+            .unwrap();
+        let items = with["result"].as_array().unwrap();
+        assert_eq!(items.len(), 3, "declaration + two usages");
+        assert_eq!(
+            items[0]["range"]["start"]["character"], 7,
+            "the chosen declaration comes first, exact name span"
+        );
+        assert_eq!(items[0]["range"]["end"]["character"], 14);
+        assert_eq!(items[1]["range"]["start"]["line"], 1);
+        assert_eq!(items[2]["range"]["start"]["line"], 2);
+        assert_eq!(items[2]["range"]["start"]["character"], 27);
+
+        let without = s
+            .handle_message(
+                "textDocument/references",
+                &nav_request(
+                    74,
+                    "file:///ref.rsc",
+                    serde_json::json!({"context": {"includeDeclaration": false}}),
+                ),
+            )
+            .unwrap();
+        let items = without["result"].as_array().unwrap();
+        assert_eq!(items.len(), 2, "usages only");
+        assert_eq!(items[0]["range"]["start"]["line"], 1);
+    }
+
+    #[test]
+    fn test_server_references_position_off_any_variable_yields_empty_list() {
+        let mut s = make_server();
+        s.handle_message(
+            "textDocument/didOpen",
+            &serde_json::json!({"params": {"textDocument": {"uri": "file:///off.rsc", "text": NAV_DOC}}}),
+        );
+        let req = serde_json::json!({
+            "id": 75,
+            "params": {
+                "textDocument": {"uri": "file:///off.rsc"},
+                "position": {"line": 0, "character": 1}, // on `:local` keyword
+                "context": {"includeDeclaration": true},
+            }
+        });
+        let resp = s.handle_message("textDocument/references", &req).unwrap();
+        assert!(resp["result"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_server_navigation_resolves_utf16_positions_after_emoji() {
+        // Default negotiation is UTF-16: `:put "🌍🌍" $ok` puts the usage
+        // identifier at units 13..15 but bytes 17..19 (each 🌍 costs 2
+        // units / 4 bytes). The probe at unit 14 (mid-identifier) would be
+        // byte 14 — the closing quote — under a byte/unit mix-up, where no
+        // word can be extracted at all, so this pin is decisive.
+        let doc = ":local ok\n:put \"🌍🌍\" $ok\n";
+        let mut s = make_server();
+        s.handle_message(
+            "textDocument/didOpen",
+            &serde_json::json!({"params": {"textDocument": {"uri": "file:///u16.rsc", "text": doc}}}),
+        );
+        let pos = serde_json::json!({
+            "textDocument": {"uri": "file:///u16.rsc"},
+            "position": {"line": 1, "character": 14},
+        });
+
+        let def = s
+            .handle_message(
+                "textDocument/definition",
+                &serde_json::json!({"id": 76, "params": pos}),
+            )
+            .unwrap();
+        assert_eq!(
+            def["result"]["range"]["start"]["character"], 7,
+            "definition resolved through utf-16 units"
+        );
+        assert_eq!(def["result"]["range"]["end"]["character"], 9);
+
+        let refs = s
+            .handle_message(
+                "textDocument/references",
+                &serde_json::json!({"id": 77, "params": {
+                    "textDocument": {"uri": "file:///u16.rsc"},
+                    "position": {"line": 1, "character": 14},
+                    "context": {"includeDeclaration": false}
+                }}),
+            )
+            .unwrap();
+        let items = refs["result"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "exactly the `$ok` usage");
+        assert_eq!(items[0]["range"]["start"]["line"], 1);
+        assert_eq!(items[0]["range"]["start"]["character"], 13);
     }
 }
 

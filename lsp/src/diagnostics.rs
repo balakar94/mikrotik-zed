@@ -686,11 +686,29 @@ pub(crate) fn logical_lines(doc: &str) -> Vec<LogicalLine> {
 }
 
 /// Find the logical line whose inclusive physical-line span
-/// `[first_physical_line, last_physical_line]` covers `phys_line`.
+/// `[first_physical_line, last_physical_line]` covers `phys_line`, as its
+/// INDEX in `logicals`.
 ///
 /// Logical lines partition physical lines in order, so at most one matches.
-/// Shared first step of every continuation-aware consumer of a cursor or
-/// diagnostic position ([`resolve_menu_for_line`], signature help).
+/// Callers that need to correlate a hit with an index into `logicals`
+/// (navigation) use this; [`covering_logical_line`] wraps it for callers
+/// that only want the line itself.
+///
+/// Returns `None` when no logical line covers the line (out of range, or the
+/// empty-body continuation degenerate case where no token can exist).
+pub(crate) fn covering_logical_line_index(
+    logicals: &[LogicalLine],
+    phys_line: usize,
+) -> Option<usize> {
+    logicals.iter().position(|ll| {
+        ll.first_physical_line() <= phys_line && phys_line <= ll.last_physical_line()
+    })
+}
+
+/// Find the logical line whose inclusive physical-line span
+/// `[first_physical_line, last_physical_line]` covers `phys_line`.
+///
+/// Index-returning twin: [`covering_logical_line_index`].
 ///
 /// Returns `None` when no logical line covers the line (out of range, or the
 /// empty-body continuation degenerate case where no token can exist).
@@ -698,9 +716,7 @@ pub(crate) fn covering_logical_line(
     logicals: &[LogicalLine],
     phys_line: usize,
 ) -> Option<&LogicalLine> {
-    logicals
-        .iter()
-        .find(|ll| ll.first_physical_line() <= phys_line && phys_line <= ll.last_physical_line())
+    covering_logical_line_index(logicals, phys_line).map(|idx| &logicals[idx])
 }
 
 /// Resolve the [`crate::menus::MenuEntry`] governing the RouterOS command

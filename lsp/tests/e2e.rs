@@ -75,6 +75,16 @@ const SYMBOL_DOC: &str = concat!(
     "/ip/route add gateway=10.0.0.254\n",
 );
 
+/// Variable-navigation script: one `:local wanif` declaration (name spans
+/// UTF-16 units 7..12 of line 0), one bare usage (`:put $wanif`, units
+/// 6..11 of line 1) and one glued to a property value
+/// (`interface=$wanif`, units 27..32 of line 2).
+const NAV_DOC: &str = concat!(
+    ":local wanif \"ether1\"\n",
+    ":put $wanif\n",
+    "/ip/address add interface=$wanif\n",
+);
+
 /// Split-URL fetch whose continuation spans physical lines 0–1; the logical
 /// line must fold onto its first physical line.
 const FOLD_DOC: &str = concat!("/tool/fetch url=\"https://example.com/a/b\\\n", "c\"\n",);
@@ -442,6 +452,10 @@ fn initialize_advertises_full_capability_surface_and_version() {
     assert_eq!(caps["documentSymbolProvider"], true);
     assert_eq!(caps["foldingRangeProvider"], true);
     assert_eq!(caps["codeActionProvider"], true);
+    // Variable navigation must be advertised so Zed wires go-to-definition
+    // and find-references for `.rsc` scripts.
+    assert_eq!(caps["definitionProvider"], true);
+    assert_eq!(caps["referencesProvider"], true);
     assert_eq!(
         caps["signatureHelpProvider"]["triggerCharacters"],
         json!([" ", "="])
@@ -645,6 +659,97 @@ fn document_symbol_reports_local_variable_and_menu_commands() {
         commands.len() >= 2 && commands.contains(&"/ip/address add"),
         "both menu commands must appear as SymbolKind.Object, got {commands:?}"
     );
+}
+
+/// Go-to-definition from a `$wanif` usage must land on the exact name span
+/// of the `:local` declaration — over the real wire, through framing and
+/// UTF-16 default positions.
+#[test]
+fn definition_from_usage_jumps_to_local_declaration_over_the_wire() {
+    let mut client = initialized_client();
+    open_text_document(&mut client, "file:///e2e-nav-def.rsc", NAV_DOC);
+    // Cursor inside the usage on line 1 (the `a` of $wanif).
+    let location = match client.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": "file:///e2e-nav-def.rsc"},
+            "position": {"line": 1, "character": 8},
+        }),
+    ) {
+        Response::Ok(v) => v,
+        Response::Err(err) => panic!("definition errored: {err}"),
+    };
+    assert!(
+        location.is_object(),
+        "usage must resolve to a Location, got {location}"
+    );
+    assert_eq!(location["uri"], "file:///e2e-nav-def.rsc");
+    assert_eq!(location["range"]["start"]["line"], 0);
+    assert_eq!(location["range"]["start"]["character"], 7);
+    assert_eq!(location["range"]["end"]["line"], 0);
+    assert_eq!(
+        location["range"]["end"]["character"], 12,
+        "range must cover exactly `wanif`, not the command token or value"
+    );
+
+    // Splicing sanity: the returned range really names the variable.
+    let line0 = ":local wanif \"ether1\"";
+    let s = location["range"]["start"]["character"].as_u64().unwrap() as usize;
+    let e = location["range"]["end"]["character"].as_u64().unwrap() as usize;
+    assert_eq!(&line0[s..e], "wanif");
+}
+
+/// Find-references over the wire: flat Location list, declaration gated by
+/// `includeDeclaration`, usages in document order including one glued to a
+/// property (`interface=$wanif`).
+#[test]
+fn references_return_expected_counts_and_document_order() {
+    let mut client = initialized_client();
+    open_text_document(&mut client, "file:///e2e-nav-refs.rsc", NAV_DOC);
+    let params = |include: bool| {
+        json!({
+            "textDocument": {"uri": "file:///e2e-nav-refs.rsc"},
+            "position": {"line": 1, "character": 8},
+            "context": {"includeDeclaration": include},
+        })
+    };
+
+    let with = match client.request("textDocument/references", params(true)) {
+        Response::Ok(v) => v,
+        Response::Err(err) => panic!("references errored: {err}"),
+    };
+    let items = with.as_array().expect("Location[]");
+    assert_eq!(items.len(), 3, "declaration + two usages");
+    assert_eq!(
+        items[0]["range"]["start"],
+        json!({"line": 0, "character": 7})
+    );
+    assert_eq!(
+        items[0]["range"]["end"],
+        json!({"line": 0, "character": 12})
+    );
+    assert_eq!(
+        items[1]["range"]["start"],
+        json!({"line": 1, "character": 6})
+    );
+    // The glued property usage is found despite sharing a token with
+    // `interface=`.
+    assert_eq!(
+        items[2]["range"]["start"],
+        json!({"line": 2, "character": 27})
+    );
+
+    let without = match client.request("textDocument/references", params(false)) {
+        Response::Ok(v) => v,
+        Response::Err(err) => panic!("references errored: {err}"),
+    };
+    let items = without.as_array().expect("Location[]");
+    assert_eq!(
+        items.len(),
+        2,
+        "usages only when includeDeclaration is false"
+    );
+    assert_eq!(items[0]["range"]["start"]["line"], 1);
 }
 
 #[test]

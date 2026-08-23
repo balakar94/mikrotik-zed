@@ -151,6 +151,12 @@ fn menu_command_symbol(
 /// identifier token (text before a possible `=`); all other verbs become
 /// Functions named by the verb itself (":put"). Returns `None` for
 /// declarations without an identifier token.
+///
+/// Declaration naming is delegated to [`crate::navigation::declared_variable`]
+/// so documentSymbol and go-to-definition/references share ONE notion of
+/// what a declaration is and where its identifier spans. Note this narrows
+/// `selectionRange` of inline-valued locals (`:local x=1`) from the whole
+/// `x=1` token down to exactly `x` — the identifier a rename would target.
 fn script_command_symbol(
     line: &diagnostics::LogicalLine,
     tokens: &[crate::parser::SpanToken],
@@ -158,17 +164,15 @@ fn script_command_symbol(
 ) -> Option<DocumentSymbol> {
     let first = &tokens[0];
     if first.text == ":local" || first.text == ":global" {
-        let var = tokens.get(1)?;
-        // `:local x=1` tokenizes to "x=1"; the identifier is the part before '='.
-        let ident = var.text.split('=').next().unwrap_or(&var.text);
-        if ident.is_empty() {
-            return None;
-        }
+        // Delegation preserves the historical contract: a declaration line
+        // without a bare identifier (`:global` alone) yields NO symbol, it
+        // does NOT degrade into a Function entry.
+        let (_kind, ident, ident_start, ident_end) = crate::navigation::declared_variable(tokens)?;
         return Some(DocumentSymbol {
-            name: ident.to_string(),
+            name: ident,
             kind: symbol_kind::VARIABLE,
             range: span,
-            selection_range: line.map_range(var.start, var.end),
+            selection_range: line.map_range(ident_start, ident_end),
         });
     }
 

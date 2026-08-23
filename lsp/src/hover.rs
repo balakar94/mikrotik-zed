@@ -7,8 +7,12 @@
 
 use crate::menus::MenuData;
 
-/// Find word start (including /, -, _)
-fn find_word_start(line: &str, pos: usize) -> usize {
+/// Find word start (including /, -, _).
+///
+/// `pub(crate)` so navigation (`word_at`) extracts words with the EXACT
+/// same rules as hover — go-to-definition, find-references, and hover must
+/// never disagree about what "the word at the cursor" is.
+pub(crate) fn find_word_start(line: &str, pos: usize) -> usize {
     let pos = pos.min(line.len());
     // Ensure we are at a valid character boundary (RSC is ASCII, but be safe).
     let pos = crate::floor_char_boundary(line, pos);
@@ -23,8 +27,9 @@ fn find_word_start(line: &str, pos: usize) -> usize {
     i
 }
 
-/// Find word end (including /, -, _)
-fn find_word_end(line: &str, pos: usize) -> usize {
+/// Find word end (including /, -, _) — shared with navigation, see
+/// [`find_word_start`].
+pub(crate) fn find_word_end(line: &str, pos: usize) -> usize {
     let pos = pos.min(line.len());
     let pos = crate::floor_char_boundary(line, pos);
     let mut i = pos;
