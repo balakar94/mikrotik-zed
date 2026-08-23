@@ -35,13 +35,13 @@ Protocol: `Content-Length` framing, `textDocumentSync = {"openClose": true, "cha
 | `lsp/src/main.rs` | LSP stdio loop + `Server::handle_message` (all method dispatch), doc store caps, `publish_diagnostics`; re-exports the extracted modules |
 | `lsp/src/cli.rs` | CLI flags (`--version`/`-V`, `--help`/`-h`, usage errors exit 2), `version_string()` (`RSC_LS_BUILD_SHA` → ` (build <sha7>)`); handled before any logging/loading |
 | `lsp/src/framing.rs` | `Frame`/`FrameError`/`read_message` — Content-Length framing with header/body caps; unparsable headers are terminal (`FrameError::Protocol`) to prevent desync cascades |
-| `lsp/src/parser.rs` | Quote-aware `scan_token`/`SpanToken`/`tokenize_with_spans`/`tokenize`, `parse_line`, multi-line `build_before_cursor` |
+| `lsp/src/parser.rs` | Quote-aware `scan_token`/`SpanToken`/`tokenize_with_spans`/`tokenize`, `parse_line`, multi-line `build_before_cursor`; whole-document `walk_structure` + `StructureEvent` (quote/comment state machine shared by folding and the syntax diagnostics) |
 | `lsp/src/encoding.rs` | `PositionEncoding` negotiation, byte↔UTF-16 conversions, `apply_incremental_edit`, diagnostic/symbol position conversion at the protocol boundary |
 | `lsp/src/logging.rs` | `log_error!…log_trace!` macros + `RSC_LS_LOG` level gate (macros resolve `crate::logging::` so any module can use them) |
 | `lsp/src/menus.rs` | `MenuData::load()` / `from_toml_str` (test-only), `COMMANDS_TOML`, validation (≤256, charset, `..`, control), `menu_by_path`, `child_names_by_parent`, `STANDARD_VERBS` (15) |
 | `lsp/src/completion.rs` | `compute_completions` → root/sub-menu/verb/arg/value + statement-start snippet templates; `kind` CLASS/FUNCTION/PROPERTY/CONSTANT/ENUM_MEMBER/SNIPPET |
 | `lsp/src/hover.rs` | `compute_hover` (menu→property→flag→verb), `find_word_start/end` (includes `/ - _`, UTF-8 safe) |
-| `lsp/src/diagnostics.rs` | `compute_diagnostics` — 5 rules, `source="rsc-ls"`, capped; also owns `logical_lines()` (continuation joining) shared with symbols/folding, and `resolve_menu_for_line()` (menu context for a physical line) used by code actions |
+| `lsp/src/diagnostics.rs` | `compute_diagnostics` — 7 rules (5 menu + 2 syntax: unclosed brace/quote family), `source="rsc-ls"`, capped; also owns `logical_lines()` (continuation joining) shared with symbols/folding, and `resolve_menu_for_line()` (menu context for a physical line) used by code actions |
 | `lsp/src/suggest.rs` | `damerau_levenshtein` (OSA variant), `suggestion_threshold`, `best_candidate` — deterministic did-you-mean engine behind code actions |
 | `lsp/src/symbols.rs` | `compute_document_symbols` — flat symbol list: menu commands → Object(19), `:local`/`:global` → Variable(13) named by identifier, other `:verb` → Function(12); skips bare fragments/comments |
 | `lsp/src/folding.rs` | `compute_folding_ranges` — quote/comment-aware brace regions (kind `"region"`), kindless folds for `\` continuations; only when `startLine < endLine` |
@@ -95,6 +95,8 @@ Returns `quickfix` actions ("Did you mean 'X'?") for client-echoed diagnostics w
 | 3 | `missing-required` | Info (3) | `Directory`/`Settings Directory` + verb `add`/`set` missing `arg.required` | `/ip/address add` → `Missing required property 'address' for '/ip/address add'` |
 | 4 | `duplicate-property` | Warning (2) | same key twice (range = second occurrence) | `address=1.1.1.1 address=2.2.2.2` → `Duplicate property 'address'` |
 | 5 | `invalid-enum-value` | Hint (4) | `arg_type` starts with `enum` and value not in `enum (a \| b \| ...)` | `chain=invalid` → `Invalid value 'invalid' for 'chain' (expected one of: input \| forward \| output)` |
+| 6 | `unclosed-brace` | Error (1) | `{` never closed before EOF; range = that brace char; companion code `unmatched-brace` flags a stray `}` with no open `{`. Shares the quote/comment-aware walk with folding (`parser::walk_structure`) — braces inside strings/comments are inert, `\` continuations keep strings alive across lines; capped at 10/publish oldest-first | `do={` with no closer → `Brace '{' opened here is never closed` |
+| 7 | `unclosed-quote` | Error (1) | quoted string whose opening quote never terminates before EOF; error points at the OPENING quote, rest of document treated as string content (no cascade); same walk/cap as rule 6 | `:put "oops` → `Quoted string opened here is never closed` |
 
 All diagnostics: `source="rsc-ls"`. Types: `Diagnostic{range, severity, code, source, message}` with `Range{Position{line,character}}`.
 
@@ -121,6 +123,8 @@ Canonical values live in `main.rs`; `server.rs` mirrors them and asserts equalit
 | `MAX_DOCS` | 100 | `main.rs` | Reject new URIs when cap reached |
 | `MAX_DIAG_LINES` | 3000 | `diagnostics.rs` | Only first N lines diagnosed |
 | `MAX_DIAG_BYTES` | 500 KB | `diagnostics.rs` | Truncate doc for diagnostics at char boundary |
+| `MAX_SYNTAX_DIAGNOSTICS` | 10 | `diagnostics.rs` | Cap on unclosed/unmatched brace + quote diagnostics per publish (oldest-first) |
+| `MAX_BRACE_DEPTH` | 4096 | `parser.rs` | Open-brace stack bound shared by folding + syntax diagnostics |
 
 Incremental edits: `lsp_position_to_offset` + `apply_incremental_edit` (`main.rs`) handle `range` patches; on `InvalidRange`/`OutOfBounds` fall back to full replace. `floor_char_boundary` polyfill for UTF-8 safety. Large docs still publish diagnostics (capped) without OOM. URI validation helper: `server.rs` (`is_valid_file_uri`).
 
@@ -138,7 +142,7 @@ make validate                         # generate-check + fmt + clippy + test-all
 | Area | File | Pattern |
 |------|------|---------|
 | Menus/indices | `lsp/src/menus.rs` | `test_*`, `synthetic` TOML via `from_toml_str`, `MenuData::load` real-data checks (`test_menus_are_not_empty`, `test_children_index_built`) |
-| Tokenize/parse | `lsp/src/parser.rs` | `test_tokenize_*`, `test_build_before_cursor_*`, `test_parse_line_*` |
+| Tokenize/parse | `lsp/src/parser.rs` | `test_tokenize_*`, `test_build_before_cursor_*`, `test_parse_line_*`, `test_walk_structure_*` |
 | Framing | `lsp/src/framing.rs` | golden streams: valid frames, garbage/malformed/duplicate headers terminal, oversized drained, EOF semantics |
 | Encoding/patching | `lsp/src/encoding.rs` | `test_lsp_position_to_offset_*`, `test_apply_incremental_edit_*`, UTF-16 round-trips, CRLF |
 | Caps/URI validation | `lsp/src/server.rs` | enclosure/capacity invariant tests, `is_valid_file_uri` sync with `crate::` |

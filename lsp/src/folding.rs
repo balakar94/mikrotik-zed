@@ -5,11 +5,12 @@
 // merged and sorted by `startLine`:
 //
 // 1. Brace regions — `{` … `}` pairs on DIFFERENT physical lines are folded
-//    with kind "region". Counting is quote-aware: brace characters inside
-//    `"…"` / `'…'` strings and inside `#` comments never open or close a
-//    region, and quote state carries across physical lines so a string split
-//    by a `\` continuation cannot desynchronize the counter. Unterminated
-//    braces at EOF simply never produce a region — no crash, no hang.
+//    with kind "region". Counting is quote-aware (shared scanner in
+//    `parser::walk_structure`): brace characters inside `"…"` / `'…'` strings
+//    and inside `#` comments never open or close a region, and quote state
+//    carries across physical lines so a string split by a `\` continuation
+//    cannot desynchronize the counter. Unterminated braces at EOF simply
+//    never produce a region — no crash, no hang.
 //
 // 2. Multi-line continuations — a logical line joined from several physical
 //    lines (trailing `\`) folds into its first line; this collapses the
@@ -20,16 +21,11 @@
 // conversion at the protocol boundary.
 
 use crate::diagnostics;
+use crate::{MAX_BRACE_DEPTH, StructureEvent, walk_structure};
 
 /// Defensive cap on emitted folding ranges. Documents are capped at 5 MiB;
 /// this bounds the response payload for pathologically nested input.
 const MAX_FOLDING_RANGES: usize = 5000;
-
-/// Maximum tracked open-brace depth. Beyond this, further `{` are ignored:
-/// memory stays bounded for adversarial input like "{{{{{…", and only
-/// regions beyond 4096 nesting levels (not expressible in real scripts)
-/// are lost.
-const MAX_BRACE_DEPTH: usize = 4096;
 
 /// One folding range in wire shape. `kind` is omitted when absent
 /// (LSP FoldingRange.kind is optional).
@@ -71,62 +67,43 @@ pub(crate) fn compute_folding_ranges(doc: &str) -> Vec<FoldingRange> {
 
 /// Brace regions: scan every physical line with quote/comment state carried
 /// across lines; match `{`/`}` pairs and keep those spanning multiple lines.
+///
+/// The quote/comment state machine itself lives in
+/// [`crate::parser::walk_structure`] — shared with the syntax diagnostics so
+/// both features agree on what is structural. This function only owns the
+/// stack matching and the multi-line filter.
 fn brace_regions(doc: &str) -> Vec<FoldingRange> {
     let mut out = Vec::new();
     // Stack of physical line indices where unclosed `{` sit.
     let mut opens: Vec<u32> = Vec::new();
 
-    let mut in_double = false;
-    let mut in_single = false;
-    let mut escaped = false;
-    let mut in_comment = false;
-
-    for (idx, line) in doc.lines().enumerate() {
-        let line_no = idx as u32;
-        for c in line.chars() {
-            if in_comment {
-                continue; // comments end at end-of-line (reset below)
-            }
-            if escaped {
-                // Escaped byte inside quotes: never structural.
-                escaped = false;
-                continue;
-            }
-            match c {
-                '\\' if in_double || in_single => escaped = true,
-                '"' if !in_single => in_double = !in_double,
-                '\'' if !in_double => in_single = !in_single,
-                '#' if !in_double && !in_single => in_comment = true,
-                '{' if !in_double && !in_single => {
-                    // Depth cap: ignore deeper opens; bounded memory, and
-                    // scripts never legitimately nest this deep.
-                    if opens.len() < MAX_BRACE_DEPTH {
-                        opens.push(line_no);
-                    }
-                }
-                '}' if !in_double && !in_single => {
-                    if let Some(start) = opens.pop() {
-                        // Only multi-line regions fold; single-line `{ }`
-                        // would produce a zero-height range clients render
-                        // as noise.
-                        if start < line_no {
-                            out.push(FoldingRange {
-                                start_line: start,
-                                end_line: line_no,
-                                kind: Some("region"),
-                            });
-                        }
-                    }
-                    // Unmatched close: ignored (no panic, no state damage).
-                }
-                _ => {}
+    walk_structure(doc, |ev| match ev {
+        StructureEvent::OpenBrace { line, .. } => {
+            // Depth cap (MAX_BRACE_DEPTH, defined beside the shared walker):
+            // ignore deeper opens; bounded memory, and scripts never
+            // legitimately nest this deep.
+            if opens.len() < MAX_BRACE_DEPTH {
+                opens.push(line as u32);
             }
         }
-        // Physical line boundary resets per-line states. Quote state does
-        // NOT reset: a `\`-continuation can legally split a quoted string.
-        in_comment = false;
-        escaped = false;
-    }
+        StructureEvent::CloseBrace { line, .. } => {
+            if let Some(start) = opens.pop() {
+                // Only multi-line regions fold; single-line `{ }`
+                // would produce a zero-height range clients render
+                // as noise.
+                if start < line as u32 {
+                    out.push(FoldingRange {
+                        start_line: start,
+                        end_line: line as u32,
+                        kind: Some("region"),
+                    });
+                }
+            }
+            // Unmatched close: ignored (no panic, no state damage).
+        }
+        // Unterminated quotes are diagnostics' concern; folding ignores them.
+        StructureEvent::UnterminatedQuote { .. } => {}
+    });
 
     // Braces still open at EOF emit nothing — unterminated blocks must not
     // fabricate ranges (and cannot crash or hang: the loop is linear).
