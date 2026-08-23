@@ -11,9 +11,10 @@
 //
 // Protocol notes:
 // - Uses Content-Length framing with JSON-RPC 2.0 over stdio.
-// - Advertises textDocumentSync = 1 (Full). Clients should send the full
-//   document text on each change. For robustness, incremental edits with
-//   a `range` are also handled by applying a best-effort patch.
+// - Advertises textDocumentSync = { openClose: true, change: 2 } (Incremental).
+//   Clients send range-scoped edits; for robustness full-text replacements
+//   (no `range`) are still handled, and a failed incremental patch falls
+//   back to a full document replace.
 // - Content-Length is capped at 10 MiB to avoid unbounded allocation.
 
 mod completion;
@@ -332,7 +333,13 @@ impl Server {
                     "result": {
                         "capabilities": {
                             "positionEncoding": self.position_encoding.as_str(),
-                            "textDocumentSync": 1,
+                            // Incremental sync (change = 2): the patching
+                            // path (apply_incremental_edit) is authoritative;
+                            // full-text changes remain supported as fallback.
+                            "textDocumentSync": {
+                                "openClose": true,
+                                "change": 2
+                            },
                             "completionProvider": {
                                 "triggerCharacters": ["/", " ", "="],
                             },
@@ -406,10 +413,11 @@ impl Server {
             }
 
             "textDocument/didChange" => {
-                // This server advertises textDocumentSync = 1 (Full), so clients
-                // should send the full text. For robustness, handle both:
-                // - Full sync: each change contains only "text" (replace doc).
+                // This server advertises textDocumentSync change = 2
+                // (Incremental), so clients normally send range-scoped edits.
+                // For robustness, handle both:
                 // - Incremental sync: changes contain "range" + "text" (patch doc).
+                // - Full sync: each change contains only "text" (replace doc).
                 let uri = params["params"]["textDocument"]["uri"].as_str()?;
                 if !is_valid_file_uri(uri) {
                     eprintln!("[rsc-ls] rejecting didChange with non-file URI: {uri:?}");
@@ -1190,6 +1198,13 @@ pub(crate) fn tokenize(text: &str) -> Vec<String> {
 ///
 /// `cursor_char` is a BYTE offset within the cursor line (already converted
 /// from the negotiated wire encoding by callers at the protocol boundary).
+///
+/// The result is intentionally NOT right-trimmed: trailing whitespace before
+/// the cursor is the signal that distinguishes "typing inside the last
+/// token" (value-completion mode) from "finished the token, starting a new
+/// one" (property-completion mode). The tokenizer ignores surrounding
+/// whitespace anyway, so only consumers that care about the cursor boundary
+/// can observe the difference.
 pub fn build_before_cursor(doc: &str, cursor_line: usize, cursor_char: usize) -> String {
     let lines: Vec<&str> = doc.lines().collect();
     if cursor_line >= lines.len() {
@@ -1218,7 +1233,7 @@ pub fn build_before_cursor(doc: &str, cursor_line: usize, cursor_char: usize) ->
         parts.insert(0, lines[i]);
     }
 
-    parts.join(" ").trim().to_string()
+    parts.join(" ")
 }
 
 /// Parse a line of RouterOS script into structural components.
@@ -1449,15 +1464,33 @@ type = "Directory"
             s.contains("/ip/route"),
             "should contain current line start: {s}"
         );
-        // Full expected: "/ip/address print /ip/route"
-        assert_eq!(s, "/ip/address print /ip/route");
+        // Cursor at character 10 sits ON the space after "/ip/route", and
+        // that boundary whitespace is preserved by design.
+        assert_eq!(s, "/ip/address print /ip/route ");
     }
 
     #[test]
-    fn test_build_before_cursor_trims() {
+    fn test_build_before_cursor_preserves_cursor_boundary_whitespace() {
         let doc = "  /ip/address add  ";
         let s = build_before_cursor(doc, 0, doc.len());
-        assert_eq!(s, "/ip/address add");
+        // Whitespace before the cursor is PRESERVED (both sides): the
+        // trailing part is the signal that the cursor sits after a finished
+        // token (property completions) rather than inside one (value
+        // completions). Leading indentation is irrelevant to the tokenizer.
+        assert_eq!(s, "  /ip/address add  ");
+    }
+
+    #[test]
+    fn test_build_before_cursor_boundary_distinguishes_token_modes() {
+        // Inside a token: no trailing whitespace…
+        let doc = "/ip/firewall/filter add chain=in";
+        assert_eq!(build_before_cursor(doc, 0, doc.len()), doc);
+        // …after whitespace: boundary preserved for completion gating.
+        let doc2 = "/ip/firewall/filter add chain=input ";
+        assert_eq!(
+            build_before_cursor(doc2, 0, doc2.len()),
+            "/ip/firewall/filter add chain=input "
+        );
     }
 
     #[test]
@@ -1991,7 +2024,9 @@ type = "Directory"
             "params": {}
         });
         let resp = server.handle_message("initialize", &msg).unwrap();
-        assert_eq!(resp["result"]["capabilities"]["textDocumentSync"], 1);
+        let sync = &resp["result"]["capabilities"]["textDocumentSync"];
+        assert_eq!(sync["openClose"], true);
+        assert_eq!(sync["change"], 2, "incremental sync must be advertised");
         assert_eq!(resp["result"]["capabilities"]["hoverProvider"], true);
         assert_eq!(resp["result"]["serverInfo"]["name"], "mikrotik-rsc-ls");
         // Assert against the crate version, not a literal, so version bumps
@@ -2811,13 +2846,27 @@ type = "enum (input | forward | output)"
     fn test_initialize_keeps_existing_capabilities_intact() {
         let (_, resp) = initialize(Some(serde_json::json!(["utf-8"])));
         let caps = &resp["result"]["capabilities"];
-        assert_eq!(caps["textDocumentSync"], 1);
+        assert_eq!(caps["textDocumentSync"]["openClose"], true);
+        assert_eq!(caps["textDocumentSync"]["change"], 2);
         assert_eq!(caps["hoverProvider"], true);
         assert_eq!(
             caps["completionProvider"]["triggerCharacters"],
             serde_json::json!(["/", " ", "="])
         );
         assert_eq!(caps["diagnosticProvider"]["interFileDependencies"], false);
+    }
+
+    #[test]
+    fn test_initialize_advertises_incremental_sync() {
+        // textDocumentSync must be the object form (openClose + change = 2),
+        // not the legacy scalar Full-sync kind. Incremental patching is
+        // implemented and tested (apply_incremental_edit); full-text
+        // replacements remain handled as a fallback.
+        let (_, resp) = initialize(None);
+        let sync = &resp["result"]["capabilities"]["textDocumentSync"];
+        assert!(sync.is_object(), "sync capability must be the object form");
+        assert_eq!(sync["change"], 2);
+        assert_eq!(sync["openClose"], true);
     }
 
     // ── utf16_to_byte_offset ──────────────────────────────────────

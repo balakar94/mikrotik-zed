@@ -125,7 +125,13 @@ pub fn compute_hover(
             } else {
                 &arg.arg_type
             };
-            let md = format!("**{}**\n\nType: `{}`", arg.name, typ);
+            let mut md = format!("**{}**\n\nType: `{}`", arg.name, typ);
+            if !arg.enum_values.is_empty() {
+                md.push_str(&format!("\n\nValues: {}", arg.enum_values.join(" | ")));
+            }
+            if !arg.description.is_empty() {
+                md.push_str(&format!("\n\n{}", arg.description));
+            }
             return Some(Hover {
                 contents: HoverContents {
                     kind: "markdown".to_string(),
@@ -401,6 +407,60 @@ type = ""
         let h =
             compute_hover(&data, line2, 2, doc, 1).expect("multiline property hover should work");
         assert!(h.contents.value.contains("**address**"));
+    }
+
+    #[test]
+    fn test_hover_property_includes_description_text() {
+        let data = synthetic_data();
+        let line = "/ip/address add address=1.1.1.1";
+        let prop_pos = line.rfind("address=").unwrap() + 2;
+        let h = compute_hover(&data, line, prop_pos, line, 0).expect("property hover");
+        assert!(h.contents.value.contains("**address**"));
+        assert!(h.contents.value.contains("Type: `ipPrefix`"));
+        assert!(
+            h.contents.value.contains("IP address"),
+            "hover must include the description text, got: {}",
+            h.contents.value
+        );
+    }
+
+    #[test]
+    fn test_hover_property_without_description_has_no_trailing_gap() {
+        // /ip/address interface has no description in this fixture.
+        let data = synthetic_data();
+        let line = "/ip/address add interface=ether1";
+        let prop_pos = line.find("interface").unwrap();
+        let h = compute_hover(&data, line, prop_pos, line, 0).expect("property hover");
+        // Type line present, no description section appended.
+        assert!(h.contents.value.contains("Type: `iface_enum`"));
+        assert_eq!(
+            h.contents.value.matches('\n').count(),
+            2,
+            "exactly header+type lines when no description"
+        );
+    }
+
+    #[test]
+    fn test_hover_property_shows_embedded_enum_values() {
+        let data = MenuData::from_toml_str(
+            r#"
+[[menus]]
+path = "/demo/enum"
+type = "Directory"
+[[menus.arguments]]
+name = "mode"
+type = "enum (on | of..."
+enum_values = ["on", "off", "auto"]
+"#,
+        );
+        let line = "/demo/enum set mode=on";
+        let pos = line.find("mode").unwrap() + 1;
+        let h = compute_hover(&data, line, pos, line, 0).expect("enum property hover");
+        assert!(
+            h.contents.value.contains("Values: on | off | auto"),
+            "complete embedded members shown even with truncated display type: {}",
+            h.contents.value
+        );
     }
 
     // ── Flag hover ────────────────────────────────────────────────

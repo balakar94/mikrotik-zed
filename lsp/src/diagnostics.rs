@@ -265,12 +265,16 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             }
 
             // ---- Rule 5: Type hint for enum properties with invalid value ----
+            // Members come from the embedded enum_values list when present
+            // (complete even for display-truncated types); the type-string
+            // parser is only a fallback. When neither yields members, the
+            // check stays silent rather than guessing.
             for (key, (value, span)) in &key_values {
                 // Find argument definition
                 if let Some(arg) = menu.arguments.iter().find(|a| a.name == *key)
                     && arg.arg_type.starts_with("enum")
                 {
-                    let allowed_vals = parse_enum_values(&arg.arg_type);
+                    let allowed_vals = arg.enum_members();
                     if !allowed_vals.is_empty() {
                         // Strip quotes from value
                         let val = value.trim().trim_matches('"').trim_matches('\'');
@@ -511,17 +515,6 @@ fn find_substring_range(haystack: &str, needle: &str) -> Option<(usize, usize)> 
     haystack
         .find(needle)
         .map(|start| (start, start + needle.len()))
-}
-
-fn parse_enum_values(type_str: &str) -> Vec<String> {
-    let inner = type_str
-        .strip_prefix("enum")
-        .and_then(|s| s.trim().strip_prefix('('))
-        .and_then(|s| s.strip_suffix(')'));
-    match inner {
-        Some(body) => body.split('|').map(|s| s.trim().to_string()).collect(),
-        None => Vec::new(),
-    }
 }
 
 #[cfg(test)]
@@ -843,6 +836,97 @@ type = "bool"
                 .any(|d| d.code.as_deref() == Some("unknown-menu")),
             "implicit parent /ip/firewall should not be unknown, got {:?}",
             diags
+        );
+    }
+
+    // ── Rule 5 via embedded enum_values ───────────────────────────
+
+    fn truncated_display_data() -> MenuData {
+        // Mirrors real generated data: display type truncated by the
+        // generator's 100-char cap, complete members in enum_values.
+        MenuData::from_toml_str(
+            r#"
+[[menus]]
+path = "/interface/wireless"
+type = "Directory"
+[[menus.arguments]]
+name = "band"
+type = "enum (2ghz-b | 2ghz-onlyg | 2ghz-b/g | 5ghz-a | 5ghz-onlyn | 5ghz-a/n | 2ghz-on..."
+enum_values = ["2ghz-b", "5ghz-a", "5ghz-onlyac"]
+[[menus.arguments]]
+name = "legacy-no-values"
+type = "enum (a | b"
+"#,
+        )
+    }
+
+    #[test]
+    fn test_invalid_enum_hint_fires_via_enum_values_despite_truncated_display() {
+        let data = truncated_display_data();
+        let diags =
+            compute_diagnostics(&data, "/interface/wireless set band=bogus", "file:///t.rsc");
+        let hint = diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some("invalid-enum-value"))
+            .expect("hint must fire using embedded enum_values");
+        assert!(hint.message.contains("bogus"));
+        assert!(hint.message.contains("2ghz-b | 5ghz-a | 5ghz-onlyac"));
+    }
+
+    #[test]
+    fn test_valid_embedded_enum_value_no_hint() {
+        let data = truncated_display_data();
+        for good in ["2ghz-b", "5ghz-a", "5ghz-onlyac"] {
+            let doc = format!("/interface/wireless set band={good}");
+            let diags = compute_diagnostics(&data, &doc, "file:///t.rsc");
+            assert!(
+                !diags
+                    .iter()
+                    .any(|d| d.code.as_deref() == Some("invalid-enum-value")),
+                "{good} is a documented member — no hint, got {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_truncated_type_without_values_stays_silent() {
+        // No enum_values AND unparsable display string → no hint (never guess).
+        let data = truncated_display_data();
+        let diags = compute_diagnostics(
+            &data,
+            "/interface/wireless set legacy-no-values=bogus",
+            "file:///t.rsc",
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("invalid-enum-value"))
+        );
+    }
+
+    #[test]
+    fn test_real_data_action_enum_hint_fires() {
+        // End-to-end on the regenerated table: action's display type is
+        // truncated, but its embedded enum_values make the rule live again.
+        let data = MenuData::load();
+        let doc = "/ip/firewall/filter add chain=input action=frobnicate";
+        let diags = compute_diagnostics(&data, doc, "file:///real.rsc");
+        let hint = diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some("invalid-enum-value"))
+            .expect("invalid-enum-value must fire on real data now");
+        assert!(hint.message.contains("frobnicate"));
+        assert!(hint.message.contains("accept"));
+
+        // A documented value stays clean.
+        let ok = compute_diagnostics(
+            &data,
+            "/ip/firewall/filter add chain=input action=accept",
+            "file:///real.rsc",
+        );
+        assert!(
+            !ok.iter()
+                .any(|d| d.code.as_deref() == Some("invalid-enum-value"))
         );
     }
 }

@@ -37,6 +37,11 @@ struct RawArgEntry {
     name: String,
     #[serde(rename = "type", default)]
     arg_type: String,
+    /// Complete enum members extracted upstream by the generator from the RAW
+    /// (untruncated) type string. Absent for non-enum types and for types the
+    /// docs list without members.
+    #[serde(default)]
+    enum_values: Vec<String>,
     #[serde(default)]
     description: String,
     #[serde(default)]
@@ -58,9 +63,42 @@ pub struct MenuEntry {
 pub struct ArgEntry {
     pub name: String,
     pub arg_type: String,
+    pub enum_values: Vec<String>,
     pub description: String,
     pub required: bool,
     pub unset: bool,
+}
+
+impl ArgEntry {
+    /// Enum members usable for completion and validation.
+    ///
+    /// Prefers the complete embedded `enum_values` array; falls back to
+    /// parsing the display type string (synthetic/test data, or entries whose
+    /// upstream docs carried no member list — those parse to empty when the
+    /// display string was truncated by the generator's 100-char cap).
+    pub fn enum_members(&self) -> Vec<String> {
+        if !self.enum_values.is_empty() {
+            return self.enum_values.clone();
+        }
+        parse_enum_values(&self.arg_type)
+    }
+}
+
+/// Parse enum members out of a display type string such as
+/// `enum (input | forward | output)`.
+///
+/// Fallback only: the display string may be truncated (trailing `...`) by the
+/// generator, in which case this returns whatever fits or nothing at all.
+/// Complete members come from [`ArgEntry::enum_values`] instead.
+pub(crate) fn parse_enum_values(type_str: &str) -> Vec<String> {
+    let inner = type_str
+        .strip_prefix("enum")
+        .and_then(|s| s.trim().strip_prefix('('))
+        .and_then(|s| s.strip_suffix(')'));
+    match inner {
+        Some(body) => body.split('|').map(|s| s.trim().to_string()).collect(),
+        None => Vec::new(),
+    }
 }
 
 // ── Child entry (for populating implicit children) ────────────────
@@ -261,6 +299,7 @@ impl From<RawArgEntry> for ArgEntry {
         ArgEntry {
             name: raw.name,
             arg_type: raw.arg_type,
+            enum_values: raw.enum_values,
             description: raw.description,
             required: raw.required,
             unset: raw.unset,
@@ -532,5 +571,93 @@ type = "Directory"
         let empty = MenuData::from_toml_str("");
         assert!(empty.ancestor_prefixes.contains("/"));
         assert_eq!(empty.ancestor_prefixes.len(), 1);
+    }
+
+    // ── enum_values field & member resolution ─────────────────────
+
+    #[test]
+    fn test_enum_values_deserialized_and_defaulted() {
+        let data = MenuData::from_toml_str(
+            r#"
+[[menus]]
+path = "/m"
+type = "Directory"
+[[menus.arguments]]
+name = "with-values"
+type = "enum (truncated | display)"
+enum_values = ["full", "complete", "list"]
+[[menus.arguments]]
+name = "without-values"
+type = "enum (a | b)"
+[[menus.arguments]]
+name = "plain"
+type = "ipPrefix"
+"#,
+        );
+        let menu = data.menu_by_path.get("/m").unwrap();
+
+        let with = menu
+            .arguments
+            .iter()
+            .find(|a| a.name == "with-values")
+            .unwrap();
+        assert_eq!(with.enum_values, vec!["full", "complete", "list"]);
+        // Embedded array wins over whatever the display string parses to.
+        assert_eq!(with.enum_members(), vec!["full", "complete", "list"]);
+
+        let without = menu
+            .arguments
+            .iter()
+            .find(|a| a.name == "without-values")
+            .unwrap();
+        assert!(without.enum_values.is_empty());
+        // Fallback: parse members out of the type string.
+        assert_eq!(without.enum_members(), vec!["a", "b"]);
+
+        let plain = menu.arguments.iter().find(|a| a.name == "plain").unwrap();
+        assert!(plain.enum_values.is_empty());
+        assert!(plain.enum_members().is_empty());
+    }
+
+    #[test]
+    fn test_enum_members_fallback_empty_on_truncated_type() {
+        // Mirrors real generated data BEFORE enum_values existed: truncated
+        // display string has no closing paren, so the fallback yields nothing
+        // rather than garbage.
+        let arg = ArgEntry {
+            name: "band".to_string(),
+            arg_type: "enum (2ghz-b | 2ghz-onlyg | 2ghz-b/g |...".to_string(),
+            enum_values: Vec::new(),
+            description: String::new(),
+            required: false,
+            unset: false,
+        };
+        assert!(arg.enum_members().is_empty());
+
+        // With the embedded array present, members are complete despite the
+        // truncated display string.
+        let mut fixed = arg.clone();
+        fixed.enum_values = vec!["2ghz-b".to_string(), "5ghz-a".to_string()];
+        assert_eq!(fixed.enum_members(), vec!["2ghz-b", "5ghz-a"]);
+    }
+
+    #[test]
+    fn test_real_data_action_has_complete_enum_values() {
+        // Root fix verification: the regenerated command table carries a
+        // complete member list for /ip/firewall/filter action, whose display
+        // string is truncated by the generator's 100-char cap.
+        let data = MenuData::load();
+        let filter = data.menu_by_path.get("/ip/firewall/filter").expect("menu");
+        let action = filter
+            .arguments
+            .iter()
+            .find(|a| a.name == "action")
+            .expect("action argument");
+        assert!(
+            !action.enum_values.is_empty(),
+            "action must embed enum_values after regeneration"
+        );
+        assert!(action.enum_values.iter().any(|v| v == "accept"));
+        assert_eq!(action.enum_members(), action.enum_values);
     }
 }
