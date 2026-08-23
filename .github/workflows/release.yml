@@ -183,6 +183,9 @@ jobs:
           - os: macos-latest
             target: x86_64-apple-darwin
             binary: rsc-ls-x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: rsc-ls-x86_64-pc-windows-msvc
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -358,6 +361,7 @@ jobs:
           - `rsc-ls-x86_64-apple-darwin` – macOS Intel
           - `rsc-ls-aarch64-unknown-linux-gnu` – Linux ARM64
           - `rsc-ls-x86_64-unknown-linux-gnu` – Linux x64
+          - `rsc-ls-x86_64-pc-windows-msvc` – Windows x64
 
           SHA256 checksums in `SHA256SUMS` and per-file `*.sha256`. Attestations are attached as build provenance.
 
