@@ -157,6 +157,10 @@ make validate                         # generate-check + fmt + clippy + test-all
 | Symbols/folding | `lsp/src/symbols.rs`, `lsp/src/folding.rs` | unit fixtures + server-level integration in `main.rs` (`test_document_symbols_*`, `test_folding_ranges_*`) incl. untracked-null and `-32602` cases |
 | Manual E2E | Zed | `Install Dev Extension` → open `.rsc` → trigger `/` ` ` `=` completion, hover, folding gutter, outline/document symbols, verify `publishDiagnostics` |
 
+### E2E harness (`lsp/tests/e2e.rs`)
+
+Permanent wire-level tests that spawn the real binary via `CARGO_BIN_EXE_rsc-ls` (same pattern as `cli.rs`) and speak Content-Length framed JSON-RPC over stdio with a small std-only client (reader thread + `mpsc`; every wait bounded at 5 s so a wedged server fails instead of hanging). Locked wire truths: full capability surface + `serverInfo.version` on `initialize`; push diagnostics for the hagezi split-URL continuation (typo surfaces, no unknown-menu/unclosed-quote false positives) and their republish after a range-based incremental didChange; completion/hover/documentSymbol/foldingRange/codeAction/signatureHelp happy paths; `-32601` error contract with verbatim id echo; LSP 3.17 shutdown→exit code 0; UTF-16 as default position encoding when the client offers none. Runs on Linux, macOS and Windows via plain `cargo test -p rsc-ls` — no workflow wiring. Debug server stderr with `RSC_LS_E2E_STDERR=1 cargo test -p rsc-ls --test e2e -- --nocapture`.
+
 Edge cases covered: empty files, quoted strings (incl. braces inside them), `[find]`, multi-menu docs, incremental edits, 5 MiB cap, UTF-8/UTF-16 positions (`héllo`, emoji), implicit parents, truncated `enum` in real data, unterminated braces/quotes at EOF.
 
 ## Debugging
