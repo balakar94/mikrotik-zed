@@ -25,7 +25,7 @@ Working end-to-end: workspace member `lsp/` (native binary `rsc-ls`) + WASM `cdy
   data/commands.toml embedded at compile time → MenuData::load() → menu_by_path + child_names_by_parent
 ```
 
-Protocol: `Content-Length` framing, `textDocumentSync = {"openClose": true, "change": 2}` (Incremental), `triggerCharacters ["/"," ","="]`, `diagnosticProvider {interFileDependencies:false}`, `signatureHelpProvider {triggerCharacters:[" ","="]}`. Range-scoped edits are the authoritative path (`apply_incremental_edit`); full-text replacements and failed patches fall back to a full document replace. The server negotiates `positionEncoding` during `initialize` (prefers utf-8, falls back to utf-16 per LSP 3.17 default) and keeps all internal position math byte-based, converting only at the protocol boundary (`lsp_character_to_byte_offset`, `convert_diagnostic_ranges`).
+Protocol: `Content-Length` framing, `textDocumentSync = {"openClose": true, "change": 2}` (Incremental), `triggerCharacters ["/"," ","=",":"]`, `diagnosticProvider {interFileDependencies:false}`, `signatureHelpProvider {triggerCharacters:[" ","="]}`. Range-scoped edits are the authoritative path (`apply_incremental_edit`); full-text replacements and failed patches fall back to a full document replace. The server negotiates `positionEncoding` during `initialize` (prefers utf-8, falls back to utf-16 per LSP 3.17 default) and keeps all internal position math byte-based, converting only at the protocol boundary (`lsp_character_to_byte_offset`, `convert_diagnostic_ranges`).
 
 ### File Responsibilities
 
@@ -53,11 +53,11 @@ Protocol: `Content-Length` framing, `textDocumentSync = {"openClose": true, "cha
 
 ## Capabilities
 
-Advertised in `initialize`: `positionEncoding`, `textDocumentSync {openClose:true, change:2}`, `completionProvider {triggerCharacters:["/", " ", "="]}`, `hoverProvider`, `documentSymbolProvider`, `foldingRangeProvider`, `codeActionProvider`, `definitionProvider`, `referencesProvider`, `signatureHelpProvider {triggerCharacters:[" ", "="]}`, `diagnosticProvider {interFileDependencies:false}`.
+Advertised in `initialize`: `positionEncoding`, `textDocumentSync {openClose:true, change:2}`, `completionProvider {triggerCharacters:["/", " ", "=", ":"]}`, `hoverProvider`, `documentSymbolProvider`, `foldingRangeProvider`, `codeActionProvider`, `definitionProvider`, `referencesProvider`, `signatureHelpProvider {triggerCharacters:[" ", "="]}`, `diagnosticProvider {interFileDependencies:false}`.
 
 ### Completion (`textDocument/completion`)
 
-Strategy: return all candidates, let Zed fuzzy-filter. Only exception: `property=` → value completions.
+Strategy: return all candidates, let Zed fuzzy-filter. Exceptions: `property=` → value completions; a `:`-prefixed token under the cursor → only labels starting with the typed `:`-word (no fallback, see below).
 
 - No path → roots (`get_root_completion_items`, `kind::CLASS`)
 - Before verb → sub-menus (`get_sub_menu_completion_items`) + `STANDARD_VERBS` + `Command` children (`get_verb_completion_items`, `kind::FUNCTION`)
@@ -66,7 +66,7 @@ Strategy: return all candidates, let Zed fuzzy-filter. Only exception: `property
 
 Context: `build_before_cursor` + `parse_line` (both in `parser.rs`; `parse_line` uses `child_names_by_parent` for implicit parents like `/ip/firewall`).
 
-Statement snippets (Stage B): at a statement start — no previous token on the logical line, or the previous quote-aware token is exactly `{` or `;` — with an empty resolved menu path and no trailing `/`, four template items (`:if`, `:foreach`, `:for`, `:do`; `kind::SNIPPET`, `insertTextFormat 2`, `sortText "9…"`) are appended to whatever base candidates apply. Strict token equality keeps them out of mid-command positions (`do={` is one token) and out of quoted strings. Note `:` is NOT a trigger character, so they surface on space-triggered requests at statement start.
+Statement snippets (Stage B): at a statement start — no previous token on the logical line, or the previous quote-aware token is exactly `{` or `;` — with an empty resolved menu path and no trailing `/`, four template items (`:if`, `:foreach`, `:for`, `:do`; `kind::SNIPPET`, `insertTextFormat 2`, `sortText "9…"`) are appended to whatever base candidates apply. Strict token equality keeps them out of mid-command positions (`do={` is one token) and out of quoted strings. `:` IS a completion trigger character: while a colon word is being typed (bare `:`, `:i`, …), `compute_completions` evaluates statement-start on the tokens PRECEDING the partial word, then filters the final list to labels starting with the typed token — so a bare `:` shows exactly these script items, `:i` narrows to `:if`, and an unknown word (`:put`) completes to nothing; there is deliberately no fallback to menu/property candidates in that context. Space-fired requests keep the historical behavior (snippets appended unfiltered alongside root candidates at statement start).
 
 ### Document Symbols (`textDocument/documentSymbol`, `compute_document_symbols` in `symbols.rs`)
 
@@ -162,7 +162,7 @@ make validate                         # generate-check + fmt + clippy + test-all
 | Diagnostics | `lsp/src/diagnostics.rs` | `test_unknown_menu`, `test_missing_required`, `test_duplicate`, `test_invalid_enum`, `test_large_doc_capped`, `test_implicit_parent` |
 | Symbols/folding | `lsp/src/symbols.rs`, `lsp/src/folding.rs` | unit fixtures + server-level integration in `main.rs` (`test_document_symbols_*`, `test_folding_ranges_*`) incl. untracked-null and `-32602` cases |
 | Navigation | `lsp/src/navigation.rs` | unit: declaration extraction (incl. continuation-split), usage scan (`$$`, strings, comments, parens/arithmetic), definition-choice rule, references counts/cap; server-level in `main.rs` (`test_server_definition_*`, `test_server_references_*`, UTF-16 emoji pin); E2E wire tests |
-| Manual E2E | Zed | `Install Dev Extension` → open `.rsc` → trigger `/` ` ` `=` completion, hover, folding gutter, outline/document symbols, verify `publishDiagnostics` |
+| Manual E2E | Zed | `Install Dev Extension` → open `.rsc` → trigger `/` ` ` `=` `:` completion, hover, folding gutter, outline/document symbols, verify `publishDiagnostics` |
 
 ### E2E harness (`lsp/tests/e2e.rs`)
 

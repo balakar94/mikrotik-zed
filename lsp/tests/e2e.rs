@@ -446,7 +446,7 @@ fn initialize_advertises_full_capability_surface_and_version() {
     );
     assert_eq!(
         caps["completionProvider"]["triggerCharacters"],
-        json!(["/", " ", "="])
+        json!(["/", " ", "=", ":"])
     );
     assert_eq!(caps["hoverProvider"], true);
     assert_eq!(caps["documentSymbolProvider"], true);
