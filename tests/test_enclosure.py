@@ -453,14 +453,18 @@ class TestCI:
         assert "save-if:" in release, "release.yml should also have save-if"
         assert "refs/heads/main" in release
 
-    def test_ci_uses_pinned_actions(self, tmp_path):
-        ci = _read(CI_YML)
-        # Check that actions use pinned versions (v4, v5 etc)
-        assert "actions/checkout@v4" in ci
-        # Use tmp_path to dummy ensure workflow file is valid yaml (if tomli available, try parse)
-        dummy = tmp_path / "dummy.yml"
-        dummy.write_text(ci[:500])
-        assert dummy.exists()
+    def test_ci_uses_pinned_actions(self):
+        # Every action reference must be pinned to a full 40-hex commit SHA
+        # (mutable tags/branches are a supply-chain risk). Version comments
+        # after the SHA are optional documentation.
+        sha_ref = re.compile(r"uses:\s*\S+@[0-9a-f]{40}(\s|#|$)")
+        any_uses = False
+        for wf in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")):
+            uses_lines = [ln for ln in wf.read_text(encoding="utf-8").splitlines() if re.search(r"\buses:\s*\S+", ln)]
+            for ln in uses_lines:
+                any_uses = True
+                assert sha_ref.search(ln), f"{wf.name}: unpinned action ref -> {ln.strip()}"
+        assert any_uses, "no workflow 'uses:' lines found"
 
 
 # ----------------------------------------------------------------------
