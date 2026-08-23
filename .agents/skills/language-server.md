@@ -25,7 +25,7 @@ Working end-to-end: workspace member `lsp/` (native binary `rsc-ls`) + WASM `cdy
   data/commands.toml embedded at compile time → MenuData::load() → menu_by_path + child_names_by_parent
 ```
 
-Protocol: `Content-Length` framing, `textDocumentSync = {"openClose": true, "change": 2}` (Incremental), `triggerCharacters ["/"," ","="]`, `diagnosticProvider {interFileDependencies:false}`. Range-scoped edits are the authoritative path (`apply_incremental_edit`); full-text replacements and failed patches fall back to a full document replace. The server negotiates `positionEncoding` during `initialize` (prefers utf-8, falls back to utf-16 per LSP 3.17 default) and keeps all internal position math byte-based, converting only at the protocol boundary (`lsp_character_to_byte_offset`, `convert_diagnostic_ranges`).
+Protocol: `Content-Length` framing, `textDocumentSync = {"openClose": true, "change": 2}` (Incremental), `triggerCharacters ["/"," ","="]`, `diagnosticProvider {interFileDependencies:false}`, `signatureHelpProvider {triggerCharacters:[" ","="]}`. Range-scoped edits are the authoritative path (`apply_incremental_edit`); full-text replacements and failed patches fall back to a full document replace. The server negotiates `positionEncoding` during `initialize` (prefers utf-8, falls back to utf-16 per LSP 3.17 default) and keeps all internal position math byte-based, converting only at the protocol boundary (`lsp_character_to_byte_offset`, `convert_diagnostic_ranges`).
 
 ### File Responsibilities
 
@@ -41,6 +41,7 @@ Protocol: `Content-Length` framing, `textDocumentSync = {"openClose": true, "cha
 | `lsp/src/menus.rs` | `MenuData::load()` / `from_toml_str` (test-only), `COMMANDS_TOML`, validation (≤256, charset, `..`, control), `menu_by_path`, `child_names_by_parent`, `STANDARD_VERBS` (15) |
 | `lsp/src/completion.rs` | `compute_completions` → root/sub-menu/verb/arg/value + statement-start snippet templates; `kind` CLASS/FUNCTION/PROPERTY/CONSTANT/ENUM_MEMBER/SNIPPET |
 | `lsp/src/hover.rs` | `compute_hover` (menu→property→flag→verb), `find_word_start/end` (includes `/ - _`, UTF-8 safe) |
+| `lsp/src/signature.rs` | `compute_signature_help` — named-parameter SignatureHelp (required-first label segments, offset labels), `resolve_verb_token` (FIRST-bare-word verb anchor), activeParameter key matching |
 | `lsp/src/diagnostics.rs` | `compute_diagnostics` — 7 rules (5 menu + 2 syntax: unclosed brace/quote family), `source="rsc-ls"`, capped; also owns `logical_lines()` (continuation joining) shared with symbols/folding, and `resolve_menu_for_line()` (menu context for a physical line) used by code actions |
 | `lsp/src/suggest.rs` | `damerau_levenshtein` (OSA variant), `suggestion_threshold`, `best_candidate` — deterministic did-you-mean engine behind code actions |
 | `lsp/src/symbols.rs` | `compute_document_symbols` — flat symbol list: menu commands → Object(19), `:local`/`:global` → Variable(13) named by identifier, other `:verb` → Function(12); skips bare fragments/comments |
@@ -51,7 +52,7 @@ Protocol: `Content-Length` framing, `textDocumentSync = {"openClose": true, "cha
 
 ## Capabilities
 
-Advertised in `initialize`: `positionEncoding`, `textDocumentSync {openClose:true, change:2}`, `completionProvider {triggerCharacters:["/", " ", "="]}`, `hoverProvider`, `documentSymbolProvider`, `foldingRangeProvider`, `codeActionProvider`, `diagnosticProvider {interFileDependencies:false}`.
+Advertised in `initialize`: `positionEncoding`, `textDocumentSync {openClose:true, change:2}`, `completionProvider {triggerCharacters:["/", " ", "="]}`, `hoverProvider`, `documentSymbolProvider`, `foldingRangeProvider`, `codeActionProvider`, `signatureHelpProvider {triggerCharacters:[" ", "="]}`, `diagnosticProvider {interFileDependencies:false}`.
 
 ### Completion (`textDocument/completion`)
 
@@ -77,6 +78,10 @@ Two sources merged and sorted by `startLine`, emitted only when `startLine < end
 ### Hover (`textDocument/hover`, `compute_hover` in `hover.rs`)
 
 Order: 1) menu path (`### /ip/address` + `Type:` + `Arguments:` + `Flags:`) 2) property (`**address** Type: ipPrefix`) 3) flag (`**X** — disabled`) 4) standard verb (`**add** — Standard RouterOS command`). Returns `Hover{contents:{kind:"markdown",value}}` or `None`.
+
+### Signature Help (`textDocument/signatureHelp`, `compute_signature_help` in `signature.rs`)
+
+Adapted to RouterOS's named-parameter CLI (no positional parentheses): ONE `SignatureInformation` describes the resolved `/menu verb` command, and every `ParameterInformation` is a `name=type` segment of that single-line label, addressed by `[start, end]` BYTE offsets into the label string. Properties come from the menu's `arguments` only (flags and `read_only` entries are never typed as `name=value`, so listing them would mislead), ordered REQUIRED FIRST then alphabetically and capped at 40 (`MAX_SIGNATURE_PROPERTIES`). The verb is anchored by `resolve_verb_token`, which mirrors `parse_line`'s sub-menu walk but takes the FIRST bare word after the path region — while a partial property is being typed (`/tool fetch add che`) `parse_line.command` already points at that fragment, which would break activeParameter detection. `activeParameter` comes from the newest quote-aware token after the verb the cursor has reached: its KEY before `=` matches a property exactly, else by unique prefix (`che` → check-certificate only when unambiguous; ambiguous prefixes highlight nothing), and a cursor INSIDE a quoted value keeps its key active because tokenization keeps `key="…"` as one token. Anti-noise gating (null result): untracked URI, no logical line covering the cursor, no resolvable menu, no verb on the line, or a menu with zero arguments. Context resolution reuses the diagnostics pipeline (`logical_lines` join once per request → `covering_logical_line` → `parse_line` → `menu_by_path`; cursor mapped via `LogicalLine::logical_offset_from_physical`); malformed params → `-32602`.
 
 ### Diagnostics (push `publishDiagnostics` + pull `textDocument/diagnostic`, `compute_diagnostics` in `diagnostics.rs`)
 
