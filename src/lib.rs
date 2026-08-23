@@ -1,5 +1,8 @@
 use zed_extension_api::{self as zed, LanguageServerId, Result, Worktree};
 
+mod sha256;
+mod verify;
+
 const BINARY_NAME: &str = "rsc-ls";
 const GITHUB_REPO: &str = "balakar94/mikrotik-zed";
 
@@ -165,6 +168,31 @@ impl zed::Extension for RscExtension {
             );
             return Err(msg);
         }
+
+        // 5) Supply-chain verification: hash the downloaded binary against the
+        // release's `.sha256` companion BEFORE it is made executable or run.
+        // Fail closed on any verification problem — never fall back to
+        // executing an unverified binary.
+        let verified_digest = match verify::verify_downloaded_binary(BINARY_NAME, &url) {
+            Ok(prefix) => prefix,
+            Err(failure) => {
+                let msg = failure.describe(&url);
+                // Best-effort cleanup so neither this session nor a later one
+                // can pick up the unverified binary from the work dir.
+                if let Err(remove_err) = std::fs::remove_file(BINARY_NAME) {
+                    eprintln!(
+                        "[mikrotik-zed] warning: could not remove unverified {BINARY_NAME}: {remove_err}"
+                    );
+                }
+                eprintln!("[mikrotik-zed] {msg}");
+                zed::set_language_server_installation_status(
+                    language_server_id,
+                    &zed::LanguageServerInstallationStatus::Failed(msg.clone()),
+                );
+                return Err(msg);
+            }
+        };
+        eprintln!("[mikrotik-zed] sha256 verified {verified_digest} ({triple})");
 
         if let Err(e) = zed::make_file_executable(BINARY_NAME) {
             let msg = format!("Downloaded {BINARY_NAME} but failed to make executable: {e}");

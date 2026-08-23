@@ -39,7 +39,11 @@ language_server_command(id, worktree) called per worktree
                                    | x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu)
        set_language_server_installation_status(CheckingForUpdate → Downloading → None/Failed)
        latest_github_release() → github_release_by_tag_name("v<version>") → direct URL fallback
-       download_file(url, "rsc-ls", Uncompressed) → make_file_executable → cache
+       download_file(url, "rsc-ls", Uncompressed)
+       fetch(url + ".sha256") → sha256 verify
+         ├─ match    → make_file_executable → cache
+         └─ mismatch / bad companion / fetch error → FAIL CLOSED:
+              delete downloaded binary + status Failed (never executed)
               │
               ▼
          rsc-ls --stdio JSON-RPC 2.0
@@ -50,6 +54,18 @@ language_server_command(id, worktree) called per worktree
            └─ textDocument/diagnostic (pull)
 Windows → auto-download error; instruct manual build.
 ```
+
+### Supply-chain verification (auto-download)
+
+Downloads are checksum-verified before they are ever executed: after
+`download_file`, the shim fetches the release's `<asset>.sha256` companion via
+the Zed host HTTP client, hashes the downloaded bytes with a built-in pure-Rust
+SHA-256 (`src/sha256.rs`, no dependencies), and compares digests. Any failure —
+companion fetch error, unparseable companion, or hash mismatch — **fails
+closed**: the binary is deleted, `LanguageServerInstallationStatus::Failed` is
+set, and the binary is never run. Status/log messages show only 12-character
+digest prefixes, never full hashes. Note: the PATH/cached-binary fast paths
+(steps 1–3) are trusted as-is; only freshly downloaded artifacts are verified.
 
 ## extension.toml Format
 
