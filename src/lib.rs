@@ -1,5 +1,6 @@
 use zed_extension_api::{self as zed, LanguageServerId, Result, Worktree};
 
+mod platform;
 mod sha256;
 mod verify;
 
@@ -25,8 +26,17 @@ impl zed::Extension for RscExtension {
         language_server_id: &LanguageServerId,
         worktree: &Worktree,
     ) -> Result<zed::Command> {
-        // 1) Fast path: binary in PATH (developer local build or manual install)
-        if let Some(path) = worktree.which(BINARY_NAME) {
+        // Local file/spawn name for this platform (`rsc-ls.exe` on Windows).
+        let (os, arch) = zed::current_platform();
+        let binary_name = platform::server_binary_name(os);
+
+        // 1) Fast path: binary in PATH (developer local build or manual install).
+        //    The plain name is probed everywhere; Windows manual installs keep
+        //    the `.exe` suffix, so probe that there too (no-op elsewhere).
+        if let Some(path) = worktree
+            .which(BINARY_NAME)
+            .or_else(|| worktree.which(binary_name))
+        {
             eprintln!("[mikrotik-zed] using {BINARY_NAME} from PATH: {path}");
             self.cached_binary = Some(path.clone());
             return Ok(zed::Command {
@@ -38,19 +48,20 @@ impl zed::Extension for RscExtension {
 
         // 2) Reuse cached binary from previous successful resolution in this session
         if let Some(cached) = &self.cached_binary {
-            // `cached` may be an absolute PATH result or the relative "rsc-ls" from a prior download.
-            // Try to verify it is still executable; if not, fall through to download.
-            // We probe by attempting to make it executable – a no-op if already executable but
-            // fails if file does not exist.
-            let probe = if cached == BINARY_NAME {
-                zed::make_file_executable(cached).is_ok()
+            // `cached` may be an absolute PATH result or the platform-relative
+            // spawn name ("rsc-ls" / "rsc-ls.exe") from a prior download.
+            // Spawnability is probed directly: Zed's host turns
+            // `make_file_executable` into an unconditional no-op on non-unix
+            // platforms, so its `Ok` says nothing about presence or exec bits.
+            let probe = if cached.as_str() == binary_name {
+                platform::is_executable(cached)
             } else {
                 // Absolute path from PATH – assume it still exists; worktree.which already failed
                 // so this is a stale cache; fall through to download.
                 false
             };
             if probe {
-                eprintln!("[mikrotik-zed] reusing cached {BINARY_NAME}: {cached}");
+                eprintln!("[mikrotik-zed] reusing cached binary: {cached}");
                 return Ok(zed::Command {
                     command: cached.clone(),
                     args: vec![],
@@ -59,22 +70,24 @@ impl zed::Extension for RscExtension {
             }
         }
 
-        // 3) Check if a previously downloaded binary exists in the extension work dir.
-        // Downloaded binaries are stored as `rsc-ls` (uncompressed) in the extension's
-        // working directory. `make_file_executable` succeeds only if the file exists.
-        if zed::make_file_executable(BINARY_NAME).is_ok() {
-            eprintln!("[mikrotik-zed] found cached {BINARY_NAME} in extension dir, reusing");
-            self.cached_binary = Some(BINARY_NAME.to_string());
+        // 3) Reuse a previously downloaded binary from the extension work dir.
+        // Downloaded binaries are stored (uncompressed) under the platform spawn
+        // name — `rsc-ls`, or `rsc-ls.exe` on Windows — and must already carry
+        // their exec bits from installation. If something stripped them since,
+        // fall through to a fresh download instead of a doomed spawn: its
+        // strict post-download gate either repairs the file or fails loudly.
+        if platform::is_executable(binary_name) {
+            eprintln!("[mikrotik-zed] found cached {binary_name} in extension dir, reusing");
+            self.cached_binary = Some(binary_name.to_string());
             return Ok(zed::Command {
-                command: BINARY_NAME.to_string(),
+                command: binary_name.to_string(),
                 args: vec![],
                 env: worktree.shell_env(),
             });
         }
 
         // 4) Auto-download from GitHub Releases
-        let (os, arch) = zed::current_platform();
-        let triple = match platform_triple(os, arch) {
+        let triple = match platform::asset_triple(os, arch) {
             Ok(t) => t,
             Err(e) => {
                 return Err(format!(
@@ -151,15 +164,17 @@ impl zed::Extension for RscExtension {
             &zed::LanguageServerInstallationStatus::Downloading,
         );
 
+        // Destination uses the platform spawn name: on Windows the bytes must
+        // land in a file named `rsc-ls.exe` or the spawn will fail.
         let download_result =
-            zed::download_file(&url, BINARY_NAME, zed::DownloadedFileType::Uncompressed);
+            zed::download_file(&url, binary_name, zed::DownloadedFileType::Uncompressed);
 
         if let Err(e) = download_result {
             let msg = format!(
                 "Failed to download {BINARY_NAME} ({triple}) from {url}: {e}. \
                 Manual install: cargo build -p rsc-ls --release and add target/release to PATH, \
                 or download {asset_name} from https://github.com/{GITHUB_REPO}/releases \
-                and place as {BINARY_NAME} in PATH. Original error: {e}"
+                and place as {binary_name} in PATH. Original error: {e}"
             );
             eprintln!("[mikrotik-zed] {msg}");
             zed::set_language_server_installation_status(
@@ -173,15 +188,15 @@ impl zed::Extension for RscExtension {
         // release's `.sha256` companion BEFORE it is made executable or run.
         // Fail closed on any verification problem — never fall back to
         // executing an unverified binary.
-        let verified_digest = match verify::verify_downloaded_binary(BINARY_NAME, &url) {
+        let verified_digest = match verify::verify_downloaded_binary(binary_name, &url) {
             Ok(prefix) => prefix,
             Err(failure) => {
                 let msg = failure.describe(&url);
                 // Best-effort cleanup so neither this session nor a later one
                 // can pick up the unverified binary from the work dir.
-                if let Err(remove_err) = std::fs::remove_file(BINARY_NAME) {
+                if let Err(remove_err) = std::fs::remove_file(binary_name) {
                     eprintln!(
-                        "[mikrotik-zed] warning: could not remove unverified {BINARY_NAME}: {remove_err}"
+                        "[mikrotik-zed] warning: could not remove unverified {binary_name}: {remove_err}"
                     );
                 }
                 eprintln!("[mikrotik-zed] {msg}");
@@ -194,8 +209,8 @@ impl zed::Extension for RscExtension {
         };
         eprintln!("[mikrotik-zed] sha256 verified {verified_digest} ({triple})");
 
-        if let Err(e) = zed::make_file_executable(BINARY_NAME) {
-            let msg = format!("Downloaded {BINARY_NAME} but failed to make executable: {e}");
+        if let Err(e) = zed::make_file_executable(binary_name) {
+            let msg = format!("Downloaded {binary_name} but failed to make executable: {e}");
             eprintln!("[mikrotik-zed] {msg}");
             zed::set_language_server_installation_status(
                 language_server_id,
@@ -209,35 +224,16 @@ impl zed::Extension for RscExtension {
             &zed::LanguageServerInstallationStatus::None,
         );
         eprintln!(
-            "[mikrotik-zed] {BINARY_NAME} downloaded and cached for {triple} -> {BINARY_NAME}"
+            "[mikrotik-zed] {BINARY_NAME} downloaded and cached for {triple} -> {binary_name}"
         );
 
-        self.cached_binary = Some(BINARY_NAME.to_string());
+        self.cached_binary = Some(binary_name.to_string());
 
         Ok(zed::Command {
-            command: BINARY_NAME.to_string(),
+            command: binary_name.to_string(),
             args: vec![],
             env: worktree.shell_env(),
         })
-    }
-}
-
-fn platform_triple(os: zed::Os, arch: zed::Architecture) -> std::result::Result<String, String> {
-    use zed::Architecture as A;
-    use zed::Os as O;
-    match (os, arch) {
-        (O::Mac, A::Aarch64) => Ok("aarch64-apple-darwin".to_string()),
-        (O::Mac, A::X8664) => Ok("x86_64-apple-darwin".to_string()),
-        (O::Mac, A::X86) => Ok("x86_64-apple-darwin".to_string()),
-        (O::Linux, A::Aarch64) => Ok("aarch64-unknown-linux-gnu".to_string()),
-        (O::Linux, A::X8664) => Ok("x86_64-unknown-linux-gnu".to_string()),
-        (O::Linux, A::X86) => Ok("x86_64-unknown-linux-gnu".to_string()),
-        (O::Windows, A::X8664) => Ok("x86_64-pc-windows-msvc".to_string()),
-        (os, arch) => Err(format!(
-            "Platform not supported for {BINARY_NAME} auto-download (os={os:?} arch={arch:?}). \
-            Install {BINARY_NAME} manually: cargo build -p rsc-ls --release and put it in PATH, \
-            or download a binary from https://github.com/{GITHUB_REPO}/releases"
-        )),
     }
 }
 

@@ -21,6 +21,7 @@ LSP_MAIN = REPO_ROOT / "lsp" / "src" / "main.rs"
 LSP_DIAG = REPO_ROOT / "lsp" / "src" / "diagnostics.rs"
 LSP_MENUS = REPO_ROOT / "lsp" / "src" / "menus.rs"
 LIB_RS = REPO_ROOT / "src" / "lib.rs"
+PLATFORM_RS = REPO_ROOT / "src" / "platform.rs"
 EXTRACT_PY = REPO_ROOT / "scripts" / "extract_commands.py"
 DEPLOY_PY = REPO_ROOT / "scripts" / "mikrotik-deploy.py"
 INJECTIONS_SCM = REPO_ROOT / "languages" / "rsc" / "injections.scm"
@@ -222,6 +223,22 @@ class TestWasmSandbox:
                 continue
             if "cfg(" in stripped or "cfg!" in stripped:
                 assert False, f"src/lib.rs contains forbidden cfg usage: {line!r}"
+
+    def test_make_file_executable_not_used_as_existence_probe(self):
+        src = _read(LIB_RS)
+        # Zed's host makes `make_file_executable` an unconditional Ok no-op on
+        # non-unix platforms, so `.is_ok()` on it would "find" binaries that do
+        # not exist on Windows. Spawnability must be probed via the filesystem.
+        for lineno, raw_line in enumerate(src.splitlines(), start=1):
+            line = raw_line.strip()
+            if "make_file_executable(" in line and ".is_ok()" in line:
+                pytest.fail(
+                    f"line {lineno}: make_file_executable used as existence probe: {raw_line}"
+                )
+        assert "is_executable(" in src, "reuse paths must gate on platform::is_executable"
+        assert (
+            "std::fs::metadata(" in _read(PLATFORM_RS) or "fs::metadata(" in _read(PLATFORM_RS)
+        ), "is_executable must probe via fs::metadata"
 
     def test_uses_current_platform_and_worktree(self):
         txt = _read(LIB_RS)
@@ -533,23 +550,44 @@ class TestNoHardcodedSecrets:
 # ----------------------------------------------------------------------
 class TestWasmPlatformTriples:
     def test_platform_triple_mapping(self):
-        txt = _read(LIB_RS)
-        # Expected triples
-        expected = {
-            ("Mac", "Aarch64"): "aarch64-apple-darwin",
-            ("Mac", "X8664"): "x86_64-apple-darwin",
-            ("Linux", "Aarch64"): "aarch64-unknown-linux-gnu",
-            ("Linux", "X8664"): "x86_64-unknown-linux-gnu",
-        }
-        for (os_name, arch), triple in expected.items():
-            assert triple in txt, f"Missing triple {triple} for {os_name}/{arch}"
-        # Check that platform_triple function exists
-        assert "fn platform_triple" in txt
-        assert "current_platform" in txt
+        txt = _read(PLATFORM_RS)
+        # Expected triples — Windows x64 included (mapped to msvc since #10)
+        expected = [
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+        ]
+        for triple in expected:
+            assert triple in txt, f"Missing triple {triple}"
+        # Check that asset_triple function exists and lib.rs drives off it
+        assert "fn asset_triple" in txt
+        assert "current_platform" in _read(LIB_RS)
         # Check asset naming
-        assert "rsc-ls-" in txt or "asset_name" in txt
-        # Verify that windows is not supported (should have error)
-        assert "Windows" in txt and "not supported" in txt
+        assert "rsc-ls-" in txt or "asset_name" in _read(LIB_RS)
+
+    def test_windows_spawn_name_has_exe_suffix(self):
+        src = _read(PLATFORM_RS)
+        # Windows cannot spawn an extension-less executable image, so the
+        # downloaded binary must be stored and launched as `rsc-ls.exe` there.
+        assert "fn server_binary_name" in src
+        assert '"rsc-ls.exe"' in src
+        # Filesystem/spawn entry points must never receive the raw
+        # extension-less constant directly.
+        guarded_calls = (
+            "zed::download_file(",
+            "make_file_executable(",
+            "verify_downloaded_binary(",
+            "std::fs::remove_file(",
+        )
+        for lineno, raw_line in enumerate(src.splitlines(), start=1):
+            line = raw_line.strip()
+            for call in guarded_calls:
+                if call in line and re.search(r"\bBINARY_NAME\b", line):
+                    pytest.fail(
+                        f"line {lineno}: raw BINARY_NAME passed to {call.rstrip('(')}: {raw_line}"
+                    )
 
     def test_asset_name_construction(self, monkeypatch):
         # Simulate platform mapping without network
@@ -561,6 +599,7 @@ class TestWasmPlatformTriples:
                 ("Linux", "Aarch64"): "aarch64-unknown-linux-gnu",
                 ("Linux", "X8664"): "x86_64-unknown-linux-gnu",
                 ("Linux", "X86"): "x86_64-unknown-linux-gnu",
+                ("Windows", "X8664"): "x86_64-pc-windows-msvc",
             }
             return mapping.get((os_name, arch))
 
@@ -571,7 +610,7 @@ class TestWasmPlatformTriples:
 
         assert platform_triple_py("Mac", "Aarch64") == "aarch64-apple-darwin"
         assert platform_triple_py("Linux", "X8664") == "x86_64-unknown-linux-gnu"
-        assert platform_triple_py("Windows", "X8664") is None
+        assert platform_triple_py("Windows", "X8664") == "x86_64-pc-windows-msvc"
         # Check asset name format
         triple = platform_triple_py("Mac", "Aarch64")
         asset = f"rsc-ls-{triple}"

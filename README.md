@@ -18,19 +18,19 @@
 
 ## ✨ Features
 
-| Area | What you get |
-|------|--------------|
-| **Highlighting** | Tree-sitter grammar (`grammars/rsc/`) — menus, globals, control flow, variables, arrays, menu continuation |
-| **Completion** | Root menus, sub-menus, verbs, properties with snippets (`address=$1`), enum/bool values with embedded docs, `:` script words + statement snippets (`:if`, `:foreach`, `:for`, `:do`) — `triggerCharacters: / space = :` |
-| **Hover** | Menu docs (`Type` + `Arguments` + `Flags`), property types, standard verbs |
-| **Diagnostics** | Menu semantics (`unknown-menu` · `unknown-property` · `missing-required` · `duplicate-property` · `invalid-enum-value`) and syntax errors (`unclosed-brace` · `unmatched-brace` · `unclosed-quote`) — capped, `source: rsc-ls` |
-| **Outline & folding** | Document symbols (menus + `:local`/`:global` variables), folding ranges (braces + `\` continuations) |
-| **Signature help** | Required-first parameter popup for menu verbs |
-| **Navigation** | Go-to-definition / find references for script variables (`:local`/`:global` ↔ `$name`) |
-| **Quick fixes** | "Did you mean …?" for typos in properties, menus, and enum values |
-| **Tasks & Deploy** | Zed tasks (`REST`/`SSH`/`Dry-run`/`Validate`) + `scripts/mikrotik-deploy.py` (`requests`/`paramiko`) |
-| **Sync** | `scripts/sync_llms.py` fetches latest `llms-full.txt` from `manual.mikrotik.com` |
-| **Grammar** | In-tree + published to [`balakar94/tree-sitter-rsc`](https://github.com/balakar94/tree-sitter-rsc) (rev pinned in `extension.toml`) |
+| Area                  | What you get                                                                                                                                                                                                                   |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Highlighting**      | Tree-sitter grammar (`grammars/rsc/`) — menus, globals, control flow, variables, arrays, menu continuation                                                                                                                     |
+| **Completion**        | Root menus, sub-menus, verbs, properties with snippets (`address=$1`), enum/bool values with embedded docs, `:` script words + statement snippets (`:if`, `:foreach`, `:for`, `:do`) — `triggerCharacters: / space = :`        |
+| **Hover**             | Menu docs (`Type` + `Arguments` + `Flags`), property types, standard verbs                                                                                                                                                     |
+| **Diagnostics**       | Menu semantics (`unknown-menu` · `unknown-property` · `missing-required` · `duplicate-property` · `invalid-enum-value`) and syntax errors (`unclosed-brace` · `unmatched-brace` · `unclosed-quote`) — capped, `source: rsc-ls` |
+| **Outline & folding** | Document symbols (menus + `:local`/`:global` variables), folding ranges (braces + `\` continuations)                                                                                                                           |
+| **Signature help**    | Required-first parameter popup for menu verbs                                                                                                                                                                                  |
+| **Navigation**        | Go-to-definition / find references for script variables (`:local`/`:global` ↔ `$name`)                                                                                                                                         |
+| **Quick fixes**       | "Did you mean …?" for typos in properties, menus, and enum values                                                                                                                                                              |
+| **Tasks & Deploy**    | Zed tasks (`REST`/`SSH`/`Dry-run`/`Validate`) + `scripts/mikrotik-deploy.py` (`requests`/`paramiko`)                                                                                                                           |
+| **Sync**              | `scripts/sync_llms.py` fetches latest `llms-full.txt` from `manual.mikrotik.com`                                                                                                                                               |
+| **Grammar**           | In-tree + published to [`balakar94/tree-sitter-rsc`](https://github.com/balakar94/tree-sitter-rsc) (rev pinned in `extension.toml`)                                                                                            |
 
 **Coverage:** **1038 menus** — complete CLI from `llms-full.txt` (491 Directory + 432 Command + implicit parents). All roots: `/interface`, `/ip`, `/ipv6`, `/routing`, `/queue`, `/system`, `/tool`, `/user`, `/certificate`, `/caps-man`, `/container`, `/disk`, `/file`, `/ppp`, `/mpls`, `/radius`, …
 
@@ -61,18 +61,18 @@
 
 ## 🔧 Dependencies & Bootstrap
 
-| Requirement | Required | Purpose |
-|-------------|----------|---------|
-| Rust 1.94+ (MSRV) | ✅ required | Builds `rsc-ls` + WASM extension; pinned via `rust-toolchain.toml` |
-| `wasm32-wasip2` target | ✅ required | WASM extension build (`rustup target add wasm32-wasip2`) |
-| C compiler + linker | ✅ required | Native Rust builds (Xcode CLT / `build-essential` / `base-devel`) |
-| git | ✅ required | Submodule checkout (`grammars/rsc`) |
-| curl | ✅ required | Doc sync, rustup installer, LSP auto-download |
-| CA certificates | ✅ required | TLS for curl / pip / npm |
-| Python 3.12+ | ✅ required | Extraction/sync scripts, tests |
-| pytest + requests + paramiko | ✅ auto-installed | Into `.venv` by `make install-tools` |
-| Node.js LTS + npm | ⚠️ optional | Grammar work only (`tree-sitter-cli` via `npx`) |
-| wasm-tools, cargo-audit | ⚪ optional | `make build-wasm` validation/legacy fallback (rustc already emits a component), `make audit` |
+| Requirement                  | Required          | Purpose                                                                                      |
+| ---------------------------- | ----------------- | -------------------------------------------------------------------------------------------- |
+| Rust 1.94+ (MSRV)            | ✅ required       | Builds `rsc-ls` + WASM extension; pinned via `rust-toolchain.toml`                           |
+| `wasm32-wasip2` target       | ✅ required       | WASM extension build (`rustup target add wasm32-wasip2`)                                     |
+| C compiler + linker          | ✅ required       | Native Rust builds (Xcode CLT / `build-essential` / `base-devel`)                            |
+| git                          | ✅ required       | Submodule checkout (`grammars/rsc`)                                                          |
+| curl                         | ✅ required       | Doc sync, rustup installer, LSP auto-download                                                |
+| CA certificates              | ✅ required       | TLS for curl / pip / npm                                                                     |
+| Python 3.12+                 | ✅ required       | Extraction/sync scripts, tests                                                               |
+| pytest + requests + paramiko | ✅ auto-installed | Into `.venv` by `make install-tools`                                                         |
+| Node.js LTS + npm            | ⚠️ optional       | Grammar work only (`tree-sitter-cli` via `npx`)                                              |
+| wasm-tools, cargo-audit      | ⚪ optional       | `make build-wasm` validation/legacy fallback (rustc already emits a component), `make audit` |
 
 ### One-liner bootstrap
 
@@ -157,21 +157,23 @@ cp target/release/rsc-ls /opt/homebrew/bin/rsc-ls  # macOS
 
 `src/lib.rs` (WASM, `zed_extension_api 0.7`) resolves `rsc-ls` as:
 
-1. `worktree.which("rsc-ls")` — PATH override (dev)
-2. Cached `rsc-ls` from prior download (extension dir)
+1. `worktree.which("rsc-ls")` — PATH override (dev; on Windows `rsc-ls.exe` is probed too)
+2. Cached binary from prior download (extension dir)
 3. **Auto-download** from GitHub Releases via `current_platform()` → `rsc-ls-<triple>`:
 
-| Triple | Platform |
-|--------|----------|
-| `aarch64-apple-darwin` | macOS Apple Silicon |
-| `x86_64-apple-darwin` | macOS Intel |
-| `aarch64-unknown-linux-gnu` | Linux ARM64 |
-| `x86_64-unknown-linux-gnu` | Linux x64 |
-| `x86_64-pc-windows-msvc` | Windows x64 |
+| Triple                      | Platform            |
+| --------------------------- | ------------------- |
+| `aarch64-apple-darwin`      | macOS Apple Silicon |
+| `x86_64-apple-darwin`       | macOS Intel         |
+| `aarch64-unknown-linux-gnu` | Linux ARM64         |
+| `x86_64-unknown-linux-gnu`  | Linux x64           |
+| `x86_64-pc-windows-msvc`    | Windows x64         |
 
 Uses `zed::download_file` + `make_file_executable` with `LanguageServerInstallationStatus` UI. On 404, shows manual install instructions.
 
-**Supply-chain check:** every download is SHA-256–verified against its `<asset>.sha256` release companion *before* it is made executable or run. Any mismatch (or missing companion) fails the install and deletes the unverified binary — fail closed, never execute unverified.
+> **Windows note:** the binary is downloaded, cached, and spawned as `rsc-ls.exe` there — Windows cannot execute an executable image whose file lacks the `.exe` suffix. Release assets themselves stay extension-less byte blobs (`rsc-ls-x86_64-pc-windows-msvc`), so one asset scheme covers all platforms.
+
+**Supply-chain check:** every download is SHA-256–verified against its `<asset>.sha256` release companion _before_ it is made executable or run. Any mismatch (or missing companion) fails the install and deletes the unverified binary — fail closed, never execute unverified.
 
 > **404 after fresh Release?** GitHub CDN takes ~1-2 min to propagate `releases/download`. Use the PATH copy above meanwhile; `gh release download` via API works immediately.
 
