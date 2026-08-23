@@ -17,6 +17,7 @@
 //   back to a full document replace.
 // - Content-Length is capped at 10 MiB to avoid unbounded allocation.
 
+mod cli;
 mod completion;
 mod diagnostics;
 mod encoding;
@@ -47,10 +48,23 @@ const MAX_DOC_SIZE: usize = 5 * 1024 * 1024; // 5 MiB per document — prevents 
 const MAX_DOCS: usize = 100; // cap number of tracked documents
 
 fn main() {
+    // CLI flags are handled FIRST — before logging, env reads, or data
+    // loading — so `--version`/`--help` probes stay side-effect-free:
+    // they never read stdin (must not hang) and never parse menus.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = cli::run_cli_command(cli::parse_cli_args(&args)) {
+        std::process::exit(code);
+    }
+
     // Initialize log level early (reads RSC_LS_LOG)
     let level = log_level();
+    // Startup banner carries version + pid so multiple server instances are
+    // correlatable in `zed: open log`; the version token matches the output
+    // of `rsc-ls --version` exactly.
     eprintln!(
-        "[rsc-ls][INFO] language server starting (RSC_LS_LOG={:?} -> {:?})",
+        "[rsc-ls][INFO] {} starting (pid={}, RSC_LS_LOG={:?} -> {:?})",
+        cli::version_string(),
+        std::process::id(),
         std::env::var("RSC_LS_LOG").unwrap_or_else(|_| "(unset, default info)".to_string()),
         level
     );

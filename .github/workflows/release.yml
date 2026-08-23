@@ -167,6 +167,11 @@ jobs:
       contents: read
       id-token: write
       attestations: write
+    # Embedded at compile time (option_env!) so released binaries can
+    # self-identify their exact commit:
+    #   rsc-ls --version  →  rsc-ls X.Y.Z (build <first-7-of-sha>)
+    env:
+      RSC_LS_BUILD_SHA: ${{ github.sha }}
     strategy:
       fail-fast: false
       matrix:
