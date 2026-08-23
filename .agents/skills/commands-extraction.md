@@ -115,6 +115,7 @@ description = "disabled"
 [[menus.arguments]]
 name = "chain"
 type = "enum (input | forward | output)"
+enum_values = ["input", "forward", "output"]
 required = true
 description = "Chain name"
 [[menus.read_only]]
@@ -168,7 +169,7 @@ Classes: `TestShouldInclude` (CLI regex), `TestEscapeTomlString`, `TestCleanType
 | Uppercase/dot path (e.g. `/Backup/Restore`) | Silently dropped | Correct — only `^[a-z0-9][a-z0-9/_-]*$` is valid CLI |
 | Link heading `## [ip/foo](url)` | `_extract_heading_path` → `None` | Expected; CLI headings never use link-only syntax |
 | ArgTable as markdown table | Menu has 0 args | Rare, not extracted — patch parser or add manual entry |
-| `type` truncated `...` | `clean_type()` caps 100 chars | Intentional |
+| `type` truncated `...` | `clean_type()` caps 100 chars | Intentional for display — complete members live in `enum_values = [...]` on arguments (extracted from the raw type before truncation) |
 | `sync --check` exit 2 in CI | "updates available" | Run `sync && extract` and commit |
 | Duplicate/unstable diff | Dedup/sort missing | Keep the dedup+sort in `generate_toml()` |
 | Stale `extension.toml` rev | Wrong grammar in Zed | `python scripts/publish_grammar.py` (grammar skill) |
