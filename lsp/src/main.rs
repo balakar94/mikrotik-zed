@@ -160,9 +160,39 @@ pub(crate) fn is_valid_file_uri(uri: &str) -> bool {
 
 // ── Server state ────────────────────────────────────────────────
 
+/// Negotiated LSP position encoding for `Position.character` values
+/// exchanged with the client (LSP 3.17).
+///
+/// The default is [`PositionEncoding::Utf16`] because that is what the LSP
+/// specification mandates when a client does not advertise the
+/// `general.positionEncodings` capability — conservative before
+/// `initialize`. The server prefers `utf-8` during negotiation since all
+/// internal position math is byte-based; conversions happen only at the
+/// protocol boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum PositionEncoding {
+    #[default]
+    Utf16,
+    Utf8,
+}
+
+impl PositionEncoding {
+    /// Wire identifier as used in `general.positionEncodings` and echoed in
+    /// the server's `capabilities.positionEncoding` response field.
+    fn as_str(self) -> &'static str {
+        match self {
+            PositionEncoding::Utf16 => "utf-16",
+            PositionEncoding::Utf8 => "utf-8",
+        }
+    }
+}
+
 struct Server {
     data: MenuData,
     docs: HashMap<String, String>, // URI → document text
+    /// Position encoding negotiated during `initialize`; defaults to UTF-16
+    /// (the spec default) until then.
+    position_encoding: PositionEncoding,
 }
 
 impl Server {
@@ -170,6 +200,7 @@ impl Server {
         Server {
             data,
             docs: HashMap::new(),
+            position_encoding: PositionEncoding::default(),
         }
     }
 
@@ -307,11 +338,31 @@ impl Server {
         match method {
             "initialize" => {
                 let id = params.get("id").cloned().unwrap_or(serde_json::Value::Null);
+                // Negotiate the position encoding (LSP 3.17): prefer utf-8
+                // (internal positions are byte offsets); otherwise fall back
+                // to utf-16, which is also the mandated default when the
+                // client sends no capability. NOTE: per LSP 3.17 the array
+                // lives at InitializeParams.capabilities.general.positionEncodings.
+                let client_offers_utf8 =
+                    params["params"]["capabilities"]["general"]["positionEncodings"]
+                        .as_array()
+                        .map(|encodings| encodings.iter().any(|v| v.as_str() == Some("utf-8")))
+                        .unwrap_or(false);
+                self.position_encoding = if client_offers_utf8 {
+                    PositionEncoding::Utf8
+                } else {
+                    PositionEncoding::Utf16
+                };
+                log_debug!(
+                    "negotiated position encoding: {}",
+                    self.position_encoding.as_str()
+                );
                 Some(serde_json::json!({
                     "jsonrpc": "2.0",
                     "id": id,
                     "result": {
                         "capabilities": {
+                            "positionEncoding": self.position_encoding.as_str(),
                             "textDocumentSync": 1,
                             "completionProvider": {
                                 "triggerCharacters": ["/", " ", "="],
@@ -371,7 +422,7 @@ impl Server {
                 }
                 // Publish diagnostics (push) after open
                 let doc_text = self.docs.get(&uri_owned).cloned().unwrap_or_default();
-                let diags = diagnostics::compute_diagnostics(&self.data, &doc_text, &uri_owned);
+                let diags = self.encoded_diagnostics(&doc_text, &uri_owned);
                 Self::publish_diagnostics(&uri_owned, diags);
                 None
             }
@@ -413,7 +464,14 @@ impl Server {
                             let mut truncate_needed = false;
                             {
                                 if let Some(doc) = self.docs.get_mut(uri) {
-                                    if apply_incremental_edit(doc, range, truncated).is_err() {
+                                    if apply_incremental_edit(
+                                        doc,
+                                        range,
+                                        truncated,
+                                        self.position_encoding,
+                                    )
+                                    .is_err()
+                                    {
                                         needs_insert = true;
                                     } else {
                                         needs_insert = false;
@@ -442,7 +500,9 @@ impl Server {
                         let mut truncate_doc = false;
                         {
                             if let Some(doc) = self.docs.get_mut(uri) {
-                                if apply_incremental_edit(doc, range, text).is_err() {
+                                if apply_incremental_edit(doc, range, text, self.position_encoding)
+                                    .is_err()
+                                {
                                     // Fallback: replace whole document if incremental patch fails.
                                     if text.len() > MAX_DOC_SIZE {
                                         let ti = floor_char_boundary(text, MAX_DOC_SIZE);
@@ -479,7 +539,7 @@ impl Server {
                 // Publish diagnostics after changes (incremental or full)
                 let uri_owned = uri.to_string();
                 let doc_text = self.docs.get(&uri_owned).cloned().unwrap_or_default();
-                let diags = diagnostics::compute_diagnostics(&self.data, &doc_text, &uri_owned);
+                let diags = self.encoded_diagnostics(&doc_text, &uri_owned);
                 Self::publish_diagnostics(&uri_owned, diags);
                 None
             }
@@ -500,7 +560,18 @@ impl Server {
                 let character = pos["character"].as_u64()?;
                 let doc = self.docs.get(uri)?;
 
-                let before_cursor = build_before_cursor(doc, line as usize, character as usize);
+                // Convert the wire `character` ONCE into a byte offset within
+                // the cursor line, extracted with the same `str::lines()` split
+                // that `build_before_cursor` uses internally, so encoding math
+                // cannot diverge from the string being sliced.
+                let line_idx = line as usize;
+                let current_line = doc.lines().nth(line_idx).unwrap_or("");
+                let char_byte = lsp_character_to_byte_offset(
+                    current_line,
+                    character as usize,
+                    self.position_encoding,
+                );
+                let before_cursor = build_before_cursor(doc, line_idx, char_byte);
                 let items = completion::compute_completions(&self.data, &before_cursor);
 
                 Some(serde_json::json!({
@@ -522,8 +593,14 @@ impl Server {
 
                 let lines: Vec<&str> = doc.lines().collect();
                 let current_line = lines.get(line).copied().unwrap_or("");
+                // Same single boundary conversion as completion: the wire
+                // `character` becomes a byte offset within `current_line`,
+                // which is exactly the slice `compute_hover` inspects and the
+                // line `build_before_cursor` re-slices internally.
+                let char_byte =
+                    lsp_character_to_byte_offset(current_line, character, self.position_encoding);
 
-                let hover = hover::compute_hover(&self.data, current_line, character, doc, line);
+                let hover = hover::compute_hover(&self.data, current_line, char_byte, doc, line);
 
                 let result = match hover {
                     Some(h) => match serde_json::to_value(h) {
@@ -564,7 +641,7 @@ impl Server {
                     .cloned()
                     .unwrap_or_else(|| "".to_string());
                 // Cap large docs same as push
-                let diags = diagnostics::compute_diagnostics(&self.data, &doc_text, uri);
+                let diags = self.encoded_diagnostics(&doc_text, uri);
                 Some(serde_json::json!({
                     "jsonrpc": "2.0",
                     "id": id,
@@ -602,6 +679,15 @@ impl Server {
                 }
             }
         }
+    }
+
+    /// Compute diagnostics for `doc` and convert emitted range characters
+    /// from internal byte-offset semantics to the negotiated position
+    /// encoding. Shared by both push paths (didOpen / didChange) and the
+    /// pull handler so they can never diverge.
+    fn encoded_diagnostics(&self, doc_text: &str, uri: &str) -> Vec<diagnostics::Diagnostic> {
+        let diags = diagnostics::compute_diagnostics(&self.data, doc_text, uri);
+        convert_diagnostic_ranges(diags, doc_text, self.position_encoding)
     }
 
     fn publish_diagnostics(uri: &str, diagnostics: Vec<diagnostics::Diagnostic>) {
@@ -696,13 +782,115 @@ pub(crate) fn floor_char_boundary(s: &str, index: usize) -> usize {
     i
 }
 
+/// Convert UTF-16 code units to a byte offset within `line`.
+///
+/// Walks chars accumulating `ch.encode_utf16().count()`. A value that lands
+/// inside a multi-unit character (surrogate half) resolves forward to that
+/// character's end; values beyond the line clamp to `line.len()`.
+pub(crate) fn utf16_to_byte_offset(line: &str, units: usize) -> usize {
+    // ASCII fast path: one byte per UTF-16 code unit.
+    if line.is_ascii() {
+        return units.min(line.len());
+    }
+    let mut seen = 0usize;
+    let mut units_buf = [0u16; 2];
+    for (byte_off, ch) in line.char_indices() {
+        if seen >= units {
+            return byte_off;
+        }
+        seen += ch.encode_utf16(&mut units_buf).len();
+    }
+    line.len()
+}
+
+/// Convert a byte offset within `line` to UTF-16 code units (clamps/floors
+/// the byte offset first).
+///
+/// The offset is clamped to the line length and floored to the nearest char
+/// boundary before counting, so non-boundary inputs yield the units of the
+/// preceding character's start.
+pub(crate) fn byte_offset_to_utf16_units(line: &str, byte_offset: usize) -> u32 {
+    let off = floor_char_boundary(line, byte_offset.min(line.len()));
+    if line.is_ascii() {
+        return off as u32;
+    }
+    line[..off]
+        .chars()
+        .map(|ch| {
+            let mut units_buf = [0u16; 2];
+            ch.encode_utf16(&mut units_buf).len() as u32
+        })
+        .sum()
+}
+
+/// Resolve an inbound LSP `character` value into a byte offset within `line`.
+///
+/// This is the single conversion point between the negotiated wire encoding
+/// and the server's internal byte-based positions. Callers must pass the
+/// exact same line text that downstream consumers slice (`str::lines()`
+/// semantics: `\n`-separated, trailing `\r` stripped).
+pub(crate) fn lsp_character_to_byte_offset(
+    line: &str,
+    character: usize,
+    enc: PositionEncoding,
+) -> usize {
+    match enc {
+        // Legacy byte semantics: clamp and floor to a char boundary.
+        PositionEncoding::Utf8 => floor_char_boundary(line, character.min(line.len())),
+        PositionEncoding::Utf16 => utf16_to_byte_offset(line, character),
+    }
+}
+
+/// Recompute diagnostic range characters from internal byte-offset semantics
+/// into the negotiated encoding, measured against the physical lines of the
+/// ORIGINAL document. Lines are split exactly like inbound logic
+/// (`str::lines()`: '\n'-separated with trailing '\r' stripped); multi-line
+/// ranges convert each endpoint against its own line. Under
+/// [`PositionEncoding::Utf8`] this is a semantic no-op.
+fn convert_diagnostic_ranges(
+    diags: Vec<diagnostics::Diagnostic>,
+    doc: &str,
+    enc: PositionEncoding,
+) -> Vec<diagnostics::Diagnostic> {
+    if enc == PositionEncoding::Utf8 {
+        return diags;
+    }
+    let lines: Vec<&str> = doc.lines().collect();
+    diags
+        .into_iter()
+        .map(|mut d| {
+            // Each endpoint may sit on a different physical line (LSP allows
+            // multi-line ranges across RouterOS continuations), so convert
+            // them independently against their own line text.
+            let convert = |p: &mut diagnostics::Position| {
+                let line_text = lines.get(p.line as usize).copied().unwrap_or("");
+                p.character = byte_offset_to_utf16_units(line_text, p.character as usize);
+            };
+            convert(&mut d.range.start);
+            convert(&mut d.range.end);
+            d
+        })
+        .collect()
+}
+
 #[derive(Debug)]
 enum EditError {
     InvalidRange,
     OutOfBounds,
 }
 
-fn lsp_position_to_offset(doc: &str, line: usize, character: usize) -> Result<usize, EditError> {
+/// Resolve an LSP position to a byte offset within `doc`.
+///
+/// `character` is interpreted per `enc`: a UTF-16 code-unit count (spec
+/// default) or already-byte-based. The target line is located by scanning
+/// '\n' separators; its content excludes the trailing '\r' of CRLF endings,
+/// so positions never address the carriage return.
+fn lsp_position_to_offset(
+    doc: &str,
+    line: usize,
+    character: usize,
+    enc: PositionEncoding,
+) -> Result<usize, EditError> {
     // Walk the document to find the start of the target line.
     let mut current_line = 0usize;
     let mut line_start = 0usize;
@@ -731,15 +919,19 @@ fn lsp_position_to_offset(doc: &str, line: usize, character: usize) -> Result<us
     // Strip trailing '\r' for "\r\n" handling.
     let line_content = doc[line_start..line_end].trim_end_matches('\r');
 
-    let clamped = character.min(line_content.len());
-    let byte_pos = floor_char_boundary(line_content, clamped);
+    let byte_pos = lsp_character_to_byte_offset(line_content, character, enc);
     Ok(line_start + byte_pos)
 }
 
+/// Apply one incremental `range` edit (`new_text`) to `doc`.
+///
+/// Range characters are interpreted per `enc`; on any invalid or
+/// out-of-bounds range the caller falls back to a full document replace.
 fn apply_incremental_edit(
     doc: &mut String,
     range: &serde_json::Value,
     new_text: &str,
+    enc: PositionEncoding,
 ) -> Result<(), EditError> {
     let start = range.get("start").ok_or(EditError::InvalidRange)?;
     let end = range.get("end").ok_or(EditError::InvalidRange)?;
@@ -760,8 +952,8 @@ fn apply_incremental_edit(
         .and_then(|v| v.as_u64())
         .ok_or(EditError::InvalidRange)? as usize;
 
-    let start_offset = lsp_position_to_offset(doc, start_line, start_char)?;
-    let end_offset = lsp_position_to_offset(doc, end_line, end_char)?;
+    let start_offset = lsp_position_to_offset(doc, start_line, start_char, enc)?;
+    let end_offset = lsp_position_to_offset(doc, end_line, end_char, enc)?;
 
     if start_offset > end_offset || end_offset > doc.len() {
         return Err(EditError::OutOfBounds);
@@ -844,6 +1036,9 @@ pub(crate) fn tokenize(text: &str) -> Vec<String> {
 /// RouterOS commands can span multiple lines — properties on subsequent lines
 /// are continuations of the same command.  Walks backwards from the cursor
 /// line, collecting all lines belonging to the current command.
+///
+/// `cursor_char` is a BYTE offset within the cursor line (already converted
+/// from the negotiated wire encoding by callers at the protocol boundary).
 pub fn build_before_cursor(doc: &str, cursor_line: usize, cursor_char: usize) -> String {
     let lines: Vec<&str> = doc.lines().collect();
     if cursor_line >= lines.len() {
@@ -1315,8 +1510,14 @@ type = "Directory"
     #[test]
     fn test_lsp_position_to_offset_single_line() {
         let doc = "hello world";
-        assert_eq!(lsp_position_to_offset(doc, 0, 5).unwrap(), 5);
-        assert_eq!(lsp_position_to_offset(doc, 0, 0).unwrap(), 0);
+        assert_eq!(
+            lsp_position_to_offset(doc, 0, 5, PositionEncoding::Utf8).unwrap(),
+            5
+        );
+        assert_eq!(
+            lsp_position_to_offset(doc, 0, 0, PositionEncoding::Utf8).unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -1324,22 +1525,34 @@ type = "Directory"
         let doc = "line1\nline2\nline3";
         // line 0 "line1\n" (5 chars + newline)
         // line 1 starts at offset 6
-        assert_eq!(lsp_position_to_offset(doc, 1, 0).unwrap(), 6);
-        assert_eq!(lsp_position_to_offset(doc, 1, 3).unwrap(), 9);
-        assert_eq!(lsp_position_to_offset(doc, 2, 2).unwrap(), 14);
+        assert_eq!(
+            lsp_position_to_offset(doc, 1, 0, PositionEncoding::Utf8).unwrap(),
+            6
+        );
+        assert_eq!(
+            lsp_position_to_offset(doc, 1, 3, PositionEncoding::Utf8).unwrap(),
+            9
+        );
+        assert_eq!(
+            lsp_position_to_offset(doc, 2, 2, PositionEncoding::Utf8).unwrap(),
+            14
+        );
     }
 
     #[test]
     fn test_lsp_position_to_offset_char_beyond_line_clamped() {
         let doc = "hi\nhello";
         // line 0 "hi" len 2, request char 10 should clamp to 2
-        assert_eq!(lsp_position_to_offset(doc, 0, 10).unwrap(), 2);
+        assert_eq!(
+            lsp_position_to_offset(doc, 0, 10, PositionEncoding::Utf8).unwrap(),
+            2
+        );
     }
 
     #[test]
     fn test_lsp_position_to_offset_line_beyond_doc_errors() {
         let doc = "a\nb";
-        let res = lsp_position_to_offset(doc, 5, 0);
+        let res = lsp_position_to_offset(doc, 5, 0, PositionEncoding::Utf8);
         assert!(matches!(res, Err(EditError::OutOfBounds)));
     }
 
@@ -1347,16 +1560,22 @@ type = "Directory"
     fn test_lsp_position_to_offset_crlf() {
         let doc = "line1\r\nline2";
         // line 0 content is "line1" (without \r), offset calculation should handle \r\n
-        assert_eq!(lsp_position_to_offset(doc, 0, 5).unwrap(), 5);
+        assert_eq!(
+            lsp_position_to_offset(doc, 0, 5, PositionEncoding::Utf8).unwrap(),
+            5
+        );
         // line1 starts after "line1\r\n" (7 bytes)
-        assert_eq!(lsp_position_to_offset(doc, 1, 0).unwrap(), 7);
+        assert_eq!(
+            lsp_position_to_offset(doc, 1, 0, PositionEncoding::Utf8).unwrap(),
+            7
+        );
     }
 
     #[test]
     fn test_lsp_position_to_offset_utf8() {
         let doc = "héllo\nworld";
         // 'é' 2 bytes, line 0 len bytes 6, but chars? Should floor boundary
-        let off = lsp_position_to_offset(doc, 0, 2).unwrap();
+        let off = lsp_position_to_offset(doc, 0, 2, PositionEncoding::Utf8).unwrap();
         // char 2 is inside é? Actually floor to 1
         assert!(off == 1 || off == 3);
     }
@@ -1370,7 +1589,7 @@ type = "Directory"
             "start": {"line": 0, "character": 6},
             "end": {"line": 0, "character": 11}
         });
-        apply_incremental_edit(&mut doc, &range, "Rust").unwrap();
+        apply_incremental_edit(&mut doc, &range, "Rust", PositionEncoding::Utf8).unwrap();
         assert_eq!(doc, "hello Rust");
     }
 
@@ -1381,7 +1600,7 @@ type = "Directory"
             "start": {"line": 0, "character": 5},
             "end": {"line": 0, "character": 5}
         });
-        apply_incremental_edit(&mut doc, &range, " world").unwrap();
+        apply_incremental_edit(&mut doc, &range, " world", PositionEncoding::Utf8).unwrap();
         assert_eq!(doc, "hello world");
     }
 
@@ -1392,7 +1611,7 @@ type = "Directory"
             "start": {"line": 0, "character": 5},
             "end": {"line": 0, "character": 11}
         });
-        apply_incremental_edit(&mut doc, &range, "").unwrap();
+        apply_incremental_edit(&mut doc, &range, "", PositionEncoding::Utf8).unwrap();
         assert_eq!(doc, "hello");
     }
 
@@ -1403,7 +1622,7 @@ type = "Directory"
             "start": {"line": 0, "character": 0},
             "end": {"line": 1, "character": 5}
         });
-        apply_incremental_edit(&mut doc, &range, "replaced").unwrap();
+        apply_incremental_edit(&mut doc, &range, "replaced", PositionEncoding::Utf8).unwrap();
         assert_eq!(doc, "replaced\nline3");
     }
 
@@ -1413,7 +1632,7 @@ type = "Directory"
         let range = serde_json::json!({
             "start": {"line": 0}
         });
-        let res = apply_incremental_edit(&mut doc, &range, "x");
+        let res = apply_incremental_edit(&mut doc, &range, "x", PositionEncoding::Utf8);
         assert!(matches!(res, Err(EditError::InvalidRange)));
     }
 
@@ -1424,7 +1643,7 @@ type = "Directory"
             "start": {"line": 5, "character": 0},
             "end": {"line": 5, "character": 2}
         });
-        let res = apply_incremental_edit(&mut doc, &range, "x");
+        let res = apply_incremental_edit(&mut doc, &range, "x", PositionEncoding::Utf8);
         assert!(matches!(res, Err(EditError::OutOfBounds)));
     }
 
@@ -1435,7 +1654,7 @@ type = "Directory"
             "start": {"line": 0, "character": 4},
             "end": {"line": 0, "character": 2}
         });
-        let res = apply_incremental_edit(&mut doc, &range, "x");
+        let res = apply_incremental_edit(&mut doc, &range, "x", PositionEncoding::Utf8);
         assert!(matches!(res, Err(EditError::OutOfBounds)));
     }
 
@@ -2123,5 +2342,538 @@ type = "enum (input | forward | output)"
                 .iter()
                 .any(|d| d.code.as_deref() == Some("unknown-menu"))
         );
+    }
+}
+
+#[cfg(test)]
+mod position_encoding {
+    //! Position-encoding negotiation, boundary conversions, and regression
+    //! coverage for UTF-16 positions against non-ASCII documents.
+
+    use super::*;
+    use crate::menus::MenuData;
+
+    fn synth_min() -> MenuData {
+        MenuData::from_toml_str(
+            r#"
+[[menus]]
+path = "/ip/address"
+type = "Directory"
+[[menus.arguments]]
+name = "address"
+type = "ipPrefix"
+[[menus.arguments]]
+name = "comment"
+type = "string"
+[[menus.flags]]
+name = "X"
+description = "disabled"
+[[menus]]
+path = "/ip/firewall/filter"
+type = "Directory"
+[[menus.arguments]]
+name = "chain"
+type = "enum (input | forward | output)"
+"#,
+        )
+    }
+
+    /// Run `initialize` with an optional `general.positionEncodings` array
+    /// (`None` = capability absent) and return the server plus the response.
+    fn initialize(encodings: Option<serde_json::Value>) -> (Server, serde_json::Value) {
+        let mut server = Server::new(synth_min());
+        let params = match encodings {
+            None => serde_json::json!({"capabilities": {}}),
+            Some(e) => {
+                serde_json::json!({"capabilities": {"general": {"positionEncodings": e}}})
+            }
+        };
+        let msg = serde_json::json!({"id": 1, "method": "initialize", "params": params});
+        let resp = server.handle_message("initialize", &msg).unwrap();
+        (server, resp)
+    }
+
+    // ── Negotiation matrix ────────────────────────────────────────
+
+    #[test]
+    fn test_initialize_without_capability_defaults_to_utf16() {
+        let (server, resp) = initialize(None);
+        assert_eq!(
+            resp["result"]["capabilities"]["positionEncoding"], "utf-16",
+            "spec default when client sends no positionEncodings"
+        );
+        assert_eq!(server.position_encoding, PositionEncoding::Utf16);
+    }
+
+    #[test]
+    fn test_initialize_prefers_utf8_when_client_advertises_it() {
+        let (server, resp) = initialize(Some(serde_json::json!(["utf-16", "utf-8"])));
+        assert_eq!(resp["result"]["capabilities"]["positionEncoding"], "utf-8");
+        assert_eq!(server.position_encoding, PositionEncoding::Utf8);
+    }
+
+    #[test]
+    fn test_initialize_falls_back_to_utf16_when_utf8_absent() {
+        let (server, resp) = initialize(Some(serde_json::json!(["utf-32"])));
+        assert_eq!(resp["result"]["capabilities"]["positionEncoding"], "utf-16");
+        assert_eq!(server.position_encoding, PositionEncoding::Utf16);
+    }
+
+    #[test]
+    fn test_initialize_keeps_existing_capabilities_intact() {
+        let (_, resp) = initialize(Some(serde_json::json!(["utf-8"])));
+        let caps = &resp["result"]["capabilities"];
+        assert_eq!(caps["textDocumentSync"], 1);
+        assert_eq!(caps["hoverProvider"], true);
+        assert_eq!(
+            caps["completionProvider"]["triggerCharacters"],
+            serde_json::json!(["/", " ", "="])
+        );
+        assert_eq!(caps["diagnosticProvider"]["interFileDependencies"], false);
+    }
+
+    // ── utf16_to_byte_offset ──────────────────────────────────────
+
+    #[test]
+    fn test_utf16_to_byte_offset_ascii_fast_path() {
+        let line = "hello world";
+        assert_eq!(utf16_to_byte_offset(line, 0), 0);
+        assert_eq!(utf16_to_byte_offset(line, 5), 5);
+        // Beyond end of line clamps to the byte length.
+        assert_eq!(utf16_to_byte_offset(line, 100), line.len());
+    }
+
+    #[test]
+    fn test_utf16_to_byte_offset_bmp_multibyte() {
+        // 'ó' and 'é' are 2 bytes each but 1 UTF-16 unit.
+        let line = "# configuración é";
+        assert_eq!(line.len(), 19);
+        assert_eq!(utf16_to_byte_offset(line, 13), 13); // start of 'ó'
+        assert_eq!(utf16_to_byte_offset(line, 14), 15); // char after 'ó'
+        assert_eq!(utf16_to_byte_offset(line, 17), 19); // end of line
+        assert_eq!(utf16_to_byte_offset(line, 99), 19); // clamped
+    }
+
+    #[test]
+    fn test_utf16_to_byte_offset_surrogate_pair_clamps_forward() {
+        // '🚨' is U+1F6A8: 4 bytes but a surrogate pair (2 UTF-16 units).
+        let line = "🚨x";
+        assert_eq!(utf16_to_byte_offset(line, 0), 0);
+        // A value inside the surrogate half resolves to the character's END.
+        assert_eq!(utf16_to_byte_offset(line, 1), 4);
+        assert_eq!(utf16_to_byte_offset(line, 2), 4);
+        assert_eq!(utf16_to_byte_offset(line, 3), 5); // past 'x' start → EOL
+        assert_eq!(utf16_to_byte_offset("🚨", usize::MAX), 4);
+    }
+
+    #[test]
+    fn test_utf16_to_byte_offset_cjk() {
+        // CJK chars are 3 bytes each but 1 UTF-16 unit.
+        let line = "語語";
+        assert_eq!(utf16_to_byte_offset(line, 1), 3);
+        assert_eq!(utf16_to_byte_offset(line, 2), 6);
+        assert_eq!(utf16_to_byte_offset(line, 50), 6);
+    }
+
+    #[test]
+    fn test_utf16_to_byte_offset_empty_line() {
+        assert_eq!(utf16_to_byte_offset("", 0), 0);
+        assert_eq!(utf16_to_byte_offset("", 7), 0);
+    }
+
+    // ── byte_offset_to_utf16_units ────────────────────────────────
+
+    #[test]
+    fn test_byte_offset_to_utf16_units_ascii() {
+        let line = "hello";
+        assert_eq!(byte_offset_to_utf16_units(line, 0), 0);
+        assert_eq!(byte_offset_to_utf16_units(line, 3), 3);
+        // Beyond end clamps.
+        assert_eq!(byte_offset_to_utf16_units(line, 100), 5);
+    }
+
+    #[test]
+    fn test_byte_offset_to_utf16_units_bmp_multibyte() {
+        let line = "# configuración é";
+        assert_eq!(byte_offset_to_utf16_units(line, 13), 13);
+        // Start of 'ó': 13 preceding chars → 13 units.
+        assert_eq!(byte_offset_to_utf16_units(line, 14), 13);
+        // Mid-'ó' floors to the char start.
+        assert_eq!(byte_offset_to_utf16_units(line, 15), 14);
+        assert_eq!(byte_offset_to_utf16_units(line, 19), 17);
+    }
+
+    #[test]
+    fn test_byte_offset_to_utf16_units_surrogate_pair_counts_two() {
+        let line = "🚨x";
+        assert_eq!(byte_offset_to_utf16_units(line, 0), 0);
+        // Mid-character floors to the char start (2 units for the pair).
+        assert_eq!(byte_offset_to_utf16_units(line, 2), 0);
+        assert_eq!(byte_offset_to_utf16_units(line, 4), 2);
+        assert_eq!(byte_offset_to_utf16_units(line, 5), 3);
+    }
+
+    #[test]
+    fn test_byte_offset_to_utf16_units_cjk() {
+        let line = "語語";
+        assert_eq!(byte_offset_to_utf16_units(line, 3), 1);
+        assert_eq!(byte_offset_to_utf16_units(line, 5), 1); // floors
+        assert_eq!(byte_offset_to_utf16_units(line, 6), 2);
+    }
+
+    #[test]
+    fn test_position_conversion_round_trip_property() {
+        let lines = [
+            "hello world",
+            "# configuración é",
+            "/ip/address add address=1.1.1.1",
+            "🚨🚨 bogus=1",
+            "語セ語 x=y",
+            "",
+        ];
+        for line in lines {
+            // Every char boundary round-trips exactly through both helpers.
+            for b in 0..=line.len() {
+                if line.is_char_boundary(b) {
+                    let units = byte_offset_to_utf16_units(line, b);
+                    assert_eq!(
+                        utf16_to_byte_offset(line, units as usize),
+                        b,
+                        "round-trip failed at byte {b} for {line:?}"
+                    );
+                }
+            }
+            // Saturating behavior: any unit value maps within the line.
+            let total = byte_offset_to_utf16_units(line, line.len());
+            for u in 0..=(total as usize + 3) {
+                let b = utf16_to_byte_offset(line, u);
+                assert!(b <= line.len(), "unit {u} out of range for {line:?}");
+            }
+        }
+    }
+
+    // ── lsp_position_to_offset under Utf16 ────────────────────────
+
+    #[test]
+    fn test_lsp_position_to_offset_utf16_non_ascii_line() {
+        let doc = "héllo\nworld";
+        // 'héllo' = 5 chars/units but 6 bytes; unit 2 lands after 'é'.
+        assert_eq!(
+            lsp_position_to_offset(doc, 0, 2, PositionEncoding::Utf16).unwrap(),
+            3
+        );
+        assert_eq!(
+            lsp_position_to_offset(doc, 0, 5, PositionEncoding::Utf16).unwrap(),
+            6
+        );
+        // Beyond the line clamps to its byte length.
+        assert_eq!(
+            lsp_position_to_offset(doc, 0, 50, PositionEncoding::Utf16).unwrap(),
+            6
+        );
+    }
+
+    #[test]
+    fn test_lsp_position_to_offset_utf16_crlf_excludes_cr() {
+        let doc = "héllo\r\nworld";
+        // Line content excludes '\r': "héllo" is 5 units / 6 bytes.
+        assert_eq!(
+            lsp_position_to_offset(doc, 0, 5, PositionEncoding::Utf16).unwrap(),
+            6
+        );
+        // The EOL position resolves before the carriage return, not past it.
+        assert_eq!(
+            lsp_position_to_offset(doc, 0, 6, PositionEncoding::Utf16).unwrap(),
+            6
+        );
+        // Line 1 starts after "héllo\r\n" (8 bytes: 6 + CRLF pair).
+        assert_eq!(
+            lsp_position_to_offset(doc, 1, 0, PositionEncoding::Utf16).unwrap(),
+            8
+        );
+    }
+
+    // ── Regression: incremental edits must not corrupt documents ──
+
+    #[test]
+    fn test_did_change_incremental_utf16_no_corruption_on_non_ascii_line() {
+        let mut s = Server::new(synth_min());
+        // Client does not advertise utf-8 → positions are UTF-16 code units.
+        s.handle_message(
+            "initialize",
+            &serde_json::json!({"id": 0, "method": "initialize", "params": {}}),
+        );
+        let doc = "# comentário ✔\n/ip/address add address=1.1.1.1\n";
+        s.handle_message(
+            "textDocument/didOpen",
+            &serde_json::json!({"params": {"textDocument": {"uri": "file:///reg.rsc", "text": doc}}}),
+        );
+
+        // Delete the trailing '✔' on line 0 expressed in UTF-16 units:
+        // "# comentário " is 13 units, '✔' spans units 13..14 (bytes 14..17).
+        s.handle_message(
+            "textDocument/didChange",
+            &serde_json::json!({"params": {
+                "textDocument": {"uri": "file:///reg.rsc"},
+                "contentChanges": [{
+                    "range": {"start": {"line": 0, "character": 13}, "end": {"line": 0, "character": 14}},
+                    "text": ""
+                }]
+            }}),
+        );
+        // Byte-level treatment would instead delete the SPACE before '✔'
+        // (bytes 13..14), leaving the emoji behind — exact equality guards it.
+        assert_eq!(
+            s.docs.get("file:///reg.rsc").unwrap(),
+            "# comentário \n/ip/address add address=1.1.1.1\n"
+        );
+
+        // Follow-up ranged edit targeting LINE 1 with non-ASCII above: the
+        // line-start scan must stay byte-exact while characters stay UTF-16
+        // (replaces exactly "/ip/address", 11 units).
+        s.handle_message(
+            "textDocument/didChange",
+            &serde_json::json!({"params": {
+                "textDocument": {"uri": "file:///reg.rsc"},
+                "contentChanges": [{
+                    "range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 11}},
+                    "text": "/ipv6/address"
+                }]
+            }}),
+        );
+        assert_eq!(
+            s.docs.get("file:///reg.rsc").unwrap(),
+            "# comentário \n/ipv6/address add address=1.1.1.1\n"
+        );
+    }
+
+    #[test]
+    fn test_did_change_incremental_utf8_positions_unchanged_for_ascii() {
+        let mut s = Server::new(synth_min());
+        s.handle_message(
+            "initialize",
+            &serde_json::json!({"id": 0, "method": "initialize",
+                "params": {"capabilities": {"general": {"positionEncodings": ["utf-8"]}}}}),
+        );
+        s.handle_message(
+            "textDocument/didOpen",
+            &serde_json::json!({"params": {"textDocument": {"uri": "file:///u8.rsc", "text": "hello world"}}}),
+        );
+        s.handle_message(
+            "textDocument/didChange",
+            &serde_json::json!({"params": {
+                "textDocument": {"uri": "file:///u8.rsc"},
+                "contentChanges": [{
+                    "range": {"start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 11}},
+                    "text": "Rust"
+                }]
+            }}),
+        );
+        assert_eq!(s.docs.get("file:///u8.rsc").unwrap(), "hello Rust");
+    }
+
+    #[test]
+    fn test_did_change_incremental_utf16_crlf_insert_before_cr() {
+        let mut s = Server::new(synth_min());
+        s.handle_message(
+            "initialize",
+            &serde_json::json!({"id": 0, "method": "initialize", "params": {}}),
+        );
+        s.handle_message(
+            "textDocument/didOpen",
+            &serde_json::json!({"params": {"textDocument": {"uri": "file:///crlf.rsc", "text": "héllo\r\nworld"}}}),
+        );
+        // Insert at the EOL position (unit 6 == end of "héllo"): must land
+        // BEFORE the '\r', never inside or after the CRLF pair.
+        s.handle_message(
+            "textDocument/didChange",
+            &serde_json::json!({"params": {
+                "textDocument": {"uri": "file:///crlf.rsc"},
+                "contentChanges": [{
+                    "range": {"start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 6}},
+                    "text": "X"
+                }]
+            }}),
+        );
+        assert_eq!(s.docs.get("file:///crlf.rsc").unwrap(), "hélloX\r\nworld");
+    }
+
+    // ── Hover / completion context under Utf16 ────────────────────
+
+    #[test]
+    fn test_hover_utf16_with_multibyte_prefix_on_same_line() {
+        let mut s = Server::new(synth_min());
+        s.handle_message(
+            "initialize",
+            &serde_json::json!({"id": 0, "method": "initialize", "params": {}}),
+        );
+        // Non-ASCII comment ABOVE and multibyte prefix BEFORE the target
+        // token on the same line: 'ççççç' adds 5 extra bytes over units.
+        let doc = concat!(
+            "# comentário ✔\n",
+            "/ip/address add comment=\"ççççç\" address=1.1.1.1",
+        );
+        s.handle_message(
+            "textDocument/didOpen",
+            &serde_json::json!({"params": {"textDocument": {"uri": "file:///hv.rsc", "text": doc}}}),
+        );
+        // "address" starts at unit 32 (byte 37); unit 35 is mid-word.
+        let hover = serde_json::json!({
+            "id": 9,
+            "params": {
+                "textDocument": {"uri": "file:///hv.rsc"},
+                "position": {"line": 1, "character": 35}
+            }
+        });
+        let resp = s.handle_message("textDocument/hover", &hover).unwrap();
+        assert!(
+            resp["result"]["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .contains("**address**"),
+            "word extraction must land on 'address', got {}",
+            resp["result"]
+        );
+    }
+
+    #[test]
+    fn test_completion_utf16_value_completions_after_multibyte_prefix() {
+        let mut s = Server::new(synth_min());
+        s.handle_message(
+            "initialize",
+            &serde_json::json!({"id": 0, "method": "initialize", "params": {}}),
+        );
+        // Trailing target token sits AFTER multibyte content on the line:
+        // 'chain=' ends at unit 42 / byte 43 ('ç' costs one extra byte).
+        let doc = "/ip/firewall/filter add comment=\"ç\" chain=";
+        s.handle_message(
+            "textDocument/didOpen",
+            &serde_json::json!({"params": {"textDocument": {"uri": "file:///cp.rsc", "text": doc}}}),
+        );
+        let comp = serde_json::json!({
+            "id": 10,
+            "params": {
+                "textDocument": {"uri": "file:///cp.rsc"},
+                "position": {"line": 0, "character": 42}
+            }
+        });
+        let resp = s.handle_message("textDocument/completion", &comp).unwrap();
+        let items = resp["result"]["items"].as_array().unwrap();
+        let labels: Vec<&str> = items.iter().map(|i| i["label"].as_str().unwrap()).collect();
+        assert!(
+            labels.contains(&"input"),
+            "value completions for 'chain=' expected, got {labels:?}"
+        );
+    }
+
+    // ── Diagnostics ranges honor the negotiated encoding ──────────
+
+    #[test]
+    fn test_pull_diagnostics_utf16_character_units_with_emoji_prefix() {
+        let mut s = Server::new(synth_min());
+        // Default negotiation (no capability) → UTF-16 emission.
+        s.handle_message(
+            "initialize",
+            &serde_json::json!({"id": 0, "method": "initialize", "params": {}}),
+        );
+        // "bogusprop" starts at byte 25 ("…add " = 16 bytes + two 🚨 = 8)
+        // but at unit 21 (each 🚨 counts 2 units).
+        let doc = "/ip/address add 🚨🚨 bogusprop=1";
+        s.handle_message(
+            "textDocument/didOpen",
+            &serde_json::json!({"params": {"textDocument": {"uri": "file:///dg.rsc", "text": doc}}}),
+        );
+        let pull = s
+            .handle_message(
+                "textDocument/diagnostic",
+                &serde_json::json!({"id": 11, "params": {"textDocument": {"uri": "file:///dg.rsc"}}}),
+            )
+            .unwrap();
+        let items = pull["result"]["items"].as_array().unwrap();
+        let up = items
+            .iter()
+            .find(|d| d["code"] == "unknown-property")
+            .expect("unknown-property diagnostic expected");
+        assert_eq!(up["range"]["start"]["character"], 21);
+        assert_eq!(up["range"]["end"]["character"], 30);
+    }
+
+    #[test]
+    fn test_pull_diagnostics_utf8_character_equals_bytes() {
+        let mut s = Server::new(synth_min());
+        s.handle_message(
+            "initialize",
+            &serde_json::json!({"id": 0, "method": "initialize",
+                "params": {"capabilities": {"general": {"positionEncodings": ["utf-8"]}}}}),
+        );
+        let doc = "/ip/address add 🚨🚨 bogusprop=1";
+        s.handle_message(
+            "textDocument/didOpen",
+            &serde_json::json!({"params": {"textDocument": {"uri": "file:///d8.rsc", "text": doc}}}),
+        );
+        let pull = s
+            .handle_message(
+                "textDocument/diagnostic",
+                &serde_json::json!({"id": 12, "params": {"textDocument": {"uri": "file:///d8.rsc"}}}),
+            )
+            .unwrap();
+        let items = pull["result"]["items"].as_array().unwrap();
+        let up = items
+            .iter()
+            .find(|d| d["code"] == "unknown-property")
+            .expect("unknown-property diagnostic expected");
+        // Byte semantics preserved exactly when utf-8 is negotiated.
+        assert_eq!(up["range"]["start"]["character"], 25);
+        assert_eq!(up["range"]["end"]["character"], 34);
+    }
+
+    #[test]
+    fn test_convert_diagnostic_ranges_multiline_and_noop() {
+        let make_diag = || diagnostics::Diagnostic {
+            range: diagnostics::Range {
+                start: diagnostics::Position {
+                    line: 0,
+                    character: 1,
+                },
+                end: diagnostics::Position {
+                    line: 1,
+                    character: 4,
+                },
+            },
+            severity: Some(diagnostics::severity::WARNING),
+            code: Some("t".to_string()),
+            source: None,
+            message: "m".to_string(),
+        };
+        // Multi-line range: each endpoint converts against its OWN physical
+        // line ('a🚨bc' has 5 units; '/de' is ASCII, and the endpoint beyond
+        // its length clamps to 3).
+        let diags = vec![make_diag()];
+        let out = convert_diagnostic_ranges(diags.clone(), "a🚨bc\r\n/de", PositionEncoding::Utf16);
+        assert_eq!(out[0].range.start.line, 0);
+        assert_eq!(out[0].range.start.character, 1);
+        assert_eq!(out[0].range.end.line, 1);
+        assert_eq!(out[0].range.end.character, 3);
+
+        // Utf8 conversion is a semantic no-op.
+        let out =
+            convert_diagnostic_ranges(vec![make_diag()], "a🚨bc\r\n/de", PositionEncoding::Utf8);
+        assert_eq!(out[0].range, diags[0].range);
+        assert_eq!(out[0].severity, diags[0].severity);
+        assert_eq!(out[0].code, diags[0].code);
+        assert_eq!(out[0].source, diags[0].source);
+        assert_eq!(out[0].message, diags[0].message);
+
+        // Non-boundary endpoints floor defensively to the char start.
+        let mut d = make_diag();
+        d.range.start.character = 3; // mid-'🚨' byte offset
+        let out = convert_diagnostic_ranges(vec![d], "a🚨bc\r\n/de", PositionEncoding::Utf16);
+        assert_eq!(out[0].range.start.character, 1);
+
+        // Missing lines clamp defensively to zero without panicking.
+        let mut d = make_diag();
+        d.range.end.line = 99;
+        let out = convert_diagnostic_ranges(vec![d], "", PositionEncoding::Utf16);
+        assert_eq!(out[0].range.end.character, 0);
     }
 }

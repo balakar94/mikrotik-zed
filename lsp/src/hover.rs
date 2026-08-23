@@ -52,6 +52,8 @@ pub struct Hover {
 pub fn compute_hover(
     data: &MenuData,
     line: &str,
+    // Byte offset within `line`, already converted from the negotiated wire
+    // encoding by the caller at the protocol boundary.
     character: usize,
     full_doc: &str,
     cursor_line: usize,

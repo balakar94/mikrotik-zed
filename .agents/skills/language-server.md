@@ -25,7 +25,7 @@ Working end-to-end: workspace member `lsp/` (native binary `rsc-ls`) + WASM `cdy
   data/commands.toml embedded at compile time → MenuData::load() → menu_by_path + child_names_by_parent
 ```
 
-Protocol: `Content-Length` framing, `textDocumentSync=1` (Full), `triggerCharacters ["/"," ","="]`, `diagnosticProvider {interFileDependencies:false}`. Incremental `range` edits patched via `apply_incremental_edit` with fallback to full replace.
+Protocol: `Content-Length` framing, `textDocumentSync=1` (Full), `triggerCharacters ["/"," ","="]`, `diagnosticProvider {interFileDependencies:false}`. Incremental `range` edits patched via `apply_incremental_edit` with fallback to full replace. The server negotiates `positionEncoding` during `initialize` (prefers utf-8, falls back to utf-16 per LSP 3.17 default) and keeps all internal position math byte-based, converting only at the protocol boundary (`lsp_character_to_byte_offset`, `convert_diagnostic_ranges`).
 
 ### File Responsibilities
 
