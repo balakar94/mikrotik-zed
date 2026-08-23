@@ -66,6 +66,11 @@ pub struct ArgEntry {
     pub enum_values: Vec<String>,
     pub description: String,
     pub required: bool,
+    /// Upstream docs mark whether the property can be removed again with
+    /// `unset` (1007 entries in the generated table carry it). No rule
+    /// consumes it yet; it is kept so the embedded dataset round-trips the
+    /// generated schema without silent field loss.
+    #[allow(dead_code)]
     pub unset: bool,
 }
 
@@ -154,6 +159,11 @@ impl MenuData {
     }
 
     /// Build `MenuData` from an arbitrary TOML string (useful for deterministic tests).
+    ///
+    /// Test-only: production loads the embedded table via [`MenuData::load`],
+    /// so this constructor is compiled out of release builds (an unused pub
+    /// item in a binary crate would trip `dead_code` under `-D warnings`).
+    #[cfg(test)]
     pub fn from_toml_str(s: &str) -> Self {
         let commands: CommandsFile =
             toml::from_str(s).expect("failed to parse TOML string in from_toml_str");

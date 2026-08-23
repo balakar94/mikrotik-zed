@@ -409,13 +409,38 @@ struct Segment {
 /// continued bodies are prefixes of their physical line and final lines are
 /// appended whole, so a logical offset inside a segment maps 1:1 onto a byte
 /// offset within that physical line.
+///
+/// Crate-visible so sibling modules (symbols, folding) can reuse the
+/// continuation-aware join; fields stay private — access goes through
+/// [`LogicalLine::text`], [`LogicalLine::first_physical_line`],
+/// [`LogicalLine::last_physical_line`] and [`LogicalLine::map_range`].
 #[derive(Debug, Default)]
-struct LogicalLine {
+pub(crate) struct LogicalLine {
     text: String,
     segments: Vec<Segment>,
 }
 
 impl LogicalLine {
+    /// Joined logical text (all physical chunks concatenated).
+    pub(crate) fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Physical line index of the first contributing chunk.
+    ///
+    /// Note: a continuing line whose body before `\` is empty contributes no
+    /// chunk, so this can point past the true visual start of very degenerate
+    /// continuations (e.g. a lone `\` line). Consumers only compare it with
+    /// [`Self::last_physical_line`], where that bias is harmless.
+    pub(crate) fn first_physical_line(&self) -> usize {
+        self.segments.first().map(|s| s.phys_line).unwrap_or(0)
+    }
+
+    /// Physical line index of the last contributing chunk.
+    pub(crate) fn last_physical_line(&self) -> usize {
+        self.segments.last().map(|s| s.phys_line).unwrap_or(0)
+    }
+
     fn push_chunk(&mut self, chunk: &str, phys_line: usize) {
         if chunk.is_empty() {
             return;
@@ -452,7 +477,7 @@ impl LogicalLine {
     /// Map a byte range in the joined text to a [`Range`] in original document
     /// coordinates. Start and end may land on different physical lines (LSP
     /// allows multi-line ranges), which happens when a token spans a join.
-    fn map_range(&self, start: usize, end: usize) -> Range {
+    pub(crate) fn map_range(&self, start: usize, end: usize) -> Range {
         Range {
             start: self.map_pos(start),
             end: self.map_pos(end.max(start)),
@@ -506,6 +531,14 @@ fn build_logical_lines(raw_lines: &[&str]) -> Vec<LogicalLine> {
     }
 
     logicals
+}
+
+/// Crate-visible wrapper so sibling modules (symbols, folding) can join
+/// physical lines into logical lines without duplicating the RouterOS
+/// continuation semantics documented on the inner function.
+pub(crate) fn logical_lines(doc: &str) -> Vec<LogicalLine> {
+    let raw: Vec<&str> = doc.lines().collect();
+    build_logical_lines(&raw)
 }
 
 fn find_substring_range(haystack: &str, needle: &str) -> Option<(usize, usize)> {

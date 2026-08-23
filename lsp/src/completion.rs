@@ -16,6 +16,7 @@ mod kind {
     pub const CLASS: i32 = 9;
     pub const ENUM_MEMBER: i32 = 12;
     pub const CONSTANT: i32 = 14;
+    pub const SNIPPET: i32 = 15;
 }
 
 /// LSP MarkupContent for `CompletionItem.documentation`.
@@ -62,6 +63,28 @@ impl CompletionItem {
 pub fn compute_completions(data: &MenuData, before_cursor: &str) -> Vec<CompletionItem> {
     let context = crate::parse_line(data, before_cursor);
 
+    let mut items = match_context(data, &context, before_cursor);
+
+    // Statement-start snippets: structural `:if` / `:foreach` / `:for` /
+    // `:do` templates offered ONLY where a new statement may begin. NOTE:
+    // ':' is not a completion trigger character (see the advertised
+    // triggerCharacters in main.rs), so these surface when a SPACE fires
+    // the request at a statement start — an empty line or right after `{`.
+    if context.path.is_empty() && !before_cursor.ends_with('/') && at_statement_start(before_cursor)
+    {
+        items.extend(statement_snippet_items());
+    }
+
+    items
+}
+
+/// The pre-snippet dispatch of [`compute_completions`], kept as its own step
+/// so snippet appending can wrap whatever base candidate set applies.
+fn match_context(
+    data: &MenuData,
+    context: &LineContext,
+    before_cursor: &str,
+) -> Vec<CompletionItem> {
     // No path yet (or a bare "/") → suggest root menus. "/" parses to path
     // "/" which has no child index entry of its own, so it must be treated
     // as the root trigger it is.
@@ -79,7 +102,7 @@ pub fn compute_completions(data: &MenuData, before_cursor: &str) -> Vec<Completi
     {
         let key = &context.last_token[..eq_pos];
         let typed_suffix = &context.last_token[eq_pos + 1..];
-        let items = get_value_completions(data, &context, key);
+        let items = get_value_completions(data, context, key);
         return filter_by_typed_prefix(items, typed_suffix);
     }
 
@@ -87,14 +110,86 @@ pub fn compute_completions(data: &MenuData, before_cursor: &str) -> Vec<Completi
     // arguments — no more sub-menus or verbs.  This matches real RouterOS
     // terminal behavior where Tab after "add" shows property completions.
     if context.command.is_some() {
-        return get_arg_completion_items(data, &context);
+        return get_arg_completion_items(data, context);
     }
 
     // Before a verb: suggest sub-menus + standard verbs
     let mut items = Vec::new();
-    items.extend(get_sub_menu_completion_items(data, &context));
-    items.extend(get_verb_completion_items(data, &context));
+    items.extend(get_sub_menu_completion_items(data, context));
+    items.extend(get_verb_completion_items(data, context));
     items
+}
+
+/// True when the cursor sits where a NEW statement may begin on the current
+/// logical line: either nothing precedes it, or the previous token is exactly
+/// `{` or `;` (a block opener / statement separator).
+///
+/// Token comparison is STRICT equality over quote-aware tokens
+/// ([`crate::tokenize_with_spans`]), which is what keeps snippets out of
+/// mid-command positions:
+/// - `do={` is one token ≠ `{` → no snippets mid-command;
+/// - `"…{…"` quoted braces never split into a `{` token;
+/// - `x=1;` is one token ≠ `;` → no snippets after an inline separator that
+///   still sits inside a larger token.
+pub(crate) fn at_statement_start(before_cursor: &str) -> bool {
+    match crate::tokenize_with_spans(before_cursor).last() {
+        None => true,
+        Some(last) => last.text == "{" || last.text == ";",
+    }
+}
+
+/// One statement template: label, snippet body, one-line markdown docs.
+struct StatementSnippet {
+    label: &'static str,
+    snippet: &'static str,
+    doc: &'static str,
+}
+
+/// The four structural statement snippets, in offer order.
+const STATEMENT_SNIPPETS: [StatementSnippet; 4] = [
+    StatementSnippet {
+        label: ":if",
+        snippet: ":if (${1:condition}) do={\n\t${2}\n} else={\n\t${3}\n}$0",
+        doc: "`:if` — conditional block with `do=` / `else=` branches.",
+    },
+    StatementSnippet {
+        label: ":foreach",
+        snippet: ":foreach ${1:i} in=[${2:find expression}] do={\n\t${3}\n}$0",
+        doc: "`:foreach` — iterate over a list or `find` result.",
+    },
+    StatementSnippet {
+        label: ":for",
+        snippet: ":for ${1:i} from=${2:1} to=${3:10} do={\n\t${4}\n}$0",
+        doc: "`:for` — counted loop from `from=` to `to=`.",
+    },
+    StatementSnippet {
+        label: ":do",
+        snippet: ":do {\n\t${1}\n} while=(${2:condition})$0",
+        doc: "`:do` — run block once, repeat while `while=` holds.",
+    },
+];
+
+/// Build the snippet completion items.
+///
+/// `sortText` "9…" ranks them below menu/argument suggestions ("0…"/"1…")
+/// while staying deterministic; kind SNIPPET (15) + insertTextFormat Snippet(2)
+/// tell clients to expand placeholders/tab stops instead of inserting literally.
+fn statement_snippet_items() -> Vec<CompletionItem> {
+    STATEMENT_SNIPPETS
+        .iter()
+        .map(|s| {
+            let mut item = CompletionItem::new(s.label.to_string(), kind::SNIPPET);
+            item.detail = Some("statement snippet".to_string());
+            item.insert_text = Some(s.snippet.to_string());
+            item.insert_text_format = Some(2); // Snippet
+            item.sort_text = Some(format!("9{}", s.label));
+            item.documentation = Some(Documentation {
+                kind: "markdown",
+                value: s.doc.to_string(),
+            });
+            item
+        })
+        .collect()
 }
 
 /// Case-insensitive prefix filter over candidate labels using the value text
@@ -445,10 +540,17 @@ type = "Directory"
             items.iter().any(|i| i.label == "/system"),
             "should contain /system"
         );
-        for item in &items {
+        // Root menus keep their CLASS kind and detail text…
+        for item in items.iter().filter(|i| i.label.starts_with('/')) {
             assert_eq!(item.kind, Some(kind::CLASS));
             assert!(item.detail.as_ref().unwrap().contains("root menu"));
         }
+        // …and statement-start snippets are appended on top of them.
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&":if"));
+        assert!(labels.contains(&":foreach"));
+        assert!(labels.contains(&":for"));
+        assert!(labels.contains(&":do"));
     }
 
     #[test]
@@ -456,6 +558,11 @@ type = "Directory"
         // "/" alone must behave like the empty context: parse_line maps it
         // to path "/" which has no child index entry, so compute_completions
         // special-cases it back to ROOT menu completions instead of verbs.
+        //
+        // Divergence since statement snippets exist: "" is a statement start
+        // (nothing typed yet) so it additionally carries the four snippet
+        // items; "/" is mid-path navigation (last token "/") so snippets are
+        // withheld there. Root menus themselves must stay identical.
         let data = synthetic_data();
         let items_empty = compute_completions(&data, "");
         let items_slash = compute_completions(&data, "/");
@@ -464,9 +571,14 @@ type = "Directory"
         assert!(slash_labels.contains(&"/ip"));
         assert!(slash_labels.contains(&"/interface"));
         assert!(slash_labels.contains(&"/system"));
-        // Same candidate set as the empty context, and NOT verb completions.
-        let empty_labels: Vec<&str> = items_empty.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(empty_labels, slash_labels);
+        assert!(!slash_labels.contains(&":if"), "no snippets after '/'");
+        // Same ROOT candidate set as the empty context, and NOT verb completions.
+        let empty_roots: Vec<&str> = items_empty
+            .iter()
+            .map(|i| i.label.as_str())
+            .filter(|l| l.starts_with('/'))
+            .collect();
+        assert_eq!(empty_roots, slash_labels);
         assert!(!slash_labels.contains(&"print"));
     }
 
@@ -474,14 +586,21 @@ type = "Directory"
     fn test_root_completions_are_only_roots() {
         let data = MenuData::load();
         let items = compute_completions(&data, "");
-        // All labels should start with /
-        for item in &items {
+        // All MENU labels should start with / (snippet labels start with ':').
+        for item in items.iter().filter(|i| i.label.starts_with('/')) {
             assert!(
-                item.label.starts_with('/'),
-                "root label should start with /: {}",
+                item.label.starts_with('/') && item.kind == Some(kind::CLASS),
+                "root label should be a CLASS menu: {}",
                 item.label
             );
         }
+        // Snippets are the only non-menu additions at statement start.
+        let extra: Vec<&str> = items
+            .iter()
+            .map(|i| i.label.as_str())
+            .filter(|l| !l.starts_with('/'))
+            .collect();
+        assert_eq!(extra, vec![":if", ":foreach", ":for", ":do"]);
         // Should contain all 8 roots at least
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert!(labels.contains(&"/ip"));
@@ -928,7 +1047,9 @@ type = "string"
         let data = synthetic();
         let items = compute_completions(&data, "");
         assert!(!items.is_empty());
-        for it in &items {
+        // Menus keep CLASS kind; snippets (kind SNIPPET) are appended at
+        // statement start since B3.
+        for it in items.iter().filter(|i| i.label.starts_with('/')) {
             assert!(it.label.starts_with('/'), "root label must start with /");
             assert_eq!(it.kind, Some(kind::CLASS));
         }
@@ -936,6 +1057,10 @@ type = "string"
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert!(!labels.contains(&"add"));
         assert!(!labels.contains(&"address"));
+        // Non-menu items must be exactly the four statement snippets.
+        let mut extra: Vec<&str> = labels.into_iter().filter(|l| !l.starts_with('/')).collect();
+        extra.sort_unstable();
+        assert_eq!(extra, vec![":do", ":for", ":foreach", ":if"]);
     }
 
     #[test]
@@ -1439,5 +1564,139 @@ type = "string"
         for i in &items {
             assert_eq!(i.kind, Some(kind::CLASS));
         }
+    }
+
+    // ── Statement-start snippets (B3) ─────────────────────────────
+
+    const SNIPPET_LABELS: [&str; 4] = [":if", ":foreach", ":for", ":do"];
+
+    fn snippet_items<'a>(items: &'a [CompletionItem]) -> Vec<&'a CompletionItem> {
+        items
+            .iter()
+            .filter(|i| SNIPPET_LABELS.contains(&i.label.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn test_at_statement_start_gating() {
+        // Statement starts…
+        assert!(at_statement_start(""), "nothing typed yet");
+        assert!(at_statement_start("   "), "whitespace only");
+        assert!(at_statement_start("{ "), "right after block opener");
+        assert!(
+            at_statement_start("{"),
+            "block opener without trailing space"
+        );
+        assert!(at_statement_start("; "));
+        // …and non-starts.
+        assert!(!at_statement_start(":if "), "previous token is the verb");
+        assert!(!at_statement_start("add address=1.1.1.1 "), "mid-command");
+        assert!(
+            !at_statement_start("do={ "),
+            "a 'do=' plus open-brace token is one token, not a bare block opener"
+        );
+        assert!(
+            !at_statement_start("x=1; "),
+            "a property token ending in a separator is one token, not a bare separator"
+        );
+    }
+
+    #[test]
+    fn test_snippets_shape_and_order() {
+        let data = synthetic();
+        let items = compute_completions(&data, "");
+        let snips = snippet_items(&items);
+        assert_eq!(snips.len(), 4, "exactly four snippets appended");
+        // Offer order matches the constant table.
+        let labels: Vec<&str> = snips.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, SNIPPET_LABELS);
+        for s in snips {
+            assert_eq!(s.insert_text_format, Some(2), "insertTextFormat Snippet");
+            assert_eq!(s.kind, Some(kind::SNIPPET));
+            assert!(
+                s.sort_text.as_deref().unwrap_or("").starts_with('9'),
+                "snippets rank below other candidates: {:?}",
+                s.sort_text
+            );
+            // One-line markdown documentation.
+            let doc = s.documentation.as_ref().expect("docs required");
+            assert_eq!(doc.kind, "markdown");
+            assert!(!doc.value.contains('\n'), "documentation stays one line");
+            assert!(!s.insert_text.as_ref().unwrap().is_empty());
+            assert!(
+                s.insert_text.as_ref().unwrap().contains("$0")
+                    || s.insert_text.as_ref().unwrap().contains("${")
+            );
+        }
+    }
+
+    #[test]
+    fn test_snippet_bodies_match_spec() {
+        let data = synthetic();
+        let items = compute_completions(&data, "");
+        let by_label = |l: &str| {
+            items
+                .iter()
+                .find(|i| i.label == l)
+                .unwrap_or_else(|| panic!("snippet {l} missing"))
+                .insert_text
+                .clone()
+                .unwrap()
+        };
+        assert_eq!(
+            by_label(":if"),
+            ":if (${1:condition}) do={\n\t${2}\n} else={\n\t${3}\n}$0"
+        );
+        assert_eq!(
+            by_label(":foreach"),
+            ":foreach ${1:i} in=[${2:find expression}] do={\n\t${3}\n}$0"
+        );
+        assert_eq!(
+            by_label(":for"),
+            ":for ${1:i} from=${2:1} to=${3:10} do={\n\t${4}\n}$0"
+        );
+        assert_eq!(by_label(":do"), ":do {\n\t${1}\n} while=(${2:condition})$0");
+    }
+
+    #[test]
+    fn test_snippets_absent_mid_command() {
+        let data = synthetic();
+        // After a verb with properties — the classic mid-command position.
+        let items = compute_completions(&data, "/ip/address add ");
+        assert!(
+            snippet_items(&items).is_empty(),
+            "no snippets after a path+verb"
+        );
+        // Inside a value token.
+        let items = compute_completions(&data, "/ip/address add address=");
+        assert!(
+            snippet_items(&items).is_empty(),
+            "no snippets inside values"
+        );
+    }
+
+    #[test]
+    fn test_snippets_absent_after_slash_and_in_path_contexts() {
+        let data = synthetic();
+        // Typing a path — resolved menu path non-empty → gated off.
+        let items = compute_completions(&data, "/ip ");
+        assert!(
+            snippet_items(&items).is_empty(),
+            "no snippets in menu context"
+        );
+        // Trailing '/' (root navigation) → gated off.
+        let items = compute_completions(&data, "/");
+        assert!(
+            snippet_items(&items).is_empty(),
+            "no snippets while typing a path"
+        );
+    }
+
+    #[test]
+    fn test_snippets_present_after_block_opener() {
+        let data = synthetic();
+        // Statement start inside a script block.
+        let items = compute_completions(&data, "{ ");
+        assert_eq!(snippet_items(&items).len(), 4);
     }
 }
