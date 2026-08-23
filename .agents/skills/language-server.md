@@ -10,7 +10,7 @@ Guide for the pure-Rust language server `rsc-ls` and WASM extension that provide
 
 ## State
 
-Working end-to-end: workspace member `lsp/` (native binary `rsc-ls`) + WASM `cdylib` `src/lib.rs` (`zed_extension_api 0.7`). Diagnostics push+pull, 5 rules. Auto-download from GitHub Releases with PATH fallback and 4 platform triples.
+Working end-to-end: workspace member `lsp/` (native binary `rsc-ls`) + WASM `cdylib` `src/lib.rs` (`zed_extension_api 0.7`). Diagnostics push+pull, 5 rules; completion with statement snippets; flat document symbols; folding ranges. Auto-download from GitHub Releases with PATH fallback and 4 platform triples.
 
 ## Architecture
 
@@ -32,16 +32,24 @@ Protocol: `Content-Length` framing, `textDocumentSync = {"openClose": true, "cha
 | File | Role |
 |------|------|
 | `src/lib.rs` | WASM extension; `RscExtension::language_server_command` (PATH→cache→download), `platform_triple`, `LanguageServerInstallationStatus` |
-| `lsp/src/main.rs` | LSP stdio loop, `Server::handle_message`, `tokenize`, `build_before_cursor`, `parse_line`, limits, logging, `publish_diagnostics` |
-| `lsp/src/menus.rs` | `MenuData::load()` / `from_toml_str`, `COMMANDS_TOML`, validation (≤256, charset, `..`, control), `menu_by_path`, `child_names_by_parent`, `STANDARD_VERBS` (15) |
-| `lsp/src/completion.rs` | `compute_completions` → root/sub-menu/verb/arg/value; snippet `arg=$1`, `kind` CLASS/FUNCTION/PROPERTY/CONSTANT/ENUM_MEMBER |
+| `lsp/src/main.rs` | LSP stdio loop + `Server::handle_message` (all method dispatch), doc store caps, `publish_diagnostics`; re-exports the extracted modules |
+| `lsp/src/framing.rs` | `Frame`/`FrameError`/`read_message` — Content-Length framing with header/body caps; unparsable headers are terminal (`FrameError::Protocol`) to prevent desync cascades |
+| `lsp/src/parser.rs` | Quote-aware `scan_token`/`SpanToken`/`tokenize_with_spans`/`tokenize`, `parse_line`, multi-line `build_before_cursor` |
+| `lsp/src/encoding.rs` | `PositionEncoding` negotiation, byte↔UTF-16 conversions, `apply_incremental_edit`, diagnostic/symbol position conversion at the protocol boundary |
+| `lsp/src/logging.rs` | `log_error!…log_trace!` macros + `RSC_LS_LOG` level gate (macros resolve `crate::logging::` so any module can use them) |
+| `lsp/src/menus.rs` | `MenuData::load()` / `from_toml_str` (test-only), `COMMANDS_TOML`, validation (≤256, charset, `..`, control), `menu_by_path`, `child_names_by_parent`, `STANDARD_VERBS` (15) |
+| `lsp/src/completion.rs` | `compute_completions` → root/sub-menu/verb/arg/value + statement-start snippet templates; `kind` CLASS/FUNCTION/PROPERTY/CONSTANT/ENUM_MEMBER/SNIPPET |
 | `lsp/src/hover.rs` | `compute_hover` (menu→property→flag→verb), `find_word_start/end` (includes `/ - _`, UTF-8 safe) |
-| `lsp/src/diagnostics.rs` | `compute_diagnostics` — 5 rules, `source="rsc-ls"`, capped |
+| `lsp/src/diagnostics.rs` | `compute_diagnostics` — 5 rules, `source="rsc-ls"`, capped; also owns `logical_lines()` (continuation joining) shared with symbols/folding |
+| `lsp/src/symbols.rs` | `compute_document_symbols` — flat symbol list: menu commands → Object(19), `:local`/`:global` → Variable(13) named by identifier, other `:verb` → Function(12); skips bare fragments/comments |
+| `lsp/src/folding.rs` | `compute_folding_ranges` — quote/comment-aware brace regions (kind `"region"`), kindless folds for `\` continuations; only when `startLine < endLine` |
 | `lsp/src/server.rs` | Helper module: URI validation (`is_valid_file_uri`), mirrored caps + enclosure/capacity invariant tests |
 | `data/commands.toml` | Generated command table (header: version/timestamp/SHA256), truth source `llms-full.txt` |
 | `extension.toml` | Manifest: `grammars[rsc]` + `language_servers[rsc-ls]` |
 
 ## Capabilities
+
+Advertised in `initialize`: `positionEncoding`, `textDocumentSync {openClose:true, change:2}`, `completionProvider {triggerCharacters:["/", " ", "="]}`, `hoverProvider`, `documentSymbolProvider`, `foldingRangeProvider`, `diagnosticProvider {interFileDependencies:false}`.
 
 ### Completion (`textDocument/completion`)
 
@@ -52,7 +60,17 @@ Strategy: return all candidates, let Zed fuzzy-filter. Only exception: `property
 - After verb (`add`/`print`) → args/flags (`get_arg_completion_items`, `kind::PROPERTY`/`CONSTANT`, snippets `address=$1` / `comment="$1"`, skips used props)
 - After `key=` → enum/bool/`iface_enum`/`ipAddr`/`ipPrefix` values (`get_value_completions`, `kind::ENUM_MEMBER`)
 
-Context: `build_before_cursor` + `parse_line` (both in `main.rs`; `parse_line` uses `child_names_by_parent` for implicit parents like `/ip/firewall`).
+Context: `build_before_cursor` + `parse_line` (both in `parser.rs`; `parse_line` uses `child_names_by_parent` for implicit parents like `/ip/firewall`).
+
+Statement snippets (Stage B): at a statement start — no previous token on the logical line, or the previous quote-aware token is exactly `{` or `;` — with an empty resolved menu path and no trailing `/`, four template items (`:if`, `:foreach`, `:for`, `:do`; `kind::SNIPPET`, `insertTextFormat 2`, `sortText "9…"`) are appended to whatever base candidates apply. Strict token equality keeps them out of mid-command positions (`do={` is one token) and out of quoted strings. Note `:` is NOT a trigger character, so they surface on space-triggered requests at statement start.
+
+### Document Symbols (`textDocument/documentSymbol`, `compute_document_symbols` in `symbols.rs`)
+
+Flat `DocumentSymbol[]` (no children). Per logical line (`diagnostics::logical_lines`, so `\` continuations join first): leading `/…` token → menu command, `Object(19)` named by the path+verb substring exactly as written, `selectionRange` on the first path token; `:local`/`:global` → `Variable(13)` named by the identifier token; other `:verb` → `Function(12)` named by the verb. Bare values, lone properties, comments, and bare `/` are skipped. Ranges computed in byte coordinates via segment mapping, converted to the negotiated encoding at the handler (`convert_position`). Untracked URI → null result; malformed params → `-32602`.
+
+### Folding Ranges (`textDocument/foldingRange`, `compute_folding_ranges` in `folding.rs`)
+
+Two sources merged and sorted by `startLine`, emitted only when `startLine < endLine`: brace regions (quote/comment-aware scan with state carried across physical lines → `kind:"region"`; unterminated braces emit nothing) and `\` continuations spanning multiple physical lines (no kind). Line-only ranges need no encoding conversion.
 
 ### Hover (`textDocument/hover`, `compute_hover` in `hover.rs`)
 
@@ -79,7 +97,7 @@ All diagnostics: `source="rsc-ls"`. Types: `Diagnostic{range, severity, code, so
 1. **Choose handler**: add match arm in `Server::handle_message` (`main.rs`) (e.g., `textDocument/definition`, `textDocument/formatting`). Advertise in `initialize` capabilities.
 2. **Reuse context**: call `build_before_cursor(doc, line, char)` → `parse_line(&data, &before)` → `LineContext{path, command, properties, last_token}`. For hover-like word precision, use `find_word_start/end` from `hover.rs`.
 3. **Query MenuData**: `data.menu_by_path.get(&ctx.path)` for exact menu, `data.child_names_by_parent.get(&ctx.path)` for children/implicit parents, `data.menus` for prefix scans. Check `menu_type` (`Directory`/`Settings Directory`/`Command`) and `arg.required`/`arg_type`.
-4. **Implement module**: create `lsp/src/<feature>.rs` (like `completion.rs`/`hover.rs`/`diagnostics.rs`), expose `compute_<feature>(data, ctx, ...) -> Option<Value>`; keep pure (no I/O) for testability. Register `mod <feature>` alongside the others in `main.rs`.
+4. **Implement module**: create `lsp/src/<feature>.rs` (like `completion.rs`/`hover.rs`/`diagnostics.rs`/`symbols.rs`/`folding.rs`), expose a pure `compute_<feature>(...) -> Vec<T>/Option<Value>` function (no I/O) for testability. Register `mod <feature>` alongside the others in `main.rs`.
 5. **Serialize LSP response**: `serde_json::json!({"jsonrpc":"2.0","id":id,"result":...})`; return `None` for notifications. Use `source="rsc-ls"` and correct `severity` for diagnostics.
 6. **Wire publish if needed**: for push diagnostics pattern, add `publish_diagnostics` call after `didOpen`/`didChange`/`didClose`.
 7. **Test**: add `#[cfg(test)]` with `MenuData::from_toml_str(synthetic)` (see the test modules in `diagnostics.rs`, `completion.rs`, `hover.rs`, `main.rs`) plus `MenuData::load()` real-data sanity. Run `cargo test -p rsc-ls`.
@@ -114,14 +132,17 @@ make validate                         # generate-check + fmt + clippy + test-all
 | Area | File | Pattern |
 |------|------|---------|
 | Menus/indices | `lsp/src/menus.rs` | `test_*`, `synthetic` TOML via `from_toml_str`, `MenuData::load` real-data checks (`test_menus_are_not_empty`, `test_children_index_built`) |
-| Tokenize/parse | `lsp/src/main.rs` | `test_tokenize_*`, `test_build_before_cursor_*`, `test_parse_line_*`, `test_lsp_position_to_offset_*`, `test_apply_incremental_edit_*` |
+| Tokenize/parse | `lsp/src/parser.rs` | `test_tokenize_*`, `test_build_before_cursor_*`, `test_parse_line_*` |
+| Framing | `lsp/src/framing.rs` | golden streams: valid frames, garbage/malformed/duplicate headers terminal, oversized drained, EOF semantics |
+| Encoding/patching | `lsp/src/encoding.rs` | `test_lsp_position_to_offset_*`, `test_apply_incremental_edit_*`, UTF-16 round-trips, CRLF |
 | Caps/URI validation | `lsp/src/server.rs` | enclosure/capacity invariant tests, `is_valid_file_uri` sync with `crate::` |
-| Completion | `lsp/src/completion.rs` | `test_root_*`, `test_submenu_*`, `test_arg_*`, `test_value_*`, real-data `test_real_data_*` |
+| Completion | `lsp/src/completion.rs` | `test_root_*`, `test_submenu_*`, `test_arg_*`, `test_value_*`, `test_snippets_*` / `test_at_statement_start_gating` (B3), real-data `test_real_data_*` |
 | Hover | `lsp/src/hover.rs` | `test_hover_menu_*`, `test_hover_property_*`, `test_hover_flag_*`, `test_hover_verb_*`, `test_find_word_*` |
 | Diagnostics | `lsp/src/diagnostics.rs` | `test_unknown_menu`, `test_missing_required`, `test_duplicate`, `test_invalid_enum`, `test_large_doc_capped`, `test_implicit_parent` |
-| Manual E2E | Zed | `Install Dev Extension` → open `.rsc` → trigger `/` ` ` `=` completion, hover, verify `publishDiagnostics` |
+| Symbols/folding | `lsp/src/symbols.rs`, `lsp/src/folding.rs` | unit fixtures + server-level integration in `main.rs` (`test_document_symbols_*`, `test_folding_ranges_*`) incl. untracked-null and `-32602` cases |
+| Manual E2E | Zed | `Install Dev Extension` → open `.rsc` → trigger `/` ` ` `=` completion, hover, folding gutter, outline/document symbols, verify `publishDiagnostics` |
 
-Edge cases covered: empty files, quoted strings, `[find]`, multi-menu docs, incremental edits, 5 MiB cap, UTF-8 (`héllo`), implicit parents, truncated `enum` in real data.
+Edge cases covered: empty files, quoted strings (incl. braces inside them), `[find]`, multi-menu docs, incremental edits, 5 MiB cap, UTF-8/UTF-16 positions (`héllo`, emoji), implicit parents, truncated `enum` in real data, unterminated braces/quotes at EOF.
 
 ## Debugging
 
