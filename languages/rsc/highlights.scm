@@ -77,6 +77,25 @@
 ; ── Global commands (:put, :local, :for, etc.) ──────────────────
 (global_command_name) @keyword
 
+; ── Variable declarations (:local/:global/:set name …) ──────────
+((global_command
+   (global_command_name (identifier) @_cmd)
+   (identifier) @variable.parameter)
+ (#match? @_cmd "^(local|global|set)$"))
+
+; ── :return true / :return false ────────────────────────────────
+((global_command
+   (global_command_name (identifier) @_cmd)
+   (identifier) @diff.plus)
+ (#eq? @_cmd "return")
+ (#eq? @diff.plus "true"))
+
+((global_command
+   (global_command_name (identifier) @_cmd)
+   (identifier) @diff.minus)
+ (#eq? @_cmd "return")
+ (#eq? @diff.minus "false"))
+
 ; ── Control flow keywords ───────────────────────────────────────
 "do" @keyword.control
 "else" @keyword.control
@@ -98,7 +117,7 @@
 ; ── Variables ───────────────────────────────────────────────────
 (variable_reference
   "$" @punctuation.special
-  (identifier) @variable)
+  (identifier) @variable.parameter)
 
 ; ── Strings ────────────────────────────────────────────────────
 (string) @string
