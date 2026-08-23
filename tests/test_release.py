@@ -235,14 +235,17 @@ class TestMakefileBump:
         assert "VERSION" in self.text, "Makefile bump target should reference VERSION"
 
     def test_bump_updates_cargo_toml(self):
-        # Check that bump sed touches Cargo.toml and lsp/Cargo.toml and grammars/rsc/Cargo.toml
+        # Bump rewrites the parent workspace manifests only.
         assert "Cargo.toml" in self.text, "Makefile bump should mention Cargo.toml"
         assert "lsp/Cargo.toml" in self.text, "Makefile bump should update lsp/Cargo.toml"
-        # grammars/rsc entries
-        assert "grammars/rsc/Cargo.toml" in self.text or "GRAMMAR" in self.text, "Makefile bump should handle grammars/rsc/Cargo.toml"
+        # Grammar versions live in the separate tree-sitter-rsc repo (the
+        # grammars/rsc submodule) and must never be bumped from the parent.
+        assert "grammars/rsc/Cargo.toml" not in self.text, "Makefile bump must not edit the grammar submodule"
 
-    def test_bump_updates_package_json_and_extension(self):
-        assert "package.json" in self.text, "Makefile bump should update grammars/rsc/package.json"
+    def test_bump_updates_extension_but_not_submodule(self):
+        # publish_grammar.py auto-commits any dirty submodule edits on --push;
+        # parent-side bumps must never leak into the grammar repo.
+        assert "package.json" not in self.text, "Makefile bump must not edit grammars/rsc/package.json"
         assert "extension.toml" in self.text, "Makefile bump should update extension.toml"
 
     def test_bump_uses_version_variable(self):
