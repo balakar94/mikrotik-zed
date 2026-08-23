@@ -92,6 +92,7 @@ These change constantly. Re-check at the canonical location before pasting them 
 ├── data/commands.toml     # Generated command table (embedded in rsc-ls)
 ├── scripts/               # sync_llms, extract_commands, publish_grammar, mikrotik-deploy, test generators
 ├── tests/                 # Python suite (environment, extraction, functionality, enclosure, release)
+├── docs/adr/              # Architecture decision records (numbered, lightweight)
 └── .agents/skills/        # Deep-dive guides (see below)
 ```
 

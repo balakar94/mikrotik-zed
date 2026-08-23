@@ -33,6 +33,7 @@ Protocol: `Content-Length` framing, `textDocumentSync = {"openClose": true, "cha
 |------|------|
 | `src/lib.rs` | WASM extension; `RscExtension::language_server_command` (PATH→cache→download), `platform_triple`, `LanguageServerInstallationStatus` |
 | `lsp/src/main.rs` | LSP stdio loop + `Server::handle_message` (all method dispatch), doc store caps, `publish_diagnostics`; re-exports the extracted modules |
+| `lsp/src/cli.rs` | CLI flags (`--version`/`-V`, `--help`/`-h`, usage errors exit 2), `version_string()` (`RSC_LS_BUILD_SHA` → ` (build <sha7>)`); handled before any logging/loading |
 | `lsp/src/framing.rs` | `Frame`/`FrameError`/`read_message` — Content-Length framing with header/body caps; unparsable headers are terminal (`FrameError::Protocol`) to prevent desync cascades |
 | `lsp/src/parser.rs` | Quote-aware `scan_token`/`SpanToken`/`tokenize_with_spans`/`tokenize`, `parse_line`, multi-line `build_before_cursor` |
 | `lsp/src/encoding.rs` | `PositionEncoding` negotiation, byte↔UTF-16 conversions, `apply_incremental_edit`, diagnostic/symbol position conversion at the protocol boundary |
@@ -156,6 +157,16 @@ RSC_LS_LOG=trace zed --foreground             # Zed foreground logs
 ```
 
 Prefixes: `[rsc-ls][ERROR]` / `[WARN]` / `[INFO]` / `[DEBUG]` / `[TRACE]` and `[mikrotik-zed]` for WASM extension (`src/lib.rs`). Startup logs menu count and limits. Non-`file://` URIs rejected (`didOpen`/`didChange`/`diagnostic`). `cfg!(test)` suppresses `publishDiagnostics` stdout during `cargo test`.
+
+### Which binary is Zed running?
+
+The extension resolves `rsc-ls` at runtime (PATH → cache → GitHub download), so a stale copy can hide behind a fresh one. Ask every candidate directly:
+
+```bash
+which -a rsc-ls | while read -r p; do printf '%s -> ' "$p"; "$p" --version; done
+```
+
+Every copy prints `rsc-ls <version>` (release builds append ` (build <sha7>)` via the compile-time `RSC_LS_BUILD_SHA`) and exits 0 without reading stdin or loading menus; unknown flags exit 2 with usage on stderr (`--help`/`-h` prints it on stdout). The startup stderr line — visible via `zed: open log` — also carries version + pid, e.g. `[rsc-ls][INFO] rsc-ls 0.1.5 starting (pid=1234, …)`, so multiple instances are correlatable in logs.
 
 ## Build
 
