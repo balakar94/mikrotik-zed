@@ -158,6 +158,12 @@ pub(crate) fn is_valid_file_uri(uri: &str) -> bool {
     true
 }
 
+/// LSP 3.17 exit semantics: the server must exit with status 0 when the
+/// `shutdown` request was received before `exit`, and with status 1 otherwise.
+pub(crate) fn exit_code(shutdown_received: bool) -> i32 {
+    if shutdown_received { 0 } else { 1 }
+}
+
 // ── Server state ────────────────────────────────────────────────
 
 /// Negotiated LSP position encoding for `Position.character` values
@@ -193,6 +199,9 @@ struct Server {
     /// Position encoding negotiated during `initialize`; defaults to UTF-16
     /// (the spec default) until then.
     position_encoding: PositionEncoding,
+    /// Whether the `shutdown` request was answered before `exit`.
+    /// LSP 3.17 requires exit status 0 only when shutdown preceded exit.
+    shutdown_received: bool,
 }
 
 impl Server {
@@ -201,6 +210,7 @@ impl Server {
             data,
             docs: HashMap::new(),
             position_encoding: PositionEncoding::default(),
+            shutdown_received: false,
         }
     }
 
@@ -375,20 +385,29 @@ impl Server {
                         },
                         "serverInfo": {
                             "name": "mikrotik-rsc-ls",
-                            "version": "0.1.0",
+                            "version": env!("CARGO_PKG_VERSION"),
                         },
                     },
                 }))
             }
 
-            "shutdown" => Some(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": null,
-            })),
+            "shutdown" => {
+                // Latch that shutdown was answered: the subsequent `exit` must
+                // then terminate with status 0 (LSP 3.17 exit semantics).
+                self.shutdown_received = true;
+                Some(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": null,
+                }))
+            }
 
             "exit" => {
-                std::process::exit(0);
+                let code = exit_code(self.shutdown_received);
+                if code != 0 {
+                    log_warn!("exit without prior shutdown (LSP 3.17) — exiting with code {code}");
+                }
+                std::process::exit(code);
             }
 
             "textDocument/didOpen" => {
@@ -1699,11 +1718,18 @@ type = "Directory"
         assert_eq!(resp["result"]["capabilities"]["textDocumentSync"], 1);
         assert_eq!(resp["result"]["capabilities"]["hoverProvider"], true);
         assert_eq!(resp["result"]["serverInfo"]["name"], "mikrotik-rsc-ls");
+        // Assert against the crate version, not a literal, so version bumps
+        // don't break this test.
+        assert_eq!(
+            resp["result"]["serverInfo"]["version"],
+            env!("CARGO_PKG_VERSION")
+        );
     }
 
     #[test]
     fn test_server_shutdown() {
         let mut server = make_server();
+        assert!(!server.shutdown_received);
         let msg = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 2,
@@ -1712,6 +1738,31 @@ type = "Directory"
         });
         let resp = server.handle_message("shutdown", &msg).unwrap();
         assert_eq!(resp["result"], serde_json::Value::Null);
+        assert!(
+            server.shutdown_received,
+            "answering shutdown must latch shutdown_received"
+        );
+    }
+
+    #[test]
+    fn test_exit_code_lsp_317() {
+        // LSP 3.17: exit status 0 only after a `shutdown` request; else 1.
+        assert_eq!(exit_code(true), 0);
+        assert_eq!(exit_code(false), 1);
+        // Fresh server: no shutdown seen yet → a bare `exit` maps to status 1.
+        let fresh = Server::new(synthetic_data());
+        assert!(!fresh.shutdown_received);
+        assert_eq!(exit_code(fresh.shutdown_received), 1);
+        // After answering `shutdown`, the same server maps to status 0.
+        let mut server = make_server();
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "shutdown",
+            "params": {}
+        });
+        server.handle_message("shutdown", &msg).unwrap();
+        assert_eq!(exit_code(server.shutdown_received), 0);
     }
 
     #[test]
