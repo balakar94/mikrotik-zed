@@ -1,7 +1,7 @@
 id = "mikrotik-rsc"
 name = "MikroTik RouterOS Script"
 description = "MikroTik language support for RouterOS (v7.0+) with syntax highlighting and command autocompletion."
-version = "0.1.5"
+version = "0.2.0"
 schema_version = 1
 authors = ["balakar94"]
 repository = "https://github.com/balakar94/mikrotik-zed"
