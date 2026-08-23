@@ -101,7 +101,7 @@ Untracked locals: `llms.txt`, `llms-full.txt` (fetch via `make sync`), `extensio
 ## Release
 
 - **Grammar:** `python scripts/publish_grammar.py --dry-run`, then `--push`. It validates generation, pushes the submodule content to GitHub, and updates the pinned revision in `extension.toml` itself — **never hand-edit `rev`**.
-- **Version:** `make bump VERSION=x.y.z`.
+- **Version:** `make bump VERSION=x.y.z`. Grammar crate/package.json versions (`grammars/rsc/`) are independent of extension releases — version coherence is enforced only within each group, never across groups.
 - **Binaries:** pushing a `v*.*.*` tag triggers `.github/workflows/release.yml` (multi-platform `rsc-ls` + WASM → GitHub Release).
 
 ## Device deploy (optional, local only)

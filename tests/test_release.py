@@ -69,14 +69,19 @@ class TestVersionCoherence:
         assert root_v == lsp_v, f"version drift: Cargo.toml={root_v!r} vs lsp/Cargo.toml={lsp_v!r}"
 
     def test_grammars_rsc_cargo_version_if_exists(self):
+        """Grammar crate version must exist and be valid semver — nothing more.
+
+        It is deliberately NOT compared against the extension release version:
+        the grammar lives in the separate tree-sitter-rsc repo ("own repo, own
+        lifecycle", see AGENTS.md) and `make bump` never touches the submodule,
+        so cross-group drift (e.g. extension 0.2.0 vs grammar 0.1.5) is expected.
+        """
         grammar_cargo = ROOT / "grammars" / "rsc" / "Cargo.toml"
         if not grammar_cargo.exists():
             pytest.skip("grammars/rsc/Cargo.toml not present (submodule not initialized)")
-        root_v = _read_version_cargo(ROOT / "Cargo.toml")
         g_v = _read_version_cargo(grammar_cargo)
         assert g_v is not None, "grammars/rsc/Cargo.toml missing version"
         assert SEMVER_RE.match(g_v), f"grammars/rsc/Cargo.toml version not semver: {g_v!r}"
-        assert root_v == g_v, f"version drift: Cargo.toml={root_v!r} vs grammars/rsc/Cargo.toml={g_v!r}"
 
     def test_extension_toml_version_matches_cargo(self):
         root_v = _read_version_cargo(ROOT / "Cargo.toml")
@@ -85,41 +90,65 @@ class TestVersionCoherence:
         assert SEMVER_RE.match(ext_v), f"extension.toml version not semver: {ext_v!r}"
         assert root_v == ext_v, f"version drift: Cargo.toml={root_v!r} vs extension.toml={ext_v!r}"
 
-    def test_package_json_version_matches_cargo_if_exists(self):
+    def test_grammar_package_json_matches_grammar_cargo(self):
+        """Grammar package.json and grammar Cargo.toml describe the same
+        tree-sitter-rsc release and must agree with EACH OTHER.
+
+        They are NOT required to match the extension release version: grammar
+        metadata keeps its own lifecycle in a separate repo (AGENTS.md "own
+        repo, own lifecycle"; `make bump` never edits the submodule), so drift
+        vs Cargo.toml/extension.toml at the repo root is expected and fine.
+        """
         pkg = ROOT / "grammars" / "rsc" / "package.json"
-        if not pkg.exists():
-            pytest.skip("grammars/rsc/package.json not present")
-        root_v = _read_version_cargo(ROOT / "Cargo.toml")
+        grammar_cargo = ROOT / "grammars" / "rsc" / "Cargo.toml"
+        if not pkg.exists() or not grammar_cargo.exists():
+            pytest.skip("grammar metadata not present (submodule not initialized)")
+        g_v = _read_version_cargo(grammar_cargo)
         pkg_v = _read_version_package_json(pkg)
+        assert g_v is not None, "grammars/rsc/Cargo.toml missing version"
         assert pkg_v is not None, "grammars/rsc/package.json missing version"
         assert SEMVER_RE.match(pkg_v), f"package.json version not semver: {pkg_v!r}"
-        assert root_v == pkg_v, f"version drift: Cargo.toml={root_v!r} vs package.json={pkg_v!r}"
+        assert pkg_v == g_v, (
+            f"grammar metadata drift: grammars/rsc/Cargo.toml={g_v!r} vs grammars/rsc/package.json={pkg_v!r}"
+        )
 
     def test_all_versions_same_coherence(self):
-        """All present version files must agree."""
-        versions: dict[str, str] = {}
-        cargo_v = _read_version_cargo(ROOT / "Cargo.toml")
-        if cargo_v:
-            versions["Cargo.toml"] = cargo_v
-        lsp_v = _read_version_cargo(ROOT / "lsp" / "Cargo.toml")
-        if lsp_v:
-            versions["lsp/Cargo.toml"] = lsp_v
-        grammar_cargo = ROOT / "grammars" / "rsc" / "Cargo.toml"
-        if grammar_cargo.exists():
-            gv = _read_version_cargo(grammar_cargo)
-            if gv:
-                versions["grammars/rsc/Cargo.toml"] = gv
+        """Versions must be coherent WITHIN each lifecycle group, never across groups.
+
+        Group A (extension release): Cargo.toml, lsp/Cargo.toml and
+        extension.toml are bumped together by `make bump` and must all exist
+        and agree.
+
+        Group B (grammar metadata): grammars/rsc/Cargo.toml and
+        grammars/rsc/package.json live in the separate tree-sitter-rsc repo
+        ("own repo, own lifecycle", see AGENTS.md; `make bump` never touches
+        the submodule). When present they must agree with each other, but
+        cross-group drift vs group A is EXPECTED and fine (e.g. extension
+        0.2.0 alongside grammar 0.1.5) — do not restore strict equality here.
+        """
+        # Group A: extension release files — bumped together via `make bump`.
         ext_v, _ = _read_extension_version_and_rev(ROOT / "extension.toml")
-        if ext_v:
-            versions["extension.toml"] = ext_v
-        pkg = ROOT / "grammars" / "rsc" / "package.json"
-        if pkg.exists():
-            pv = _read_version_package_json(pkg)
-            if pv:
-                versions["grammars/rsc/package.json"] = pv
-        assert len(versions) >= 3, f"expected at least 3 version files, found {versions}"
-        unique = set(versions.values())
-        assert len(unique) == 1, f"version drift across files: {versions}"
+        group_a = {
+            "Cargo.toml": _read_version_cargo(ROOT / "Cargo.toml"),
+            "lsp/Cargo.toml": _read_version_cargo(ROOT / "lsp" / "Cargo.toml"),
+            "extension.toml": ext_v,
+        }
+        missing = sorted(name for name, v in group_a.items() if v is None)
+        assert not missing, f"extension release files missing version: {missing}"
+        unique_a = set(group_a.values())
+        assert len(unique_a) == 1, f"version drift within extension release files: {group_a}"
+
+        # Group B: grammar metadata — own lifecycle; coherent only among themselves.
+        group_b: dict[str, str] = {}
+        gv = _read_version_cargo(ROOT / "grammars" / "rsc" / "Cargo.toml")
+        if gv is not None:
+            group_b["grammars/rsc/Cargo.toml"] = gv
+        pv = _read_version_package_json(ROOT / "grammars" / "rsc" / "package.json")
+        if pv is not None:
+            group_b["grammars/rsc/package.json"] = pv
+        if group_b:
+            unique_b = set(group_b.values())
+            assert len(unique_b) == 1, f"version drift within grammar metadata files: {group_b}"
 
     def test_valid_semver_all_files(self):
         """Every version file that exists must be valid semver."""
