@@ -14,7 +14,7 @@ languages = ["languages/rsc"]
 # Update after pushing grammars/rsc: `git -C grammars/rsc rev-parse HEAD`
 [grammars.rsc]
 repository = "https://github.com/balakar94/tree-sitter-rsc"
-rev = "b8ed319c2edd44ca451a4a2ba141d8fe0a7e7aaa"
+rev = "cfb7bdd7db08ac5fdfec1f72f222363586e04877"
 
 [language_servers.rsc-ls]
 name = "MikroTik Language Server"
