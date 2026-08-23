@@ -41,7 +41,8 @@ Protocol: `Content-Length` framing, `textDocumentSync = {"openClose": true, "cha
 | `lsp/src/menus.rs` | `MenuData::load()` / `from_toml_str` (test-only), `COMMANDS_TOML`, validation (≤256, charset, `..`, control), `menu_by_path`, `child_names_by_parent`, `STANDARD_VERBS` (15) |
 | `lsp/src/completion.rs` | `compute_completions` → root/sub-menu/verb/arg/value + statement-start snippet templates; `kind` CLASS/FUNCTION/PROPERTY/CONSTANT/ENUM_MEMBER/SNIPPET |
 | `lsp/src/hover.rs` | `compute_hover` (menu→property→flag→verb), `find_word_start/end` (includes `/ - _`, UTF-8 safe) |
-| `lsp/src/diagnostics.rs` | `compute_diagnostics` — 5 rules, `source="rsc-ls"`, capped; also owns `logical_lines()` (continuation joining) shared with symbols/folding |
+| `lsp/src/diagnostics.rs` | `compute_diagnostics` — 5 rules, `source="rsc-ls"`, capped; also owns `logical_lines()` (continuation joining) shared with symbols/folding, and `resolve_menu_for_line()` (menu context for a physical line) used by code actions |
+| `lsp/src/suggest.rs` | `damerau_levenshtein` (OSA variant), `suggestion_threshold`, `best_candidate` — deterministic did-you-mean engine behind code actions |
 | `lsp/src/symbols.rs` | `compute_document_symbols` — flat symbol list: menu commands → Object(19), `:local`/`:global` → Variable(13) named by identifier, other `:verb` → Function(12); skips bare fragments/comments |
 | `lsp/src/folding.rs` | `compute_folding_ranges` — quote/comment-aware brace regions (kind `"region"`), kindless folds for `\` continuations; only when `startLine < endLine` |
 | `lsp/src/server.rs` | Helper module: URI validation (`is_valid_file_uri`), mirrored caps + enclosure/capacity invariant tests |
@@ -50,7 +51,7 @@ Protocol: `Content-Length` framing, `textDocumentSync = {"openClose": true, "cha
 
 ## Capabilities
 
-Advertised in `initialize`: `positionEncoding`, `textDocumentSync {openClose:true, change:2}`, `completionProvider {triggerCharacters:["/", " ", "="]}`, `hoverProvider`, `documentSymbolProvider`, `foldingRangeProvider`, `diagnosticProvider {interFileDependencies:false}`.
+Advertised in `initialize`: `positionEncoding`, `textDocumentSync {openClose:true, change:2}`, `completionProvider {triggerCharacters:["/", " ", "="]}`, `hoverProvider`, `documentSymbolProvider`, `foldingRangeProvider`, `codeActionProvider`, `diagnosticProvider {interFileDependencies:false}`.
 
 ### Completion (`textDocument/completion`)
 
@@ -80,6 +81,10 @@ Order: 1) menu path (`### /ip/address` + `Type:` + `Arguments:` + `Flags:`) 2) p
 ### Diagnostics (push `publishDiagnostics` + pull `textDocument/diagnostic`, `compute_diagnostics` in `diagnostics.rs`)
 
 `publish_diagnostics` called after `didOpen`/`didChange` (full+incremental), `didClose` clears. `diagnosticProvider` advertised in `initialize`. Skips `#` comments, `:` globals, `}`/`{`/`..`. Unknown menu suppresses further property checks on that line (no cascade).
+
+### Code Actions (`textDocument/codeAction`, `compute_code_actions` in `main.rs` + `suggest.rs`)
+
+Returns `quickfix` actions ("Did you mean 'X'?") for client-echoed diagnostics with `source="rsc-ls"` and code `unknown-property`/`unknown-menu`; the edit replaces the diagnostic's own range with the candidate. The typo'd token is recovered from the tracked document at the diagnostic range (never by parsing message text), and its governing menu is resolved with the same continuation-aware machinery as the diagnostic pipeline (`diagnostics::logical_lines` + `parse_line` + `menu_by_path`, factored as `diagnostics::resolve_menu_for_line`) — unknown-property candidates are that menu's `arguments ∪ flags ∪ read_only` names, unknown-menu candidates are all known paths, an unresolvable menu yields no action rather than a cross-menu guess. Suggestion policy: Damerau-Levenshtein (optimal string alignment) distance must be ≤ 1 for inputs of ≤ 4 characters and ≤ 2 otherwise (short identifiers must not pick up noisy matches), distance-0 "identity fixes" for stale diagnostics are rejected, and ties break to the lexicographically smallest candidate so results never depend on HashMap iteration order. Capped at 8 actions per request; untracked URI → empty array; malformed params → `-32602`.
 
 ## Diagnostics Rules
 

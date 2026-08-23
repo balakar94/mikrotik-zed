@@ -28,11 +28,12 @@ mod logging;
 mod menus;
 mod parser;
 mod server;
+mod suggest;
 mod symbols;
 
 pub(crate) use encoding::{
     PositionEncoding, apply_incremental_edit, convert_diagnostic_ranges, convert_position,
-    floor_char_boundary, lsp_character_to_byte_offset,
+    floor_char_boundary, lsp_character_to_byte_offset, lsp_position_to_offset,
 };
 pub(crate) use framing::{Frame, FrameError, MAX_HEADER_SIZE, MAX_MESSAGE_SIZE, read_message};
 pub(crate) use logging::{log_debug, log_error, log_info, log_level, log_warn};
@@ -46,6 +47,12 @@ use std::io::{BufReader, Write};
 // message-framing caps live in framing.rs and are re-exported above.
 const MAX_DOC_SIZE: usize = 5 * 1024 * 1024; // 5 MiB per document — prevents single-file OOM
 const MAX_DOCS: usize = 100; // cap number of tracked documents
+/// Cap on quick-fix actions returned per `textDocument/codeAction` request.
+///
+/// Bounds the response even when a client echoes hundreds of eligible
+/// diagnostics (e.g. after pasting a large broken script); eight one-click
+/// fixes is already beyond what an editor surfaces comfortably.
+const MAX_CODE_ACTIONS: usize = 8;
 
 fn main() {
     // CLI flags are handled FIRST — before logging, env reads, or data
@@ -124,6 +131,17 @@ pub(crate) fn invalid_params_response(
             "message": message,
         },
     }))
+}
+
+/// Extract a `(line, character)` pair from a JSON LSP Position object,
+/// or [`None`] when the object is missing or mistyped (non-numeric
+/// fields). Values stay in wire units — callers convert per the
+/// negotiated encoding at the document boundary.
+fn wire_position(v: Option<&serde_json::Value>) -> Option<(usize, usize)> {
+    let v = v?;
+    let line = v.get("line").and_then(|p| p.as_u64())?;
+    let character = v.get("character").and_then(|p| p.as_u64())?;
+    Some((line as usize, character as usize))
 }
 
 // ── Server state ────────────────────────────────────────────────
@@ -261,6 +279,9 @@ impl Server {
                             "hoverProvider": true,
                             "documentSymbolProvider": true,
                             "foldingRangeProvider": true,
+                            // Quick-fixes ("Did you mean …?") for
+                            // unknown-property / unknown-menu diagnostics.
+                            "codeActionProvider": true,
                             "diagnosticProvider": {
                                 "interFileDependencies": false,
                                 "workspaceDiagnostics": false
@@ -684,6 +705,35 @@ impl Server {
                 }))
             }
 
+            "textDocument/codeAction" => {
+                // Quick-fixes ("Did you mean …?") for our own
+                // unknown-property / unknown-menu diagnostics. Same response
+                // guarantees as the other request handlers: -32602 for
+                // malformed params; an untracked URI answers with an EMPTY
+                // action list (a valid CodeAction[] result), never an error.
+                let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
+                    return invalid_params_response(&id, "missing textDocument.uri");
+                };
+                let Some(client_diags) = params["params"]["context"]["diagnostics"].as_array()
+                else {
+                    return invalid_params_response(&id, "missing context.diagnostics");
+                };
+                let Some(doc) = self.docs.get(uri) else {
+                    log_debug!("codeAction for untracked URI, returning empty list: {uri:?}");
+                    return Some(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": [],
+                    }));
+                };
+                let actions = self.compute_code_actions(uri, doc, client_diags);
+                Some(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": actions,
+                }))
+            }
+
             _ => {
                 // Unknown method
                 if !id.is_null() {
@@ -709,6 +759,120 @@ impl Server {
     fn encoded_diagnostics(&self, doc_text: &str, uri: &str) -> Vec<diagnostics::Diagnostic> {
         let diags = diagnostics::compute_diagnostics(&self.data, doc_text, uri);
         convert_diagnostic_ranges(diags, doc_text, self.position_encoding)
+    }
+
+    /// Build `quickfix` CodeActions for client-echoed diagnostics.
+    ///
+    /// Eligibility: `source == "rsc-ls"` AND code `unknown-property` or
+    /// `unknown-menu`. Anything else — foreign sources, other codes,
+    /// missing or mistyped fields — is ignored by design: a quick-fix must
+    /// never be invented that cannot be grounded in the document.
+    ///
+    /// For each eligible diagnostic the mistyped token is recovered from
+    /// the tracked document at the diagnostic's own range (never by
+    /// re-parsing our message text), the candidate set is resolved with the
+    /// same line-resolution machinery the diagnostic pipeline uses
+    /// ([`diagnostics::resolve_menu_for_line`] — per-menu property tables
+    /// for unknown-property, all known menu paths for unknown-menu), and
+    /// [`suggest::best_candidate`] picks a deterministic replacement under
+    /// the length-aware threshold. Total actions are capped at
+    /// [`MAX_CODE_ACTIONS`].
+    fn compute_code_actions(
+        &self,
+        uri: &str,
+        doc: &str,
+        client_diags: &[serde_json::Value],
+    ) -> Vec<serde_json::Value> {
+        let mut actions = Vec::new();
+        if client_diags.is_empty() {
+            return actions;
+        }
+        // One continuation-aware logical-line join per REQUEST, shared by
+        // every diagnostic below — not one join per diagnostic.
+        let logicals = diagnostics::logical_lines(doc);
+
+        for diag in client_diags {
+            if actions.len() >= MAX_CODE_ACTIONS {
+                break;
+            }
+            if diag.get("source").and_then(|s| s.as_str()) != Some(diagnostics::DIAGNOSTIC_SOURCE) {
+                continue;
+            }
+            // LSP Diagnostic.code is number|string; ours are strings, so a
+            // numeric or absent code fails this binding and is skipped.
+            let Some(code) = diag.get("code").and_then(|c| c.as_str()) else {
+                continue;
+            };
+            // The offending-token range, echoed verbatim into the edit.
+            let Some(range) = diag.get("range") else {
+                continue;
+            };
+            let Some((start_line, start_char)) = wire_position(range.get("start")) else {
+                continue;
+            };
+            let Some((end_line, end_char)) = wire_position(range.get("end")) else {
+                continue;
+            };
+
+            // Recover the mistyped token text from the document itself.
+            // Stale ranges (pointing outside the current text) and absurdly
+            // long spans yield no suggestion rather than a wild guess.
+            let start_off =
+                lsp_position_to_offset(doc, start_line, start_char, self.position_encoding);
+            let end_off = lsp_position_to_offset(doc, end_line, end_char, self.position_encoding);
+            let (start_off, end_off) = match (start_off, end_off) {
+                (Ok(s), Ok(e)) if e > s && e - s <= suggest::MAX_SUGGEST_INPUT_BYTES => (s, e),
+                _ => continue,
+            };
+            let input = &doc[start_off..end_off];
+
+            let suggestion = match code {
+                // Candidate set: the property names of THE menu the
+                // diagnostic's line belongs to. If that menu cannot be
+                // resolved (implicit parent, stale range), skip — never
+                // guess across all menus.
+                "unknown-property" => {
+                    let Some(menu) =
+                        diagnostics::resolve_menu_for_line(&self.data, &logicals, start_line)
+                    else {
+                        continue;
+                    };
+                    suggest::best_candidate(
+                        input,
+                        menu.arguments
+                            .iter()
+                            .chain(menu.flags.iter())
+                            .chain(menu.read_only.iter())
+                            .map(|a| &a.name),
+                    )
+                }
+                // Candidate set: every known menu path. best_candidate is
+                // deterministic, so HashMap iteration order is irrelevant.
+                "unknown-menu" => suggest::best_candidate(input, self.data.menu_by_path.keys()),
+                _ => continue,
+            };
+            let Some(candidate) = suggestion else {
+                continue;
+            };
+
+            // serde_json's json! macro cannot take the dynamic URI as a map
+            // key, so the per-URI change list is inserted explicitly.
+            let mut changes = serde_json::Map::new();
+            changes.insert(
+                uri.to_string(),
+                serde_json::json!([{
+                    "range": range,
+                    "newText": candidate,
+                }]),
+            );
+            actions.push(serde_json::json!({
+                "title": format!("Did you mean '{candidate}'?"),
+                "kind": "quickfix",
+                "diagnostics": [diag],
+                "edit": { "changes": changes },
+            }));
+        }
+        actions
     }
 
     fn publish_diagnostics(uri: &str, diagnostics: Vec<diagnostics::Diagnostic>) {
@@ -780,6 +944,21 @@ type = "Directory"
 
     fn make_server() -> Server {
         Server::new(synthetic_data())
+    }
+
+    #[test]
+    fn test_server_initialize_advertises_code_action_provider() {
+        // Quick-fixes ("Did you mean …?") must be advertised so Zed offers
+        // the lightbulb action on unknown-property / unknown-menu squiggles.
+        let mut server = make_server();
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {}
+        });
+        let resp = server.handle_message("initialize", &msg).unwrap();
+        assert_eq!(resp["result"]["capabilities"]["codeActionProvider"], true);
     }
 
     #[test]
@@ -1127,6 +1306,339 @@ type = "Directory"
         });
         let resp = server.handle_message("textDocument/didChange", &msg);
         assert!(resp.is_none());
+    }
+
+    // ── Code actions (did-you-mean quick-fixes) ──────────────────
+
+    /// Open `doc` in `server` and return its diagnostics exactly as a
+    /// client would echo them back inside a codeAction request: computed
+    /// through the push pipeline (including position-encoding conversion)
+    /// and serialized to wire JSON.
+    fn opened_wire_diagnostics(
+        server: &mut Server,
+        uri: &str,
+        doc: &str,
+    ) -> Vec<serde_json::Value> {
+        server.handle_message(
+            "textDocument/didOpen",
+            &serde_json::json!({"params": {"textDocument": {"uri": uri, "text": doc}}}),
+        );
+        let stored = server.docs.get(uri).cloned().unwrap_or_default();
+        let diags = server.encoded_diagnostics(&stored, uri);
+        match serde_json::to_value(diags) {
+            Ok(serde_json::Value::Array(items)) => items,
+            other => panic!("diagnostics must serialize to an array, got {other:?}"),
+        }
+    }
+
+    fn code_action_request(id: i64, uri: &str, diags: &[serde_json::Value]) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "params": {
+                "textDocument": {"uri": uri},
+                "context": {"diagnostics": diags}
+            }
+        })
+    }
+
+    #[test]
+    fn test_code_actions_fixes_typo_property_at_exact_range() {
+        let mut s = make_server();
+        // "adress" spans bytes 15..21 (ASCII ⇒ UTF-16 units are identical).
+        let doc = "/ip/address add adress=1.1.1.1";
+        let diags = opened_wire_diagnostics(&mut s, "file:///ca.rsc", doc);
+        assert_eq!(diags.len(), 1, "exactly the unknown-property diagnostic");
+        assert_eq!(diags[0]["code"], "unknown-property");
+
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &code_action_request(41, "file:///ca.rsc", &diags),
+            )
+            .unwrap();
+        assert_eq!(resp["id"], 41, "id must be echoed");
+        let actions = resp["result"].as_array().unwrap();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0]["title"], "Did you mean 'address'?");
+        assert_eq!(actions[0]["kind"], "quickfix");
+        assert_eq!(
+            actions[0]["diagnostics"][0],
+            serde_json::to_value(&diags[0]).unwrap(),
+            "the originating diagnostic object is attached"
+        );
+        let edit = &actions[0]["edit"]["changes"]["file:///ca.rsc"][0];
+        assert_eq!(edit["newText"], "address");
+        assert_eq!(
+            edit["range"], diags[0]["range"],
+            "replacement targets the offending token range exactly"
+        );
+        assert_eq!(edit["range"]["start"]["character"], 16);
+        assert_eq!(edit["range"]["end"]["character"], 22);
+    }
+
+    #[test]
+    fn test_code_actions_fixes_typo_menu_path() {
+        let mut s = make_server();
+        // "/ip/addres" is one insertion away from "/ip/address".
+        let doc = "/ip/addres add gateway=1";
+        let diags = opened_wire_diagnostics(&mut s, "file:///cm.rsc", doc);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0]["code"], "unknown-menu");
+
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &code_action_request(42, "file:///cm.rsc", &diags),
+            )
+            .unwrap();
+        let actions = resp["result"].as_array().unwrap();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0]["title"], "Did you mean '/ip/address'?");
+        let edit = &actions[0]["edit"]["changes"]["file:///cm.rsc"][0];
+        assert_eq!(edit["newText"], "/ip/address");
+        assert_eq!(edit["range"]["start"]["character"], 0);
+        assert_eq!(edit["range"]["end"]["character"], 10);
+    }
+
+    #[test]
+    fn test_code_actions_healthy_doc_returns_empty_array() {
+        let mut s = make_server();
+        let doc = "/ip/address add address=1.1.1.1 interface=ether1";
+        let diags = opened_wire_diagnostics(&mut s, "file:///ok.rsc", doc);
+        assert!(diags.is_empty());
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &code_action_request(43, "file:///ok.rsc", &diags),
+            )
+            .unwrap();
+        assert_eq!(resp["id"], 43);
+        assert!(resp["result"].is_array());
+        assert!(resp["result"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_code_actions_untracked_uri_returns_empty_array_not_error() {
+        let mut s = make_server();
+        let fake = serde_json::json!({
+            "range": {"start": {"line": 0, "character": 15}, "end": {"line": 0, "character": 21}},
+            "severity": 2,
+            "code": "unknown-property",
+            "source": "rsc-ls",
+            "message": "Unknown property 'adress' for '/ip/address'"
+        });
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &code_action_request(44, "file:///never-opened.rsc", &[fake]),
+            )
+            .unwrap();
+        assert_eq!(resp["id"], 44, "id must be echoed");
+        assert!(
+            resp["result"].is_array(),
+            "untracked URI must answer an array, not null or error"
+        );
+        assert!(resp["result"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_code_actions_ignore_foreign_and_unparseable_diagnostics() {
+        let mut s = make_server();
+        let diags = opened_wire_diagnostics(&mut s, "file:///f.rsc", "");
+        assert!(diags.is_empty());
+        let range = serde_json::json!({
+            "start": {"line": 0, "character": 15},
+            "end": {"line": 0, "character": 21}
+        });
+        let mixed = vec![
+            // Foreign source — even with our codes.
+            serde_json::json!({"source": "other-ls", "code": "unknown-property", "range": range}),
+            // Our source but a different rule.
+            serde_json::json!({"source": "rsc-ls", "code": "duplicate-property", "range": range}),
+            // Numeric code (LSP allows number|string; ours are strings).
+            serde_json::json!({"source": "rsc-ls", "code": 7, "range": range}),
+            // Missing code entirely.
+            serde_json::json!({"source": "rsc-ls", "range": range}),
+            // Missing range entirely.
+            serde_json::json!({"source": "rsc-ls", "code": "unknown-property"}),
+            // Missing source entirely.
+            serde_json::json!({"code": "unknown-property", "range": range}),
+        ];
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &code_action_request(45, "file:///f.rsc", &mixed),
+            )
+            .unwrap();
+        let actions = resp["result"].as_array().unwrap();
+        assert!(actions.is_empty(), "nothing eligible, got {actions:?}");
+    }
+
+    #[test]
+    fn test_code_actions_capped_at_eight() {
+        let mut s = make_server();
+        let mut doc = String::new();
+        for i in 0..12 {
+            doc.push_str(&format!("/ip/address add adress={i}.1.1.1\n"));
+        }
+        let diags = opened_wire_diagnostics(&mut s, "file:///cap.rsc", &doc);
+        assert_eq!(diags.len(), 12, "one eligible diagnostic per line");
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &code_action_request(46, "file:///cap.rsc", &diags),
+            )
+            .unwrap();
+        let actions = resp["result"].as_array().unwrap();
+        assert_eq!(
+            actions.len(),
+            MAX_CODE_ACTIONS,
+            "capped, not truncated to zero"
+        );
+        // Deterministic order: the first action repairs the FIRST diagnostic.
+        let first_edit = &actions[0]["edit"]["changes"]["file:///cap.rsc"][0];
+        assert_eq!(first_edit["range"]["start"]["line"], 0);
+        assert_eq!(first_edit["newText"], "address");
+    }
+
+    #[test]
+    fn test_code_actions_malformed_params_return_32602() {
+        let mut s = make_server();
+        // Missing textDocument.uri entirely.
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &serde_json::json!({"id": 47, "params": {"context": {"diagnostics": []}}}),
+            )
+            .unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        assert_eq!(resp["id"], 47, "id must be echoed on error responses");
+        // Missing context entirely.
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &serde_json::json!({"id": 48, "params": {"textDocument": {"uri": "file:///a.rsc"}}}),
+            )
+            .unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        assert_eq!(resp["id"], 48);
+        // Context present but diagnostics absent.
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &serde_json::json!({"id": 49, "params": {
+                    "textDocument": {"uri": "file:///a.rsc"}, "context": {}
+                }}),
+            )
+            .unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        assert_eq!(resp["id"], 49);
+    }
+
+    #[test]
+    fn test_code_actions_unknown_property_without_resolvable_menu_yields_nothing() {
+        let mut s = make_server();
+        // Track "/ip": a valid ancestor prefix with NO direct menu entry,
+        // hence no property table — a fabricated unknown-property here must
+        // be skipped rather than guessed against ALL menus.
+        s.handle_message(
+            "textDocument/didOpen",
+            &serde_json::json!({"params": {"textDocument": {"uri": "file:///p.rsc", "text": "/ip"}}}),
+        );
+        let fake = serde_json::json!({
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 3}},
+            "severity": 2,
+            "code": "unknown-property",
+            "source": "rsc-ls",
+            "message": "Unknown property 'ip' for '/ip'"
+        });
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &code_action_request(50, "file:///p.rsc", &[fake]),
+            )
+            .unwrap();
+        let actions = resp["result"].as_array().unwrap();
+        assert!(actions.is_empty(), "no menu ⇒ no action, got {actions:?}");
+    }
+
+    #[test]
+    fn test_code_actions_garbage_beyond_threshold_yields_nothing() {
+        let mut s = make_server();
+        // 12 characters of nonsense: outside threshold 2 of every property.
+        let doc = "/ip/address add zzzqqqxxxwww=1";
+        let diags = opened_wire_diagnostics(&mut s, "file:///g.rsc", doc);
+        assert_eq!(diags.len(), 1);
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &code_action_request(51, "file:///g.rsc", &diags),
+            )
+            .unwrap();
+        let actions = resp["result"].as_array().unwrap();
+        assert!(
+            actions.is_empty(),
+            "no candidate within threshold ⇒ no action"
+        );
+    }
+
+    #[test]
+    fn test_code_actions_utf16_positions_extract_correct_token() {
+        let mut s = make_server();
+        // Default negotiation is UTF-16: 'bogus' token sits at unit 21
+        // (byte 25), because each 🚨 costs two units but four bytes.
+        let doc = "/ip/address add 🚨🚨 adress=1";
+        let diags = opened_wire_diagnostics(&mut s, "file:///u.rsc", doc);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0]["range"]["start"]["character"], 21);
+        assert_eq!(diags[0]["range"]["end"]["character"], 27);
+
+        // Extraction must round-trip through the negotiated encoding — a
+        // byte/unit mix-up would grab the wrong text and yield no action.
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &code_action_request(52, "file:///u.rsc", &diags),
+            )
+            .unwrap();
+        let actions = resp["result"].as_array().unwrap();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(
+            actions[0]["edit"]["changes"]["file:///u.rsc"][0]["newText"],
+            "address"
+        );
+    }
+
+    #[test]
+    fn test_code_actions_resolve_menu_across_line_continuation() {
+        let mut s = make_server();
+        // RouterOS continuation: the command spans two physical lines; the
+        // diagnostic lands on PHYSICAL line 1 while the governing menu path
+        // lives on line 0. resolve_menu_for_line must join them exactly like
+        // the diagnostic pipeline did when emitting this range.
+        let doc = "/ip/address add \\\nadress=1.2.3.4";
+        let diags = opened_wire_diagnostics(&mut s, "file:///cont.rsc", doc);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0]["code"], "unknown-property");
+        assert_eq!(diags[0]["range"]["start"]["line"], 1);
+        assert_eq!(diags[0]["range"]["start"]["character"], 0);
+        assert_eq!(diags[0]["range"]["end"]["character"], 6);
+
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &code_action_request(53, "file:///cont.rsc", &diags),
+            )
+            .unwrap();
+        let actions = resp["result"].as_array().unwrap();
+        assert_eq!(
+            actions.len(),
+            1,
+            "menu must resolve across the continuation, got {actions:?}"
+        );
+        let edit = &actions[0]["edit"]["changes"]["file:///cont.rsc"][0];
+        assert_eq!(edit["newText"], "address");
+        assert_eq!(edit["range"]["start"]["line"], 1);
     }
 
     #[test]
