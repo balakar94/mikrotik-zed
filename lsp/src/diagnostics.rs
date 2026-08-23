@@ -8,6 +8,15 @@
 //  4. Duplicate property: Warning if same key appears twice
 //  5. Type hint: Hint for enum properties with invalid value
 //
+// Syntactic rules (share the quote/comment-aware walk with folding via
+// crate::parser::walk_structure; braces and quotes inside comments or
+// strings are inert, and a `\` continuation keeps a string alive across
+// physical lines):
+//  6. Unclosed brace: Error for every `{` never closed before EOF (`unclosed-brace`)
+//     — companion `unmatched-brace`: Error for a stray `}` with no open `{`
+//  7. Unclosed quote: Error at the opening quote of a string never terminated
+//     before EOF (`unclosed-quote`)
+//
 // RouterOS line continuation is honored: physical lines ending with a trailing
 // unescaped backslash are joined into a single logical line before parsing, so
 // commands split across lines (e.g. long quoted URLs after `/tool/fetch add`)
@@ -16,6 +25,7 @@
 //
 // Capped for large docs to prevent OOM / CPU blow-up.
 
+use crate::StructureEvent;
 use crate::menus::MenuData;
 use std::collections::{HashMap, HashSet};
 
@@ -25,6 +35,12 @@ use std::collections::{HashMap, HashSet};
 pub(crate) const DIAGNOSTIC_SOURCE: &str = "rsc-ls";
 const MAX_DIAG_LINES: usize = 3000;
 const MAX_DIAG_BYTES: usize = 500_000; // cap per-doc bytes considered for diagnostics
+/// Cap on syntactic diagnostics (the unclosed/unmatched brace and quote
+/// family) emitted per publish. The FIRST ten in document order win; the
+/// rest are dropped silently — past ten structural errors the remaining
+/// squiggles would be noise around an already-broken file, and the response
+/// payload stays bounded.
+const MAX_SYNTAX_DIAGNOSTICS: usize = 10;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct Position {
@@ -317,7 +333,114 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
     }
 
     // If we capped lines, add a hint diagnostic about truncation? Not necessary.
+
+    // ---- Syntactic structure rules (unclosed/unmatched braces, quotes) ----
+    // Computed over the FULL document, deliberately NOT the byte-capped slice
+    // used by the menu rules above: amputating the tail could hide the `}` or
+    // closing quote that balances earlier content and fabricate errors for a
+    // large well-formed document. The walk is one linear scan (same cost
+    // profile as folding ranges) and the server already caps tracked
+    // documents at 5 MiB.
+    diagnostics.extend(syntax_diagnostics(doc));
+
     diagnostics
+}
+
+// ── Syntactic structure rules ──────────────────────────────────────
+//
+// Detect plain syntax breakage the menu-semantics rules cannot see. All
+// three diagnostics below derive from ONE stack pass over the shared
+// [`crate::parser::walk_structure`] events — the exact same walk folding
+// uses — so "what is inside a string/comment" has a single source of truth.
+//
+// Conservative by design: false positives here are worse than silence, so
+// anything ambiguous (depth beyond MAX_BRACE_DEPTH, an unterminated string
+// that swallows the rest of the document) reports at most the root cause and
+// never cascades.
+
+/// Build an Error diagnostic whose range covers exactly one character.
+fn char_diag(code: &str, message: String, line: usize, character: usize) -> Diagnostic {
+    Diagnostic {
+        range: Range {
+            start: Position {
+                line: line as u32,
+                character: character as u32,
+            },
+            end: Position {
+                line: line as u32,
+                character: character as u32 + 1,
+            },
+        },
+        severity: Some(severity::ERROR),
+        code: Some(code.to_string()),
+        source: Some(DIAGNOSTIC_SOURCE.to_string()),
+        message,
+    }
+}
+
+/// Syntax rules 6–7 (see module header): unclosed `{` (plus its
+/// `unmatched-brace` companion), and unterminated quoted strings.
+///
+/// Positions come from the shared walker in byte coordinates and are mapped
+/// to wire encoding by the usual boundary conversion (`convert_diagnostic_ranges`),
+/// exactly like every other rule's output. Output is deterministic: sorted by
+/// document position ("oldest first"), capped at [`MAX_SYNTAX_DIAGNOSTICS`].
+fn syntax_diagnostics(doc: &str) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    // Stack of (line, character) positions of `{` still considered open.
+    let mut opens: Vec<(usize, usize)> = Vec::new();
+    // Latched once the stack overflows MAX_BRACE_DEPTH (pathological input).
+    // Dropped opens would make later legitimate closers look unmatched, so
+    // stray-close reporting stops for the rest of the document: silence
+    // beats false positives on absurd input.
+    let mut saturated = false;
+
+    crate::walk_structure(doc, |ev| match ev {
+        StructureEvent::OpenBrace { line, character } => {
+            if opens.len() < crate::MAX_BRACE_DEPTH {
+                opens.push((line, character));
+            } else {
+                saturated = true;
+            }
+        }
+        StructureEvent::CloseBrace { line, character } => {
+            if opens.pop().is_none() && !saturated {
+                out.push(char_diag(
+                    "unmatched-brace",
+                    "Unmatched '}': no '{' is open at this point".to_string(),
+                    line,
+                    character,
+                ));
+            }
+        }
+        StructureEvent::UnterminatedQuote { line, character } => {
+            // One error at the OPENING quote; everything after it is treated
+            // as string content by the shared walker, so this never cascades.
+            out.push(char_diag(
+                "unclosed-quote",
+                "Quoted string opened here is never closed".to_string(),
+                line,
+                character,
+            ));
+        }
+    });
+
+    // Remaining opens are unclosed braces. The stack pops innermost-first,
+    // so drain it reversed to recover document order.
+    for (line, character) in opens.into_iter().rev() {
+        out.push(char_diag(
+            "unclosed-brace",
+            "Brace '{' opened here is never closed".to_string(),
+            line,
+            character,
+        ));
+    }
+
+    // Deterministic ordering across the three sources, then a silent cap
+    // keeping the OLDEST ten (document order).
+    out.sort_by_key(|d| (d.range.start.line, d.range.start.character));
+    out.truncate(MAX_SYNTAX_DIAGNOSTICS);
+    out
 }
 
 // ── RouterOS backslash line continuation ──────────────────────────
@@ -1764,5 +1887,281 @@ required = true
             .find(|d| d.code.as_deref() == Some("unknown-menu"))
             .expect("unknown menu must still be flagged");
         assert!(unk.message.contains("/foo/bar"));
+    }
+}
+
+// ── Syntactic structure rules (unclosed braces / quotes) ───────────
+//
+// Coverage for rules 6–8. Docs deliberately favor `:`-prefixed script lines
+// (skipped by the menu rules) so total-count assertions isolate the syntax
+// pipeline; one interaction test proves both rule families coexist in the
+// same publish.
+#[cfg(test)]
+mod syntax_rules {
+    use super::*;
+    use crate::menus::MenuData;
+
+    fn synth() -> MenuData {
+        MenuData::from_toml_str(
+            r#"
+[[menus]]
+path = "/ip/address"
+type = "Directory"
+[[menus.arguments]]
+name = "address"
+type = "ipPrefix"
+required = true
+[[menus.arguments]]
+name = "interface"
+type = "iface_enum"
+required = true
+[[menus]]
+path = "/tool/fetch"
+type = "Command"
+[[menus.arguments]]
+name = "url"
+type = "string"
+[[menus.arguments]]
+name = "ssl-verify"
+type = "bool"
+"#,
+        )
+    }
+
+    fn codes(diags: &[Diagnostic]) -> Vec<&str> {
+        diags.iter().filter_map(|d| d.code.as_deref()).collect()
+    }
+
+    #[test]
+    fn test_balanced_doc_no_syntax_diagnostics() {
+        // Realistic script shape: nested blocks, braces inside strings and a
+        // trailing comment — all inert or matched. Also proves a stray-close
+        // report is NOT raised for legitimate closers of real blocks.
+        let doc = concat!(
+            ":do {\n",
+            "\t:foreach i in=[find] do={\n",
+            "\t\t:put (\"item { \" . $i)\n",
+            "\t}\n",
+            "}\n",
+            ":put 'all done}'\n",
+            "# trailing { comment\n",
+        );
+        assert!(
+            compute_diagnostics(&synth(), doc, "file:///a.rsc").is_empty(),
+            "balanced doc must stay clean"
+        );
+    }
+
+    #[test]
+    fn test_single_unclosed_brace_exact_range() {
+        // ':foreach i in=[find] do={' → '{' sits at byte 24 of line 0.
+        let doc = ":foreach i in=[find] do={\n\t:put $i\n";
+        let diags = compute_diagnostics(&synth(), doc, "file:///a.rsc");
+        assert_eq!(diags.len(), 1, "exactly one syntax error, got {diags:?}");
+        let d = &diags[0];
+        assert_eq!(d.code.as_deref(), Some("unclosed-brace"));
+        assert_eq!(d.severity, Some(severity::ERROR));
+        assert_eq!(d.source.as_deref(), Some("rsc-ls"));
+        assert_eq!(d.message, "Brace '{' opened here is never closed");
+        // Range covers EXACTLY the brace character.
+        assert_eq!(d.range.start.line, 0);
+        assert_eq!(d.range.start.character, 24);
+        assert_eq!(d.range.end.line, 0);
+        assert_eq!(d.range.end.character, 25);
+    }
+
+    #[test]
+    fn test_nested_unclosed_braces_each_reported() {
+        // Outer opens at (0,4), inner at (1,18); neither ever closes.
+        let doc = ":do {\n\t:if ($a > $b) do={\n\t\t:put x\n";
+        let diags = compute_diagnostics(&synth(), doc, "file:///a.rsc");
+        assert_eq!(
+            diags.len(),
+            2,
+            "both unclosed opens reported, got {diags:?}"
+        );
+        assert_eq!(
+            diags[0].range.start,
+            Position {
+                line: 0,
+                character: 4
+            }
+        );
+        assert_eq!(
+            diags[1].range.start,
+            Position {
+                line: 1,
+                character: 18
+            }
+        );
+        assert!(codes(&diags).iter().all(|&c| c == "unclosed-brace"));
+    }
+
+    #[test]
+    fn test_brace_inside_comment_is_inert() {
+        // '}', '{' and even a quote inside a comment must never fire.
+        let doc = "# } { \" unterminated-looking\n:put x\n";
+        assert!(compute_diagnostics(&synth(), doc, "file:///a.rsc").is_empty());
+    }
+
+    #[test]
+    fn test_brace_inside_closed_string_is_inert() {
+        let doc = ":put \"}{\"\n:put '}'\n# c {\n:put x\n";
+        assert!(compute_diagnostics(&synth(), doc, "file:///a.rsc").is_empty());
+    }
+
+    #[test]
+    fn test_split_url_continuation_not_flagged() {
+        // Real-world hagezi repro (mirror of the continuation tests above):
+        // a quoted URL split across lines by a trailing backslash inside the
+        // string must not read as an unclosed quote.
+        let data = synth();
+        let doc = concat!(
+            "/tool/fetch add ssl-verify=no url=\"https://raw.githubusercontent.com",
+            "/hagezi/dns-blocklists\\\n/main/hosts/pro.txt\"",
+        );
+        let diags = compute_diagnostics(&data, doc, "file:///a.rsc");
+        assert!(
+            diags.is_empty(),
+            "split-URL continuation must stay clean, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn test_unterminated_quote_at_eof_reports_opening_quote_once() {
+        // The open string swallows the rest of the document (including a
+        // stray '}') — exactly ONE error, pointing at the OPENING quote.
+        // ':log info "' → quote at byte 10 of line 0.
+        let doc = ":log info \"oops\n:put x\n}\n";
+        let diags = compute_diagnostics(&synth(), doc, "file:///a.rsc");
+        assert_eq!(
+            diags.len(),
+            1,
+            "no cascade past the root cause, got {diags:?}"
+        );
+        let d = &diags[0];
+        assert_eq!(d.code.as_deref(), Some("unclosed-quote"));
+        assert_eq!(d.severity, Some(severity::ERROR));
+        assert_eq!(d.message, "Quoted string opened here is never closed");
+        assert_eq!(d.range.start.line, 0);
+        assert_eq!(d.range.start.character, 10);
+        assert_eq!(d.range.end.character, 11);
+    }
+
+    #[test]
+    fn test_quote_spanning_lines_via_continuation_not_flagged() {
+        // String legitimately continues across the physical line via a
+        // trailing backslash INSIDE the quotes and closes on line 1.
+        let doc = ":put \"abc\\\ndef\"\n:put done\n";
+        assert!(compute_diagnostics(&synth(), doc, "file:///a.rsc").is_empty());
+    }
+
+    #[test]
+    fn test_crlf_variant_matches_lf() {
+        // LF baseline: unclosed brace at (0,4) plus unclosed quote at (1,6).
+        let lf = ":do {\n\t:put \"unterminated\n";
+        let diags = compute_diagnostics(&synth(), lf, "file:///a.rsc");
+        let starts: Vec<_> = diags
+            .iter()
+            .map(|d| (d.range.start.line, d.range.start.character))
+            .collect();
+        assert_eq!(
+            starts,
+            vec![(0, 4), (1, 6)],
+            "LF: brace then quote, oldest first, got {diags:?}"
+        );
+
+        // CRLF produces identical results (str::lines strips '\r'; columns
+        // are byte offsets within the stripped line).
+        let crlf = lf.replace('\n', "\r\n");
+        let diags_crlf = compute_diagnostics(&synth(), &crlf, "file:///a.rsc");
+        let starts_crlf: Vec<_> = diags_crlf
+            .iter()
+            .map(|d| (d.range.start.line, d.range.start.character))
+            .collect();
+        assert_eq!(starts_crlf, starts, "CRLF must match LF results");
+    }
+
+    #[test]
+    fn test_syntax_diagnostics_capped_at_10_oldest_first() {
+        // 15 unclosed opens on their own lines ('{' lines are skipped by the
+        // menu rules): only the FIRST ten survive, in document order.
+        let doc = "{\n".repeat(15);
+        let diags = compute_diagnostics(&synth(), &doc, "file:///a.rsc");
+        assert_eq!(diags.len(), 10, "cap keeps exactly 10, got {}", diags.len());
+        for (i, d) in diags.iter().enumerate() {
+            assert_eq!(d.code.as_deref(), Some("unclosed-brace"));
+            assert_eq!(
+                d.range.start,
+                Position {
+                    line: i as u32,
+                    character: 0
+                },
+                "oldest-first: line {i} expected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_stray_close_brace_reported_at_char() {
+        // '}' with an empty stack → unmatched-brace at that exact character.
+        let doc = "}\n:put x\n";
+        let diags = compute_diagnostics(&synth(), doc, "file:///a.rsc");
+        assert_eq!(diags.len(), 1, "got {diags:?}");
+        let d = &diags[0];
+        assert_eq!(d.code.as_deref(), Some("unmatched-brace"));
+        assert_eq!(d.severity, Some(severity::ERROR));
+        assert_eq!(d.message, "Unmatched '}': no '{' is open at this point");
+        assert_eq!(
+            d.range.start,
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+        assert_eq!(
+            d.range.end,
+            Position {
+                line: 0,
+                character: 1
+            }
+        );
+    }
+
+    #[test]
+    fn test_close_after_balanced_block_only_flags_the_extra() {
+        // A well-formed block closes cleanly; only the EXTRA '}' is stray.
+        let doc = ":do {\n:put x\n}\n}\n";
+        let diags = compute_diagnostics(&synth(), doc, "file:///a.rsc");
+        assert_eq!(diags.len(), 1, "got {diags:?}");
+        assert_eq!(diags[0].code.as_deref(), Some("unmatched-brace"));
+        assert_eq!(
+            diags[0].range.start,
+            Position {
+                line: 3,
+                character: 0
+            }
+        );
+    }
+
+    #[test]
+    fn test_empty_and_whitespace_docs_no_syntax_diagnostics() {
+        let data = synth();
+        assert!(compute_diagnostics(&data, "", "file:///a.rsc").is_empty());
+        assert!(compute_diagnostics(&data, "   \n\n\t\n  ", "file:///a.rsc").is_empty());
+    }
+
+    #[test]
+    fn test_syntax_rule_runs_alongside_menu_rules_in_one_publish() {
+        // Interaction contract: menu-rule diagnostics and syntax-rule
+        // diagnostics flow through the same compute_diagnostics result.
+        let doc = "/foo/bar add x=1\ndo {\n";
+        let diags = compute_diagnostics(&synth(), doc, "file:///a.rsc");
+        let c = codes(&diags);
+        assert!(c.contains(&"unknown-menu"), "menu rule fired, got {c:?}");
+        assert!(
+            c.contains(&"unclosed-brace"),
+            "syntax rule fired, got {c:?}"
+        );
     }
 }

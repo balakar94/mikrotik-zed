@@ -50,6 +50,128 @@ fn scan_token(bytes: &[u8], start: usize) -> usize {
     i
 }
 
+// ── Whole-document structural walk ──────────────────────────────
+//
+// Shared quote/comment-aware scan over a full document, used by every
+// consumer that must agree on what counts as a *structural* `{` / `}`
+// / quote: folding ranges and the syntax diagnostics rules. Centralizing
+// the state machine here means the two features cannot drift apart —
+// a brace inside a comment or string is inert for both, and a `\`
+// line-continuation keeps a quoted string alive across physical lines
+// for both.
+
+/// Maximum open-brace depth tracked by [`walk_structure`] consumers.
+///
+/// Bounds consumer-side stacks (a `Vec` of positions) for adversarial input
+/// like `"{" repeated 5 million times`: memory stays capped, and only
+/// structures nested beyond 4096 levels — not expressible in real RouterOS
+/// scripts — lose tracking.
+pub(crate) const MAX_BRACE_DEPTH: usize = 4096;
+
+/// A structural character observed outside comments and quoted strings.
+///
+/// `character` is the BYTE offset within the physical line (the crate-internal
+/// position convention; conversion to the negotiated wire encoding happens at
+/// the protocol boundary). `line` is the zero-based physical line index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StructureEvent {
+    /// `{` outside any comment or quoted string.
+    OpenBrace { line: usize, character: usize },
+    /// `}` outside any comment or quoted string.
+    CloseBrace { line: usize, character: usize },
+    /// End of input reached while still inside the quoted string opened here.
+    /// Reported once per walk, pointing at the OPENING quote.
+    UnterminatedQuote { line: usize, character: usize },
+}
+
+/// Walk `doc` once, emitting [`StructureEvent`]s for structural characters.
+///
+/// State-machine semantics (identical to the scanner this was extracted from,
+/// formerly private to `folding::brace_regions`):
+/// - Inside `"…"` / `'…'`, a `\` escapes the next byte; both quote styles
+///   toggle symmetrically and cannot nest inside each other.
+/// - An unquoted `#` starts a comment that runs to end-of-line.
+/// - Quote state carries ACROSS physical lines: RouterOS strings may be split
+///   by a trailing `\` continuation, so resetting per line would let split
+///   URLs desynchronize brace matching. Comment and escape states reset at
+///   line boundaries.
+/// - A backslash outside quotes is not special (matches long-shipped folding
+///   behavior); escape sequences are recognized inside quotes only.
+///
+/// Single linear pass, no allocation; events arrive in document order.
+pub(crate) fn walk_structure<F>(doc: &str, mut on_event: F)
+where
+    F: FnMut(StructureEvent),
+{
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut escaped = false;
+    let mut in_comment = false;
+    // Position of the quote that opened the currently active quoted string,
+    // so EOF can report the OPENING quote instead of the end of input.
+    // Cleared when the string closes; replaced if another quote opens after
+    // a legitimate close.
+    let mut quote_open: Option<(usize, usize)> = None;
+
+    for (line_idx, line) in doc.lines().enumerate() {
+        for (col, c) in line.char_indices() {
+            if in_comment {
+                continue; // comments end at end-of-line (reset below)
+            }
+            if escaped {
+                // Escaped byte inside quotes: never structural.
+                escaped = false;
+                continue;
+            }
+            match c {
+                '\\' if in_double || in_single => escaped = true,
+                '"' if !in_single => {
+                    in_double = !in_double;
+                    quote_open = if in_double {
+                        Some((line_idx, col))
+                    } else {
+                        None
+                    };
+                }
+                '\'' if !in_double => {
+                    in_single = !in_single;
+                    quote_open = if in_single {
+                        Some((line_idx, col))
+                    } else {
+                        None
+                    };
+                }
+                '#' if !in_double && !in_single => in_comment = true,
+                '{' if !in_double && !in_single => {
+                    on_event(StructureEvent::OpenBrace {
+                        line: line_idx,
+                        character: col,
+                    });
+                }
+                '}' if !in_double && !in_single => {
+                    on_event(StructureEvent::CloseBrace {
+                        line: line_idx,
+                        character: col,
+                    });
+                }
+                _ => {}
+            }
+        }
+        // Physical line boundary resets per-line states. Quote state does
+        // NOT reset: a `\`-continuation can legally split a quoted string.
+        in_comment = false;
+        escaped = false;
+    }
+
+    // EOF inside a quoted string: point at the opening quote so the user
+    // sees where the string started, not where the file happens to end.
+    if (in_double || in_single)
+        && let Some((line, character)) = quote_open
+    {
+        on_event(StructureEvent::UnterminatedQuote { line, character });
+    }
+}
+
 /// Split a line into tokens with spans: quoted strings, /-prefixed paths, or
 /// bare words.
 ///
@@ -345,6 +467,125 @@ type = "Directory"
         assert_eq!(&text[spans[0].start..spans[0].end], "/ip/address");
         assert_eq!(&text[spans[1].start..spans[1].end], "add");
         assert_eq!(&text[spans[2].start..spans[2].end], "chain=input");
+    }
+
+    // ── walk_structure ────────────────────────────────────────────
+
+    fn events(doc: &str) -> Vec<(StructureEvent, usize, usize)> {
+        let mut out = Vec::new();
+        walk_structure(doc, |ev| match ev {
+            StructureEvent::OpenBrace { line, character } => out.push((ev, line, character)),
+            StructureEvent::CloseBrace { line, character } => out.push((ev, line, character)),
+            StructureEvent::UnterminatedQuote { line, character } => {
+                out.push((ev, line, character))
+            }
+        });
+        out
+    }
+
+    #[test]
+    fn test_walk_structure_reports_brace_events_in_document_order() {
+        let doc = ":do {\nx\n}\n}\n";
+        // Open at ":do {" col 4; close on line 2 matches it; the close on
+        // line 3 has an empty stack but the WALKER still reports it —
+        // matching is the consumer's job.
+        assert_eq!(
+            events(doc),
+            vec![
+                (
+                    StructureEvent::OpenBrace {
+                        line: 0,
+                        character: 4
+                    },
+                    0,
+                    4
+                ),
+                (
+                    StructureEvent::CloseBrace {
+                        line: 2,
+                        character: 0
+                    },
+                    2,
+                    0
+                ),
+                (
+                    StructureEvent::CloseBrace {
+                        line: 3,
+                        character: 0
+                    },
+                    3,
+                    0
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_walk_structure_ignores_strings_and_comments() {
+        // Braces inside double quotes, single quotes, and comments are all
+        // inert. The UNCLOSED single-quoted string IS reported at its
+        // opening quote.
+        let doc = ":put \"}{\" # }\n'open brace { stays inert\n";
+        assert_eq!(
+            events(doc),
+            vec![(
+                StructureEvent::UnterminatedQuote {
+                    line: 1,
+                    character: 0
+                },
+                1,
+                0
+            )]
+        );
+    }
+
+    #[test]
+    fn test_walk_structure_unterminated_quote_points_at_opening_quote() {
+        // Quote state carries across a RAW newline (no continuation): the
+        // event points at the OPENING quote on line 0, not EOF.
+        let doc = ":put \"abc\ndef\n";
+        assert_eq!(
+            events(doc),
+            vec![(
+                StructureEvent::UnterminatedQuote {
+                    line: 0,
+                    character: 5
+                },
+                0,
+                5
+            )]
+        );
+    }
+
+    #[test]
+    fn test_walk_structure_continuation_keeps_string_alive() {
+        // Split string via trailing backslash that DOES close → silent.
+        assert!(events(":put \"ab\\\ncd\"\n").is_empty());
+        // Split string via continuation that never closes → opening quote.
+        assert_eq!(
+            events(":put \"ab\\\ncd\n"),
+            vec![(
+                StructureEvent::UnterminatedQuote {
+                    line: 0,
+                    character: 5
+                },
+                0,
+                5
+            )]
+        );
+    }
+
+    #[test]
+    fn test_walk_structure_escaped_quotes_do_not_confuse_state() {
+        // Escaped quotes stay inside the string, so the brace after them is
+        // inert and the string closes normally.
+        assert!(events(":put \"a\\\"b{\"\n").is_empty());
+    }
+
+    #[test]
+    fn test_walk_structure_empty_document_yields_no_events() {
+        assert!(events("").is_empty());
+        assert!(events("\n\n   \n").is_empty());
     }
 
     // ── build_before_cursor ───────────────────────────────────────

@@ -37,7 +37,10 @@ pub(crate) use encoding::{
 };
 pub(crate) use framing::{Frame, FrameError, MAX_HEADER_SIZE, MAX_MESSAGE_SIZE, read_message};
 pub(crate) use logging::{log_debug, log_error, log_info, log_level, log_warn};
-pub(crate) use parser::{build_before_cursor, parse_line, tokenize_with_spans};
+pub(crate) use parser::{
+    MAX_BRACE_DEPTH, StructureEvent, build_before_cursor, parse_line, tokenize_with_spans,
+    walk_structure,
+};
 
 use menus::MenuData;
 use std::collections::HashMap;
