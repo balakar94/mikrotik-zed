@@ -1,10 +1,11 @@
 ; ── MikroTik RouterOS Script — highlights ────────────────────────
-; Color scheme (matches RouterOS terminal):
+; Color scheme:
 ;   Blue   = root menu (first command after /)
-;   Green  = sub-menus and commands
-;   Orange = properties/variables (name=value)
-;   Red    = strings
-;   Cyan   = numbers, IPs
+;   Green  = sub-menus, quoted strings, `yes`
+;   Yellow = property names (name=value)
+;   Orange = bare values, numbers, IPs, true/false
+;   Purple = action verbs, :globals, "/"
+;   Red    = comment values, `no`
 ;   Grey   = comments
 
 ; ── Comments ─────────────────────────────────────────────────────
@@ -100,7 +101,7 @@
   (identifier) @variable)
 
 ; ── Strings ────────────────────────────────────────────────────
-(string) @string.special
+(string) @string
 
 ; ── Numbers ─────────────────────────────────────────────────────
 (number) @number
@@ -145,3 +146,29 @@
 (block
   "{" @punctuation.bracket
   "}" @punctuation.bracket)
+
+; ── Overrides (MUST stay last — later patterns win on same node) ──
+
+; comment=... always red, quoted or bare (field work request #5)
+((named_param
+   name: (identifier) @_comment_prop
+   value: (literal
+           (string) @diff.minus))
+ (#eq? @_comment_prop "comment"))
+
+((named_param
+   name: (identifier) @_comment_prop
+   value: (identifier) @diff.minus)
+ (#eq? @_comment_prop "comment"))
+
+; yes → green (on), no → red (off).
+; NOTE: in value position the lexer resolves yes/no as identifiers (lexical
+; conflict with `identifier`), so these match named_param identifier values,
+; not boolean_literal nodes. true/false stay plain values.
+((named_param
+   value: (identifier) @diff.plus)
+ (#eq? @diff.plus "yes"))
+
+((named_param
+   value: (identifier) @diff.minus)
+ (#eq? @diff.minus "no"))
