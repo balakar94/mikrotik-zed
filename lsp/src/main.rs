@@ -58,6 +58,30 @@ const MAX_DOCS: usize = 100; // cap number of tracked documents
 /// fixes is already beyond what an editor surfaces comfortably.
 const MAX_CODE_ACTIONS: usize = 8;
 
+/// Resolved payload of one quick-fix suggestion: the candidate shown in
+/// the action title and the text actually spliced into the document.
+///
+/// The two differ only for enum-value repairs, where the replacement
+/// re-wraps the suggested member in the offending value's original quote
+/// style while the title stays bare (`Did you mean 'input'?` repairing
+/// `"inpt"` splices `"input"`).
+struct Suggestion {
+    /// Candidate rendered inside `Did you mean '<…>'?`.
+    title_subject: String,
+    /// Replacement text for the diagnostic's own range.
+    new_text: String,
+}
+
+impl Suggestion {
+    /// A suggestion whose title subject and replacement text coincide.
+    fn plain(candidate: String) -> Self {
+        Self {
+            new_text: candidate.clone(),
+            title_subject: candidate,
+        }
+    }
+}
+
 fn main() {
     // CLI flags are handled FIRST — before logging, env reads, or data
     // loading — so `--version`/`--help` probes stay side-effect-free:
@@ -284,7 +308,8 @@ impl Server {
                             "documentSymbolProvider": true,
                             "foldingRangeProvider": true,
                             // Quick-fixes ("Did you mean …?") for
-                            // unknown-property / unknown-menu diagnostics.
+                            // unknown-property / unknown-menu /
+                            // invalid-enum-value diagnostics.
                             "codeActionProvider": true,
                             // Named-parameter signature popup; same space/=
                             // triggers completion uses (typing a new property
@@ -784,7 +809,8 @@ impl Server {
 
             "textDocument/codeAction" => {
                 // Quick-fixes ("Did you mean …?") for our own
-                // unknown-property / unknown-menu diagnostics. Same response
+                // unknown-property / unknown-menu / invalid-enum-value
+                // diagnostics. Same response
                 // guarantees as the other request handlers: -32602 for
                 // malformed params; an untracked URI answers with an EMPTY
                 // action list (a valid CodeAction[] result), never an error.
@@ -840,20 +866,37 @@ impl Server {
 
     /// Build `quickfix` CodeActions for client-echoed diagnostics.
     ///
-    /// Eligibility: `source == "rsc-ls"` AND code `unknown-property` or
-    /// `unknown-menu`. Anything else — foreign sources, other codes,
-    /// missing or mistyped fields — is ignored by design: a quick-fix must
-    /// never be invented that cannot be grounded in the document.
+    /// Eligibility: `source == "rsc-ls"` AND code `unknown-property`,
+    /// `unknown-menu`, or `invalid-enum-value`. Anything else — foreign
+    /// sources, other codes, missing or mistyped fields — is ignored by
+    /// design: a quick-fix must never be invented that cannot be grounded
+    /// in the document.
     ///
     /// For each eligible diagnostic the mistyped token is recovered from
     /// the tracked document at the diagnostic's own range (never by
-    /// re-parsing our message text), the candidate set is resolved with the
-    /// same line-resolution machinery the diagnostic pipeline uses
-    /// ([`diagnostics::resolve_menu_for_line`] — per-menu property tables
-    /// for unknown-property, all known menu paths for unknown-menu), and
-    /// [`suggest::best_candidate`] picks a deterministic replacement under
-    /// the length-aware threshold. Total actions are capped at
-    /// [`MAX_CODE_ACTIONS`].
+    /// re-parsing our message text) and [`suggest::best_candidate`] picks
+    /// a deterministic replacement under the length-aware threshold. The
+    /// candidate SET depends on the code:
+    ///
+    /// - `unknown-property`: the property names of THE menu the
+    ///   diagnostic's line belongs to, resolved with the same
+    ///   line-resolution machinery the diagnostic pipeline uses
+    ///   ([`diagnostics::resolve_menu_for_line`]).
+    /// - `unknown-menu`: every known menu path.
+    /// - `invalid-enum-value`: the enum members of the argument named by
+    ///   the `key=value` token pair whose value span overlaps the
+    ///   diagnostic range. The pair is located WITHOUT touching the
+    ///   message: the covering logical line is tokenized with spans
+    ///   (exactly like signature help), wire positions are mapped into
+    ///   logical coordinates via [`diagnostics::LogicalLine::logical_offset_from_physical`],
+    ///   and only the pair's KEY is consumed — the replacement text is
+    ///   derived from the recovered range slice itself, so even a stale
+    ///   range can never splice mismatched text. A quoted typo is
+    ///   repaired to a quoted member in the SAME quote style; every
+    ///   unresolved link (no menu, no pair, no argument, no members) or
+    ///   candidate beyond threshold yields no action rather than a guess.
+    ///
+    /// Total actions are capped at [`MAX_CODE_ACTIONS`].
     fn compute_code_actions(
         &self,
         uri: &str,
@@ -903,7 +946,7 @@ impl Server {
             };
             let input = &doc[start_off..end_off];
 
-            let suggestion = match code {
+            let fix = match code {
                 // Candidate set: the property names of THE menu the
                 // diagnostic's line belongs to. If that menu cannot be
                 // resolved (implicit parent, stale range), skip — never
@@ -922,13 +965,96 @@ impl Server {
                             .chain(menu.read_only.iter())
                             .map(|a| &a.name),
                     )
+                    .map(Suggestion::plain)
                 }
                 // Candidate set: every known menu path. best_candidate is
                 // deterministic, so HashMap iteration order is irrelevant.
-                "unknown-menu" => suggest::best_candidate(input, self.data.menu_by_path.keys()),
+                "unknown-menu" => suggest::best_candidate(input, self.data.menu_by_path.keys())
+                    .map(Suggestion::plain),
+                // Candidate set: the enum members of the `key=value` pair
+                // the diagnostic points at, recovered WITHOUT parsing the
+                // message. The Rule 5 range covers exactly the value part
+                // (quotes included), so the pair is found by matching that
+                // range against token VALUE spans in logical coordinates —
+                // the same tokenize-the-logical-line walk signature help
+                // performs.
+                "invalid-enum-value" => {
+                    let Some(menu) =
+                        diagnostics::resolve_menu_for_line(&self.data, &logicals, start_line)
+                    else {
+                        continue;
+                    };
+                    let Some(ll) = diagnostics::covering_logical_line(&logicals, start_line) else {
+                        continue;
+                    };
+                    // Wire characters → byte offsets within their own
+                    // physical lines → logical offsets (the conversion
+                    // chain the signature-help handler uses); token spans
+                    // live in logical coordinates, so the comparison must
+                    // happen there.
+                    let lines: Vec<&str> = doc.lines().collect();
+                    let to_logical = |line_idx: usize, character: usize| -> Option<usize> {
+                        let text = lines.get(line_idx)?;
+                        let byte =
+                            lsp_character_to_byte_offset(text, character, self.position_encoding);
+                        ll.logical_offset_from_physical(line_idx, byte)
+                    };
+                    let (Some(log_start), Some(log_end)) = (
+                        to_logical(start_line, start_char),
+                        to_logical(end_line, end_char),
+                    ) else {
+                        continue;
+                    };
+                    // First key=value token whose VALUE part overlaps the
+                    // diagnostic range; only its KEY is consumed — the
+                    // repaired text comes from `input`, the exact slice
+                    // this edit replaces.
+                    let tokens = tokenize_with_spans(ll.text());
+                    let Some(key) = tokens.iter().find_map(|t| {
+                        let eq = t.text.find('=')?;
+                        let value_start = t.start + eq + 1;
+                        (log_start < t.end && log_end > value_start).then(|| &t.text[..eq])
+                    }) else {
+                        continue;
+                    };
+                    // Mirror the Rule 5 emitter: only `arguments` carry
+                    // enum-typed values, and an argument without resolvable
+                    // members never guesses.
+                    let Some(arg) = menu.arguments.iter().find(|a| a.name == *key) else {
+                        continue;
+                    };
+                    let members = arg.enum_members();
+                    if members.is_empty() {
+                        continue;
+                    }
+                    // Strip quotes exactly like the Rule 5 emitter did
+                    // before validating, so distance is measured against
+                    // the bare member.
+                    let trimmed_input = input.trim();
+                    let stripped = trimmed_input.trim_matches('"').trim_matches('\'');
+                    let Some(member) = suggest::best_candidate(stripped, members.iter()) else {
+                        continue;
+                    };
+                    // Preserve the value's quote style: a quoted typo is
+                    // repaired to a quoted member, a bare one stays bare.
+                    // Only a symmetric pair of quotes counts; anything
+                    // else (debris, unterminated string) edits as bare.
+                    let quote_style = trimmed_input.chars().next().filter(|&q| {
+                        (q == '"' || q == '\'')
+                            && trimmed_input.len() >= 2
+                            && trimmed_input.ends_with(q)
+                    });
+                    Some(Suggestion {
+                        new_text: match quote_style {
+                            Some(q) => format!("{q}{member}{q}"),
+                            None => member.clone(),
+                        },
+                        title_subject: member,
+                    })
+                }
                 _ => continue,
             };
-            let Some(candidate) = suggestion else {
+            let Some(fix) = fix else {
                 continue;
             };
 
@@ -939,11 +1065,11 @@ impl Server {
                 uri.to_string(),
                 serde_json::json!([{
                     "range": range,
-                    "newText": candidate,
+                    "newText": fix.new_text,
                 }]),
             );
             actions.push(serde_json::json!({
-                "title": format!("Did you mean '{candidate}'?"),
+                "title": format!("Did you mean '{}'?", fix.title_subject),
                 "kind": "quickfix",
                 "diagnostics": [diag],
                 "edit": { "changes": changes },
@@ -1716,6 +1842,205 @@ type = "Directory"
         let edit = &actions[0]["edit"]["changes"]["file:///cont.rsc"][0];
         assert_eq!(edit["newText"], "address");
         assert_eq!(edit["range"]["start"]["line"], 1);
+    }
+
+    #[test]
+    fn test_code_actions_fixes_typo_enum_value_unquoted() {
+        let mut s = make_server();
+        // "inpt" spans bytes 30..34 (ASCII ⇒ UTF-16 units are identical):
+        // the Rule 5 range covers the VALUE part only, skipping "chain=".
+        let doc = "/ip/firewall/filter add chain=inpt";
+        let diags = opened_wire_diagnostics(&mut s, "file:///ev.rsc", doc);
+        assert_eq!(diags.len(), 1, "exactly the invalid-enum-value hint");
+        assert_eq!(diags[0]["code"], "invalid-enum-value");
+        assert_eq!(diags[0]["range"]["start"]["character"], 30);
+        assert_eq!(diags[0]["range"]["end"]["character"], 34);
+
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &code_action_request(54, "file:///ev.rsc", &diags),
+            )
+            .unwrap();
+        let actions = resp["result"].as_array().unwrap();
+        assert_eq!(actions.len(), 1, "got {actions:?}");
+        assert_eq!(actions[0]["title"], "Did you mean 'input'?");
+        assert_eq!(actions[0]["kind"], "quickfix");
+        assert_eq!(
+            actions[0]["diagnostics"][0],
+            serde_json::to_value(&diags[0]).unwrap(),
+            "the originating diagnostic object is attached"
+        );
+        let edit = &actions[0]["edit"]["changes"]["file:///ev.rsc"][0];
+        assert_eq!(edit["newText"], "input", "bare typo stays bare");
+        assert_eq!(
+            edit["range"], diags[0]["range"],
+            "replacement targets the offending value range exactly"
+        );
+    }
+
+    #[test]
+    fn test_code_actions_fixes_typo_enum_value_quoted() {
+        let mut s = make_server();
+        // Quoted variant: the Rule 5 range KEEPS the surrounding quotes,
+        // so the repair must re-wrap the suggested member in the SAME
+        // quote style while the title stays bare.
+        let doc = "/ip/firewall/filter add chain=\"forwrd\"";
+        let diags = opened_wire_diagnostics(&mut s, "file:///evq.rsc", doc);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0]["code"], "invalid-enum-value");
+
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &code_action_request(55, "file:///evq.rsc", &diags),
+            )
+            .unwrap();
+        let actions = resp["result"].as_array().unwrap();
+        assert_eq!(actions.len(), 1, "got {actions:?}");
+        assert_eq!(
+            actions[0]["title"], "Did you mean 'forward'?",
+            "title shows the bare member, not the re-quoted splice"
+        );
+        let edit = &actions[0]["edit"]["changes"]["file:///evq.rsc"][0];
+        assert_eq!(edit["newText"], "\"forward\"");
+        assert_eq!(edit["range"], diags[0]["range"]);
+        assert_eq!(edit["range"]["start"]["character"], 30);
+        assert_eq!(
+            edit["range"]["end"]["character"], 38,
+            "quotes stay in range"
+        );
+    }
+
+    #[test]
+    fn test_code_actions_invalid_enum_without_resolvable_menu_yields_nothing() {
+        let mut s = make_server();
+        // Track "/ip": an implicit parent with NO direct menu entry, hence
+        // no property table and no enum members — a fabricated
+        // invalid-enum-value here must be skipped rather than guessed.
+        s.handle_message(
+            "textDocument/didOpen",
+            &serde_json::json!({"params": {"textDocument": {"uri": "file:///evn.rsc", "text": "/ip"}}}),
+        );
+        let fake = serde_json::json!({
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 3}},
+            "severity": 4,
+            "code": "invalid-enum-value",
+            "source": "rsc-ls",
+            "message": "Invalid value 'zz' for 'x' (expected one of: a | b)"
+        });
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &code_action_request(57, "file:///evn.rsc", &[fake]),
+            )
+            .unwrap();
+        let actions = resp["result"].as_array().unwrap();
+        assert!(actions.is_empty(), "no menu ⇒ no action, got {actions:?}");
+    }
+
+    #[test]
+    fn test_code_actions_invalid_enum_unknown_key_yields_nothing() {
+        let mut s = make_server();
+        s.handle_message(
+            "textDocument/didOpen",
+            &serde_json::json!({"params": {
+                "textDocument": {"uri": "file:///evk.rsc"},
+                "text": "/ip/address add bogus=inpt"
+            }}),
+        );
+        // The menu resolves and the key=value pair is found by spans
+        // (value "inpt" at bytes 22..26), but "bogus" names no argument in
+        // /ip/address ⇒ no candidate set, no action.
+        let fake = serde_json::json!({
+            "range": {"start": {"line": 0, "character": 22}, "end": {"line": 0, "character": 26}},
+            "severity": 4,
+            "code": "invalid-enum-value",
+            "source": "rsc-ls",
+            "message": "Invalid value 'inpt' for 'bogus'"
+        });
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &code_action_request(58, "file:///evk.rsc", &[fake]),
+            )
+            .unwrap();
+        let actions = resp["result"].as_array().unwrap();
+        assert!(
+            actions.is_empty(),
+            "unknown key ⇒ no enum candidates ⇒ no action, got {actions:?}"
+        );
+    }
+
+    #[test]
+    fn test_code_actions_invalid_enum_garbage_beyond_threshold_yields_nothing() {
+        let mut s = make_server();
+        // A REAL Rule 5 hint whose value is hopeless: nothing within the
+        // length-aware threshold of input/forward/output ⇒ no action.
+        let doc = "/ip/firewall/filter add chain=zzzqqqxxxwww";
+        let diags = opened_wire_diagnostics(&mut s, "file:///evg.rsc", doc);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0]["code"], "invalid-enum-value");
+
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &code_action_request(59, "file:///evg.rsc", &diags),
+            )
+            .unwrap();
+        let actions = resp["result"].as_array().unwrap();
+        assert!(
+            actions.is_empty(),
+            "no candidate within threshold ⇒ no action, got {actions:?}"
+        );
+    }
+
+    #[test]
+    fn test_code_actions_mixed_codes_still_capped_at_eight() {
+        let mut s = make_server();
+        let mut doc = String::new();
+        // Six unknown-property typos…
+        for i in 0..6 {
+            doc.push_str(&format!("/ip/address add adress={i}.1.1.1\n"));
+        }
+        // …plus six invalid-enum-value typos: twelve eligible diagnostics
+        // across two codes, still answered with exactly MAX_CODE_ACTIONS.
+        for i in 0..6 {
+            doc.push_str(&format!("/ip/firewall/filter add chain=inpt{i}\n"));
+        }
+        let diags = opened_wire_diagnostics(&mut s, "file:///mix.rsc", &doc);
+        let eligible = diags
+            .iter()
+            .filter(|d| {
+                matches!(
+                    d["code"].as_str(),
+                    Some("unknown-property") | Some("invalid-enum-value")
+                )
+            })
+            .count();
+        assert_eq!(eligible, 12, "six property typos + six enum typos");
+
+        let resp = s
+            .handle_message(
+                "textDocument/codeAction",
+                &code_action_request(60, "file:///mix.rsc", &diags),
+            )
+            .unwrap();
+        let actions = resp["result"].as_array().unwrap();
+        assert_eq!(
+            actions.len(),
+            MAX_CODE_ACTIONS,
+            "the cap spans every eligible code, not per kind"
+        );
+        for a in actions {
+            assert!(
+                matches!(
+                    a["diagnostics"][0]["code"].as_str(),
+                    Some("unknown-property") | Some("invalid-enum-value")
+                ),
+                "only eligible codes may back an action: {a:?}"
+            );
+        }
     }
 
     #[test]
