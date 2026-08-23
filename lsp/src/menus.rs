@@ -5,7 +5,7 @@
 // implicit root entries).
 
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ── Embedded command table ────────────────────────────────────────
 
@@ -89,6 +89,12 @@ pub struct MenuData {
     pub menus: Vec<MenuEntry>,
     pub menu_by_path: HashMap<String, MenuEntry>,
     pub child_names_by_parent: HashMap<String, Vec<ChildEntry>>,
+    /// Every path that is a proper ancestor prefix of at least one known
+    /// menu (e.g. "/", "/ip", "/ip/firewall"), precomputed for O(1)
+    /// "is this a known menu prefix?" checks in diagnostics. Kept separate
+    /// from `child_names_by_parent` so the membership semantics ("ancestor
+    /// of a real menu") do not depend on how the children index is keyed.
+    pub ancestor_prefixes: HashSet<String>,
 }
 
 impl MenuData {
@@ -103,6 +109,7 @@ impl MenuData {
                     menus: Vec::new(),
                     menu_by_path: HashMap::new(),
                     child_names_by_parent: HashMap::new(),
+                    ancestor_prefixes: HashSet::new(),
                 }
             }
         }
@@ -164,13 +171,16 @@ impl MenuData {
             menu_by_path.insert(m.path.clone(), m.clone());
         }
 
-        // Build parent→children index from ALL paths
+        // Build parent→children index from ALL paths, and collect every
+        // proper ancestor prefix for O(1) known-prefix membership checks.
+        let mut ancestor_prefixes: HashSet<String> = HashSet::new();
         let mut child_map: HashMap<String, HashMap<String, ChildEntry>> = HashMap::new();
 
         for m in &menus {
             let parts: Vec<&str> = m.path.split('/').collect();
             for i in 2..parts.len() {
                 let parent_path = format!("/{}", parts[1..i].join("/"));
+                ancestor_prefixes.insert(parent_path.clone());
                 let child_name = parts[i].to_string();
                 let child_path = format!("/{}", parts[1..i + 1].join("/"));
 
@@ -187,8 +197,15 @@ impl MenuData {
                     child.menu_type = m.menu_type.clone();
                 }
             }
+            // Root segments are ancestors too (e.g. "/ip" for "/ip/address").
+            if let Some(root_name) = m.path.split('/').nth(1) {
+                ancestor_prefixes.insert(format!("/{root_name}"));
+            }
         }
 
+        // "/" itself is always a known prefix (the old check treated it as
+        // known whenever the children index existed at all).
+        ancestor_prefixes.insert("/".to_string());
         let mut root_children: HashMap<String, ChildEntry> = HashMap::new();
         for m in &menus {
             if let Some(root_name) = m.path.split('/').nth(1) {
@@ -213,6 +230,7 @@ impl MenuData {
             menus,
             menu_by_path,
             child_names_by_parent,
+            ancestor_prefixes,
         }
     }
 
@@ -470,5 +488,49 @@ type = "Directory"
         let roots = data.child_names_by_parent.get("").expect("root children");
         assert!(!roots.is_empty(), "should have root menus");
         assert!(roots.iter().any(|c| c.path == "/ip"), "missing /ip root");
+    }
+
+    // ── Ancestor prefix set ───────────────────────────────────────
+
+    #[test]
+    fn test_ancestor_prefixes_built_synthetic() {
+        let data = MenuData::from_toml_str(
+            r#"
+[[menus]]
+path = "/ip/address"
+type = "Directory"
+[[menus]]
+path = "/ip/firewall/filter"
+type = "Directory"
+"#,
+        );
+        // Root sentinel, root segments, and implicit intermediates.
+        assert!(data.ancestor_prefixes.contains("/"));
+        assert!(data.ancestor_prefixes.contains("/ip"));
+        assert!(data.ancestor_prefixes.contains("/ip/firewall"));
+        // Full menu paths themselves are NOT ancestors (they are covered by
+        // menu_by_path lookups instead).
+        assert!(!data.ancestor_prefixes.contains("/ip/address"));
+        // Unknown prefixes stay unknown.
+        assert!(!data.ancestor_prefixes.contains("/foo"));
+        assert!(!data.ancestor_prefixes.contains("/foo/bar"));
+    }
+
+    #[test]
+    fn test_ancestor_prefixes_real_data() {
+        let data = MenuData::load();
+        assert!(data.ancestor_prefixes.contains("/"), "root sentinel");
+        assert!(
+            data.ancestor_prefixes.contains("/ip"),
+            "root segment of real menus"
+        );
+        assert!(
+            data.ancestor_prefixes.contains("/ip/firewall"),
+            "implicit intermediate"
+        );
+        // Empty dataset keeps only the root sentinel (fail-safe path parity).
+        let empty = MenuData::from_toml_str("");
+        assert!(empty.ancestor_prefixes.contains("/"));
+        assert_eq!(empty.ancestor_prefixes.len(), 1);
     }
 }

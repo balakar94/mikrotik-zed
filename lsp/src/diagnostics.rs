@@ -115,16 +115,14 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
 
         // ---- Rule 1: Unknown menu path ----
         if !ctx.path.is_empty() {
+            // O(1) membership: exact menu OR a proper ancestor prefix of a
+            // known menu (precomputed at load time). This replaces the former
+            // two linear scans over all menus per logical line — each with a
+            // format! allocation per element. The children index remains the
+            // authoritative structure for context RESOLUTION in parse_line;
+            // this set only answers "is this prefix known?".
             let is_known = data.menu_by_path.contains_key(&ctx.path)
-                || data.child_names_by_parent.contains_key(&ctx.path)
-                // Also consider root parents: child_names_by_parent.get("") contains roots
-                || (ctx.path == "/" && data.child_names_by_parent.contains_key(""))
-                // Also check if path is an implicit parent that is prefix of some known menu
-                // The child_names_by_parent approach already covers implicit intermediates like /ip/firewall
-                // But we also handle case where path is prefix of known menu but not yet in child_names?
-                // Fallback: check if any menu path starts with ctx.path + "/"
-                || data.menus.iter().any(|m| m.path.starts_with(&format!("{}/", ctx.path)))
-                || data.menus.iter().any(|m| m.path == ctx.path);
+                || data.ancestor_prefixes.contains(&ctx.path);
             if !is_known && let Some((start_char, end_char)) = find_substring_range(line, &ctx.path)
             {
                 diagnostics.push(Diagnostic {
@@ -151,61 +149,61 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
         // If menu is None but path is implicit parent, we will have is_known true but no menu entry; then property checks should be skipped (no args expected).
         // For unknown property / missing required, we require a known Directory menu with arguments.
 
-        // ---- Tokenize for duplicate and precise range detection ----
-        // We need to detect duplicate keys by scanning tokens with "=".
-        let tokens = crate::tokenize(line);
+        // ---- Tokenize with spans for duplicate and precise range detection ----
+        // Property occurrences are recorded DURING tokenization, so diagnostic
+        // ranges point at the exact occurrence instead of the first textual
+        // match (which could sit inside the menu path or an earlier value).
+        let tokens = crate::tokenize_with_spans(line);
         let mut key_counts: HashMap<String, usize> = HashMap::new();
-        let mut key_first_pos: HashMap<String, (usize, usize)> = HashMap::new();
-        let mut key_value_map: HashMap<String, String> = HashMap::new();
+        // key → ordered byte spans (start, end) of each KEY occurrence.
+        let mut key_spans: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+        // key → (value text, full-token span) of the LAST occurrence.
+        let mut key_values: HashMap<String, (String, (usize, usize))> = HashMap::new();
 
         for token in &tokens {
-            if let Some(eq_idx) = token.find('=') {
-                let key = token[..eq_idx].to_string();
-                let value = token[eq_idx + 1..].to_string();
-                let count = key_counts.entry(key.clone()).or_insert(0);
-                *count += 1;
-                if !key_first_pos.contains_key(&key)
-                    && let Some((s, e)) = find_substring_range(line, &key)
-                {
-                    key_first_pos.insert(key.clone(), (s, e));
-                }
-                // For duplicate detection we need to know positions of duplicates.
-                // We'll store last value but for diagnostics we need to find second occurrence range later.
-                key_value_map.insert(key, value);
+            if let Some(eq_idx) = token.text.find('=') {
+                let key = &token.text[..eq_idx];
+                let value = &token.text[eq_idx + 1..];
+                *key_counts.entry(key.to_string()).or_insert(0) += 1;
+                key_spans
+                    .entry(key.to_string())
+                    .or_default()
+                    .push((token.start, token.start + eq_idx));
+                key_values.insert(
+                    key.to_string(),
+                    (value.to_string(), (token.start, token.end)),
+                );
             }
         }
 
+        // Whole-token span of the command verb (first token whose text equals
+        // the parsed command). Property values always contain '=' so they can
+        // never collide with a bare verb; path tokens start with '/'.
+        let command_span = ctx.command.as_deref().and_then(|cmd| {
+            tokens
+                .iter()
+                .find(|t| t.text == cmd)
+                .map(|t| (t.start, t.end))
+        });
+
         // ---- Rule 4: Duplicate property ----
+        // Highlight the SECOND occurrence precisely: the first may be the
+        // legitimate definition; repeats are the anomaly. Spans come from
+        // tokenization, so a key that also appears inside the menu path (e.g.
+        // "address" in "/ip/address") never gets squiggled by accident.
         for (key, count) in &key_counts {
-            if *count > 1 {
-                // Find second occurrence range: search for "key=" after first occurrence
-                if let Some(first) = key_first_pos.get(key) {
-                    let search_start = first.1 + 1; // after first key
-                    if search_start < line.len() {
-                        let remainder = &line[search_start..];
-                        let needle = format!("{}=", key);
-                        if let Some(rel_start) = remainder.find(&needle) {
-                            let abs_start = search_start + rel_start;
-                            let abs_end = abs_start + key.len();
-                            diagnostics.push(Diagnostic {
-                                range: ll.map_range(abs_start, abs_end),
-                                severity: Some(severity::WARNING),
-                                code: Some("duplicate-property".to_string()),
-                                source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                                message: format!("Duplicate property '{}'", key),
-                            });
-                        } else {
-                            // Fallback to first occurrence
-                            diagnostics.push(Diagnostic {
-                                range: ll.map_range(first.0, first.1),
-                                severity: Some(severity::WARNING),
-                                code: Some("duplicate-property".to_string()),
-                                source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                                message: format!("Duplicate property '{}'", key),
-                            });
-                        }
-                    }
-                }
+            if *count > 1
+                && let Some(&(s, e)) = key_spans
+                    .get(key)
+                    .and_then(|spans| spans.get(1).or_else(|| spans.first()))
+            {
+                diagnostics.push(Diagnostic {
+                    range: ll.map_range(s, e),
+                    severity: Some(severity::WARNING),
+                    code: Some("duplicate-property".to_string()),
+                    source: Some(DIAGNOSTIC_SOURCE.to_string()),
+                    message: format!("Duplicate property '{}'", key),
+                });
             }
         }
 
@@ -224,12 +222,12 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             }
 
             // ---- Rule 2: Unknown property ----
-            for key in key_counts.keys() {
+            for (key, spans) in &key_spans {
                 if !allowed.contains(key)
-                    && let Some((s, e)) = key_first_pos.get(key)
+                    && let Some(&(s, e)) = spans.first()
                 {
                     diagnostics.push(Diagnostic {
-                        range: ll.map_range(*s, *e),
+                        range: ll.map_range(s, e),
                         severity: Some(severity::WARNING),
                         code: Some("unknown-property".to_string()),
                         source: Some(DIAGNOSTIC_SOURCE.to_string()),
@@ -247,12 +245,9 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             {
                 for arg in &menu.arguments {
                     if arg.required && !key_counts.contains_key(&arg.name) {
-                        // Range: point at command or start of line if command not found
-                        let (s, e) = if let Some(cmd) = &ctx.command {
-                            find_substring_range(line, cmd).unwrap_or((0, line.len().min(8)))
-                        } else {
-                            (0, ctx.path.len().min(line.len()))
-                        };
+                        // Range: point at the command verb token, falling back
+                        // to the start of the line if no whole-token match.
+                        let (s, e) = command_span.unwrap_or((0, line.len().min(8)));
                         diagnostics.push(Diagnostic {
                             range: ll.map_range(s, e),
                             severity: Some(severity::INFORMATION),
@@ -270,9 +265,9 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             }
 
             // ---- Rule 5: Type hint for enum properties with invalid value ----
-            for (key, value) in &key_value_map {
+            for (key, (value, span)) in &key_values {
                 // Find argument definition
-                if let Some(arg) = menu.arguments.iter().find(|a| &a.name == key)
+                if let Some(arg) = menu.arguments.iter().find(|a| a.name == *key)
                     && arg.arg_type.starts_with("enum")
                 {
                     let allowed_vals = parse_enum_values(&arg.arg_type);
@@ -291,29 +286,22 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                             // Handle values that may be prefix? No, strict equality
                         });
                         if !is_valid {
-                            // Find range for value part: "key=value"
-                            let needle = format!("{}={}", key, value);
-                            if let Some((mut s, mut e)) = find_substring_range(line, &needle) {
-                                // Adjust to value part only
-                                s += key.len() + 1; // skip "key="
-                                // If value includes quotes, keep them in range
-                                // s already points to value start
-                                if e < s {
-                                    e = s + value.len();
-                                }
-                                diagnostics.push(Diagnostic {
-                                    range: ll.map_range(s, e),
-                                    severity: Some(severity::HINT),
-                                    code: Some("invalid-enum-value".to_string()),
-                                    source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                                    message: format!(
-                                        "Invalid value '{}' for '{}' (expected one of: {})",
-                                        val,
-                                        key,
-                                        allowed_vals.join(" | ")
-                                    ),
-                                });
-                            }
+                            // Narrow the recorded token span to the value part
+                            // only (skip "key="), keeping any quotes in range.
+                            let s = span.0 + key.len() + 1;
+                            let e = span.1.max(s);
+                            diagnostics.push(Diagnostic {
+                                range: ll.map_range(s, e),
+                                severity: Some(severity::HINT),
+                                code: Some("invalid-enum-value".to_string()),
+                                source: Some(DIAGNOSTIC_SOURCE.to_string()),
+                                message: format!(
+                                    "Invalid value '{}' for '{}' (expected one of: {})",
+                                    val,
+                                    key,
+                                    allowed_vals.join(" | ")
+                                ),
+                            });
                         }
                     }
                 }
@@ -1500,5 +1488,129 @@ type = "bool"
         let clamped = ll[0].map_pos(joined.len() + 100);
         assert_eq!(clamped.line, 1);
         assert_eq!(clamped.character, 4);
+    }
+
+    // ── Token-position ranges ──────────────────────────────────────
+
+    fn demo_menu_data() -> MenuData {
+        MenuData::from_toml_str(
+            r#"
+[[menus]]
+path = "/demo/alpha"
+type = "Directory"
+[[menus.arguments]]
+name = "name"
+type = "string"
+
+[[menus]]
+path = "/demo/enum"
+type = "Directory"
+[[menus.arguments]]
+name = "mode"
+type = "enum (on | off)"
+"#,
+        )
+    }
+
+    #[test]
+    fn test_duplicate_property_highlights_second_occurrence_precisely() {
+        // PHASE 1: ranges come from tokenization, so the flagged occurrence
+        // is the SECOND property occurrence (bytes 33..40), never the "address"
+        // substring inside the menu path (bytes 4..11).
+        let md = MenuData::from_toml_str(
+            r#"
+[[menus]]
+path = "/ip/address"
+type = "Directory"
+[[menus.arguments]]
+name = "address"
+type = "ipPrefix"
+required = true
+"#,
+        );
+        let line = "/ip/address add address=1.1.1.1 address=2.2.2.2";
+        let diags = compute_diagnostics(&md, line, "file:///a.rsc");
+        let dup = diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some("duplicate-property"))
+            .expect("duplicate-property expected");
+        assert_eq!(dup.range.start.line, 0);
+        assert_eq!(dup.range.start.character, 32, "must flag second occurrence");
+        assert_eq!(dup.range.end.character, 39, "range covers the KEY only");
+    }
+
+    #[test]
+    fn test_unknown_property_key_inside_menu_path_is_not_misranged() {
+        // Key text also appears inside the menu path ("alpha" in "/demo/alpha");
+        // the diagnostic must point at the PROPERTY occurrence after "add".
+        let md = demo_menu_data();
+        let line = "/demo/alpha add alpha=1 name=x";
+        let diags = compute_diagnostics(&md, line, "file:///a.rsc");
+        let up = diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some("unknown-property"))
+            .expect("unknown-property expected for 'alpha'");
+        assert_eq!(up.range.start.character, 16, "'alpha' after 'add'");
+        assert_eq!(up.range.end.character, 21);
+    }
+
+    #[test]
+    fn test_quoted_value_with_keylike_substring_no_phantom_diagnostics() {
+        // Quote-aware tokenization keeps this as ONE value token, so "alpha="
+        // inside the quoted string can no longer fabricate properties.
+        let md = demo_menu_data();
+        let line = r#"/demo/alpha add name="x alpha=9 y""#;
+        let diags = compute_diagnostics(&md, line, "file:///a.rsc");
+        assert!(
+            diags.is_empty(),
+            "quoted key-like substrings must not warn, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn test_enum_value_range_points_at_value_part_only() {
+        let md = demo_menu_data();
+        let line = "/demo/enum set mode=bogus";
+        let diags = compute_diagnostics(&md, line, "file:///a.rsc");
+        let hint = diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some("invalid-enum-value"))
+            .expect("invalid-enum-value expected");
+        // "/demo/enum set mode=bogus": token "mode=bogus" starts at 15;
+        // value part starts after "key=" (15+5=20), ends at token end (25).
+        assert_eq!(hint.range.start.character, 20);
+        assert_eq!(hint.range.end.character, 25);
+    }
+
+    // ── Known-prefix O(1) parity ──────────────────────────────────
+
+    #[test]
+    fn test_known_prefix_parity_root_deep_implicit_unknown() {
+        let md = demo_menu_data();
+        // Root prefix of a known menu ("/demo") → known, no warning.
+        assert!(
+            !compute_diagnostics(&md, "/demo print", "f")
+                .iter()
+                .any(|d| { d.code.as_deref() == Some("unknown-menu") })
+        );
+        // Implicit parent with no direct entry but known children → known.
+        assert!(
+            !compute_diagnostics(&md, "/demo/enum print", "f")
+                .iter()
+                .any(|d| d.code.as_deref() == Some("unknown-menu"))
+        );
+        // Exact deep menu → known.
+        assert!(
+            !compute_diagnostics(&md, "/demo/alpha print", "f")
+                .iter()
+                .any(|d| d.code.as_deref() == Some("unknown-menu"))
+        );
+        // Genuinely unknown → still warned, same message shape as before.
+        let diags = compute_diagnostics(&md, "/foo/bar add x=1", "f");
+        let unk = diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some("unknown-menu"))
+            .expect("unknown menu must still be flagged");
+        assert!(unk.message.contains("/foo/bar"));
     }
 }
