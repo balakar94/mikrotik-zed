@@ -19,7 +19,10 @@
 use crate::menus::MenuData;
 use std::collections::{HashMap, HashSet};
 
-const DIAGNOSTIC_SOURCE: &str = "rsc-ls";
+/// Source tag stamped on every diagnostic this server emits. Crate-visible
+/// so consumers (codeAction quick-fixes) can filter client-echoed
+/// diagnostics back to exactly the ones we produced.
+pub(crate) const DIAGNOSTIC_SOURCE: &str = "rsc-ls";
 const MAX_DIAG_LINES: usize = 3000;
 const MAX_DIAG_BYTES: usize = 500_000; // cap per-doc bytes considered for diagnostics
 
@@ -539,6 +542,38 @@ fn build_logical_lines(raw_lines: &[&str]) -> Vec<LogicalLine> {
 pub(crate) fn logical_lines(doc: &str) -> Vec<LogicalLine> {
     let raw: Vec<&str> = doc.lines().collect();
     build_logical_lines(&raw)
+}
+
+/// Resolve the [`crate::menus::MenuEntry`] governing the RouterOS command
+/// that contains physical line `phys_line`, using **exactly** the pipeline
+/// [`compute_diagnostics`] uses: continuation-aware logical-line join,
+/// then `parse_line`, then a `menu_by_path` lookup.
+///
+/// Sharing this resolver matters for consumers that repair our own
+/// diagnostics (textDocument/codeAction quick-fixes): they must agree
+/// with the diagnostic about which menu a line belongs to, and must never
+/// invent a second, diverging notion of line resolution.
+///
+/// Returns `None` when:
+/// - `phys_line` belongs to no logical line (out of range, or inside the
+///   empty-body continuation degenerate case where no token can exist),
+/// - the command parses to no menu path,
+/// - or the path has no direct `menu_by_path` entry (implicit parents such
+///   as `/ip/firewall` carry no property table of their own).
+pub(crate) fn resolve_menu_for_line<'a>(
+    data: &'a MenuData,
+    logicals: &[LogicalLine],
+    phys_line: usize,
+) -> Option<&'a crate::menus::MenuEntry> {
+    // Logical lines partition physical lines in order; pick the one whose
+    // inclusive [first, last] span covers the diagnostic's line. A token
+    // can only ever be mapped into its own logical line's span, so this
+    // reproduces the original rule's context faithfully.
+    let line = logicals
+        .iter()
+        .find(|ll| ll.first_physical_line() <= phys_line && phys_line <= ll.last_physical_line())?;
+    let ctx = crate::parse_line(data, line.text());
+    data.menu_by_path.get(&ctx.path)
 }
 
 fn find_substring_range(haystack: &str, needle: &str) -> Option<(usize, usize)> {
