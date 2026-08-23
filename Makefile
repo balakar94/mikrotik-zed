@@ -56,8 +56,10 @@ test-grammar: ## Run tree-sitter grammar tests (corpus tests, 59)
 	@command -v npx >/dev/null || (echo "error: npx not found" && false)
 	cd $(GRAMMAR_DIR) && npx tree-sitter test
 
-test-rust: ## Run Rust tests (lsp 156)
-	cargo test
+test-rust: ## Run Rust tests (all workspace members)
+	# Root is a workspace *package* with no tests of its own; bare `cargo test`
+	# would silently run 0 tests. `--workspace` descends into lsp (rsc-ls).
+	cargo test --workspace
 
 test-python: ## Run Python extraction tests (77)
 	@command -v $(PYTHON) >/dev/null || (echo "skip: $(PYTHON) not found" && exit 0)
