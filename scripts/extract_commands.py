@@ -22,6 +22,16 @@ from pathlib import Path
 # at least one segment, no spaces. The leading "/" is added separately.
 _CLI_PATH_RE = re.compile(r"^[a-z0-9][a-z0-9/_-]*$")
 
+# Enum member extraction: captures the body between the parentheses of an
+# `enum (a | b | c)` type declaration. Anything after the closing paren
+# (e.g. a bit-map suffix `{ name:0, other:1 }`) is intentionally ignored,
+# because the capture stops at the first `)`.
+_ENUM_VALUES_RE = re.compile(r"enum \(([^)]*)\)")
+
+# Header policy: how many distinct root segments to list in the `# Covers:`
+# line before collapsing the rest into an ellipsis.
+_MAX_COVERED_ROOTS = 12
+
 # Explicit deny list — empty for complete coverage. Keep as set for future use.
 _DENY_ROOTS: set[str] = set()
 
@@ -78,6 +88,24 @@ def _extract_heading_path(line: str) -> str | None:
     if "/" in path and not path.startswith("#"):
         return path
     return None
+
+
+def extract_enum_values(typ: str) -> list[str]:
+    """Extract enum members from a RAW type string, before any truncation.
+
+    Examples:
+      "enum (none)"                                        -> ["none"]
+      "enum (mac:ssid | mac | ssid)"                       -> ["mac:ssid", "mac", "ssid"]
+      "enum (a | b) { a:0, b:1 }"                          -> ["a", "b"]   (bit-map suffix ignored)
+      "enum (as-username | as-username-and-password)"      -> ["as-username", "as-username-and-password"]
+
+    Non-enum types yield an empty list. Members are stripped of surrounding
+    whitespace and empty members are dropped (e.g. from trailing separators).
+    """
+    m = _ENUM_VALUES_RE.search(typ)
+    if not m:
+        return []
+    return [part.strip() for part in m.group(1).split("|") if part.strip()]
 
 
 def parse_llms_full(filepath: str) -> list[dict]:
@@ -147,6 +175,14 @@ def parse_llms_full(filepath: str) -> list[dict]:
                 "unset": bool(unset_match),
                 "description": description,
             }
+
+            # Preserve enum members from the RAW type string. The `type`
+            # field is truncated by clean_type() at emit time, which would
+            # otherwise make downstream enum parsing lose members (or fail
+            # entirely on the trailing "..." of long enums).
+            enum_values = extract_enum_values(entry["type"])
+            if enum_values:
+                entry["enum_values"] = enum_values
 
             if current_section == "flags":
                 current_menu["flags"].append(entry)
@@ -224,12 +260,29 @@ def _source_hash(llms_path: Path) -> str:
         return "unknown"
 
 
+def _covers_line(menus: list[dict]) -> str:
+    """Build the `# Covers:` header line from the included menus.
+
+    Lists the sorted, deduplicated root segments (`/ip`, `/interface`, ...)
+    capped at `_MAX_COVERED_ROOTS` entries followed by an ellipsis, and ends
+    with the real menu count so the header never drifts from the payload.
+    """
+    roots = sorted({m["path"].split("/")[1] for m in menus if len(m["path"].split("/")) > 1})
+    shown = [f"/{r}" for r in roots][:_MAX_COVERED_ROOTS]
+    body = ", ".join(shown)
+    if len(roots) > _MAX_COVERED_ROOTS:
+        body += ", …"
+    if body:
+        return f"# Covers: {body} ({len(menus)} menus)"
+    return f"# Covers: ({len(menus)} menus)"
+
+
 def generate_toml(menus: list[dict], llms_path: Path | None = None) -> str:
     """Generate TOML output from parsed menus."""
     lines = []
     lines.append("# MikroTik RouterOS CLI Command Table")
     lines.append("# Auto-generated from llms-full.txt")
-    lines.append("# Covers: ALL roots (complete) — /interface, /ip, /ipv6, /routing, /queue, /system, /tool, /user, /certificate, /caps-man, /container, /disk, /file, /ppp, /mpls, /radius, /snmp, /log, /dude, /partitions, /console, /port, /user-manager, /zerotier, /iot, /lcd, /openflow, /task, /tr069-client, /app, /colon, ... (~970 menus)")
+    lines.append(_covers_line(menus))
     # Metadata header
     if llms_path is not None and llms_path.exists():
         version = _extract_routeros_version(llms_path)
@@ -270,6 +323,12 @@ def generate_toml(menus: list[dict], llms_path: Path | None = None) -> str:
                 lines.append("[[menus.arguments]]")
                 lines.append(f'name = "{name}"')
                 lines.append(f'type = "{typ}"')
+                # Enum members are emitted ONLY for writable arguments —
+                # flags and read-only values are never user-assigned.
+                enum_values = arg.get("enum_values") or []
+                if enum_values:
+                    rendered = ", ".join(f'"{escape_toml_string(v)}"' for v in enum_values)
+                    lines.append(f"enum_values = [{rendered}]")
                 if desc:
                     lines.append(f'description = "{desc}"')
                 if arg.get("required"):
@@ -292,6 +351,36 @@ def generate_toml(menus: list[dict], llms_path: Path | None = None) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+def _strip_generated_line(text: str) -> str:
+    """Remove `# Generated:` metadata lines so two outputs that differ only
+    by their generation timestamp compare equal."""
+    return "\n".join(
+        line for line in text.split("\n") if not line.startswith("# Generated:")
+    )
+
+
+def write_if_changed(output_file: Path, new_content: str) -> bool:
+    """Write `new_content` to `output_file`, skipping timestamp-only churn.
+
+    If the existing file differs from `new_content` ONLY by its
+    `# Generated:` line, the file is left untouched (keeping the old
+    timestamp) and False is returned. This keeps `make validate` /
+    `git diff --exit-code` clean when nothing material changed, instead of
+    dirtying the tracked file with a new timestamp on every run.
+    """
+    try:
+        existing = output_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        existing = None
+
+    if existing is not None and _strip_generated_line(existing) == _strip_generated_line(new_content):
+        return False
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_text(new_content, encoding="utf-8")
+    return True
 
 
 def main():
@@ -324,9 +413,13 @@ def main():
 
     toml_content = generate_toml(unique, llms_path=input_file)
 
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    output_file.write_text(toml_content, encoding="utf-8")
-    print(f"Wrote {output_file} ({len(unique)} menus)")
+    if write_if_changed(output_file, toml_content):
+        print(f"Wrote {output_file} ({len(unique)} menus)")
+    else:
+        print(
+            f"{output_file} unchanged (only the Generated timestamp differs) — left untouched "
+            f"({len(unique)} menus)"
+        )
 
 
 if __name__ == "__main__":
