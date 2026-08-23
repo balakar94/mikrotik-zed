@@ -13,7 +13,10 @@ from extract_commands import (
     clean_type,
     generate_toml,
     parse_llms_full,
+    extract_enum_values,
+    write_if_changed,
     _extract_heading_path,
+    _MAX_COVERED_ROOTS,
 )
 
 
@@ -170,6 +173,319 @@ class TestCleanType:
         result = clean_type("enum (disabled | enabled | proxy-arp)")
         assert "enum" in result
         assert "disabled" in result
+
+
+class TestExtractEnumValues:
+    """Tests for enum member extraction from RAW type strings."""
+
+    def test_multi_member_enum(self):
+        assert extract_enum_values("enum (input | forward | output)") == [
+            "input",
+            "forward",
+            "output",
+        ]
+
+    def test_single_member_enum(self):
+        assert extract_enum_values("enum (none)") == ["none"]
+
+    def test_colon_containing_members(self):
+        assert extract_enum_values("enum (mac:ssid | mac | ssid)") == [
+            "mac:ssid",
+            "mac",
+            "ssid",
+        ]
+
+    def test_bitmap_suffix_ignored(self):
+        typ = "enum (as-username | as-username-and-password) { as-username:0, as-username-and-password:1 }"
+        assert extract_enum_values(typ) == ["as-username", "as-username-and-password"]
+
+    def test_non_enum_type_yields_empty(self):
+        assert extract_enum_values("ipPrefix") == []
+        assert extract_enum_values("bool") == []
+        assert extract_enum_values("") == []
+
+    def test_empty_enum_body(self):
+        assert extract_enum_values("enum ()") == []
+
+    def test_whitespace_around_members_stripped(self):
+        assert extract_enum_values("enum (  a  |  b |c)") == ["a", "b", "c"]
+
+    def test_long_enum_survives_beyond_display_truncation_limit(self):
+        # Members must be extracted from the raw string even when the type
+        # display value would be truncated by clean_type() at >100 chars.
+        members = [f"value-{i:02d}" for i in range(30)]
+        typ = "enum (" + " | ".join(members) + ")"
+        assert len(typ) > 100
+        assert extract_enum_values(typ) == members
+
+
+class TestEnumValuesInPipeline:
+    """enum_values flows from parse_llms_full into generate_toml output."""
+
+    def _write_temp(self, content: str) -> str:
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+        tmp.write(content)
+        tmp.flush()
+        tmp.close()
+        return tmp.name
+
+    def test_parsed_argument_gets_enum_values(self):
+        content = """
+## ip/firewall/filter
+
+**Type:** Directory
+
+<ArgTable c1="Argument" c2="Type" c3="Description">
+<ArgTableRow arg="chain" typ="enum (input | forward | output)">Chain</ArgTableRow>
+</ArgTable>
+"""
+        path = self._write_temp(content)
+        try:
+            menus = parse_llms_full(path)
+            arg = menus[0]["arguments"][0]
+            assert arg["enum_values"] == ["input", "forward", "output"]
+        finally:
+            os.unlink(path)
+
+    def test_non_enum_argument_has_no_enum_values_field(self):
+        content = """
+## ip/address
+
+**Type:** Directory
+
+<ArgTable c1="Argument" c2="Type" c3="Description">
+<ArgTableRow arg="address" typ="ipPrefix">Addr</ArgTableRow>
+</ArgTable>
+"""
+        path = self._write_temp(content)
+        try:
+            arg = parse_llms_full(path)[0]["arguments"][0]
+            assert "enum_values" not in arg
+        finally:
+            os.unlink(path)
+
+    def test_generate_toml_emits_enum_values_for_arguments(self):
+        menus = [
+            {
+                "path": "/ip/firewall/filter",
+                "type": "Directory",
+                "flags": [],
+                "arguments": [
+                    {
+                        "name": "chain",
+                        "type": "enum (input | forward | output)",
+                        "required": False,
+                        "unset": False,
+                        "description": "Chain name",
+                        "enum_values": ["input", "forward", "output"],
+                    }
+                ],
+                "read_only": [],
+            }
+        ]
+        result = generate_toml(menus)
+        assert 'enum_values = ["input", "forward", "output"]' in result
+        # Emission order: enum_values belongs to the argument block, after type.
+        chain_block = result.split("[[menus.arguments]]")[1].split("[[menus]]")[0]
+        assert 'name = "chain"' in chain_block
+        assert chain_block.index('type = "') < chain_block.index("enum_values = ")
+
+    def test_generate_toml_skips_enum_values_for_flags_and_read_only(self):
+        menus = [
+            {
+                "path": "/ip/firewall/filter",
+                "type": "Directory",
+                "flags": [
+                    {
+                        "name": "D",
+                        "type": "enum (dynamic | static)",
+                        "required": False,
+                        "unset": False,
+                        "description": "",
+                        "enum_values": ["dynamic", "static"],
+                    }
+                ],
+                "arguments": [],
+                "read_only": [
+                    {
+                        "name": "mode",
+                        "type": "enum (a | b)",
+                        "required": False,
+                        "unset": False,
+                        "description": "",
+                        "enum_values": ["a", "b"],
+                    }
+                ],
+            }
+        ]
+        result = generate_toml(menus)
+        assert "enum_values" not in result, "flags/read_only must not carry enum_values"
+
+    def test_generate_toml_omits_field_when_no_members(self):
+        menus = [
+            {
+                "path": "/ip/address",
+                "type": "Directory",
+                "flags": [],
+                "arguments": [
+                    {
+                        "name": "address",
+                        "type": "ipPrefix",
+                        "required": True,
+                        "unset": False,
+                        "description": "",
+                    }
+                ],
+                "read_only": [],
+            }
+        ]
+        result = generate_toml(menus)
+        assert "enum_values" not in result
+
+    def test_generated_toml_is_valid_and_roundtrips_members(self):
+        import tomllib
+
+        menus = [
+            {
+                "path": "/interface/wireless/security-modes",
+                "type": "Directory",
+                "flags": [],
+                "arguments": [
+                    {
+                        "name": "security-profile-mode",
+                        "type": "enum (mac:ssid | mac | ssid) { mac:ssid:0 }",
+                        "required": False,
+                        "unset": False,
+                        "description": 'Mode with "quotes"',
+                        "enum_values": ["mac:ssid", "mac", "ssid"],
+                    }
+                ],
+                "read_only": [],
+            }
+        ]
+        parsed = tomllib.loads(generate_toml(menus))
+        arg = parsed["menus"][0]["arguments"][0]
+        assert arg["enum_values"] == ["mac:ssid", "mac", "ssid"]
+
+
+class TestCoversHeader:
+    """The `# Covers:` header is computed from included menus."""
+
+    @staticmethod
+    def _menus_for_roots(roots):
+        return [
+            {"path": f"/{root}/menu", "type": "Directory", "flags": [], "arguments": [], "read_only": []}
+            for root in roots
+        ]
+
+    def test_few_roots_listed_sorted_with_real_count(self):
+        menus = self._menus_for_roots(["tool", "ip", "interface"])
+        result = generate_toml(menus)
+        covers_line = next(l for l in result.split("\n") if l.startswith("# Covers:"))
+        assert covers_line == "# Covers: /interface, /ip, /tool (3 menus)"
+
+    def test_many_roots_capped_at_twelve_with_ellipsis(self):
+        roots = [f"root{i:02d}" for i in range(20)]  # 20 distinct roots
+        menus = self._menus_for_roots(roots)
+        result = generate_toml(menus)
+        covers_line = next(l for l in result.split("\n") if l.startswith("# Covers:"))
+        expected_prefix = ", ".join(f"/root{i:02d}" for i in range(_MAX_COVERED_ROOTS))
+        assert covers_line == f"# Covers: {expected_prefix}, … ({len(menus)} menus)"
+        # The 13th root must not leak into the header
+        assert "/root12" not in covers_line
+
+    def test_exactly_twelve_roots_not_capped(self):
+        roots = [f"r{i}" for i in range(_MAX_COVERED_ROOTS)]
+        menus = self._menus_for_roots(roots)
+        result = generate_toml(menus)
+        covers_line = next(l for l in result.split("\n") if l.startswith("# Covers:"))
+        assert "…" not in covers_line
+        assert covers_line.endswith(f"({_MAX_COVERED_ROOTS} menus)")
+
+    def test_duplicate_root_segments_counted_once(self):
+        menus = [
+            {"path": "/ip/a", "type": "Directory", "flags": [], "arguments": [], "read_only": []},
+            {"path": "/ip/b", "type": "Directory", "flags": [], "arguments": [], "read_only": []},
+        ]
+        result = generate_toml(menus)
+        covers_line = next(l for l in result.split("\n") if l.startswith("# Covers:"))
+        assert covers_line == "# Covers: /ip (2 menus)"
+
+
+class TestWriteIfChanged:
+    """Timestamp-only churn does not rewrite the output file."""
+
+    def _fresh_path(self) -> Path:
+        tmpdir = tempfile.mkdtemp()
+        return Path(tmpdir) / "commands.toml"
+
+    @staticmethod
+    def _content(timestamp: str, body: str = "body-line") -> str:
+        return (
+            "# MikroTik RouterOS CLI Command Table\n"
+            f"# Generated: {timestamp}\n"
+            f"{body}\n"
+        )
+
+    def test_timestamp_only_difference_keeps_existing_file(self):
+        target = self._fresh_path()
+        first = self._content("2026-01-01T00:00:00Z")
+        second = self._content("2026-02-02T12:34:56.789Z")
+        assert first != second
+
+        target.write_text(first, encoding="utf-8")
+        wrote = write_if_changed(target, second)
+        assert wrote is False
+        assert target.read_text(encoding="utf-8") == first, "file must stay byte-identical"
+
+    def test_identical_content_keeps_existing_file(self):
+        target = self._fresh_path()
+        first = self._content("2026-01-01T00:00:00Z")
+        target.write_text(first, encoding="utf-8")
+        assert write_if_changed(target, first) is False
+        assert target.read_text(encoding="utf-8") == first
+
+    def test_material_change_rewrites_file(self):
+        target = self._fresh_path()
+        first = self._content("2026-01-01T00:00:00Z", body="old body")
+        second = self._content("2026-01-01T00:00:00Z", body="new body")
+        target.write_text(first, encoding="utf-8")
+        assert write_if_changed(target, second) is True
+        assert target.read_text(encoding="utf-8") == second
+
+    def test_missing_file_is_written(self):
+        target = self._fresh_path()
+        assert write_if_changed(target, self._content("t")) is True
+        assert target.exists()
+
+    def test_second_generate_over_same_menus_leaves_file_byte_identical(self):
+        target = self._fresh_path()
+        menus = [
+            {
+                "path": "/ip/address",
+                "type": "Directory",
+                "flags": [],
+                "arguments": [
+                    {
+                        "name": "address",
+                        "type": "enum (a | b | c)",
+                        "required": True,
+                        "unset": False,
+                        "description": "Addr",
+                        "enum_values": ["a", "b", "c"],
+                    }
+                ],
+                "read_only": [],
+            }
+        ]
+        first = generate_toml(menus)
+        target.write_text(first, encoding="utf-8")
+        # A later run over identical inputs may produce a new timestamp…
+        second = generate_toml(menus)
+        wrote = write_if_changed(target, second)
+        # …but the tracked file must remain byte-identical either way.
+        assert wrote is False
+        assert target.read_text(encoding="utf-8") == first
 
 
 class TestGenerateToml:
