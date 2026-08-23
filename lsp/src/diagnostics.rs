@@ -609,6 +609,24 @@ impl LogicalLine {
             end: self.map_pos(end.max(start)),
         }
     }
+
+    /// Map a byte offset within physical line `phys_line` onto the joined
+    /// logical text. Inverse of the segment layout: each chunk starts at
+    /// character 0 of its physical line, so the logical offset is the
+    /// segment's `text_start` plus the offset, clamped to the chunk length
+    /// (a cursor sitting past a continuation body's cut point — e.g. on or
+    /// after the trailing `\` — lands at the body's end).
+    ///
+    /// Returns `None` when this physical line contributes no chunk to the
+    /// logical line (the empty-body degenerate case).
+    pub(crate) fn logical_offset_from_physical(
+        &self,
+        phys_line: usize,
+        byte_in_phys_line: usize,
+    ) -> Option<usize> {
+        let seg = self.segments.iter().find(|s| s.phys_line == phys_line)?;
+        Some(seg.text_start + byte_in_phys_line.min(seg.len))
+    }
 }
 
 /// Join raw physical lines into logical lines at `\` continuations.
@@ -667,6 +685,24 @@ pub(crate) fn logical_lines(doc: &str) -> Vec<LogicalLine> {
     build_logical_lines(&raw)
 }
 
+/// Find the logical line whose inclusive physical-line span
+/// `[first_physical_line, last_physical_line]` covers `phys_line`.
+///
+/// Logical lines partition physical lines in order, so at most one matches.
+/// Shared first step of every continuation-aware consumer of a cursor or
+/// diagnostic position ([`resolve_menu_for_line`], signature help).
+///
+/// Returns `None` when no logical line covers the line (out of range, or the
+/// empty-body continuation degenerate case where no token can exist).
+pub(crate) fn covering_logical_line(
+    logicals: &[LogicalLine],
+    phys_line: usize,
+) -> Option<&LogicalLine> {
+    logicals
+        .iter()
+        .find(|ll| ll.first_physical_line() <= phys_line && phys_line <= ll.last_physical_line())
+}
+
 /// Resolve the [`crate::menus::MenuEntry`] governing the RouterOS command
 /// that contains physical line `phys_line`, using **exactly** the pipeline
 /// [`compute_diagnostics`] uses: continuation-aware logical-line join,
@@ -688,13 +724,7 @@ pub(crate) fn resolve_menu_for_line<'a>(
     logicals: &[LogicalLine],
     phys_line: usize,
 ) -> Option<&'a crate::menus::MenuEntry> {
-    // Logical lines partition physical lines in order; pick the one whose
-    // inclusive [first, last] span covers the diagnostic's line. A token
-    // can only ever be mapped into its own logical line's span, so this
-    // reproduces the original rule's context faithfully.
-    let line = logicals
-        .iter()
-        .find(|ll| ll.first_physical_line() <= phys_line && phys_line <= ll.last_physical_line())?;
+    let line = covering_logical_line(logicals, phys_line)?;
     let ctx = crate::parse_line(data, line.text());
     data.menu_by_path.get(&ctx.path)
 }
