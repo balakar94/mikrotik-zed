@@ -24,7 +24,7 @@ mod server;
 
 use menus::{LineContext, MenuData};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::sync::OnceLock;
 
 // ── Structured logging (RSC_LS_LOG) ───────────────────────────
@@ -164,6 +164,24 @@ pub(crate) fn exit_code(shutdown_received: bool) -> i32 {
     if shutdown_received { 0 } else { 1 }
 }
 
+/// Build a JSON-RPC `-32602 Invalid params` error response for a REQUEST.
+///
+/// Requests (messages carrying an `id`) must always receive a response —
+/// dropping one leaves the client awaiting it until timeout.
+pub(crate) fn invalid_params_response(
+    id: &serde_json::Value,
+    message: &str,
+) -> Option<serde_json::Value> {
+    Some(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32602,
+            "message": message,
+        },
+    }))
+}
+
 // ── Server state ────────────────────────────────────────────────
 
 /// Negotiated LSP position encoding for `Position.character` values
@@ -217,93 +235,34 @@ impl Server {
     fn run(&mut self) {
         let stdin = std::io::stdin();
         let mut reader = BufReader::new(stdin.lock());
-        let mut header_buf = String::new();
 
         loop {
-            // Read headers until an empty line. Handle both "\r\n" and "\n".
-            // Enforce MAX_HEADER_SIZE to prevent header-based OOM / slowloris.
-            header_buf.clear();
-            let mut header_bytes: usize = 0;
-            let mut header_too_large = false;
-            loop {
-                let mut line = String::new();
-                match reader.read_line(&mut line) {
-                    Ok(0) => return, // EOF
-                    Ok(_) => {
-                        header_bytes += line.len();
-                        if header_bytes > MAX_HEADER_SIZE {
-                            eprintln!(
-                                "[rsc-ls] header too large (> {MAX_HEADER_SIZE} bytes), discarding message"
-                            );
-                            header_too_large = true;
-                            // Drain until empty line to resync framing
-                            if line == "\r\n" || line == "\n" || line.trim().is_empty() {
-                                break;
-                            } else {
-                                continue;
-                            }
-                        }
-                        header_buf.push_str(&line);
-                        if line == "\r\n" || line == "\n" || line.trim().is_empty() {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("[rsc-ls] read error: {e}");
-                        return;
-                    }
-                }
-            }
-            if header_too_large {
-                // If we overflowed, attempt to discard a body if Content-Length was present
-                // before overflow detection was complete; otherwise just resync.
-                if let Some(cl) = parse_content_length(&header_buf)
-                    && cl > 0
-                {
-                    let _ = discard_bytes(&mut reader, cl);
-                }
-                // Prevent header_buf capacity from staying huge (allocation DoS)
-                if header_buf.capacity() > MAX_HEADER_SIZE * 2 {
-                    header_buf.shrink_to_fit();
-                }
-                continue;
-            }
-
-            // Parse Content-Length (case-insensitive)
-            let content_length = parse_content_length(&header_buf);
-
-            let content_length = match content_length {
-                Some(n) => n,
-                None => continue,
-            };
-
-            if content_length == 0 {
-                continue;
-            }
-
-            if content_length > MAX_MESSAGE_SIZE {
-                eprintln!(
-                    "[rsc-ls] message too large: {} bytes (limit {MAX_MESSAGE_SIZE}), discarding",
-                    content_length
-                );
-                if let Err(e) = discard_bytes(&mut reader, content_length) {
-                    eprintln!("[rsc-ls] failed to discard oversized body: {e}");
+            // Read one framed message. A Protocol framing failure is terminal
+            // (exit code 1 — no shutdown was received): the stream cannot be
+            // resynchronized, so terminate and let the client's supervisor
+            // restart a clean server. I/O failures exit cleanly as before.
+            let body = match read_message(&mut reader) {
+                Ok(Frame::Message(body)) => body,
+                Ok(Frame::Eof) => return,
+                Ok(Frame::Skipped) => continue,
+                Err(FrameError::Io(e)) => {
+                    log_error!("read error: {e}");
                     return;
                 }
-                continue;
-            }
-
-            // Read body
-            let mut body = vec![0u8; content_length];
-            if let Err(e) = reader.read_exact(&mut body) {
-                eprintln!("[rsc-ls] read body error: {e}");
-                return;
-            }
+                Err(FrameError::Protocol(why)) => {
+                    log_error!(
+                        "unrecoverable framing error ({why}) — terminating with code {} \
+                         so the client supervisor restarts a clean server",
+                        exit_code(false)
+                    );
+                    std::process::exit(exit_code(false));
+                }
+            };
 
             let msg: serde_json::Value = match serde_json::from_slice(&body) {
                 Ok(v) => v,
                 Err(e) => {
-                    eprintln!("[rsc-ls] JSON parse error: {e}");
+                    log_warn!("JSON parse error: {e}");
                     continue;
                 }
             };
@@ -573,11 +532,27 @@ impl Server {
             }
 
             "textDocument/completion" => {
-                let uri = params["params"]["textDocument"]["uri"].as_str()?;
+                // Requests must always be answered: malformed params →
+                // -32602, untracked URI (never opened, closed, or rejected
+                // at MAX_DOCS) → spec-permitted null result. Never silence.
+                let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
+                    return invalid_params_response(&id, "missing textDocument.uri");
+                };
                 let pos = &params["params"]["position"];
-                let line = pos["line"].as_u64()?;
-                let character = pos["character"].as_u64()?;
-                let doc = self.docs.get(uri)?;
+                let Some(line) = pos["line"].as_u64() else {
+                    return invalid_params_response(&id, "missing position.line");
+                };
+                let Some(character) = pos["character"].as_u64() else {
+                    return invalid_params_response(&id, "missing position.character");
+                };
+                let Some(doc) = self.docs.get(uri) else {
+                    log_debug!("completion for untracked URI, returning null result: {uri:?}");
+                    return Some(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": null,
+                    }));
+                };
 
                 // Convert the wire `character` ONCE into a byte offset within
                 // the cursor line, extracted with the same `str::lines()` split
@@ -604,20 +579,38 @@ impl Server {
             }
 
             "textDocument/hover" => {
-                let uri = params["params"]["textDocument"]["uri"].as_str()?;
+                // Same response guarantees as completion: -32602 for
+                // malformed params, null result for untracked URIs.
+                let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
+                    return invalid_params_response(&id, "missing textDocument.uri");
+                };
                 let pos = &params["params"]["position"];
-                let line = pos["line"].as_u64()? as usize;
-                let character = pos["character"].as_u64()? as usize;
-                let doc = self.docs.get(uri)?;
+                let Some(line) = pos["line"].as_u64() else {
+                    return invalid_params_response(&id, "missing position.line");
+                };
+                let Some(character) = pos["character"].as_u64() else {
+                    return invalid_params_response(&id, "missing position.character");
+                };
+                let Some(doc) = self.docs.get(uri) else {
+                    log_debug!("hover for untracked URI, returning null result: {uri:?}");
+                    return Some(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": null,
+                    }));
+                };
+                let line = line as usize;
+                let current_line = doc.lines().nth(line).unwrap_or("");
 
-                let lines: Vec<&str> = doc.lines().collect();
-                let current_line = lines.get(line).copied().unwrap_or("");
                 // Same single boundary conversion as completion: the wire
                 // `character` becomes a byte offset within `current_line`,
                 // which is exactly the slice `compute_hover` inspects and the
                 // line `build_before_cursor` re-slices internally.
-                let char_byte =
-                    lsp_character_to_byte_offset(current_line, character, self.position_encoding);
+                let char_byte = lsp_character_to_byte_offset(
+                    current_line,
+                    character as usize,
+                    self.position_encoding,
+                );
 
                 let hover = hover::compute_hover(&self.data, current_line, char_byte, doc, line);
 
@@ -782,6 +775,121 @@ fn discard_bytes<R: std::io::Read>(reader: &mut R, mut n: usize) -> std::io::Res
         n -= to_read;
     }
     Ok(())
+}
+
+/// Outcome of reading one length-prefixed message.
+#[derive(Debug)]
+pub(crate) enum Frame {
+    /// One complete message body.
+    Message(Vec<u8>),
+    /// Clean EOF at a message boundary — the stream is over.
+    Eof,
+    /// The message was deliberately discarded (oversized body or zero-length
+    /// body) and the stream remains usable; the caller should read again.
+    Skipped,
+}
+
+/// Terminal framing failure: the stream cannot be resynchronized because
+/// headers were unparsable (missing / malformed / duplicate Content-Length).
+/// The caller must terminate so the client's supervisor can restart a clean
+/// server; continuing would interpret body bytes as headers (desync cascade).
+#[derive(Debug)]
+pub(crate) enum FrameError {
+    Protocol(String),
+    Io(std::io::Error),
+}
+
+impl From<std::io::Error> for FrameError {
+    fn from(e: std::io::Error) -> Self {
+        FrameError::Io(e)
+    }
+}
+
+/// Read exactly one length-prefixed JSON-RPC message from `reader`.
+///
+/// Behavior-preserving extraction of the former inline loop in [`Server::run`]
+/// with one deliberate change: when headers cannot be parsed into a
+/// Content-Length, this returns [`FrameError::Protocol`] instead of skipping
+/// ahead — skipping is what caused permanent header/body desync.
+///
+/// Preserved defensive properties:
+/// - Header section capped at [`MAX_HEADER_SIZE`]; on overflow with a
+///   parseable Content-Length the body is drained and the frame skipped.
+/// - Bodies larger than [`MAX_MESSAGE_SIZE`] are drained and skipped.
+/// - Zero-length bodies are skipped.
+/// - EOF on the first header line yields [`Frame::Eof`]; EOF mid-frame is an
+///   I/O error.
+pub(crate) fn read_message<R: BufRead>(reader: &mut R) -> Result<Frame, FrameError> {
+    // Read headers until an empty line. Handle both "\r\n" and "\n".
+    let mut header_buf = String::new();
+    let mut header_bytes: usize = 0;
+    let mut header_too_large = false;
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line)? {
+            0 => return Ok(Frame::Eof),
+            _ => {
+                header_bytes += line.len();
+                if header_bytes > MAX_HEADER_SIZE {
+                    log_error!("header too large (> {MAX_HEADER_SIZE} bytes), discarding message");
+                    header_too_large = true;
+                    // Drain until empty line to resync framing
+                    if line == "\r\n" || line == "\n" || line.trim().is_empty() {
+                        break;
+                    } else {
+                        continue;
+                    }
+                }
+                header_buf.push_str(&line);
+                if line == "\r\n" || line == "\n" || line.trim().is_empty() {
+                    break;
+                }
+            }
+        }
+    }
+
+    if header_too_large {
+        // If we overflowed, attempt to discard a body if Content-Length was
+        // present before overflow detection completed; otherwise the headers
+        // are unusable → unrecoverable.
+        return match parse_content_length(&header_buf) {
+            Some(cl) if cl > 0 => {
+                discard_bytes(reader, cl).map_err(FrameError::from)?;
+                Ok(Frame::Skipped)
+            }
+            Some(_) => Ok(Frame::Skipped), // zero-length body claimed: nothing to drain
+            None => Err(FrameError::Protocol(
+                "headers exceeded MAX_HEADER_SIZE without a parsable Content-Length".to_string(),
+            )),
+        };
+    }
+
+    // Parse Content-Length (case-insensitive). None here is terminal: without
+    // a trusted length we cannot know where the body ends, so consuming more
+    // bytes would guess — the desync cascade this guard exists to prevent.
+    let content_length = parse_content_length(&header_buf).ok_or_else(|| {
+        FrameError::Protocol("missing or malformed Content-Length header".to_string())
+    })?;
+
+    if content_length == 0 {
+        return Ok(Frame::Skipped);
+    }
+
+    if content_length > MAX_MESSAGE_SIZE {
+        log_warn!(
+            "message too large: {content_length} bytes (limit {MAX_MESSAGE_SIZE}), discarding"
+        );
+        discard_bytes(reader, content_length).map_err(|e| {
+            log_error!("failed to discard oversized body: {e}");
+            FrameError::Io(e)
+        })?;
+        return Ok(Frame::Skipped);
+    }
+
+    // Read body
+    let mut body = vec![0u8; content_length];
+    reader.read_exact(&mut body)?;
+    Ok(Frame::Message(body))
 }
 
 /// Polyfill for `str::floor_char_boundary` (stabilized in Rust 1.91).
@@ -983,8 +1091,57 @@ fn apply_incremental_edit(
 
 // ── Tokenizer / parser (ported from ls.mjs) ─────────────────────
 
-/// Split a line into tokens: quoted strings, /-prefixed paths, or bare words.
-pub(crate) fn tokenize(text: &str) -> Vec<String> {
+/// One token plus its byte span within the tokenized text.
+///
+/// Spans let consumers (diagnostics) point at the exact occurrence of a
+/// token instead of re-finding it with substring search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SpanToken {
+    pub text: String,
+    /// Inclusive start byte offset within the scanned text.
+    pub start: usize,
+    /// Exclusive end byte offset within the scanned text.
+    pub end: usize,
+}
+
+/// Scan one whitespace-delimited token starting at byte offset `start`.
+///
+/// Tracks quote state so whitespace inside `"..."` or `'...'` does not split
+/// the token and a backslash inside quotes escapes the next byte. This
+/// mirrors the state machine of `continuation_body_end` in diagnostics.rs
+/// (RouterOS treats both quote styles symmetrically). Returns the exclusive
+/// end offset, which is always a char boundary: quote, backslash and
+/// whitespace bytes only occur as standalone bytes in valid UTF-8.
+fn scan_token(bytes: &[u8], start: usize) -> usize {
+    let mut i = start;
+    let mut in_double = false;
+    let mut in_single = false;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if in_double || in_single => {
+                // Escaped byte inside quotes: skip it entirely. Clamp so a
+                // trailing backslash cannot push `i` past `bytes.len()`.
+                i = (i + 2).min(bytes.len());
+                continue;
+            }
+            b'"' if !in_single => in_double = !in_double,
+            b'\'' if !in_double => in_single = !in_single,
+            _ if !in_double && !in_single && bytes[i].is_ascii_whitespace() => break,
+            _ => {}
+        }
+        i += 1;
+    }
+    i
+}
+
+/// Split a line into tokens with spans: quoted strings, /-prefixed paths, or
+/// bare words.
+///
+/// Quote-aware: a bare word that opens a quote keeps consuming across
+/// whitespace until the matching close (e.g. `comment="a=b c=d"` stays ONE
+/// token), so quoted values can no longer spawn phantom property tokens
+/// downstream. Unterminated quotes simply run to end-of-input.
+pub(crate) fn tokenize_with_spans(text: &str) -> Vec<SpanToken> {
     let mut tokens = Vec::new();
     let bytes = text.as_bytes();
     let mut i = 0;
@@ -998,56 +1155,31 @@ pub(crate) fn tokenize(text: &str) -> Vec<String> {
             break;
         }
 
-        // Quoted string
-        if bytes[i] == b'"' {
-            let start = i;
-            i += 1;
-            while i < bytes.len() {
-                if bytes[i] == b'\\' {
-                    i += 2; // skip escaped char
-                } else if bytes[i] == b'"' {
-                    i += 1;
-                    break;
-                } else {
-                    i += 1;
-                }
-            }
-            tokens.push(
-                std::str::from_utf8(&bytes[start..i])
-                    .unwrap_or("")
-                    .to_string(),
-            );
-            continue;
-        }
-
-        // /-prefixed path segment
-        if bytes[i] == b'/' {
-            let start = i;
-            i += 1;
-            while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
-                i += 1;
-            }
-            tokens.push(
-                std::str::from_utf8(&bytes[start..i])
-                    .unwrap_or("")
-                    .to_string(),
-            );
-            continue;
-        }
-
-        // Bare word
+        // Quoted string, /-prefixed path, or bare word — all share the same
+        // quote-aware scanner; the distinction lives in the token text, not
+        // in how far it scans.
         let start = i;
-        while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        tokens.push(
-            std::str::from_utf8(&bytes[start..i])
+        let end = scan_token(bytes, i);
+        tokens.push(SpanToken {
+            text: std::str::from_utf8(&bytes[start..end])
                 .unwrap_or("")
                 .to_string(),
-        );
+            start,
+            end,
+        });
+        i = end;
     }
 
     tokens
+}
+
+/// [`tokenize_with_spans`] without the span bookkeeping (kept for callers
+/// that only need token text).
+pub(crate) fn tokenize(text: &str) -> Vec<String> {
+    tokenize_with_spans(text)
+        .into_iter()
+        .map(|t| t.text)
+        .collect()
 }
 
 /// Build the "before cursor" context across multiple lines.
@@ -1427,21 +1559,68 @@ type = "Directory"
     #[test]
     fn test_parse_line_quoted_value() {
         let data = synthetic_data();
-        // Value without space stays as one token; with space the tokenizer splits on whitespace
-        // so we test the no-space case which is handled correctly.
+        // Value without space stays as one token; with space the quote-aware
+        // tokenizer also keeps it as ONE token (see tokenize docs).
         let ctx = parse_line(&data, r#"/ip/address add comment="hello""#);
         assert_eq!(
             ctx.properties.get("comment").map(|s| s.as_str()),
             Some("\"hello\"")
         );
-        // Space inside quotes currently splits into two tokens due to bare-word tokenization.
-        // Expected behavior: first part truncated to "\"hello", second token orphaned.
+        // PHASE 1 FLIP: this previously asserted the BROKEN behavior where
+        // the tokenizer split quoted values at whitespace (`"\"hello"` plus an
+        // orphaned `"world\"" token), which spawned phantom property tokens
+        // and false unknown-property / duplicate-property warnings
+        // downstream. Bare-word scanning is now quote-aware, so a quoted
+        // value containing spaces stays a single token/value.
         let ctx2 = parse_line(&data, r#"/ip/address add comment="hello world""#);
         assert_eq!(
             ctx2.properties.get("comment").map(|s| s.as_str()),
-            Some("\"hello")
+            Some("\"hello world\"")
         );
-        assert_eq!(ctx2.last_token, "world\"");
+        // last_token remains the RAW token text (key included), per LineContext.
+        assert_eq!(ctx2.last_token, r#"comment="hello world""#);
+    }
+
+    #[test]
+    fn test_tokenize_quoted_value_with_spaces_and_equals() {
+        // '=' and spaces inside quotes must not create phantom properties.
+        let tokens = tokenize(r#"comment="a=b c=d""#);
+        assert_eq!(tokens, vec![r#"comment="a=b c=d""#]);
+    }
+
+    #[test]
+    fn test_tokenize_escaped_quotes_inside_string() {
+        // Escaped quotes do not terminate the string…
+        let tokens = tokenize(r#"comment="say \"hi\" now""#);
+        assert_eq!(tokens.len(), 1);
+        assert!(tokens[0].contains("\\\"hi\\\""));
+        assert!(tokens[0].ends_with("now\""));
+        // …and escaped backslashes are skipped pairwise.
+        let tokens = tokenize(r#"comment="a\\b c""#);
+        assert_eq!(tokens.len(), 1);
+    }
+
+    #[test]
+    fn test_tokenize_unterminated_quote_terminates_at_eof() {
+        // Unterminated quote: scan runs to end-of-input without looping
+        // forever or panicking.
+        let tokens = tokenize(r#"comment="unterminated"#);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0], r#"comment="unterminated"#);
+        // Lone trailing backslash inside an open quote must clamp, not
+        // overshoot the buffer.
+        let tokens = tokenize("comment=\"oops\\");
+        assert_eq!(tokens.len(), 1);
+    }
+
+    #[test]
+    fn test_tokenize_spans_record_exact_offsets() {
+        let text = "/ip/address add chain=input";
+        let spans = tokenize_with_spans(text);
+        assert_eq!(spans.len(), 3);
+        assert_eq!(&text[spans[0].start..spans[0].end], "/ip/address");
+        assert_eq!(&text[spans[1].start..spans[1].end], "add");
+        assert_eq!(&text[spans[2].start..spans[2].end], "chain=input");
     }
 
     // ── parse_content_length ──────────────────────────────────────
@@ -1699,6 +1878,103 @@ type = "Directory"
         assert_eq!(remaining, b"hello");
     }
 
+    // ── read_message (golden streams) ─────────────────────────────
+
+    /// Build one length-prefixed frame around `body`.
+    fn framed(body: &[u8]) -> Vec<u8> {
+        let mut out = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
+        out.extend_from_slice(body);
+        out
+    }
+
+    #[test]
+    fn test_read_message_valid_frame_then_eof() {
+        let body = br#"{"jsonrpc":"2.0","id":1,"method":"x"}"#;
+        let mut stream = Cursor::new(framed(body));
+        match read_message(&mut stream).unwrap() {
+            Frame::Message(b) => assert_eq!(&b[..], &body[..]),
+            other => panic!("expected Message, got {other:?}"),
+        }
+        assert!(matches!(read_message(&mut stream).unwrap(), Frame::Eof));
+    }
+
+    #[test]
+    fn test_read_message_two_frames_back_to_back() {
+        let mut bytes = framed(br#"{"id":1}"#);
+        bytes.extend_from_slice(&framed(br#"{"id":2}"#));
+        let mut stream = Cursor::new(bytes);
+        assert!(matches!(
+            read_message(&mut stream).unwrap(),
+            Frame::Message(ref b) if b == br#"{"id":1}"#
+        ));
+        assert!(matches!(
+            read_message(&mut stream).unwrap(),
+            Frame::Message(ref b) if b == br#"{"id":2}"#
+        ));
+        assert!(matches!(read_message(&mut stream).unwrap(), Frame::Eof));
+    }
+
+    #[test]
+    fn test_read_message_garbage_header_fails_fast() {
+        // PHASE 1: missing Content-Length is now terminal. Previously the
+        // loop continued without consuming anything, so the body bytes were
+        // re-parsed as headers → permanent desync cascade.
+        let mut stream = Cursor::new(b"X-Garbage: 1\r\n\r\n{\"body\":true}".to_vec());
+        match read_message(&mut stream).unwrap_err() {
+            FrameError::Protocol(why) => assert!(
+                why.contains("Content-Length"),
+                "error should name the missing header, got: {why}"
+            ),
+            other => panic!("expected Protocol error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_read_message_malformed_content_length_fails_fast() {
+        let mut stream = Cursor::new(b"Content-Length: abc\r\n\r\nhello".to_vec());
+        assert!(matches!(
+            read_message(&mut stream).unwrap_err(),
+            FrameError::Protocol(_)
+        ));
+    }
+
+    #[test]
+    fn test_read_message_duplicate_content_length_is_unparsable() {
+        let mut stream =
+            Cursor::new(b"Content-Length: 5\r\nContent-Length: 6\r\n\r\nhello!".to_vec());
+        assert!(matches!(
+            read_message(&mut stream).unwrap_err(),
+            FrameError::Protocol(_)
+        ));
+    }
+
+    #[test]
+    fn test_read_message_oversized_body_drained_and_stream_usable() {
+        // Oversize bodies are still drained/skipped (defensive cap preserved),
+        // and the next valid frame parses cleanly afterwards.
+        let big = vec![b'x'; MAX_MESSAGE_SIZE + 1];
+        let mut bytes = framed(&big);
+        bytes.extend_from_slice(&framed(br#"{"id":2}"#));
+        let mut stream = Cursor::new(bytes);
+        assert!(matches!(read_message(&mut stream).unwrap(), Frame::Skipped));
+        assert!(matches!(
+            read_message(&mut stream).unwrap(),
+            Frame::Message(ref b) if b == br#"{"id":2}"#
+        ));
+    }
+
+    #[test]
+    fn test_read_message_zero_length_body_skipped() {
+        let mut bytes = b"Content-Length: 0\r\n\r\n".to_vec();
+        bytes.extend_from_slice(&framed(br#"{"id":3}"#));
+        let mut stream = Cursor::new(bytes);
+        assert!(matches!(read_message(&mut stream).unwrap(), Frame::Skipped));
+        assert!(matches!(
+            read_message(&mut stream).unwrap(),
+            Frame::Message(_)
+        ));
+    }
+
     // ── Server handle_message integration ─────────────────────────
 
     fn make_server() -> Server {
@@ -1831,7 +2107,11 @@ type = "Directory"
     }
 
     #[test]
-    fn test_server_completion_unknown_uri_returns_none() {
+    fn test_server_completion_untracked_uri_returns_null_result() {
+        // PHASE 1 FLIP: this previously asserted `resp.is_none()` — a request
+        // carrying an id got NO response and the client hung until timeout.
+        // Untracked URI now yields a spec-permitted null result with the id
+        // echoed.
         let mut server = make_server();
         let comp = serde_json::json!({
             "id": 1,
@@ -1840,8 +2120,48 @@ type = "Directory"
                 "position": {"line": 0, "character": 1}
             }
         });
-        let resp = server.handle_message("textDocument/completion", &comp);
-        assert!(resp.is_none());
+        let resp = server
+            .handle_message("textDocument/completion", &comp)
+            .unwrap();
+        assert_eq!(resp["id"], 1, "id must be echoed");
+        assert!(resp["result"].is_null(), "untracked URI → null result");
+    }
+
+    #[test]
+    fn test_server_completion_malformed_params_returns_32602() {
+        let mut server = make_server();
+        // Missing position entirely.
+        let no_pos = serde_json::json!({
+            "id": 7,
+            "params": {"textDocument": {"uri": "file:///a.rsc"}}
+        });
+        let resp = server
+            .handle_message("textDocument/completion", &no_pos)
+            .unwrap();
+        assert_eq!(resp["id"], 7);
+        assert_eq!(resp["error"]["code"], -32602);
+        // Missing URI entirely.
+        let no_uri = serde_json::json!({
+            "id": 8,
+            "params": {"position": {"line": 0, "character": 0}}
+        });
+        let resp = server
+            .handle_message("textDocument/completion", &no_uri)
+            .unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        // Non-numeric position.
+        let bad_types = serde_json::json!({
+            "id": 9,
+            "params": {
+                "textDocument": {"uri": "file:///a.rsc"},
+                "position": {"line": "zero", "character": null}
+            }
+        });
+        let resp = server
+            .handle_message("textDocument/completion", &bad_types)
+            .unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        assert_eq!(resp["id"], 9);
     }
 
     #[test]
@@ -1966,7 +2286,9 @@ type = "Directory"
     }
 
     #[test]
-    fn test_server_hover_unknown_doc_returns_none() {
+    fn test_server_hover_untracked_doc_returns_null_result() {
+        // PHASE 1 FLIP: previously asserted `resp.is_none()` (dropped
+        // request); untracked URI now answers null result with id echoed.
         let mut server = make_server();
         let hover = serde_json::json!({
             "id": 7,
@@ -1975,8 +2297,23 @@ type = "Directory"
                 "position": {"line": 0, "character": 1}
             }
         });
-        let resp = server.handle_message("textDocument/hover", &hover);
-        assert!(resp.is_none());
+        let resp = server.handle_message("textDocument/hover", &hover).unwrap();
+        assert_eq!(resp["id"], 7);
+        assert!(resp["result"].is_null());
+    }
+
+    #[test]
+    fn test_server_hover_malformed_params_returns_32602() {
+        let mut server = make_server();
+        let no_pos = serde_json::json!({
+            "id": 11,
+            "params": {"textDocument": {"uri": "file:///a.rsc"}}
+        });
+        let resp = server
+            .handle_message("textDocument/hover", &no_pos)
+            .unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        assert_eq!(resp["id"], 11, "id must be echoed on error responses");
     }
 
     #[test]
