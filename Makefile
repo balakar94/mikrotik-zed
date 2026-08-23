@@ -210,8 +210,10 @@ install: install-deps install-tools install-lsp ## Full bootstrap: system deps +
 bump: ## Bump version (usage: make bump VERSION=0.2.0)
 	@test -n "$(VERSION)" || (echo "usage: make bump VERSION=0.2.0" && false)
 	@echo "Bumping to $(VERSION) ..."
-	@sed -i '' 's/^version = ".*"/version = "$(VERSION)"/' Cargo.toml lsp/Cargo.toml grammars/rsc/Cargo.toml 2>/dev/null || sed -i 's/^version = ".*"/version = "$(VERSION)"/' Cargo.toml lsp/Cargo.toml grammars/rsc/Cargo.toml
-	@sed -i '' 's/"version": ".*"/"version": "$(VERSION)"/' grammars/rsc/package.json 2>/dev/null || sed -i 's/"version": ".*"/"version": "$(VERSION)"/' grammars/rsc/package.json
+	@sed -i '' 's/^version = ".*"/version = "$(VERSION)"/' Cargo.toml lsp/Cargo.toml 2>/dev/null || sed -i 's/^version = ".*"/version = "$(VERSION)"/' Cargo.toml lsp/Cargo.toml
+	@echo "Note: grammar versions live in the separate tree-sitter-rsc repo"
+	@echo "      (grammars/rsc submodule) — never bumped from here:"
+	@echo "      publish_grammar.py would auto-commit them into that repo."
 	@sed -i '' 's/^version = ".*"/version = "$(VERSION)"/' extension.toml 2>/dev/null || sed -i 's/^version = ".*"/version = "$(VERSION)"/' extension.toml
 	@echo "Bumped. Now run: cargo check && git diff"
 
