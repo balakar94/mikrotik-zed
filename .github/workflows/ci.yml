@@ -76,6 +76,38 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  # ── Windows: rsc-ls must compile and pass tests on MSVC ────────────
+  # fmt/clippy/wasm are platform-independent (covered by the ubuntu job);
+  # this job only guards Windows-specific compilation of the LSP binary.
+  windows:
+    name: Windows (rsc-ls compile + test)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4 # pin: v4.2.2
+
+      - name: Install Rust 1.94 (MSRV)
+        uses: dtolnay/rust-toolchain@stable # pin: stable
+        with:
+          toolchain: "1.94"
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2 # pin: v2.8.1
+        with:
+          workspaces: lsp
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Tests (cargo test -p rsc-ls)
+        run: cargo test -p rsc-ls
+
+      - name: Build LSP (rsc-ls.exe)
+        run: cargo build -p rsc-ls --release
+
+      - name: Smoke — artifact size
+        shell: bash
+        run: ls -lh target/release/rsc-ls.exe || ls -lh target/release/rsc-ls
+
   # ── Python: mirrors `make test-python && make sync-check && make extract` ──
   python:
     name: Python extraction

@@ -204,9 +204,11 @@ fn platform_triple(os: zed::Os, arch: zed::Architecture) -> std::result::Result<
         (O::Linux, A::Aarch64) => Ok("aarch64-unknown-linux-gnu".to_string()),
         (O::Linux, A::X8664) => Ok("x86_64-unknown-linux-gnu".to_string()),
         (O::Linux, A::X86) => Ok("x86_64-unknown-linux-gnu".to_string()),
-        (O::Windows, _) => Err(format!(
-            "Windows is not supported for {BINARY_NAME} auto-download (os={os:?} arch={arch:?}). \
-            Please build from source: cargo build -p rsc-ls --release"
+        (O::Windows, A::X8664) => Ok("x86_64-pc-windows-msvc".to_string()),
+        (os, arch) => Err(format!(
+            "Platform not supported for {BINARY_NAME} auto-download (os={os:?} arch={arch:?}). \
+            Install {BINARY_NAME} manually: cargo build -p rsc-ls --release and put it in PATH, \
+            or download a binary from https://github.com/{GITHUB_REPO}/releases"
         )),
     }
 }
