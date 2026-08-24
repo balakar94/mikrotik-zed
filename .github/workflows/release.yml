@@ -373,6 +373,7 @@ jobs:
           - `rsc-ls-aarch64-unknown-linux-gnu` – Linux ARM64
           - `rsc-ls-x86_64-unknown-linux-gnu` – Linux x64
           - `rsc-ls-x86_64-pc-windows-msvc` – Windows x64
+          - `rsc-ls-aarch64-pc-windows-msvc` – Windows ARM64
 
           SHA256 checksums in `SHA256SUMS` and per-file `*.sha256`. Attestations are attached as build provenance.
 
