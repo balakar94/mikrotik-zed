@@ -9,7 +9,7 @@
   <a href="https://github.com/balakar94/mikrotik-zed/releases"><img src="https://img.shields.io/github/v/release/balakar94/mikrotik-zed?label=release&color=blue" alt="release"></a>
   <a href="https://github.com/balakar94/mikrotik-zed/actions/workflows/ci.yml"><img src="https://github.com/balakar94/mikrotik-zed/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/balakar94/mikrotik-zed/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green" alt="license"></a>
-  <a href="https://manual.mikrotik.com/docs/cli-reference/"><img src="https://img.shields.io/badge/RouterOS-v7.0%2B-red" alt="RouterOS"></a>
+  <a href="https://manual.mikrotik.com/docs/cli-reference/"><img src="https://img.shields.io/badge/RouterOS-v7.20%2B-red" alt="RouterOS"></a>
   <a href="https://zed.dev"><img src="https://img.shields.io/badge/Zed-extension-black" alt="Zed"></a>
   <a href="https://github.com/balakar94/tree-sitter-rsc"><img src="https://img.shields.io/badge/tree--sitter-rsc-orange" alt="grammar"></a>
 </p>
@@ -36,7 +36,7 @@
 | **Sync**         | Keeps the built-in command database aligned with MikroTik's published CLI reference                       |
 | **Grammar**      | A dedicated tree-sitter grammar, developed in its own repository and pinned by revision                   |
 
-**Coverage:** the command database models the complete RouterOS v7 CLI — **1038 menus**, directories and executable commands alike, spanning every context of the hierarchy from interfaces and networking to queues, users and system tools. It is extracted automatically from MikroTik's official machine-readable documentation, so completion, hover and diagnostics work anywhere in the tree rather than on a hand-picked subset.
+**Coverage:** the command database models the complete RouterOS v7.20+ CLI — **1038 menus**, directories and executable commands alike, spanning every context of the hierarchy from interfaces and networking to queues, users and system tools. It is extracted automatically from MikroTik's official machine-readable documentation, so completion, hover and diagnostics work anywhere in the tree rather than on a hand-picked subset.
 
 <details>
 <summary>Example <code>.rsc</code> — hover, completion, diagnostics</summary>
@@ -92,14 +92,21 @@ Using the extension requires no manual builds. When you open a `.rsc` file, the 
 2. **The cache** — the copy downloaded by a previous session, reused as-is.
 3. **GitHub Releases** — otherwise it downloads the build that matches your platform from the table below, verifies it against the published SHA-256 companion _before_ making it executable or running it, and surfaces progress through Zed's installation-status UI. Any failure — missing asset, checksum mismatch — aborts cleanly and shows manual instructions: an unverified binary is never executed.
 
-| Triple                      | Platform            |
-| --------------------------- | ------------------- |
-| `aarch64-apple-darwin`      | macOS Apple Silicon |
-| `x86_64-apple-darwin`       | macOS Intel         |
-| `aarch64-unknown-linux-gnu` | Linux ARM64         |
-| `x86_64-unknown-linux-gnu`  | Linux x64           |
-| `x86_64-pc-windows-msvc`    | Windows x64         |
-| `aarch64-pc-windows-msvc`   | Windows ARM64       |
+Every asset is named after a Rust **target triple**: the conventional `<architecture>-<vendor>-<os>-<abi>` string that compilers and toolchains use to identify one exact platform.
+
+<table align="center">
+  <thead>
+    <tr><th>Target triple</th><th>Platform</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>aarch64-apple-darwin</code></td><td>macOS Apple Silicon</td></tr>
+    <tr><td><code>x86_64-apple-darwin</code></td><td>macOS Intel</td></tr>
+    <tr><td><code>aarch64-unknown-linux-gnu</code></td><td>Linux ARM64</td></tr>
+    <tr><td><code>x86_64-unknown-linux-gnu</code></td><td>Linux x64</td></tr>
+    <tr><td><code>x86_64-pc-windows-msvc</code></td><td>Windows x64</td></tr>
+    <tr><td><code>aarch64-pc-windows-msvc</code></td><td>Windows ARM64</td></tr>
+  </tbody>
+</table>
 
 > **Windows detail:** the downloaded binary is cached and spawned with an `.exe` suffix, because Windows refuses to execute images whose file name lacks one. Release assets themselves stay extension-less byte blobs, so a single naming scheme serves every platform.
 >
@@ -130,16 +137,16 @@ Open `demo.rsc` in Zed and try three things, one per core feature:
 
 Nothing exotic is required, and `make install` sets up all of it for you (see Bootstrap below). This is the complete list, and why each piece exists:
 
-| Dependency                 | Required          | Why                                                                                                                                                                                                                       |
-| -------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Rust, via rustup           | ✅ required       | Builds the language server and the extension glue. The repo pins the compiler version _and_ the WebAssembly target in `rust-toolchain.toml`, so rustup installs both automatically on first use — nothing to add by hand. |
-| Python 3.11+               | ✅ required       | Runs the extraction, sync and deploy tooling (it relies on the standard-library `tomllib`).                                                                                                                               |
-| pytest, requests, paramiko | ✅ auto-installed | The Python test suite and the deploy transports. They live inside a project-local `.venv`, never the system interpreter — which sidesteps PEP 668 on Fedora, Debian and Arch.                                             |
-| C compiler + linker        | ✅ required       | Compiles the native language server (Xcode CLT, `build-essential`, or `base-devel` depending on platform).                                                                                                                |
-| git                        | ✅ required       | Clones the grammar working copy at the revision pinned in `extension.toml`.                                                                                                                                               |
-| curl                       | ✅ required       | Downloads toolchains and release binaries during setup.                                                                                                                                                                   |
-| cargo-audit                | ⚪ optional       | Scans dependencies against the RustSec advisory database. It runs weekly in CI; `make audit` does the same locally.                                                                                                       |
-| wasm-tools                 | ⚪ optional       | Inspects the compiled WebAssembly component when hacking on the extension glue (rustc already emits a valid component).                                                                                                   |
+| Dependency                 | Required    | Why                                                                                                                                                                                                                       |
+| -------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Rust 1.90                  | ✅ required | Builds the language server and the extension glue. The repo pins the compiler version _and_ the WebAssembly target in `rust-toolchain.toml`, so rustup installs both automatically on first use — nothing to add by hand. |
+| Python 3.11+               | ✅ required | Runs the extraction, sync and deploy tooling (it relies on the standard-library `tomllib`).                                                                                                                               |
+| pytest, requests, paramiko | ✅ auto     | The Python test suite and the deploy transports. They live inside a project-local `.venv`, never the system interpreter — which sidesteps PEP 668 on Fedora, Debian and Arch.                                             |
+| C compiler + linker        | ✅ required | Compiles the native language server (Xcode CLT, `build-essential`, or `base-devel` depending on platform).                                                                                                                |
+| git                        | ✅ required | Clones the grammar working copy at the revision pinned in `extension.toml`.                                                                                                                                               |
+| curl                       | ✅ required | Downloads toolchains and release binaries during setup.                                                                                                                                                                   |
+| cargo-audit                | ⚪ optional | Scans dependencies against the RustSec advisory database. It runs weekly in CI; `make audit` does the same locally.                                                                                                       |
+| wasm-tools                 | ⚪ optional | Inspects the compiled WebAssembly component when hacking on the extension glue (rustc already emits a valid component).                                                                                                   |
 
 ### Bootstrap
 
@@ -150,10 +157,10 @@ Nothing exotic is required, and `make install` sets up all of it for you (see Bo
 
 Supported platforms:
 
-- **macOS** — Homebrew, plus Xcode Command Line Tools
-- **Fedora / RHEL** — dnf or yum
-- **Arch** — pacman
-- **Debian / Ubuntu** — apt
+- **macOS** — Homebrew and Xcode Command Line Tools
+- **Fedora / RHEL**
+- **Arch**
+- **Debian / Ubuntu**
 
 Any other system works too: skip the distro step with `SKIP_SYSTEM=1` and provide the equivalent packages yourself.
 
@@ -207,7 +214,7 @@ Local validation only proves the script is well-formed; sooner or later you want
 
 Two transports are available, selected per task:
 
-- **REST** — talks to the RouterOS 7 REST API, posting the script for execution (with a file-upload + `/import` fallback for longer scripts).
+- **REST** — talks to the RouterOS v7.20+ REST API, posting the script for execution (with a file-upload + `/import` fallback for longer scripts).
 - **SSH** — uploads via SFTP and runs `/import` over an interactive session.
 
 Both report more than a transport-level success code: RouterOS routinely answers HTTP 200 or exits SSH with status 0 even when an import failed, so the output is scanned for high-confidence failure markers (`syntax error`, `bad command name`, `failure:` …) and surfaces them as real failures.
@@ -295,7 +302,26 @@ RSC_LS_LOG=debug zed --foreground      # or: RUST_LOG
 
 ## 📤 Release
 
-A release is fully automated behind one action: push a tag. Concretely, bump versions with `make bump VERSION=x.y.z`, then `git tag vX.Y.Z && git push origin vX.Y.Z`. The release workflow cross-compiles the language server for all six platform triples, builds the WebAssembly component, and publishes a GitHub Release containing every binary together with its SHA-256 companion — which is precisely what the extension's auto-download verifies at install time. Distribution through the Zed marketplace is a separate, human-reviewed step: a pull request to [`zed-industries/extensions`](https://github.com/zed-industries/extensions) carrying the extension metadata and the pinned grammar revision. `extension.toml` is kept marketplace-ready at all times.
+Two independent tracks: an automated GitHub Release, then a human-reviewed marketplace listing.
+
+**1 · GitHub Release — automated**
+
+```bash
+make bump VERSION=x.y.z                     # updates Cargo.toml + extension.toml
+git tag vX.Y.Z && git push origin vX.Y.Z    # this is the whole trigger
+```
+
+The tag fires `release.yml`, which:
+
+1. Cross-compiles `rsc-ls` for all six platform triples
+2. Builds the WebAssembly component
+3. Publishes a GitHub Release with every binary plus its SHA-256 companion
+
+Those digests are exactly what the extension's auto-download verifies at install time.
+
+**2 · Zed Marketplace — human reviewed**
+
+A pull request to [`zed-industries/extensions`](https://github.com/zed-industries/extensions) carrying the extension metadata and the pinned grammar revision. `extension.toml` stays marketplace-ready at all times; preparing this PR never blocks on track 1, but merging makes sense only once the release exists.
 
 ---
 
