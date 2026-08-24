@@ -104,6 +104,14 @@ jobs:
       - name: Build LSP (rsc-ls.exe)
         run: cargo build -p rsc-ls --release
 
+      # Cross-compile smoke: the release workflow ships aarch64-pc-windows-msvc
+      # built exactly this way on the same runner image — catch toolchain or
+      # link breakage here before a tag, not during a release.
+      - name: Smoke — cross aarch64-pc-windows-msvc
+        run: |
+          rustup target add aarch64-pc-windows-msvc
+          cargo check -p rsc-ls --target aarch64-pc-windows-msvc
+
       - name: Smoke — artifact size
         shell: bash
         run: ls -lh target/release/rsc-ls.exe || ls -lh target/release/rsc-ls

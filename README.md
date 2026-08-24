@@ -168,6 +168,7 @@ cp target/release/rsc-ls /opt/homebrew/bin/rsc-ls  # macOS
 | `aarch64-unknown-linux-gnu` | Linux ARM64         |
 | `x86_64-unknown-linux-gnu`  | Linux x64           |
 | `x86_64-pc-windows-msvc`    | Windows x64         |
+| `aarch64-pc-windows-msvc`   | Windows ARM64       |
 
 Uses `zed::download_file` + `make_file_executable` with `LanguageServerInstallationStatus` UI. On 404, shows manual install instructions.
 
