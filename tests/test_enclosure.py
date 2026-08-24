@@ -558,6 +558,7 @@ class TestWasmPlatformTriples:
             "aarch64-unknown-linux-gnu",
             "x86_64-unknown-linux-gnu",
             "x86_64-pc-windows-msvc",
+            "aarch64-pc-windows-msvc",
         ]
         for triple in expected:
             assert triple in txt, f"Missing triple {triple}"

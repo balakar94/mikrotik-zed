@@ -30,6 +30,7 @@ pub(crate) fn asset_triple(
         (O::Linux, A::X8664) => Ok("x86_64-unknown-linux-gnu".to_string()),
         (O::Linux, A::X86) => Ok("x86_64-unknown-linux-gnu".to_string()),
         (O::Windows, A::X8664) => Ok("x86_64-pc-windows-msvc".to_string()),
+        (O::Windows, A::Aarch64) => Ok("aarch64-pc-windows-msvc".to_string()),
         (os, arch) => Err(format!(
             "Platform not supported for {BINARY_NAME} auto-download (os={os:?} arch={arch:?}). \
             Install {BINARY_NAME} manually: cargo build -p rsc-ls --release and put it in PATH, \
@@ -100,6 +101,11 @@ mod tests {
                 zed::Os::Windows,
                 zed::Architecture::X8664,
                 "x86_64-pc-windows-msvc",
+            ),
+            (
+                zed::Os::Windows,
+                zed::Architecture::Aarch64,
+                "aarch64-pc-windows-msvc",
             ),
         ];
         for (os, arch, triple) in cases {
