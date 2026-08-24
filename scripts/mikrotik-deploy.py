@@ -3,7 +3,7 @@
 MikroTik RSC deploy companion — push .rsc files to a RouterOS device.
 
 Supports two transports:
-  1) REST API via `requests` (preferred, RouterOS 7+ has /rest)
+  1) REST API via `requests` (preferred, RouterOS 7.20+ has /rest)
   2) SSH via `paramiko` (fallback, or explicit --method ssh)
 
 Env vars (all can be overridden by CLI flags):

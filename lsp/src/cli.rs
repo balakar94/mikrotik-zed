@@ -21,7 +21,7 @@ const SHA_SHORT_LEN: usize = 7;
 /// Usage text shared by `--help` (printed to stdout) and argument errors
 /// (printed to stderr after the offending reason).
 const USAGE: &str = "\
-rsc-ls — MikroTik RouterOS Script language server (RouterOS 7.0+)
+rsc-ls — MikroTik RouterOS Script language server (RouterOS 7.20+)
 
 Usage:
   rsc-ls             Serve LSP over stdio (default; this is how Zed starts it)
