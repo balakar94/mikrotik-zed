@@ -33,7 +33,7 @@ help: ## Show this help
 # ── Tooling checks ───────────────────────────────────────────────
 
 check-tools: ## Verify required tools are installed
-	@command -v cargo >/dev/null || (echo "error: cargo not found — run 'make install' to bootstrap, or install Rust 1.94+ (MSRV 1.94 (rust-analyzer >=1.94))" && false)
+	@command -v cargo >/dev/null || (echo "error: cargo not found — run 'make install' to bootstrap, or install rustup (the pinned toolchain from rust-toolchain.toml provides the compiler)" && false)
 	@command -v rustup >/dev/null && rustup target list --installed | grep -q $(WASM_TARGET) || echo "hint: rustup target add $(WASM_TARGET)"
 	@command -v npx >/dev/null || echo "hint: npm install -g tree-sitter-cli (for grammar)"
 	@command -v $(PYTHON) >/dev/null || echo "hint: $(PYTHON) not found — Python 3.12+ needed for extract/sync/test-python (run 'make install-tools')"
@@ -52,7 +52,7 @@ generate-check: ## Verify parser.c is up-to-date (CI: fails if stale)
 
 test: test-grammar ## Alias for test-grammar
 
-test-grammar: ## Run tree-sitter grammar tests (corpus tests, 59)
+test-grammar: ## Run tree-sitter grammar tests (corpus tests, 67)
 	@command -v npx >/dev/null || (echo "error: npx not found" && false)
 	cd $(GRAMMAR_DIR) && npx tree-sitter test
 
@@ -61,7 +61,7 @@ test-rust: ## Run Rust tests (all workspace members)
 	# (wasm extension) and lsp (rsc-ls).
 	cargo test --workspace
 
-test-python: ## Run Python extraction tests (77)
+test-python: ## Run Python extraction tests (216)
 	@command -v $(PYTHON) >/dev/null || (echo "skip: $(PYTHON) not found" && exit 0)
 	@command -v pytest >/dev/null 2>&1 || $(PYTHON) -m pytest --version >/dev/null 2>&1 || (echo "skip: pytest not found (pip install pytest)" && exit 0)
 	$(PYTHON) -m pytest tests/ -v
@@ -180,7 +180,7 @@ install-deps: ## Install system dependencies for detected platform (macOS/Homebr
 		echo "==> [Debian/Ubuntu] installing system dependencies"; \
 		$(SUDO) apt-get update && $(SUDO) $(APT) install -y build-essential curl git ca-certificates pkg-config libssl-dev python3 python3-venv python3-pip nodejs npm; \
 	else \
-		echo "error: unsupported platform — see README 'Dependencies & Bootstrap' for manual instructions" >&2; \
+		echo "error: unsupported platform — see README 'Dependencies' for manual instructions" >&2; \
 		exit 1; \
 	fi
 
