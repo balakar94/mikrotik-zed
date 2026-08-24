@@ -16,6 +16,10 @@
 
 ---
 
+**Contents:** [Features](#-features) · [Install](#-install) · [Quick start](#-quick-start) · [Dependencies & Bootstrap](#-dependencies--bootstrap) · [Tasks — Deploy to MikroTik](#-tasks--deploy-to-mikrotik) · [Language Server](#-language-server) · [Grammar](#-grammar) · [Sync & Extraction](#-sync--extraction) · [Development](#️-development) · [Release](#-release) · [Reference](#-reference) · [License](#-license)
+
+---
+
 ## ✨ Features
 
 | Area                  | What you get                                                                                                                                                                                                                   |
@@ -56,6 +60,73 @@
 ```
 
 </details>
+
+---
+
+## 📦 Install
+
+### From Zed Extensions (once published)
+
+Zed → `zed: extensions` → search **MikroTik** → **Install**.
+
+### Dev install (local)
+
+```bash
+# 1. Optional: build LSP locally (otherwise extension auto-downloads from Releases)
+cargo build -p rsc-ls --release
+export PATH="$PWD/target/release:$PATH"
+
+# For GUI Zed (Dock), also copy to a GUI-visible PATH (or just run: make install-lsp):
+cp target/release/rsc-ls ~/.cargo/bin/rsc-ls
+cp target/release/rsc-ls /opt/homebrew/bin/rsc-ls  # macOS
+
+# 2. Zed → Command Palette → Install Dev Extension → select this directory
+# 3. Open a .rsc file; check logs via zed --foreground or zed: open log
+```
+
+### Binary auto-download
+
+`src/lib.rs` (WASM, `zed_extension_api 0.7`) resolves `rsc-ls` as:
+
+1. `worktree.which("rsc-ls")` — PATH override (dev; on Windows `rsc-ls.exe` is probed too)
+2. Cached binary from prior download (extension dir)
+3. **Auto-download** from GitHub Releases via `current_platform()` → `rsc-ls-<triple>`:
+
+| Triple                      | Platform            |
+| --------------------------- | ------------------- |
+| `aarch64-apple-darwin`      | macOS Apple Silicon |
+| `x86_64-apple-darwin`       | macOS Intel         |
+| `aarch64-unknown-linux-gnu` | Linux ARM64         |
+| `x86_64-unknown-linux-gnu`  | Linux x64           |
+| `x86_64-pc-windows-msvc`    | Windows x64         |
+| `aarch64-pc-windows-msvc`   | Windows ARM64       |
+
+Uses `zed::download_file` + `make_file_executable` with `LanguageServerInstallationStatus` UI. On 404, shows manual install instructions.
+
+> **Windows note:** the binary is downloaded, cached, and spawned as `rsc-ls.exe` there — Windows cannot execute an executable image whose file lacks the `.exe` suffix. Release assets themselves stay extension-less byte blobs (`rsc-ls-x86_64-pc-windows-msvc`), so one asset scheme covers all platforms.
+
+**Supply-chain check:** every download is SHA-256–verified against its `<asset>.sha256` release companion _before_ it is made executable or run. Any mismatch (or missing companion) fails the install and deletes the unverified binary — fail closed, never execute unverified.
+
+> **404 after fresh Release?** GitHub CDN takes ~1-2 min to propagate `releases/download`. Use the PATH copy above meanwhile; `gh release download` via API works immediately.
+
+---
+
+## 🚀 Quick start
+
+```bash
+# Try completion / hover / diagnostics
+cat > /tmp/demo.rsc <<'RSC'
+/ip address add address=10.0.0.1/24 interface=ether1
+/ip firewall filter add chain=input action=accept
+/certificate add name=my-cert common-name=example.com
+RSC
+# open in Zed
+open -a Zed /tmp/demo.rsc
+```
+
+- **Trigger completion:** type `/`, ` `, `=`, or `:` (script words like `:if`) — the server pre-filters; Zed fuzzy-filters on top
+- **Hover:** over `/ip/address` or `chain`
+- **Diagnostics:** delete `address=` → `Info: missing-required`
 
 ---
 
@@ -129,73 +200,6 @@ cd grammars/rsc && npm install
 ```
 
 > `make install-tools` uses a project-local `.venv` instead of system pip, which sidesteps PEP 668 on Fedora/Debian/Arch.
-
----
-
-## 📦 Install
-
-### From Zed Extensions (once published)
-
-Zed → `zed: extensions` → search **MikroTik** → **Install**.
-
-### Dev install (local)
-
-```bash
-# 1. Optional: build LSP locally (otherwise extension auto-downloads from Releases)
-cargo build -p rsc-ls --release
-export PATH="$PWD/target/release:$PATH"
-
-# For GUI Zed (Dock), also copy to a GUI-visible PATH (or just run: make install-lsp):
-cp target/release/rsc-ls ~/.cargo/bin/rsc-ls
-cp target/release/rsc-ls /opt/homebrew/bin/rsc-ls  # macOS
-
-# 2. Zed → Command Palette → Install Dev Extension → select this directory
-# 3. Open a .rsc file; check logs via zed --foreground or zed: open log
-```
-
-### Binary auto-download
-
-`src/lib.rs` (WASM, `zed_extension_api 0.7`) resolves `rsc-ls` as:
-
-1. `worktree.which("rsc-ls")` — PATH override (dev; on Windows `rsc-ls.exe` is probed too)
-2. Cached binary from prior download (extension dir)
-3. **Auto-download** from GitHub Releases via `current_platform()` → `rsc-ls-<triple>`:
-
-| Triple                      | Platform            |
-| --------------------------- | ------------------- |
-| `aarch64-apple-darwin`      | macOS Apple Silicon |
-| `x86_64-apple-darwin`       | macOS Intel         |
-| `aarch64-unknown-linux-gnu` | Linux ARM64         |
-| `x86_64-unknown-linux-gnu`  | Linux x64           |
-| `x86_64-pc-windows-msvc`    | Windows x64         |
-| `aarch64-pc-windows-msvc`   | Windows ARM64       |
-
-Uses `zed::download_file` + `make_file_executable` with `LanguageServerInstallationStatus` UI. On 404, shows manual install instructions.
-
-> **Windows note:** the binary is downloaded, cached, and spawned as `rsc-ls.exe` there — Windows cannot execute an executable image whose file lacks the `.exe` suffix. Release assets themselves stay extension-less byte blobs (`rsc-ls-x86_64-pc-windows-msvc`), so one asset scheme covers all platforms.
-
-**Supply-chain check:** every download is SHA-256–verified against its `<asset>.sha256` release companion _before_ it is made executable or run. Any mismatch (or missing companion) fails the install and deletes the unverified binary — fail closed, never execute unverified.
-
-> **404 after fresh Release?** GitHub CDN takes ~1-2 min to propagate `releases/download`. Use the PATH copy above meanwhile; `gh release download` via API works immediately.
-
----
-
-## 🚀 Quick start
-
-```bash
-# Try completion / hover / diagnostics
-cat > /tmp/demo.rsc <<'RSC'
-/ip address add address=10.0.0.1/24 interface=ether1
-/ip firewall filter add chain=input action=accept
-/certificate add name=my-cert common-name=example.com
-RSC
-# open in Zed
-open -a Zed /tmp/demo.rsc
-```
-
-- **Trigger completion:** type `/`, ` `, `=`, or `:` (script words like `:if`) — the server pre-filters; Zed fuzzy-filters on top
-- **Hover:** over `/ip/address` or `chain`
-- **Diagnostics:** delete `address=` → `Info: missing-required`
 
 ---
 
@@ -311,6 +315,20 @@ Header in `commands.toml` includes `RouterOS version`, `Generated` UTC, `Source 
 
 ## 🛠️ Development
 
+### Repository layout
+
+```text
+mikrotik-zed/
+├── languages/rsc/    Zed language pack: config.toml, queries (highlights/outline/indents/brackets), tasks.json
+├── grammars/rsc/     tree-sitter-rsc working copy (untracked — make grammar-clone)
+├── lsp/              rsc-ls language server (pure Rust, no Node)
+├── src/              WASM extension glue (zed_extension_api): download + SHA-256 verify
+├── data/             commands.toml — 1038 menus extracted from llms-full.txt
+├── docs/adr/         architecture decision records
+├── scripts/          sync / extract / deploy / publish tooling (Python)
+└── tests/            Python test suite (pytest)
+```
+
 ```bash
 make help
 make generate          # parser.c (tree-sitter)
@@ -351,7 +369,7 @@ RSC_LS_LOG=debug zed --foreground      # or: RUST_LOG
 ## 📤 Release
 
 - Grammar: `scripts/publish_grammar.py --push`
-- Extension + LS: `git tag v0.1.0 && git push origin v0.1.0` → `.github/workflows/release.yml` builds 4 triples + WASM → GitHub Release with `rsc-ls-<triple>` assets for auto-download
+- Extension + LS: `git tag vX.Y.Z && git push origin vX.Y.Z` → `.github/workflows/release.yml` builds all 6 triples + WASM → GitHub Release with `rsc-ls-<triple>` assets for auto-download
 - Zed Marketplace: PR to [`zed-industries/extensions`](https://github.com/zed-industries/extensions) with `extensions.toml` + `pnpm sort-extensions`
 
 `extension.toml` is marketplace-ready (`id`, `homepage`, `repository`, `grammars.rsc` rev pinned).
