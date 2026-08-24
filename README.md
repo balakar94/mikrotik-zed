@@ -16,27 +16,27 @@
 
 ---
 
-**Contents:** [Features](#-features) · [Install](#-install) · [Quick start](#-quick-start) · [Dependencies & Bootstrap](#-dependencies--bootstrap) · [Tasks — Deploy to MikroTik](#-tasks--deploy-to-mikrotik) · [Language Server](#-language-server) · [Grammar](#-grammar) · [Sync & Extraction](#-sync--extraction) · [Development](#️-development) · [Release](#-release) · [Reference](#-reference) · [License](#-license)
+**Contents:** [Features](#-features) · [Install](#-install) · [Quick start](#-quick-start) · [Dependencies](#-dependencies) · [Deploy](#-deploy) · [Language Server](#-language-server) · [Grammar](#-grammar) · [Sync & Extraction](#-sync--extraction) · [Development](#️-development) · [Release](#-release) · [Reference](#-reference) · [License](#-license)
 
 ---
 
 ## ✨ Features
 
-| Area                  | What you get                                                                                                                                                                                                                   |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Highlighting**      | Tree-sitter grammar (`grammars/rsc/`) — menus, globals, control flow, variables, arrays, menu continuation                                                                                                                     |
-| **Completion**        | Root menus, sub-menus, verbs, properties with snippets (`address=$1`), enum/bool values with embedded docs, `:` script words + statement snippets (`:if`, `:foreach`, `:for`, `:do`) — `triggerCharacters: / space = :`        |
-| **Hover**             | Menu docs (`Type` + `Arguments` + `Flags`), property types, standard verbs                                                                                                                                                     |
-| **Diagnostics**       | Menu semantics (`unknown-menu` · `unknown-property` · `missing-required` · `duplicate-property` · `invalid-enum-value`) and syntax errors (`unclosed-brace` · `unmatched-brace` · `unclosed-quote`) — capped, `source: rsc-ls` |
-| **Outline & folding** | Document symbols (menus + `:local`/`:global` variables), folding ranges (braces + `\` continuations)                                                                                                                           |
-| **Signature help**    | Required-first parameter popup for menu verbs                                                                                                                                                                                  |
-| **Navigation**        | Go-to-definition / find references for script variables (`:local`/`:global` ↔ `$name`)                                                                                                                                         |
-| **Quick fixes**       | "Did you mean …?" for typos in properties, menus, and enum values                                                                                                                                                              |
-| **Tasks & Deploy**    | Zed tasks (`REST`/`SSH`/`Dry-run`/`Validate`) + `scripts/mikrotik-deploy.py` (`requests`/`paramiko`)                                                                                                                           |
-| **Sync**              | `scripts/sync_llms.py` fetches latest `llms-full.txt` from `manual.mikrotik.com`                                                                                                                                               |
-| **Grammar**           | In-tree + published to [`balakar94/tree-sitter-rsc`](https://github.com/balakar94/tree-sitter-rsc) (rev pinned in `extension.toml`)                                                                                            |
+| Area             | What you get                                                                                              |
+| ---------------- | --------------------------------------------------------------------------------------------------------- |
+| **Highlighting** | Full RouterOS syntax highlighting powered by a dedicated tree-sitter grammar                              |
+| **Completion**   | Context-aware suggestions for menus, verbs, properties and values, with snippets and inline documentation |
+| **Hover**        | Reference documentation for menus, properties and verbs, shown right where you type                       |
+| **Diagnostics**  | Live semantic and syntax validation of your script while you write it                                     |
+| **Outlining**    | Document outline of menus and script variables, plus code folding                                         |
+| **Signature**    | Parameter hints when calling menu verbs                                                                   |
+| **Navigation**   | Go-to-definition and find-references across script variables                                              |
+| **Quick fixes**  | "Did you mean …?" corrections for typos in properties, menus and values                                   |
+| **Deploy**       | Send a validated script to a real router over REST or SSH without leaving the editor                      |
+| **Sync**         | Keeps the built-in command database aligned with MikroTik's published CLI reference                       |
+| **Grammar**      | A dedicated tree-sitter grammar, developed in its own repository and pinned by revision                   |
 
-**Coverage:** **1038 menus** — complete CLI from `llms-full.txt` (491 Directory + 432 Command + implicit parents). All roots: `/interface`, `/ip`, `/ipv6`, `/routing`, `/queue`, `/system`, `/tool`, `/user`, `/certificate`, `/caps-man`, `/container`, `/disk`, `/file`, `/ppp`, `/mpls`, `/radius`, …
+**Coverage:** the command database models the complete RouterOS v7 CLI — **1038 menus**, directories and executable commands alike, spanning every context of the hierarchy from interfaces and networking to queues, users and system tools. It is extracted automatically from MikroTik's official machine-readable documentation, so completion, hover and diagnostics work anywhere in the tree rather than on a hand-picked subset.
 
 <details>
 <summary>Example <code>.rsc</code> — hover, completion, diagnostics</summary>
@@ -86,11 +86,11 @@ cp target/release/rsc-ls /opt/homebrew/bin/rsc-ls  # macOS
 
 ### Binary auto-download
 
-`src/lib.rs` (WASM, `zed_extension_api 0.7`) resolves `rsc-ls` as:
+Using the extension requires no manual builds. When you open a `.rsc` file, the extension locates its language server by trying three sources in order, stopping at the first success:
 
-1. `worktree.which("rsc-ls")` — PATH override (dev; on Windows `rsc-ls.exe` is probed too)
-2. Cached binary from prior download (extension dir)
-3. **Auto-download** from GitHub Releases via `current_platform()` → `rsc-ls-<triple>`:
+1. **Your PATH** — an `rsc-ls` you installed yourself takes precedence (the development override; Windows probes `rsc-ls.exe` too).
+2. **The cache** — the copy downloaded by a previous session, reused as-is.
+3. **GitHub Releases** — otherwise it downloads the build that matches your platform from the table below, verifies it against the published SHA-256 companion _before_ making it executable or running it, and surfaces progress through Zed's installation-status UI. Any failure — missing asset, checksum mismatch — aborts cleanly and shows manual instructions: an unverified binary is never executed.
 
 | Triple                      | Platform            |
 | --------------------------- | ------------------- |
@@ -101,65 +101,64 @@ cp target/release/rsc-ls /opt/homebrew/bin/rsc-ls  # macOS
 | `x86_64-pc-windows-msvc`    | Windows x64         |
 | `aarch64-pc-windows-msvc`   | Windows ARM64       |
 
-Uses `zed::download_file` + `make_file_executable` with `LanguageServerInstallationStatus` UI. On 404, shows manual install instructions.
-
-> **Windows note:** the binary is downloaded, cached, and spawned as `rsc-ls.exe` there — Windows cannot execute an executable image whose file lacks the `.exe` suffix. Release assets themselves stay extension-less byte blobs (`rsc-ls-x86_64-pc-windows-msvc`), so one asset scheme covers all platforms.
-
-**Supply-chain check:** every download is SHA-256–verified against its `<asset>.sha256` release companion _before_ it is made executable or run. Any mismatch (or missing companion) fails the install and deletes the unverified binary — fail closed, never execute unverified.
-
-> **404 after fresh Release?** GitHub CDN takes ~1-2 min to propagate `releases/download`. Use the PATH copy above meanwhile; `gh release download` via API works immediately.
+> **Windows detail:** the downloaded binary is cached and spawned with an `.exe` suffix, because Windows refuses to execute images whose file name lacks one. Release assets themselves stay extension-less byte blobs, so a single naming scheme serves every platform.
+>
+> **Fresh-release 404s:** GitHub's CDN can take a minute or two to propagate new release assets; the API path works immediately, and a PATH-installed binary always bypasses the download entirely.
 
 ---
 
 ## 🚀 Quick start
 
+Create a script in a folder where you actually keep your RouterOS work — any `.rsc` file will do, they are plain text:
+
 ```bash
-# Try completion / hover / diagnostics
-cat > /tmp/demo.rsc <<'RSC'
+cat > demo.rsc <<'RSC'
 /ip address add address=10.0.0.1/24 interface=ether1
 /ip firewall filter add chain=input action=accept
-/certificate add name=my-cert common-name=example.com
 RSC
-# open in Zed
-open -a Zed /tmp/demo.rsc
 ```
 
-- **Trigger completion:** type `/`, ` `, `=`, or `:` (script words like `:if`) — the server pre-filters; Zed fuzzy-filters on top
-- **Hover:** over `/ip/address` or `chain`
-- **Diagnostics:** delete `address=` → `Info: missing-required`
+Open `demo.rsc` in Zed and try three things, one per core feature:
+
+- **Completion:** type `/ip ` and pause — the popup lists the sub-menus that exist under `/ip` according to the command database.
+- **Hover:** rest the cursor on `/ip address` — a card explains what the menu is for and what its commands accept.
+- **Diagnostics:** remove `address=` from the first line — the editor flags that `add` under `/ip address` cannot run without it, because validation knows the real command signature rather than guessing from syntax alone.
 
 ---
 
-## 🔧 Dependencies & Bootstrap
+## 🔧 Dependencies
 
-| Requirement                  | Required          | Purpose                                                                                      |
-| ---------------------------- | ----------------- | -------------------------------------------------------------------------------------------- |
-| Rust 1.90+ (MSRV)            | ✅ required       | Builds `rsc-ls` + WASM extension; pinned via `rust-toolchain.toml`                           |
-| `wasm32-wasip2` target       | ✅ required       | WASM extension build (`rustup target add wasm32-wasip2`)                                     |
-| C compiler + linker          | ✅ required       | Native Rust builds (Xcode CLT / `build-essential` / `base-devel`)                            |
-| git                          | ✅ required       | Submodule checkout (`grammars/rsc`)                                                          |
-| curl                         | ✅ required       | Doc sync, rustup installer, LSP auto-download                                                |
-| CA certificates              | ✅ required       | TLS for curl / pip / npm                                                                     |
-| Python 3.12+                 | ✅ required       | Extraction/sync scripts, tests                                                               |
-| pytest + requests + paramiko | ✅ auto-installed | Into `.venv` by `make install-tools`                                                         |
-| Node.js LTS + npm            | ⚠️ optional       | Grammar work only (`tree-sitter-cli` via `npx`)                                              |
-| wasm-tools, cargo-audit      | ⚪ optional       | `make build-wasm` validation/legacy fallback (rustc already emits a component), `make audit` |
+Nothing exotic is required, and `make install` sets up all of it for you (see Bootstrap below). This is the complete list, and why each piece exists:
 
-### One-liner bootstrap
+| Dependency                 | Required          | Why                                                                                                                                                                                                                       |
+| -------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Rust, via rustup           | ✅ required       | Builds the language server and the extension glue. The repo pins the compiler version _and_ the WebAssembly target in `rust-toolchain.toml`, so rustup installs both automatically on first use — nothing to add by hand. |
+| Python 3.11+               | ✅ required       | Runs the extraction, sync and deploy tooling (it relies on the standard-library `tomllib`).                                                                                                                               |
+| pytest, requests, paramiko | ✅ auto-installed | The Python test suite and the deploy transports. They live inside a project-local `.venv`, never the system interpreter — which sidesteps PEP 668 on Fedora, Debian and Arch.                                             |
+| C compiler + linker        | ✅ required       | Compiles the native language server (Xcode CLT, `build-essential`, or `base-devel` depending on platform).                                                                                                                |
+| git                        | ✅ required       | Clones the grammar working copy at the revision pinned in `extension.toml`.                                                                                                                                               |
+| curl                       | ✅ required       | Downloads toolchains and release binaries during setup.                                                                                                                                                                   |
+| cargo-audit                | ⚪ optional       | Scans dependencies against the RustSec advisory database. It runs weekly in CI; `make audit` does the same locally.                                                                                                       |
+| wasm-tools                 | ⚪ optional       | Inspects the compiled WebAssembly component when hacking on the extension glue (rustc already emits a valid component).                                                                                                   |
 
-```bash
-make install
-```
+### Bootstrap
 
-Detects your platform and bootstraps everything: system packages (**macOS/Homebrew**, **Fedora/RHEL** `dnf`/`yum`, **Arch** `pacman`, **Debian/Ubuntu** `apt`), rustup + `wasm32-wasip2`, the `.venv` with pytest/requests/paramiko, local `tree-sitter-cli`, then builds and installs `rsc-ls`. Idempotent — safe to re-run.
+`make install` performs the entire setup and is idempotent — re-running it never breaks anything. It detects your operating system and package manager, installs the system packages, provisions rustup with a minimal profile if it is missing (the pinned toolchain and WASI target then arrive on their own through `rust-toolchain.toml`), creates the `.venv` with the Python dependencies, installs a local tree-sitter CLI, and finally builds the language server and puts it on your PATH — including the GUI-visible location on macOS, so the Zed app finds it too.
 
-- Skip distro packages (containers, CI, no sudo): `SKIP_SYSTEM=1 make install`
-- Granular targets:
-  - `make install-deps` — system packages only
-  - `make install-tools` — rustup + `.venv` + npm deps
-  - `make install-lsp` — build + copy `rsc-ls` to PATH
+- Containers and CI usually want `SKIP_SYSTEM=1 make install` to skip distro packages.
+- Every stage is also a standalone target: `make install-deps` (system packages), `make install-tools` (toolchains and `.venv`), `make install-lsp` (build + install the server).
 
-### Manual fallback (per platform)
+Supported platforms:
+
+- **macOS** — Homebrew, plus Xcode Command Line Tools
+- **Fedora / RHEL** — dnf or yum
+- **Arch** — pacman
+- **Debian / Ubuntu** — apt
+
+Any other system works too: skip the distro step with `SKIP_SYSTEM=1` and provide the equivalent packages yourself.
+
+<details>
+<summary>Per-platform notes</summary>
 
 macOS (Homebrew):
 
@@ -172,7 +171,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profil
 Fedora/RHEL:
 
 ```bash
-sudo dnf install -y gcc gcc-c++ make curl git ca-certificates openssl-devel pkgconf-pkg-config python3 python3-pip nodejs npm
+sudo dnf install -y gcc gcc-c++ make curl git openssl-devel pkgconf-pkg-config python3 python3-pip nodejs npm
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
 ```
 
@@ -180,7 +179,7 @@ Debian/Ubuntu:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential curl git ca-certificates pkg-config libssl-dev python3 python3-venv python3-pip nodejs npm
+sudo apt-get install -y build-essential curl git pkg-config libssl-dev python3 python3-venv python3-pip nodejs npm
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
 ```
 
@@ -191,172 +190,100 @@ sudo pacman -Sy --needed --noconfirm base-devel curl git python python-pip nodej
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
 ```
 
-Common tail (all platforms):
+Then, on any platform:
 
 ```bash
-rustup target add wasm32-wasip2
-make install-tools
-cd grammars/rsc && npm install
+make install-tools   # .venv + tree-sitter-cli; toolchain and WASI target come pinned via rust-toolchain.toml
+make grammar-clone   # fetch the grammars/rsc working copy
 ```
 
-> `make install-tools` uses a project-local `.venv` instead of system pip, which sidesteps PEP 668 on Fedora/Debian/Arch.
+</details>
 
 ---
 
-## 🛫 Tasks — Deploy to MikroTik
+## 🛫 Deploy
 
-Zed tasks are per-worktree (`.zed/tasks.json`). Shipped:
+Local validation only proves the script is well-formed; sooner or later you want it running on a router. Doing that by hand means copying text into a terminal session and hoping the paste survived quoting intact. The deploy tooling closes that gap: it pushes the file to the device and imports it, either from a Zed task or from the companion script, with a dry-run mode that exercises the whole path without ever touching a device.
 
-- `languages/rsc/tasks.json` — template
-- `.zed/tasks.json` — active (copy of template)
-- `scripts/mikrotik-deploy.py` — deploy companion
+Two transports are available, selected per task:
 
-### Companion script
+- **REST** — talks to the RouterOS 7 REST API, posting the script for execution (with a file-upload + `/import` fallback for longer scripts).
+- **SSH** — uploads via SFTP and runs `/import` over an interactive session.
 
-```bash
-python scripts/mikrotik-deploy.py --help
+Both report more than a transport-level success code: RouterOS routinely answers HTTP 200 or exits SSH with status 0 even when an import failed, so the output is scanned for high-confidence failure markers (`syntax error`, `bad command name`, `failure:` …) and surfaces them as real failures.
 
-# Env (also CLI flags):
-export MIKROTIK_HOST=192.168.88.1
-export MIKROTIK_USER=admin
-export MIKROTIK_PASS=secret
-# optional:
-export MIKROTIK_PORT=443
-export MIKROTIK_METHOD=rest   # rest | ssh | auto
-export MIKROTIK_SSL=0         # 0 = disable SSL verify (does NOT change scheme)
-export MIKROTIK_HTTP=1        # 1 = force plain http:// (default https://)
-export MIKROTIK_TIMEOUT=60    # seconds to wait for SSH /import (default 60)
-export MIKROTIK_ACCEPT_HOST_KEY=1   # SSH only: trust unknown host keys (TOFU); MITM risk
-
-# Dry-run (no device needed):
-python scripts/mikrotik-deploy.py file.rsc --dry-run
-MIKROTIK_HOST=192.168.88.1 python scripts/mikrotik-deploy.py file.rsc --dry-run
-
-# REST (RouterOS 7+):
-python scripts/mikrotik-deploy.py file.rsc --host 192.168.88.1 --user admin
-python scripts/mikrotik-deploy.py file.rsc --host 192.168.88.1 --http --dry-run  # plain HTTP
-# SSH:
-python scripts/mikrotik-deploy.py file.rsc --method ssh --host 192.168.88.1
-
-# Deps (optional transports):
-pip install requests paramiko
-# Auto-detects: missing requests → falls back to paramiko
-```
-
-**How it works:** REST `POST /rest/execute` (fallback `/rest/file` + `/import`); SSH `SFTP` + `/import`. Import output is scanned for high-confidence failure markers (`syntax error`, `input does not match`, `bad command name`, `failure:`) — HTTP 200 / SSH 0 does not guarantee success. Scheme is `https` by default; `--http` is explicit, `--no-ssl-verify` only disables cert validation (legacy shim warns if it previously implied `http`).
-
-### Zed tasks
+The connection is configured through environment variables (`MIKROTIK_HOST`, `MIKROTIK_USER`, `MIKROTIK_PASS`, plus optional overrides for port, method, TLS verification and timeout — see `python scripts/mikrotik-deploy.py --help`). One safe first run needs nothing else:
 
 ```bash
-mkdir -p .zed && cp languages/rsc/tasks.json .zed/tasks.json
-# then: Zed → task: spawn → MikroTik: Deploy current file (REST|SSH|Dry-run|Validate)
-# Tasks use $ZED_FILE and $ZED_WORKTREE_ROOT, output to terminal panel
+python scripts/mikrotik-deploy.py demo.rsc --dry-run
 ```
+
+Zed tasks live per-worktree: copy `languages/rsc/tasks.json` to `.zed/tasks.json` and you get **REST / SSH / Dry-run / Validate** entries that operate on `$ZED_FILE`.
 
 ---
 
 ## 🧠 Language Server
 
-**Pure Rust, no Node.** `lsp/` embeds `data/commands.toml` (1038 menus) via `include_str!()` — 555 Rust tests.
+The heart of the extension is **rsc-ls**, a self-contained language server written in pure Rust — no Node runtime, no external processes: one binary speaking the Language Server Protocol over stdio. Its entire knowledge of RouterOS, the 1038-menu database, is compiled into the executable itself, which means instant startup and zero data files to lose track of.
 
-- `menus.rs` — loads TOML, validates paths (`..`, control chars, charset, length ≤256), builds `menu_by_path` + `child_names_by_parent` (implicit parents)
-- `completion.rs` — `compute_completions(before_cursor)` — root / sub-menu / verb / arg / value (enums, bools, IP placeholders), statement snippets, `:`-triggered script-word filtering
-- `hover.rs` — `compute_hover(line, character, full_doc, cursor_line)` — UTF-8 safe, `find_word_start/end`
-- `diagnostics.rs` — 5 semantic rules (`unknown-menu`/`unknown-property`/`missing-required`/`duplicate-property`/`invalid-enum-value`) + 3 syntax rules (`unclosed-brace`/`unmatched-brace`/`unclosed-quote`), `MAX_DIAG_LINES 3000` / `MAX_DIAG_BYTES 500KB`, handles incremental edits + RouterOS backslash line continuation (`\` → logical lines, ranges mapped to physical lines)
-- `symbols.rs` / `folding.rs` — document symbols (menus + script variables) and folding ranges
-- `signature.rs` / `suggest.rs` — signature help; did-you-mean candidates behind quick fixes
-- `navigation.rs` — go-to-definition / find-references for script variables
+That database drives everything contextual the editor experiences:
 
-Protocol: `stdio` JSON-RPC 2.0, `Content-Length` framing, `MAX_MESSAGE_SIZE 10MiB`, `MAX_HEADER_SIZE 32KiB`, `MAX_DOCS 100`, `MAX_DOC_SIZE 5MiB`, `file://` URI validation (rejects `..`, `\0`, non-`file://`).
+- **Completions** understand where the cursor is: root menus after a leading `/`, sub-menus within the current context, the verbs a specific menu accepts, and per-verb properties and values — including enumerations, booleans and their documentation. After a `:` it switches to RouterOS scripting words. Triggers are `/`, space, `=` and `:`.
+- **Hover** resolves menu paths, properties and verbs against the same database, so the documentation shown is the documentation MikroTik publishes, not paraphrasing.
+- **Diagnostics** work in two layers. Semantic rules check each statement against the real command signatures — unknown menus, unknown properties, missing required arguments, duplicated properties, invalid enum values. Syntax rules catch structural breakage such as brace and quote mismatches, correctly handling backslash line continuations by reasoning about logical lines while reporting positions on physical ones. Generous caps on file size keep the editor responsive on huge export scripts.
+- **Structure** features derive from the same parse: document symbols for menus and script variables, plus folding ranges.
+- **Signature** help shows required-first parameter hints when calling menu verbs.
+- **Navigation** links variable declarations (`:local` / `:global`) to their `$name` usages in both directions.
+- **Quick fixes** offer "did you mean …?" candidates computed by edit distance when something is mistyped.
 
-Capabilities: incremental sync (`change: 2`), completion (`triggerCharacters: / space = :`), hover, document symbols, folding ranges, signature help, code actions (quick fixes), definition, references, pull diagnostics.
+The protocol side is hardened deliberately: message-size and document-size caps, a bounded document store, and strict URI validation — so a hostile or corrupt workspace cannot exhaust the server's memory.
 
 ---
 
 ## 🌳 Grammar
 
-Untracked working copy at `grammars/rsc/` ([balakar94/tree-sitter-rsc](https://github.com/balakar94/tree-sitter-rsc)), pinned by `rev` in `extension.toml`.
-It is deliberately not a submodule — nested gitlinks break zed-industries/extensions packaging.
-After cloning this repo: `make grammar-clone`.
+RouterOS has no standard tree-sitter grammar, so this project maintains one — but in its own repository, [`balakar94/tree-sitter-rsc`](https://github.com/balakar94/tree-sitter-rsc), rather than in-tree. Two reasons drive the split: the grammar iterates independently of the extension, and the Zed marketplace rejects packages containing nested git repositories. Instead of vendoring history, this repo keeps an **untracked working copy** at `grammars/rsc/` and pins the exact grammar revision in `extension.toml` — builds stay reproducible while the packaging stays clean. After cloning, `make grammar-clone` fetches the working copy at that revision.
+
+Query files exist twice by design: `languages/rsc/*.scm` here is canonical (it is what Zed loads), while the copy inside the grammar repository exists only so `tree-sitter test` can run against it.
+
+Grammar development is the **only** place Node.js enters this project — it provides `tree-sitter-cli` through npx:
 
 ```bash
 cd grammars/rsc
-npx tree-sitter generate          # grammar.js → src/parser.c
-npx tree-sitter test              # 67 corpus tests
-npx tree-sitter parse test/example.rsc
-npx tree-sitter highlight test/example.rsc
+npx tree-sitter generate       # grammar.js → src/parser.c
+npx tree-sitter test           # run the corpus suite
+npx tree-sitter parse FILE     # inspect how a file parses
+npx tree-sitter highlight FILE # preview highlighting
 ```
 
-Queries: `languages/rsc/highlights.scm` is canonical; `grammars/rsc/queries/highlights.scm` is a deduped copy for `tree-sitter test`.
-
-Publishing:
-
-```bash
-python scripts/publish_grammar.py --dry-run
-python scripts/publish_grammar.py --push  # pushes + updates extension.toml rev
-```
+Publishing a grammar change is scripted: `python scripts/publish_grammar.py` pushes the grammar repository and updates the revision pin in `extension.toml` in one step.
 
 ---
 
 ## 🔄 Sync & Extraction
 
-```bash
-python scripts/sync_llms.py --check   # exit 2 if upstream changed
-python scripts/sync_llms.py           # fetch https://manual.mikrotik.com/llms*.txt
-python scripts/extract_commands.py    # → data/commands.toml (1038 menus)
-# verify:
-rg -c '^\[\[menus\]\]' data/commands.toml
-rg 'path = "/ip/firewall/filter"' data/commands.toml
-```
+RouterOS evolves, and a hardcoded command table would rot silently. MikroTik mitigates this by publishing its CLI reference in machine-readable form (`llms-full.txt`), and this project builds directly on that source of truth.
 
-Header in `commands.toml` includes `RouterOS version`, `Generated` UTC, `Source hash` for traceability. `make sync-check` is CI-gated; `make extract` is idempotent — skips anonymous `ArgTableRow` with empty `arg`.
+The pipeline has two steps. `scripts/sync_llms.py` fetches the upstream files and compares them against what the database was built from — with `--check` it writes nothing and exits non-zero when upstream moved, which is exactly how CI notices drift. `scripts/extract_commands.py` then distills the fetched documentation into `data/commands.toml`: currently 1038 menus, regenerated idempotently. Each generation records the RouterOS version, the UTC timestamp and the hash of the source document in its header, so any database snapshot can be traced back to the exact documentation it came from.
+
+Updating the language server's knowledge therefore reduces to: sync, extract, commit — the TOML is embedded into the binary at compile time, and the next build carries the fresh data everywhere.
 
 ---
 
 ## 🛠️ Development
 
-### Repository layout
-
-```text
-mikrotik-zed/
-├── languages/rsc/    Zed language pack: config.toml, queries (highlights/outline/indents/brackets), tasks.json
-├── grammars/rsc/     tree-sitter-rsc working copy (untracked — make grammar-clone)
-├── lsp/              rsc-ls language server (pure Rust, no Node)
-├── src/              WASM extension glue (zed_extension_api): download + SHA-256 verify
-├── data/             commands.toml — 1038 menus extracted from llms-full.txt
-├── docs/adr/         architecture decision records
-├── scripts/          sync / extract / deploy / publish tooling (Python)
-└── tests/            Python test suite (pytest)
-```
+Everything runs through `make`, so contributor workflows mirror CI one-to-one: `make validate` replays the entire gate locally — formatting, clippy on both targets with warnings denied, all three test suites, upstream-sync check and extraction idempotency. The combined suite is 838 tests: 67 grammar corpus tests, 555 Rust tests (537 unit + 4 CLI + 14 end-to-end) and 216 Python tests.
 
 ```bash
-make help
-make generate          # parser.c (tree-sitter)
-make test-all          # 835 tests: grammar (67) + rust (555) + python (213)
-make extract           # commands.toml (1038 menus)
-make build             # WASM (Zed builds as component on install)
-make build-lsp         # native rsc-ls
-make check             # cargo check wasm (wasip2) + lsp
-make fmt clippy audit
-make validate          # generate-check + fmt + clippy + test-all + sync-check + extract
+make generate      # regenerate parser.c from grammar.js
+make test-all      # grammar + Rust + Python suites
+make check         # fast compile verification (WASM + LSP targets)
+make fmt clippy    # format check + lints (-D warnings)
+make audit         # dependency scan against RustSec advisories
+make validate      # everything CI runs, in one target
 ```
 
-Health checks (mirrors CI):
-
-```bash
-cargo check --target wasm32-wasip2
-cargo check -p rsc-ls
-cargo fmt --all -- --check
-cargo clippy --target wasm32-wasip2 -- -D warnings
-cargo clippy -p rsc-ls -- -D warnings
-cargo test -p rsc-ls                 # 555 tests (537 unit + 4 cli + 14 e2e)
-python -m pytest tests/ -v           # 213 tests
-npx tree-sitter test                 # 67 tests (run inside grammars/rsc/)
-make generate-check
-make validate
-```
-
-**Observability:** LSP logs to **stderr** (stdout is LSP):
+**Observability:** the server logs to stderr (stdout belongs to the protocol):
 
 ```bash
 RSC_LS_LOG=debug zed --foreground      # or: RUST_LOG
@@ -368,11 +295,7 @@ RSC_LS_LOG=debug zed --foreground      # or: RUST_LOG
 
 ## 📤 Release
 
-- Grammar: `scripts/publish_grammar.py --push`
-- Extension + LS: `git tag vX.Y.Z && git push origin vX.Y.Z` → `.github/workflows/release.yml` builds all 6 triples + WASM → GitHub Release with `rsc-ls-<triple>` assets for auto-download
-- Zed Marketplace: PR to [`zed-industries/extensions`](https://github.com/zed-industries/extensions) with `extensions.toml` + `pnpm sort-extensions`
-
-`extension.toml` is marketplace-ready (`id`, `homepage`, `repository`, `grammars.rsc` rev pinned).
+A release is fully automated behind one action: push a tag. Concretely, bump versions with `make bump VERSION=x.y.z`, then `git tag vX.Y.Z && git push origin vX.Y.Z`. The release workflow cross-compiles the language server for all six platform triples, builds the WebAssembly component, and publishes a GitHub Release containing every binary together with its SHA-256 companion — which is precisely what the extension's auto-download verifies at install time. Distribution through the Zed marketplace is a separate, human-reviewed step: a pull request to [`zed-industries/extensions`](https://github.com/zed-industries/extensions) carrying the extension metadata and the pinned grammar revision. `extension.toml` is kept marketplace-ready at all times.
 
 ---
 
