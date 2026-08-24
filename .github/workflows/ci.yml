@@ -162,7 +162,7 @@ jobs:
           pip install pytest tomli 2>/dev/null || pip install pytest
           pip freeze | grep -E "pytest|tomli" || true
 
-      - name: Run Python tests (make test-python, 77 tests)
+      - name: Run Python tests (make test-python, 216 tests)
         run: make test-python
 
       # llms.txt / llms-full.txt are gitignored and fetched from manual.mikrotik.com.
@@ -205,6 +205,13 @@ jobs:
           # If sync-check above fetched fresh docs, they are on disk (unless --check); if it
           # warned on network failure, this checks local determinism only.
           # Ignore the non-deterministic '# Generated:' timestamp so only real content drift fails.
+          if [ ! -f llms-full.txt ]; then
+            echo "::notice::llms-full.txt unavailable (upstream unreachable this run) — drift check skipped, verifying committed data/commands.toml structure only"
+            test -s data/commands.toml || { echo "::error::data/commands.toml empty"; exit 1; }
+            grep -q '^\[\[menus\]\]' data/commands.toml || { echo "::error::data/commands.toml missing [[menus]]"; exit 1; }
+            echo "commands.toml structure OK (no upstream docs to diff against)"
+            exit 0
+          fi
           python scripts/extract_commands.py
           echo "Checking data/commands.toml drift (timestamp-agnostic)..."
           if [ -f data/commands.toml ]; then
