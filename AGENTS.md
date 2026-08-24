@@ -7,11 +7,11 @@ User-facing documentation: [`README.md`](README.md). Task-specific deep dives: [
 
 A Zed extension giving MikroTik RouterOS scripts (RouterOS 7.0+) first-class editor support: tree-sitter syntax highlighting plus a native language server with completion, hover, and diagnostics. One monorepo, three components:
 
-| Component | Location | Notes |
-|-----------|----------|-------|
-| Tree-sitter grammar | `grammars/rsc/` | Git submodule of [tree-sitter-rsc](https://github.com/balakar94/tree-sitter-rsc) — own repo, own lifecycle |
-| Zed language definition | `languages/rsc/` | Queries (highlights, brackets, indents, outline), `config.toml`, `tasks.json` |
-| Language server (`rsc-ls`) | `lsp/src/` | Pure-Rust LSP binary; embeds `data/commands.toml` via `include_str!()` |
+| Component                  | Location         | Notes                                                                                                                                                |
+| -------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tree-sitter grammar        | `grammars/rsc/`  | Untracked working copy of [tree-sitter-rsc](https://github.com/balakar94/tree-sitter-rsc) — own repo, own lifecycle, pinned via `extension.toml rev` |
+| Zed language definition    | `languages/rsc/` | Queries (highlights, brackets, indents, outline), `config.toml`, `tasks.json`                                                                        |
+| Language server (`rsc-ls`) | `lsp/src/`       | Pure-Rust LSP binary; embeds `data/commands.toml` via `include_str!()`                                                                               |
 
 Glue: `src/lib.rs` is the WASM shim Zed actually loads. It contains zero language logic; it only resolves `rsc-ls` at runtime (PATH → cache → GitHub Releases auto-download).
 
@@ -34,7 +34,7 @@ Breaking any of these breaks Zed registry review or runtime behavior:
 First clone:
 
 ```bash
-git submodule update --init --recursive   # pulls grammars/rsc
+make grammar-clone                        # pulls grammars/rsc at the pinned rev
 make install                              # full bootstrap (SKIP_SYSTEM=1 skips distro packages)
 ```
 
@@ -49,12 +49,12 @@ Individual suites: `make test-grammar` · `make test-rust` · `make test-python`
 
 ### Minimum verification by change type
 
-| You changed… | Run before claiming done |
-|--------------|--------------------------|
-| `lsp/src/**` | `make fmt clippy test-rust` |
-| `src/lib.rs` (shim) | `make check-wasm clippy`, then *Install Dev Extension* in Zed and watch `zed: open log` |
-| `grammars/rsc/grammar.js` | inside `grammars/rsc/`: `npx tree-sitter generate && npx test`; then bump pointer (see *Release*) |
-| `languages/rsc/*.scm` | mirror into `grammars/rsc/queries/` (deduped copy must stay in sync), then smoke-test in Zed |
+| You changed…                           | Run before claiming done                                                                                        |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `lsp/src/**`                           | `make fmt clippy test-rust`                                                                                     |
+| `src/lib.rs` (shim)                    | `make check-wasm clippy`, then _Install Dev Extension_ in Zed and watch `zed: open log`                         |
+| `grammars/rsc/grammar.js`              | inside `grammars/rsc/`: `npx tree-sitter generate && npx test`; then bump pointer (see _Release_)               |
+| `languages/rsc/*.scm`                  | mirror into `grammars/rsc/queries/` (deduped copy must stay in sync), then smoke-test in Zed                    |
 | Extraction pipeline or `llms-full.txt` | `make extract`, diff `data/commands.toml`, spot-check against <https://manual.mikrotik.com/docs/cli-reference/> |
 
 ## Data pipeline
@@ -72,20 +72,20 @@ manual.mikrotik.com ──sync_llms.py──▶ llms-full.txt ──extract_comm
 
 These change constantly. Re-check at the canonical location before pasting them into any doc, PR, or answer:
 
-| Fact | Canonical location |
-|------|--------------------|
-| Pinned grammar revision | `extension.toml` → `[grammars.rsc] rev` |
-| Available make targets | `make help` |
-| Test counts / status | run the suite |
-| Command/menu coverage | header of `data/commands.toml` |
-| Upstream doc version | header of `llms-full.txt` |
-| MSRV / toolchain / WASM target | `rust-toolchain.toml` |
-| Dependency versions | the relevant `Cargo.toml` |
+| Fact                           | Canonical location                      |
+| ------------------------------ | --------------------------------------- |
+| Pinned grammar revision        | `extension.toml` → `[grammars.rsc] rev` |
+| Available make targets         | `make help`                             |
+| Test counts / status           | run the suite                           |
+| Command/menu coverage          | header of `data/commands.toml`          |
+| Upstream doc version           | header of `llms-full.txt`               |
+| MSRV / toolchain / WASM target | `rust-toolchain.toml`                   |
+| Dependency versions            | the relevant `Cargo.toml`               |
 
 ## Repo map (one level)
 
 ```
-├── grammars/rsc/          # Tree-sitter grammar (submodule → tree-sitter-rsc)
+├── grammars/rsc/          # Tree-sitter grammar (untracked working copy → tree-sitter-rsc)
 ├── languages/rsc/         # Zed queries + config.toml + tasks.json
 ├── lsp/src/               # rsc-ls: main, server, menus, completion, hover, diagnostics
 ├── src/lib.rs             # WASM shim: resolve/download rsc-ls
@@ -100,7 +100,7 @@ Untracked locals: `llms.txt`, `llms-full.txt` (fetch via `make sync`), `extensio
 
 ## Release
 
-- **Grammar:** `python scripts/publish_grammar.py --dry-run`, then `--push`. It validates generation, pushes the submodule content to GitHub, and updates the pinned revision in `extension.toml` itself — **never hand-edit `rev`**.
+- **Grammar:** `python scripts/publish_grammar.py --dry-run`, then `--push`. It validates generation, pushes the grammar working copy to GitHub, and updates the pinned revision in `extension.toml` itself — **never hand-edit `rev`**.
 - **Version:** `make bump VERSION=x.y.z`. Grammar crate/package.json versions (`grammars/rsc/`) are independent of extension releases — version coherence is enforced only within each group, never across groups.
 - **Binaries:** pushing a `v*.*.*` tag triggers `.github/workflows/release.yml` (multi-platform `rsc-ls` + WASM → GitHub Release).
 
@@ -110,12 +110,12 @@ Untracked locals: `llms.txt`, `llms-full.txt` (fetch via `make sync`), `extensio
 
 ## Deep dives (`.agents/skills/`)
 
-| Skill | Load when… |
-|-------|------------|
-| `development-workflow.md` | Running day-to-day commands, debugging build/CI failures |
-| `tree-sitter-grammar.md` | Editing the grammar, corpus failures, publishing it |
-| `routeros-reference.md` | Looking up RouterOS commands/properties or validating command data |
-| `commands-extraction.md` | Regenerating `data/commands.toml`, syncing upstream docs |
-| `language-server.md` | Working on completion/hover/diagnostics or the WASM shim |
-| `zed-extension-dev.md` | Extension manifest, packaging, publishing to `zed-industries/extensions` |
-| `language-convention.md` | Anything about the English-only convention or RouterOS naming |
+| Skill                     | Load when…                                                               |
+| ------------------------- | ------------------------------------------------------------------------ |
+| `development-workflow.md` | Running day-to-day commands, debugging build/CI failures                 |
+| `tree-sitter-grammar.md`  | Editing the grammar, corpus failures, publishing it                      |
+| `routeros-reference.md`   | Looking up RouterOS commands/properties or validating command data       |
+| `commands-extraction.md`  | Regenerating `data/commands.toml`, syncing upstream docs                 |
+| `language-server.md`      | Working on completion/hover/diagnostics or the WASM shim                 |
+| `zed-extension-dev.md`    | Extension manifest, packaging, publishing to `zed-industries/extensions` |
+| `language-convention.md`  | Anything about the English-only convention or RouterOS naming            |

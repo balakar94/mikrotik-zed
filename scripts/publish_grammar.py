@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-Publish the grammar submodule (grammars/rsc -> balakar94/tree-sitter-rsc)
-and update extension.toml rev + the parent-side submodule pointer.
+Publish the grammar working copy (grammars/rsc -> balakar94/tree-sitter-rsc)
+and update extension.toml rev. grammars/rsc is an untracked working copy —
+nested gitlinks break zed-industries/extensions packaging, so the parent repo
+never records a pointer; extension.toml [grammars.rsc].rev is the only pin.
 
 By default uses the repo at https://github.com/balakar94/tree-sitter-rsc.
 For local dev, can push to the bare repo at grammar-bare.git.
@@ -34,9 +36,6 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 GRAMMAR_DIR = ROOT / "grammars" / "rsc"
 EXT_TOML = ROOT / "extension.toml"
 BARE_REPO = ROOT / "grammar-bare.git"
-GITMODULES = ROOT / ".gitmodules"
-# Submodule path as registered in .gitmodules (see ensure_grammar_repo).
-GRAMMAR_SUBMODULE_PATH = "grammars/rsc"
 
 def run(cmd, cwd=None, check=True):
     print(f"$ {' '.join(cmd)}", file=sys.stderr)
@@ -49,31 +48,9 @@ def run(cmd, cwd=None, check=True):
         raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
     return result
 
-def _is_registered_submodule() -> bool:
-    """Check .gitmodules for a 'path = grammars/rsc' entry."""
-    if not GITMODULES.exists():
-        return False
-    try:
-        text = GITMODULES.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    return any(line.strip() == f"path = {GRAMMAR_SUBMODULE_PATH}" for line in text.splitlines())
-
 def ensure_grammar_repo():
     if (GRAMMAR_DIR / ".git").exists():
         return
-    # A missing grammars/rsc/.git is exactly the state after a fresh clone
-    # without `git submodule update --init`. Running `git init` there would
-    # silently turn the empty submodule directory into an unrelated repo, so
-    # refuse with an actionable message instead.
-    if _is_registered_submodule():
-        print(
-            f"error: {GRAMMAR_SUBMODULE_PATH} is a registered git submodule but is not initialized;"
-            " run: git submodule update --init --recursive",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    # Genuinely not a submodule (local/bare layout): keep the plain-init fallback.
     print(f"Initializing new git repo in {GRAMMAR_DIR}")
     run(["git", "init"], cwd=GRAMMAR_DIR)
     run(["git", "branch", "-M", "main"], cwd=GRAMMAR_DIR)
@@ -197,10 +174,9 @@ def main():
 
     update_extension_toml(new_head)
 
-    # Stage the submodule pointer bump in the parent repo
-    run(["git", "-C", str(ROOT), "add", "grammars/rsc"], check=False)
-    print("Staged submodule pointer bump ('grammars/rsc') in the parent repo.")
-    print(f"Next: git commit -m 'chore: bump grammar submodule to {new_head[:7]}'")
+    # grammars/rsc is untracked — nothing to stage in the parent repo.
+    print("Parent repo stays untouched (grammar working copy is untracked).")
+    print(f"Next: git commit -m 'chore: bump grammar rev to {new_head[:7]}' ({EXT_TOML})")
 
     # Cargo.lock handling: ensure committed for binary workspaces
     # Run cargo generate-lockfile if needed, but don't ignore
