@@ -28,9 +28,11 @@ jobs:
       - name: Install cargo-audit
         uses: taiki-e/install-action@6cd13508893c0e7eab5f273c2575d3859bd7229a # v2.86.6
         with:
-          tool: cargo-audit
+          # Pinned so a future CLI change cannot silently break this job;
+          # bump deliberately when upgrading.
+          tool: cargo-audit@0.22.2
 
       - name: Run cargo-audit
         run: |
-          cargo-audit --version
-          cargo-audit --file Cargo.lock
+          cargo audit --version
+          cargo audit --file Cargo.lock
