@@ -156,7 +156,7 @@ mod tests {
     fn test_version_string_contains_cargo_pkg_version() {
         let v = version_string();
         assert_eq!(
-            v.split(' ').nth(0),
+            v.split(' ').next(),
             Some("rsc-ls"),
             "identity line must start with the binary name"
         );

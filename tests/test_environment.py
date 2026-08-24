@@ -68,7 +68,7 @@ class TestRustToolchain:
         p = PROJECT_ROOT / "rust-toolchain.toml"
         assert p.is_file(), f"missing {p}"
         data = _load_toml(p)
-        assert data.get("toolchain", {}).get("channel") == "1.94"
+        assert data.get("toolchain", {}).get("channel") == "1.90"
 
     def test_targets_include_wasip2_only(self):
         data = _load_toml(PROJECT_ROOT / "rust-toolchain.toml")
@@ -86,7 +86,7 @@ class TestRustToolchain:
         dst = tmp_path / "rust-toolchain.toml"
         dst.write_bytes(src.read_bytes())
         data = _load_toml(dst)
-        assert data["toolchain"]["channel"] == "1.94"
+        assert data["toolchain"]["channel"] == "1.90"
         assert "wasm32-wasip2" in data["toolchain"]["targets"]
 
 

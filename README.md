@@ -63,7 +63,7 @@
 
 | Requirement                  | Required          | Purpose                                                                                      |
 | ---------------------------- | ----------------- | -------------------------------------------------------------------------------------------- |
-| Rust 1.94+ (MSRV)            | ✅ required       | Builds `rsc-ls` + WASM extension; pinned via `rust-toolchain.toml`                           |
+| Rust 1.90+ (MSRV)            | ✅ required       | Builds `rsc-ls` + WASM extension; pinned via `rust-toolchain.toml`                           |
 | `wasm32-wasip2` target       | ✅ required       | WASM extension build (`rustup target add wasm32-wasip2`)                                     |
 | C compiler + linker          | ✅ required       | Native Rust builds (Xcode CLT / `build-essential` / `base-devel`)                            |
 | git                          | ✅ required       | Submodule checkout (`grammars/rsc`)                                                          |
