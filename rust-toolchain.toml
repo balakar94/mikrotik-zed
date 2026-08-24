@@ -1,7 +1,7 @@
-# Pinned Rust toolchain — MSRV 1.94 (rust-analyzer >=1.94).
-# Ensures local `cargo` and CI use the same compiler; workflows also pin 1.94 explicitly.
+# Pinned Rust toolchain — MSRV 1.90 (matches the zed-industries/extensions packaging toolchain).
+# Ensures local `cargo` and CI use the same compiler; workflows also pin 1.90 explicitly.
 [toolchain]
-channel = "1.94"
+channel = "1.90"
 targets = ["wasm32-wasip2"]
 components = ["rustfmt", "clippy", "rust-analyzer"]
 profile = "minimal"

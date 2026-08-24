@@ -1630,7 +1630,7 @@ type = "string"
 
     const SNIPPET_LABELS: [&str; 4] = [":if", ":foreach", ":for", ":do"];
 
-    fn snippet_items<'a>(items: &'a [CompletionItem]) -> Vec<&'a CompletionItem> {
+    fn snippet_items(items: &[CompletionItem]) -> Vec<&CompletionItem> {
         items
             .iter()
             .filter(|i| SNIPPET_LABELS.contains(&i.label.as_str()))

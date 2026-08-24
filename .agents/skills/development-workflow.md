@@ -17,10 +17,10 @@ For deep dives see: `tree-sitter-grammar`, `commands-extraction`, `language-serv
 ## Environment Setup
 
 ```bash
-# Rust 1.94+ (edition 2024) + WASM target for the extension — MSRV 1.94 due to icu 2.2.0
-rustup toolchain install 1.94
+# Rust 1.90+ (edition 2024) + WASM target for the extension — MSRV matches the zed-industries/extensions registry toolchain
+rustup toolchain install 1.90
 rustup target add wasm32-wasip2
-rustc --version  # >=1.94 (see rust-toolchain.toml)
+rustc --version  # >=1.90 (see rust-toolchain.toml)
 cargo install cargo-audit  # optional, for `make audit`
 
 # Node 20+ + tree-sitter-cli 0.26.x (grammar only, not at runtime)

@@ -271,12 +271,12 @@ mod tests {
     #[test]
     fn test_wire_shape_omits_absent_kind() {
         let doc = "/ip/address add \\\nx\n";
-        let v = serde_json::to_value(&compute_folding_ranges(doc)).unwrap();
+        let v = serde_json::to_value(compute_folding_ranges(doc)).unwrap();
         assert_eq!(v[0]["startLine"], 0);
         assert_eq!(v[0]["endLine"], 1);
         assert!(v[0].get("kind").is_none());
 
-        let v = serde_json::to_value(&compute_folding_regions_fixture()).unwrap();
+        let v = serde_json::to_value(compute_folding_regions_fixture()).unwrap();
         assert_eq!(v[0]["kind"], "region");
     }
 

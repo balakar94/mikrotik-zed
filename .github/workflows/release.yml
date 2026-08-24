@@ -98,12 +98,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # MSRV 1.94 — required by icu 2.2.0 (transitive). Keep in sync with
+      # MSRV 1.90 — matches the zed-industries/extensions packaging toolchain. Keep in sync with
       # rust-toolchain.toml and Cargo.toml rust-version.
-      - name: Install Rust 1.94 (MSRV)
+      - name: Install Rust 1.90 (MSRV)
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 6c977a6
         with:
-          toolchain: "1.94"
+          toolchain: "1.90"
           targets: wasm32-wasip2
 
       - name: Cargo cache
@@ -201,12 +201,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # MSRV 1.94 — required by icu 2.2.0 (transitive). Keep in sync with
+      # MSRV 1.90 — matches the zed-industries/extensions packaging toolchain. Keep in sync with
       # rust-toolchain.toml and Cargo.toml rust-version.
-      - name: Install Rust 1.94 (MSRV)
+      - name: Install Rust 1.90 (MSRV)
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 6c977a6
         with:
-          toolchain: "1.94"
+          toolchain: "1.90"
           targets: ${{ matrix.target }}
 
       - name: Install zig (for aarch64 linux cross)
