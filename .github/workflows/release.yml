@@ -388,10 +388,6 @@ jobs:
           # verify: sha256sum -c SHA256SUMS
           ```
 
-          ### Zed Marketplace
-          To publish the extension update, open a PR to https://github.com/zed-industries/extensions
-          with updated `extensions.toml` and submodule pointer. See README.md.
-
           ### Observability
           Set `RSC_LS_LOG=debug` and run `zed --foreground` for verbose LSP logs.
           EOF
@@ -453,4 +449,4 @@ jobs:
           echo "  1. Ensure grammar rev is pushed: python scripts/publish_grammar.py --push"
           echo "  2. Bump version: make bump VERSION=${{ needs.meta.outputs.version }} && cargo check && git diff"
           echo "  3. Tag: git tag ${{ needs.meta.outputs.tag }} && git push origin --tags"
-          echo "  4. Wait for Release workflow to publish assets, then PR to https://github.com/zed-industries/extensions (submodule + extensions.toml + pnpm sort-extensions)"
+          echo "  4. Wait for Release workflow to publish assets, then distribute per README 'Release' section"
