@@ -25,6 +25,7 @@ PLATFORM_RS = REPO_ROOT / "src" / "platform.rs"
 EXTRACT_PY = REPO_ROOT / "scripts" / "extract_commands.py"
 DEPLOY_PY = REPO_ROOT / "scripts" / "mikrotik-deploy.py"
 INJECTIONS_SCM = REPO_ROOT / "languages" / "rsc" / "injections.scm"
+INDENTS_SCM = REPO_ROOT / "languages" / "rsc" / "indents.scm"
 HIGHLIGHTS_A = REPO_ROOT / "languages" / "rsc" / "highlights.scm"
 HIGHLIGHTS_B = REPO_ROOT / "grammars" / "rsc" / "queries" / "highlights.scm"
 CI_YML = REPO_ROOT / ".github" / "workflows" / "ci.yml"
@@ -402,20 +403,26 @@ class TestDeployScript:
 # 6. Grammar
 # ----------------------------------------------------------------------
 class TestGrammar:
-    def test_injections_empty_or_comment_only(self):
-        txt = _read(INJECTIONS_SCM)
-        stripped = txt.strip()
-        if stripped == "":
-            assert True
-            return
-        # Allow only comments (lines starting with ;) and whitespace
-        for line in stripped.splitlines():
-            s = line.strip()
-            if s == "":
-                continue
-            assert s.startswith(";"), f"injections.scm should be empty or only comments, found: {line!r}"
-        # Also ensure no injection patterns like (#set!)
-        assert "#set!" not in txt and "injection" not in txt.lower() or ";" in txt
+    def test_no_injections_scm(self):
+        # RSC has no embedded languages. A present-but-empty injections.scm is
+        # an error for modern Zed ("missing required capture ... content"), so
+        # the file must not exist at all.
+        assert not INJECTIONS_SCM.exists(), (
+            "languages/rsc/injections.scm must be deleted (empty placeholder "
+            "fails Zed's injections query validation)"
+        )
+
+    def test_indents_use_modern_captures(self):
+        txt = _read(INDENTS_SCM)
+        # Modern Zed requires a plain @indent capture and no longer recognizes
+        # the legacy dotted names (they log warnings). Comments are exempt so
+        # the file can document the migration.
+        code = "\n".join(
+            line for line in txt.splitlines() if not line.strip().startswith(";")
+        )
+        assert "(block) @indent" in code, "indents.scm must gate blocks via @indent"
+        for legacy in ("@indent.begin", "@indent.end", "@indent.continue"):
+            assert legacy not in code, f"legacy capture {legacy} used in indents.scm"
 
     def test_highlights_deduped(self):
         a = _read(HIGHLIGHTS_A)
