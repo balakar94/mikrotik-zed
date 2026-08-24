@@ -125,7 +125,7 @@ Also: `make clippy` fails → `cargo clippy -- -D warnings` must be clean for bo
 | Generated parser | `grammars/rsc/src/parser.c` (+ `grammar.json`, `node-types.json`) |
 | Grammar crate | `grammars/rsc/Cargo.toml`, `package.json`, `tree-sitter.json` |
 | Canonical highlights | `languages/rsc/highlights.scm` (deduped to `grammars/rsc/queries/highlights.scm`) |
-| Brackets / indents / outline | `languages/rsc/brackets.scm`, `indents.scm`, `outline.scm` (`injections.scm` empty) |
+| Brackets / indents / outline | `languages/rsc/brackets.scm`, `indents.scm`, `outline.scm` (no `injections.scm`) |
 | Language config | `languages/rsc/config.toml` (`_`, `-`, `$` word chars) |
 | Tasks template / active | `languages/rsc/tasks.json` → `.zed/tasks.json` (4 tasks: REST, SSH, Dry-run, Validate) |
 | Command table | `data/commands.toml` (header: version, timestamp, sha256) |

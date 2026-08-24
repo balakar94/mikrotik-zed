@@ -1,10 +1,10 @@
 ; ── Indentation rules for RSC ─────────────────────────────────
-; Zed expects @indent.begin / @indent.end (see tree-sitter-grammar.md)
-(block "{" @indent.begin)
-(block "}" @indent.end)
-(command_substitution "[" @indent.begin)
-(command_substitution "]" @indent.end)
-(subexpression "(" @indent.begin)
-(subexpression ")" @indent.end)
-; Line continuation keeps indent on the following line
-(line_continuation) @indent.continue
+; Modern Zed contract (language_core::grammar): @indent is REQUIRED and marks
+; a node whose span should be indented after its first line — single-line
+; matches are ignored automatically, so one capture per bracketing node covers
+; both open and close. Optional markers: @start / @end / @outdent (plus
+; @start.<suffix>, tied to config.toml regex rules).
+; The legacy @indent.begin/@indent.end/@indent.continue names no longer exist.
+(block) @indent
+(command_substitution) @indent
+(subexpression) @indent

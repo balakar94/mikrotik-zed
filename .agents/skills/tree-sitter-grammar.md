@@ -113,10 +113,10 @@ make validate   # also runs extract_commands.py + cargo fmt/clippy
 (string) @string.special ; (number)/(ip_address) @number ; (comment) @comment
 ```
 
-- **Indents** (`indents.scm`): `(block "{" @indent.begin)` / `"}" @indent.end`, same for `command_substitution`/`subexpression`, `(line_continuation) @indent.continue`. Zed re-indents on paste/type.
+- **Indents** (`indents.scm`): modern Zed contract — one `@indent` per bracketing node (`(block) @indent`, same for `command_substitution`/`subexpression`). Single-line matches are ignored; legacy `@indent.begin/@end/@continue` names are gone.
 - **Brackets** (`brackets.scm`): `("(" @open ")" @close)` triple for `()`, `[]`, `{}` — must match grammar delimiters.
 - **Outline** (`outline.scm`): `menu_command (root_menu @context) (sub_menu @name) @item` → `ip > address` in symbol view.
-- **Injections** (`injections.scm`): empty placeholder — RSC has no embedded languages.
+- **Injections**: none — an empty placeholder file fails Zed's validation, so no `injections.scm` exists.
 
 Always verify captures after reordering: `npx tree-sitter highlight test/example.rsc --html | grep -c keyword` should include verbs.
 

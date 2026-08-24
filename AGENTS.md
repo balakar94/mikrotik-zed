@@ -10,7 +10,7 @@ A Zed extension giving MikroTik RouterOS scripts (RouterOS 7.0+) first-class edi
 | Component | Location | Notes |
 |-----------|----------|-------|
 | Tree-sitter grammar | `grammars/rsc/` | Git submodule of [tree-sitter-rsc](https://github.com/balakar94/tree-sitter-rsc) — own repo, own lifecycle |
-| Zed language definition | `languages/rsc/` | Queries (highlights, brackets, indents, outline, injections), `config.toml`, `tasks.json` |
+| Zed language definition | `languages/rsc/` | Queries (highlights, brackets, indents, outline), `config.toml`, `tasks.json` |
 | Language server (`rsc-ls`) | `lsp/src/` | Pure-Rust LSP binary; embeds `data/commands.toml` via `include_str!()` |
 
 Glue: `src/lib.rs` is the WASM shim Zed actually loads. It contains zero language logic; it only resolves `rsc-ls` at runtime (PATH → cache → GitHub Releases auto-download).
