@@ -425,6 +425,8 @@ class TestGrammar:
             assert legacy not in code, f"legacy capture {legacy} used in indents.scm"
 
     def test_highlights_deduped(self):
+        if not HIGHLIGHTS_B.exists():
+            pytest.skip("grammars/rsc highlights.scm absent (untracked; run 'make grammar-clone')")
         a = _read(HIGHLIGHTS_A)
         b = _read(HIGHLIGHTS_B)
         ha = hashlib.sha256(a.encode()).hexdigest()

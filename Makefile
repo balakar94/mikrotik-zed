@@ -68,6 +68,18 @@ test-python: ## Run Python extraction tests (77)
 
 test-all: test-grammar test-rust test-python ## Run all tests
 
+grammar-clone: ## Clone the grammar working copy at the rev pinned in extension.toml
+	@if [ -d $(GRAMMAR_DIR)/.git ] || [ -f $(GRAMMAR_DIR)/.git ]; then \
+		echo "grammars/rsc already present"; \
+	else \
+		git clone https://github.com/balakar94/tree-sitter-rsc $(GRAMMAR_DIR); \
+	fi
+	@REV=$$(awk '/^\[grammars\.rsc\]/{f=1;next} f&&/^rev/{gsub(/"/,"",$$3);print $$3;exit}' extension.toml); \
+	if [ -n "$$REV" ] && [ "$$(git -C $(GRAMMAR_DIR) rev-parse HEAD)" != "$$REV" ]; then \
+		git -C $(GRAMMAR_DIR) fetch --depth 1 origin "$$REV" && \
+		git -C $(GRAMMAR_DIR) checkout --detach FETCH_HEAD; fi
+	@git -C $(GRAMMAR_DIR) log --oneline -1
+
 parse: ## Parse a file (usage: make parse FILE=grammars/rsc/test/example.rsc)
 	@test -n "$(FILE)" || (echo "usage: make parse FILE=path/to/file.rsc" && false)
 	@test -f "$(FILE)" || (echo "error: file not found: $(FILE)" && false)
@@ -212,7 +224,7 @@ bump: ## Bump version (usage: make bump VERSION=0.2.0)
 	@echo "Bumping to $(VERSION) ..."
 	@sed -i '' 's/^version = ".*"/version = "$(VERSION)"/' Cargo.toml lsp/Cargo.toml 2>/dev/null || sed -i 's/^version = ".*"/version = "$(VERSION)"/' Cargo.toml lsp/Cargo.toml
 	@echo "Note: grammar versions live in the separate tree-sitter-rsc repo"
-	@echo "      (grammars/rsc submodule) — never bumped from here:"
+	@echo "      (untracked grammars/rsc working copy) — never bumped from here:"
 	@echo "      publish_grammar.py would auto-commit them into that repo."
 	@sed -i '' 's/^version = ".*"/version = "$(VERSION)"/' extension.toml 2>/dev/null || sed -i 's/^version = ".*"/version = "$(VERSION)"/' extension.toml
 	@echo "Bumped. Now run: cargo check && git diff"

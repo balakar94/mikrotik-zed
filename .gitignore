@@ -66,3 +66,8 @@ blob/
 *.bak
 *~
 TODO.md
+
+# Grammar working copy — untracked; cloned from balakar94/tree-sitter-rsc at the
+# rev pinned in extension.toml (see make grammar-clone). Kept out of the published
+# tree so registry packaging does not see a nested submodule placeholder dir.
+grammars/rsc/

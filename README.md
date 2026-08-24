@@ -271,8 +271,9 @@ Capabilities: incremental sync (`change: 2`), completion (`triggerCharacters: / 
 
 ## 🌳 Grammar
 
-Git submodule at `grammars/rsc/` ([balakar94/tree-sitter-rsc](https://github.com/balakar94/tree-sitter-rsc)).
-After cloning this repo: `git submodule update --init`.
+Untracked working copy at `grammars/rsc/` ([balakar94/tree-sitter-rsc](https://github.com/balakar94/tree-sitter-rsc)), pinned by `rev` in `extension.toml`.
+It is deliberately not a submodule — nested gitlinks break zed-industries/extensions packaging.
+After cloning this repo: `make grammar-clone`.
 
 ```bash
 cd grammars/rsc

@@ -3,6 +3,7 @@
 ## When to Use
 
 Trigger this skill when:
+
 - Editing `grammars/rsc/grammar.js` or any `languages/rsc/*.scm` query file
 - Adding a new RSC syntax construct, keyword, literal, control-flow form, or operator
 - Fixing highlighting, indentation, bracket matching, or outline/symbol issues
@@ -13,7 +14,7 @@ Trigger this skill when:
 
 ## Grammar Location
 
-- **Source:** `grammars/rsc/grammar.js` — own repo mounted as a **git submodule** (`https://github.com/balakar94/tree-sitter-rsc`; pinned rev in `extension.toml` → `[grammars.rsc] rev`). Fresh clone: `git submodule update --init`
+- **Source:** `grammars/rsc/grammar.js` — own repo checked out as an **untracked working copy** (`https://github.com/balakar94/tree-sitter-rsc`; pinned rev in `extension.toml` → `[grammars.rsc] rev`). Fresh clone: `make grammar-clone`
 - **Generated:** `grammars/rsc/src/parser.c` (`TREE_SITTER_LANGUAGE_VERSION 15`), `src/grammar.json`, `src/node-types.json` — never edit by hand
 - **Metadata:** `grammars/rsc/tree-sitter.json` (scope `source.rsc`, file-types `["rsc"]`); crate + CLI versions live in `Cargo.toml` / `package.json` — read them there, don't trust remembered numbers
 - **Queries:** canonical `languages/rsc/*.scm` (used by Zed) → deduped copy `grammars/rsc/queries/highlights.scm` (used by `tree-sitter test` / playground)
@@ -34,18 +35,18 @@ _statement → menu_command (prec 2) | menu_continuation (prec 1) | global_comma
 
 ### Statement Types
 
-| Node | Syntax | Example |
-|------|--------|---------|
-| `menu_command` | `/path params…` (prec 2) | `/ip address add address=192.168.1.1/24 interface=ether1` |
-| `menu_continuation` | `params…` without `/` (prec 1, `repeat1`) | `    address=10.0.0.1/24 interface=ether1` |
-| `root_menu` | First ident after `/` | `ip` in `/ip route` |
-| `sub_menu` | Subsequent idents (prec 1) | `route`, `add` |
-| `global_command` | `:name body? params…` (prec 1) | `:if (cond) do={ … }` |
-| `named_param` | `key=value` (value optional) | `name=ether1`, `disabled=` |
-| `block` | `{ … }` | `do={ :put "hi" }` |
-| `command_substitution` | `[stmt]` | `[find where name=ether1]` |
-| `variable_reference` | `$name` | `$myVar` |
-| `array` | `{ elem; … }` | `{1;2;3}` / `{a=1;b=2}` |
+| Node                   | Syntax                                    | Example                                                   |
+| ---------------------- | ----------------------------------------- | --------------------------------------------------------- |
+| `menu_command`         | `/path params…` (prec 2)                  | `/ip address add address=192.168.1.1/24 interface=ether1` |
+| `menu_continuation`    | `params…` without `/` (prec 1, `repeat1`) | `    address=10.0.0.1/24 interface=ether1`                |
+| `root_menu`            | First ident after `/`                     | `ip` in `/ip route`                                       |
+| `sub_menu`             | Subsequent idents (prec 1)                | `route`, `add`                                            |
+| `global_command`       | `:name body? params…` (prec 1)            | `:if (cond) do={ … }`                                     |
+| `named_param`          | `key=value` (value optional)              | `name=ether1`, `disabled=`                                |
+| `block`                | `{ … }`                                   | `do={ :put "hi" }`                                        |
+| `command_substitution` | `[stmt]`                                  | `[find where name=ether1]`                                |
+| `variable_reference`   | `$name`                                   | `$myVar`                                                  |
+| `array`                | `{ elem; … }`                             | `{1;2;3}` / `{a=1;b=2}`                                   |
 
 ### Control Flow (via `global_command`)
 
@@ -70,7 +71,7 @@ Parsed as `global_command` + `_command_body` (`do_block`/`else_block`/`while_con
 
 ## Grammar Evolution
 
-Historical rule-by-rule changes live in the submodule's git log (`git -C grammars/rsc log`) — not duplicated here. When you change the grammar in a non-obvious way, capture *why* in the commit message, not in this skill.
+Historical rule-by-rule changes live in the submodule's git log (`git -C grammars/rsc log`) — not duplicated here. When you change the grammar in a non-obvious way, capture _why_ in the commit message, not in this skill.
 
 ## Making Changes — 6-Step Workflow
 
@@ -82,6 +83,7 @@ Historical rule-by-rule changes live in the submodule's git log (`git -C grammar
 6. **Publish** — `python scripts/publish_grammar.py --dry-run` then `python scripts/publish_grammar.py --push` (pushes `grammars/rsc` to `balakar94/tree-sitter-rsc` and updates `extension.toml` rev). Requires `tree-sitter generate` clean and corpus green.
 
 Verification:
+
 ```bash
 npx tree-sitter generate && npx tree-sitter test                    # all pass
 npx tree-sitter parse test/example.rsc | grep -q ERROR && echo FAIL || echo OK

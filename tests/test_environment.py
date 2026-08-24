@@ -143,32 +143,40 @@ class TestExtensionToml:
 
 
 # ---------------------------------------------------------------------------
-# 12-13: .gitmodules
+# 12-13: grammar repository declaration (grammars/rsc is an untracked working
+# copy — cloned from the repo pinned in extension.toml, never a submodule:
+# nested gitlinks break zed-industries/extensions packaging)
 # ---------------------------------------------------------------------------
 
 
-class TestGitmodules:
-    def test_url_matches_extension_repository(self):
-        text = _read_text(PROJECT_ROOT / ".gitmodules")
-        m = re.search(r"url\s*=\s*(.+)", text)
-        assert m, ".gitmodules missing url"
-        gm_url = _strip_git_suffix(m.group(1).strip())
+class TestGrammarRepository:
+    def test_repository_is_public_github_url(self):
         ext = _load_toml(PROJECT_ROOT / "extension.toml")
-        grammars_repo = ext.get("grammars", {}).get("rsc", {}).get("repository", "")
-        root_repo = ext.get("repository", "")
-        candidates = [_strip_git_suffix(grammars_repo), _strip_git_suffix(root_repo)]
-        assert any(gm_url == c for c in candidates if c), (
-            f".gitmodules url {gm_url!r} != grammars {grammars_repo!r} nor root {root_repo!r}"
+        grammars_repo = _strip_git_suffix(
+            ext.get("grammars", {}).get("rsc", {}).get("repository", "")
+        )
+        assert grammars_repo.startswith("https://github.com/"), (
+            f"grammar repository must be a public GitHub HTTPS URL, got {grammars_repo!r}"
         )
 
-    def test_submodule_path_exists(self):
-        text = _read_text(PROJECT_ROOT / ".gitmodules")
-        m = re.search(r"path\s*=\s*(.+)", text)
-        assert m, ".gitmodules missing path"
-        rel = m.group(1).strip()
-        p = PROJECT_ROOT / rel
-        assert p.is_dir(), f"submodule path {p} missing"
-        assert (p / "grammar.js").is_file() or (p / ".git").exists()
+    def test_working_copy_if_present_is_the_declared_repo(self):
+        base = PROJECT_ROOT / "grammars" / "rsc"
+        if not base.is_dir():
+            pytest.skip("grammars/rsc working copy absent (fresh clone)")
+        r = subprocess.run(
+            ["git", "-C", str(base), "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+        )
+        if r.returncode != 0:
+            pytest.skip(f"grammars/rsc has no origin remote: {r.stderr.strip()[:120]}")
+        ext = _load_toml(PROJECT_ROOT / "extension.toml")
+        grammars_repo = _strip_git_suffix(
+            ext.get("grammars", {}).get("rsc", {}).get("repository", "")
+        )
+        assert _strip_git_suffix(r.stdout.strip()) == grammars_repo, (
+            f"working copy remote {r.stdout.strip()!r} != extension.toml repository {grammars_repo!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +292,8 @@ class TestLanguagesRsc:
 class TestGrammarsRsc:
     def test_grammar_files_exist(self, tmp_path: Path):
         base = PROJECT_ROOT / "grammars" / "rsc"
+        if not base.is_dir():
+            pytest.skip("grammars/rsc working copy absent (untracked; run 'make grammar-clone')")
         for rel in ("grammar.js", "package.json", "binding.gyp", "src/parser.c"):
             p = base / rel
             assert p.is_file(), f"missing {p}"
@@ -352,12 +362,15 @@ class TestNodeTools:
 
         if shutil.which("npx") is None:
             pytest.skip("npx not in PATH")
+        grammar_dir = PROJECT_ROOT / "grammars" / "rsc"
+        if not (grammar_dir / "package.json").is_file():
+            pytest.skip("grammars/rsc working copy absent (untracked; run 'make grammar-clone')")
         result = subprocess.run(
             ["npx", "--yes", "tree-sitter", "--version"],
             capture_output=True,
             text=True,
             timeout=15,
-            cwd=str(PROJECT_ROOT / "grammars" / "rsc"),
+            cwd=str(grammar_dir),
         )
         if result.returncode != 0:
             local = PROJECT_ROOT / "grammars" / "rsc" / "node_modules" / ".bin" / "tree-sitter"
