@@ -27,14 +27,13 @@
 
 use crate::StructureEvent;
 use crate::menus::MenuData;
+use crate::{MAX_DIAG_BYTES, MAX_DIAG_LINES};
 use std::collections::{HashMap, HashSet};
 
 /// Source tag stamped on every diagnostic this server emits. Crate-visible
 /// so consumers (codeAction quick-fixes) can filter client-echoed
 /// diagnostics back to exactly the ones we produced.
 pub(crate) const DIAGNOSTIC_SOURCE: &str = "rsc-ls";
-const MAX_DIAG_LINES: usize = 3000;
-const MAX_DIAG_BYTES: usize = 500_000; // cap per-doc bytes considered for diagnostics
 /// Cap on syntactic diagnostics (the unclosed/unmatched brace and quote
 /// family) emitted per publish. The FIRST ten in document order win; the
 /// rest are dropped silently — past ten structural errors the remaining

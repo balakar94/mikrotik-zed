@@ -17,6 +17,7 @@
 //   back to a full document replace.
 // - Content-Length is capped at 10 MiB to avoid unbounded allocation.
 
+mod caps;
 mod cli;
 mod completion;
 mod diagnostics;
@@ -33,11 +34,15 @@ mod signature;
 mod suggest;
 mod symbols;
 
+pub(crate) use caps::{
+    MAX_CODE_ACTIONS, MAX_DIAG_BYTES, MAX_DIAG_LINES, MAX_DOC_SIZE, MAX_DOCS, MAX_HEADER_SIZE,
+    MAX_MESSAGE_SIZE,
+};
 pub(crate) use encoding::{
     PositionEncoding, apply_incremental_edit, convert_diagnostic_ranges, convert_position,
     floor_char_boundary, lsp_character_to_byte_offset, lsp_position_to_offset,
 };
-pub(crate) use framing::{Frame, FrameError, MAX_HEADER_SIZE, MAX_MESSAGE_SIZE, read_message};
+pub(crate) use framing::{Frame, FrameError, read_message};
 pub(crate) use logging::{log_debug, log_error, log_info, log_level, log_warn};
 pub(crate) use parser::{
     MAX_BRACE_DEPTH, StructureEvent, build_before_cursor, parse_line, tokenize_with_spans,
@@ -48,16 +53,8 @@ use menus::MenuData;
 use std::collections::HashMap;
 use std::io::{BufReader, Write};
 
-// Doc-size / doc-count caps remain server-owned (they bound tracked state);
-// message-framing caps live in framing.rs and are re-exported above.
-const MAX_DOC_SIZE: usize = 5 * 1024 * 1024; // 5 MiB per document — prevents single-file OOM
-const MAX_DOCS: usize = 100; // cap number of tracked documents
-/// Cap on quick-fix actions returned per `textDocument/codeAction` request.
-///
-/// Bounds the response even when a client echoes hundreds of eligible
-/// diagnostics (e.g. after pasting a large broken script); eight one-click
-/// fixes is already beyond what an editor surfaces comfortably.
-const MAX_CODE_ACTIONS: usize = 8;
+// Resource caps live in caps.rs — single source of truth; re-exported here
+// so existing paths keep working.
 
 /// Resolved payload of one quick-fix suggestion: the candidate shown in
 /// the action title and the text actually spliced into the document.

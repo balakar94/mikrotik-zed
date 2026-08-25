@@ -17,7 +17,9 @@ import sys
 import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+LSP_SRC = REPO_ROOT / "lsp" / "src"
 LSP_MAIN = REPO_ROOT / "lsp" / "src" / "main.rs"
+LSP_CAPS = REPO_ROOT / "lsp" / "src" / "caps.rs"
 LSP_DIAG = REPO_ROOT / "lsp" / "src" / "diagnostics.rs"
 LSP_MENUS = REPO_ROOT / "lsp" / "src" / "menus.rs"
 LIB_RS = REPO_ROOT / "src" / "lib.rs"
@@ -50,86 +52,70 @@ def _load_deploy_module():
 
 
 # ----------------------------------------------------------------------
-# Helpers for URI validation (mirrors desired enclosure)
-# ----------------------------------------------------------------------
-def is_valid_file_uri(uri: str) -> bool:
-    """Enclosure validator: only file://, no traversal, no control chars, no null."""
-    if not uri.startswith("file://"):
-        return False
-    # Reject null byte and control chars \x00-\x1F
-    if "\x00" in uri or any(ord(c) <= 0x1F for c in uri):
-        return False
-    # Path part after scheme
-    path_part = uri[7:]  # strip file://
-    # Normalize percent? Keep simple: reject literal ".." segment and "//.." traversal
-    # Split on "/" and check for ".." component
-    if ".." in path_part.split("/"):
-        return False
-    # Also reject bare ".." substring as defense-in-depth (covers encoded variants partially)
-    if ".." in path_part:
-        # Use component check already, but keep explicit substring for enclosure doc
-        # Ensure we don't false-positive on ".." inside filename? RouterOS paths shouldn't have ".." anyway.
-        # For security, reject any "..".
-        return False
-    # Reject empty host + traversal patterns like file:///.. or file:// with control
-    if not path_part:
-        return False
-    return True
-
-
-# ----------------------------------------------------------------------
 # 1. LSP caps
 # ----------------------------------------------------------------------
 class TestLspCaps:
-    def test_max_doc_size_constant(self):
-        txt = _read(LSP_MAIN)
-        assert "MAX_DOC_SIZE" in txt, "MAX_DOC_SIZE constant missing in lsp/src/main.rs"
-        # Expect 5 MiB = 5 * 1024 * 1024  (allow variations with underscores)
-        assert re.search(r"MAX_DOC_SIZE.*5\s*\*\s*1024\s*\*\s*1024", txt), (
-            "MAX_DOC_SIZE should be 5*1024*1024 (5 MiB)"
+    """Exact-value pins for every shared resource cap.
+
+    All shared caps are declared once, in lsp/src/caps.rs; these tests
+    read that file so a silent value change fails here first.
+    """
+
+    # Every cap that must exist exactly once across the whole LSP crate.
+    SHARED_CAP_NAMES = (
+        "MAX_HEADER_SIZE",
+        "MAX_MESSAGE_SIZE",
+        "MAX_DOC_SIZE",
+        "MAX_DOCS",
+        "MAX_CODE_ACTIONS",
+        "MAX_DIAG_LINES",
+        "MAX_DIAG_BYTES",
+    )
+
+    def _decl_int(self, txt: str, name: str) -> int:
+        m = re.search(rf"const\s+{name}\s*:\s*usize\s*=\s*([\d_]+)", txt)
+        assert m, f"{name} declaration not parseable in caps.rs"
+        return int(m.group(1).replace("_", ""))
+
+    def test_max_header_size_constant(self):
+        txt = _read(LSP_CAPS)
+        assert re.search(r"MAX_HEADER_SIZE.*32\s*\*\s*1024", txt), (
+            "MAX_HEADER_SIZE should be 32 KiB (32 * 1024)"
         )
 
     def test_max_message_size_constant(self):
-        txt = _read(LSP_MAIN)
-        assert "MAX_MESSAGE_SIZE" in txt, "MAX_MESSAGE_SIZE missing"
+        txt = _read(LSP_CAPS)
         assert re.search(r"MAX_MESSAGE_SIZE.*10\s*\*\s*1024\s*\*\s*1024", txt), (
             "MAX_MESSAGE_SIZE should be 10*1024*1024 (10 MiB)"
         )
 
-    def test_max_docs_constant(self, caplog):
-        txt = _read(LSP_MAIN)
-        assert "MAX_DOCS" in txt, "MAX_DOCS missing"
-        m = re.search(r"const\s+MAX_DOCS\s*:\s*usize\s*=\s*(\d+)", txt)
-        assert m, "MAX_DOCS declaration not parseable"
-        val = int(m.group(1))
-        # Task says 100, actual code has 512. Accept either but enforce enclosure bounds.
-        # Enclosure: must be capped (<= 1024) and >= 10 to prevent DoS.
-        assert 10 <= val <= 1024, f"MAX_DOCS {val} out of enclosure bounds [10,1024]"
-        # At least 100 is desired; warn via caplog if 512 but still pass
-        if val != 100:
-            # Use caplog to satisfy usage requirement without failing
-            import logging
+    def test_max_doc_size_constant(self):
+        txt = _read(LSP_CAPS)
+        assert re.search(r"MAX_DOC_SIZE.*5\s*\*\s*1024\s*\*\s*1024", txt), (
+            "MAX_DOC_SIZE should be 5*1024*1024 (5 MiB)"
+        )
 
-            logging.getLogger().warning("MAX_DOCS is %s, expected 100 per spec (512 is also capped)", val)
+    def test_max_docs_constant(self):
+        val = self._decl_int(_read(LSP_CAPS), "MAX_DOCS")
+        # Enclosure bound: bounded tracked documents, small enough to prevent DoS.
+        assert val == 100, f"MAX_DOCS should be 100, got {val}"
 
-    def test_max_header_size_exists(self):
-        txt = _read(LSP_MAIN)
-        assert "MAX_HEADER_SIZE" in txt, "MAX_HEADER_SIZE should exist to prevent header OOM"
-        assert re.search(r"MAX_HEADER_SIZE.*32\s*\*\s*1024", txt), "MAX_HEADER_SIZE should be 32 KiB"
+    def test_max_code_actions_constant(self):
+        val = self._decl_int(_read(LSP_CAPS), "MAX_CODE_ACTIONS")
+        assert val == 8, f"MAX_CODE_ACTIONS should be 8, got {val}"
 
     def test_max_diag_lines_and_bytes(self):
-        txt = _read(LSP_DIAG)
-        assert "MAX_DIAG_LINES" in txt, "MAX_DIAG_LINES missing in diagnostics.rs"
-        assert "MAX_DIAG_BYTES" in txt, "MAX_DIAG_BYTES missing in diagnostics.rs"
-        m_lines = re.search(r"const\s+MAX_DIAG_LINES\s*:\s*usize\s*=\s*(\d+)", txt)
-        assert m_lines and int(m_lines.group(1)) == 3000, "MAX_DIAG_LINES should be 3000"
-        m_bytes = re.search(r"const\s+MAX_DIAG_BYTES\s*:\s*usize\s*=\s*([\d_]+)", txt)
-        assert m_bytes, "MAX_DIAG_BYTES parse failed"
-        val = int(m_bytes.group(1).replace("_", ""))
-        # Spec says 500KB = 500_000 (or 500*1024 = 512000). Accept 500_000 or 500KB range.
-        assert val == 500_000 or val == 512_000, f"MAX_DIAG_BYTES should be 500_000 (500KB), got {val}"
-        # Also verify it is used to cap diagnostics (grep surrounding logic)
-        assert "floor_char_boundary" in txt and "MAX_DIAG_BYTES" in txt
+        txt = _read(LSP_CAPS)
+        assert self._decl_int(txt, "MAX_DIAG_LINES") == 3000, "MAX_DIAG_LINES should be 3000"
+        assert self._decl_int(txt, "MAX_DIAG_BYTES") == 500_000, (
+            "MAX_DIAG_BYTES should be 500_000 (500KB)"
+        )
+        # Enforcement still lives beside compute_diagnostics in diagnostics.rs:
+        # it must truncate at a char boundary using the shared cap.
+        diag = _read(LSP_DIAG)
+        assert "MAX_DIAG_BYTES" in diag and "MAX_DIAG_LINES" in diag
+        assert "floor_char_boundary" in diag, "diagnostics must truncate at char boundary"
+        assert "if doc.len() > MAX_DIAG_BYTES" in diag or "bytes_to_process" in diag
 
     def test_diag_caps_enforced_in_compute_diagnostics(self):
         txt = _read(LSP_DIAG)
@@ -138,6 +124,21 @@ class TestLspCaps:
         # Check truncation logic exists
         assert "if doc.len() > MAX_DIAG_BYTES" in txt or "bytes_to_process" in txt
         assert "if capped" in txt or "MAX_DIAG_LINES" in txt
+
+    def test_caps_are_single_sourced(self):
+        """Regression guard on the copy-pattern: each shared cap may be
+        declared exactly once across all of lsp/src — in caps.rs."""
+        sources = {p.name: _read(p) for p in sorted(LSP_SRC.glob("*.rs"))}
+        assert "caps.rs" in sources, "lsp/src/caps.rs is missing"
+        for name in self.SHARED_CAP_NAMES:
+            total = sum(
+                len(re.findall(rf"const\s+{name}\b", body)) for body in sources.values()
+            )
+            in_caps = len(re.findall(rf"const\s+{name}\b", sources["caps.rs"]))
+            assert total == 1 and in_caps == 1, (
+                f"{name} must be declared exactly once, in caps.rs "
+                f"(found {total} declaration(s) across lsp/src, {in_caps} in caps.rs)"
+            )
 
 
 # ----------------------------------------------------------------------
@@ -168,41 +169,25 @@ class TestUriValidation:
             or has_helper
         )
 
-    def test_python_helper_rejects_bad_schemes(self):
-        assert is_valid_file_uri("file:///home/user/test.rsc") is True
-        assert is_valid_file_uri("file:///tmp/a.rsc") is True
-        assert is_valid_file_uri("untitled://test.rsc") is False
-        assert is_valid_file_uri("http://example.com/test.rsc") is False
-        assert is_valid_file_uri("https://example.com/test.rsc") is False
-        assert is_valid_file_uri("vscode://file/test.rsc") is False
-        assert is_valid_file_uri("") is False
-        assert is_valid_file_uri("file:/tmp/test.rsc") is False  # missing //
-
-    def test_python_helper_rejects_traversal_and_control_chars(self):
-        # Path traversal
-        assert is_valid_file_uri("file:///home/user/../etc/passwd") is False
-        assert is_valid_file_uri("file:///tmp/..") is False
-        assert is_valid_file_uri("file:///a/b/../../c") is False
-        # Null byte
-        assert is_valid_file_uri("file:///tmp/test\x00.rsc") is False
-        # Control chars \x00-\x1F
-        for ch in ["\x01", "\x0a", "\x1f"]:
-            assert is_valid_file_uri(f"file:///tmp/test{ch}.rsc") is False
-        # Valid should still pass
-        assert is_valid_file_uri("file:///home/user/project/test.rsc") is True
-
-    def test_rust_does_not_accept_non_file_in_tests(self, tmp_path, monkeypatch):
-        # Use monkeypatch to demonstrate env isolation (required by task)
-        monkeypatch.setenv("RSC_LS_LOG", "debug")
-        assert is_valid_file_uri("file:///valid.rsc")
-        # tmp_path usage: create a dummy file to ensure file:// path exists conceptually
-        p = tmp_path / "test.rsc"
-        p.write_text("/ip address print\n")
-        uri = f"file://{p}"
-        assert is_valid_file_uri(uri) is True
-        # traversal via tmp_path
-        traversal_uri = f"file://{tmp_path}/../etc/passwd"
-        assert is_valid_file_uri(traversal_uri) is False
+    def test_rust_uri_validator_single_source_and_guards(self):
+        """Structural pin: exactly ONE canonical validator definition across
+        lsp/src, defined in main.rs, with all three enclosure guards in its
+        body (file:// prefix, null/control-char rejection, ".." rejection).
+        Behavioral coverage of the validator lives in the Rust unit tests."""
+        matches = []
+        for p in sorted(LSP_SRC.glob("*.rs")):
+            for lineno, line in enumerate(_read(p).splitlines(), start=1):
+                if "pub(crate) fn is_valid_file_uri" in line:
+                    matches.append((p.name, lineno))
+        assert len(matches) == 1 and matches[0][0] == "main.rs", (
+            f"is_valid_file_uri must be defined exactly once, in main.rs; found {matches}"
+        )
+        txt = _read(LSP_MAIN)
+        assert 'starts_with("file://")' in txt, "Must check file:// scheme prefix"
+        assert (
+            "contains('\\0')" in txt or "contains('\0')" in txt
+        ), "Must reject null/control chars"
+        assert 'contains("..")' in txt, "Must reject path traversal"
 
 
 # ----------------------------------------------------------------------
@@ -512,8 +497,6 @@ class TestNoHardcodedSecrets:
                 if p.is_dir():
                     continue
                 if p.suffix not in (".rs", ".py"):
-                    continue
-                if p.name in ("clean_tests.py",):
                     continue
                 txt = _read(p)
                 for line in txt.splitlines():

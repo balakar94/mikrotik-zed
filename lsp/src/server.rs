@@ -1,43 +1,18 @@
-// ── Server helper & enclosure tests ─────────────────────────────────
+// ── Server enclosure / caps / URI validation tests ──────────────────
 //
-// This module exists to group enclosure / caps / URI validation logic
-// and its tests separately from the main LSP loop.  The main `Server`
-// lives in `main.rs`; this file re-exports helpers and adds focused
-// coverage for the security and capacity invariants.
-
-#![allow(dead_code)]
-
-/// Validate that a URI is an allowed `file://` URI.
-///
-/// Mirrors `crate::is_valid_file_uri` — kept separate so that tests
-/// can exercise the helper in isolation and ensure the two stay in sync.
-pub(crate) fn is_valid_file_uri(uri: &str) -> bool {
-    if !uri.starts_with("file://") {
-        return false;
-    }
-    if uri.contains('\0') {
-        return false;
-    }
-    if uri.contains("..") {
-        return false;
-    }
-    true
-}
-
-/// Re-export caps for test assertions (keeps single source of truth in `crate::*`
-/// but allows this module to be the authoritative documentation place).
-pub(crate) const MAX_DOC_SIZE: usize = 5 * 1024 * 1024;
-pub(crate) const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
-pub(crate) const MAX_DOCS: usize = 100;
-pub(crate) const MAX_DIAG_LINES: usize = 3000;
-pub(crate) const MAX_DIAG_BYTES: usize = 500_000;
+// This module groups enclosure, resource-cap, and URI-validation
+// coverage separately from the main LSP loop.  The `Server` itself and
+// the canonical helpers live elsewhere on purpose: shared resource caps
+// are declared once in `caps.rs` (re-exported via the crate root) and
+// `is_valid_file_uri` lives in `main.rs`.  The tests here exercise them
+// through the `crate::` paths so they pin real wire-visible behavior.
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::caps::{MAX_DIAG_BYTES, MAX_DIAG_LINES, MAX_DOC_SIZE, MAX_DOCS};
     use crate::diagnostics;
     use crate::menus::MenuData;
-    use crate::{Server, is_valid_file_uri as crate_is_valid};
+    use crate::{Server, is_valid_file_uri};
 
     fn synthetic_data() -> MenuData {
         MenuData::from_toml_str(
@@ -68,31 +43,16 @@ type = "enum (accept | drop | reject)"
     }
 
     // ── Caps constants ────────────────────────────────────────────────
-
-    #[test]
-    fn test_caps_max_doc_size_is_5mib() {
-        assert_eq!(crate::MAX_DOC_SIZE, 5 * 1024 * 1024);
-        assert_eq!(MAX_DOC_SIZE, 5 * 1024 * 1024);
-        assert_eq!(crate::MAX_DOC_SIZE, MAX_DOC_SIZE);
-    }
-
-    #[test]
-    fn test_caps_max_message_size_is_10mib() {
-        assert_eq!(crate::MAX_MESSAGE_SIZE, 10 * 1024 * 1024);
-        assert_eq!(MAX_MESSAGE_SIZE, 10 * 1024 * 1024);
-    }
-
-    #[test]
-    fn test_caps_max_docs_is_100() {
-        assert_eq!(crate::MAX_DOCS, 100);
-        assert_eq!(MAX_DOCS, 100);
-    }
+    //
+    // The shared caps themselves are pinned by exact value in `caps.rs`
+    // (and cross-checked by tests/test_enclosure.py). The tests below are
+    // behavioral companions: they prove each cap is actually enforced.
 
     #[test]
     fn test_caps_max_diag_bytes_is_500kb() {
         assert_eq!(MAX_DIAG_BYTES, 500_000);
-        // diagnostics private const should also be 500_000; verify via behavior
-        // Create a doc larger than 500KB and ensure truncation happens
+        // Behavioral companion: a doc larger than 500KB is truncated before
+        // diagnosis instead of blowing up.
         let data = synthetic_data();
         let line = "/ip/address add address=1.1.1.1 interface=ether1\n";
         // ~50 bytes per line -> 20k lines = ~1M bytes
@@ -123,13 +83,11 @@ type = "enum (accept | drop | reject)"
         assert!(is_valid_file_uri("file:///home/user/test.rsc"));
         assert!(is_valid_file_uri("file:///test.rsc"));
         assert!(is_valid_file_uri("file:///a/b/c/d.rsc"));
-        assert!(crate_is_valid("file:///home/user/test.rsc"));
     }
 
     #[test]
     fn test_uri_rejects_untitled() {
         assert!(!is_valid_file_uri("untitled://test.rsc"));
-        assert!(!crate_is_valid("untitled://test.rsc"));
         assert!(!is_valid_file_uri("untitled:Untitled-1"));
     }
 
@@ -137,8 +95,6 @@ type = "enum (accept | drop | reject)"
     fn test_uri_rejects_http_and_https() {
         assert!(!is_valid_file_uri("http://example.com/test.rsc"));
         assert!(!is_valid_file_uri("https://example.com/test.rsc"));
-        assert!(!crate_is_valid("http://example.com/test.rsc"));
-        assert!(!crate_is_valid("https://example.com/test.rsc"));
     }
 
     #[test]
@@ -155,14 +111,12 @@ type = "enum (accept | drop | reject)"
         assert!(!is_valid_file_uri("file:///home/../etc/passwd"));
         assert!(!is_valid_file_uri("file:///test/../secret.rsc"));
         assert!(!is_valid_file_uri("file:///a/b/../../c.rsc"));
-        assert!(!crate_is_valid("file:///home/../etc/passwd"));
     }
 
     #[test]
     fn test_uri_rejects_null_byte() {
         assert!(!is_valid_file_uri("file:///test\0.rsc"));
         assert!(!is_valid_file_uri("file://\0/test.rsc"));
-        assert!(!crate_is_valid("file:///test\0.rsc"));
         let uri_with_null = format!("file:///test{}.rsc", '\0');
         assert!(!is_valid_file_uri(&uri_with_null));
     }
@@ -281,8 +235,8 @@ type = "enum (accept | drop | reject)"
     #[test]
     fn test_server_did_open_truncates_large_doc_at_5mib() {
         let mut server = Server::new(synthetic_data());
-        let large_text = "a".repeat(5 * 1024 * 1024 + 1000);
-        assert!(large_text.len() > crate::MAX_DOC_SIZE);
+        let large_text = "a".repeat(MAX_DOC_SIZE + 1000);
+        assert!(large_text.len() > MAX_DOC_SIZE);
         let open = serde_json::json!({
             "params": {"textDocument": {"uri": "file:///large.rsc", "text": large_text}}
         });
@@ -291,8 +245,7 @@ type = "enum (accept | drop | reject)"
             .docs
             .get("file:///large.rsc")
             .expect("should store truncated doc");
-        assert_eq!(stored.len(), crate::MAX_DOC_SIZE);
-        assert!(stored.len() <= 5 * 1024 * 1024);
+        assert_eq!(stored.len(), MAX_DOC_SIZE);
     }
 
     #[test]
@@ -332,7 +285,7 @@ type = "enum (accept | drop | reject)"
         // Wait check code: after early truncation for text.len() > MAX_DOC_SIZE, it does continue; but for full sync without range, the early branch only handles if with range? No, early check is before range check and does handle both? Let's read: if text.len() > MAX_DOC_SIZE { truncate and insert and continue } — so it should truncate.
         // Assert capped
         assert!(
-            stored.len() <= crate::MAX_DOC_SIZE * 2,
+            stored.len() <= MAX_DOC_SIZE * 2,
             "stored len {}",
             stored.len()
         );
@@ -345,27 +298,27 @@ type = "enum (accept | drop | reject)"
     #[test]
     fn test_server_max_docs_enforced_at_100() {
         let mut server = Server::new(synthetic_data());
-        for i in 0..100 {
+        for i in 0..MAX_DOCS {
             let uri = format!("file:///test{i}.rsc");
             let open = serde_json::json!({
                 "params": {"textDocument": {"uri": uri, "text": "hello"}}
             });
             server.handle_message("textDocument/didOpen", &open);
         }
-        assert_eq!(server.docs.len(), 100);
+        assert_eq!(server.docs.len(), MAX_DOCS);
         // 101st should be rejected
         let open101 = serde_json::json!({
             "params": {"textDocument": {"uri": "file:///test101.rsc", "text": "hello"}}
         });
         server.handle_message("textDocument/didOpen", &open101);
-        assert_eq!(server.docs.len(), 100);
+        assert_eq!(server.docs.len(), MAX_DOCS);
         assert!(!server.docs.contains_key("file:///test101.rsc"));
     }
 
     #[test]
     fn test_server_max_docs_allows_update_existing_when_full() {
         let mut server = Server::new(synthetic_data());
-        for i in 0..100 {
+        for i in 0..MAX_DOCS {
             let uri = format!("file:///test{i}.rsc");
             let open = serde_json::json!({
                 "params": {"textDocument": {"uri": uri, "text": "hello"}}
@@ -377,14 +330,14 @@ type = "enum (accept | drop | reject)"
             "params": {"textDocument": {"uri": "file:///test0.rsc", "text": "updated"}}
         });
         server.handle_message("textDocument/didOpen", &open);
-        assert_eq!(server.docs.len(), 100);
+        assert_eq!(server.docs.len(), MAX_DOCS);
         assert_eq!(server.docs.get("file:///test0.rsc").unwrap(), "updated");
     }
 
     #[test]
     fn test_server_did_change_max_docs_enforced() {
         let mut server = Server::new(synthetic_data());
-        for i in 0..100 {
+        for i in 0..MAX_DOCS {
             let uri = format!("file:///doc{i}.rsc");
             let open = serde_json::json!({
                 "params": {"textDocument": {"uri": uri, "text": "hi"}}
@@ -397,7 +350,7 @@ type = "enum (accept | drop | reject)"
         });
         server.handle_message("textDocument/didChange", &change);
         assert!(!server.docs.contains_key("file:///new.rsc"));
-        assert_eq!(server.docs.len(), 100);
+        assert_eq!(server.docs.len(), MAX_DOCS);
     }
 
     // ── Large doc truncation preserves first N diags ──────────────────

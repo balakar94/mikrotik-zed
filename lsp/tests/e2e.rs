@@ -39,7 +39,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_rsc-ls");
 /// into a fast, named failure rather than a hung job.
 const RECV_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Mirror of the server's own header cap (`framing::MAX_HEADER_SIZE`): a
+/// Mirror of the server's own header cap (`caps::MAX_HEADER_SIZE`): a
 /// peer that never terminates its header section must fail the frame, not
 /// spin the reader thread forever.
 const MAX_HEADER_BYTES: usize = 32 * 1024;

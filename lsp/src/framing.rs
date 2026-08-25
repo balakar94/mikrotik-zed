@@ -13,13 +13,8 @@
 //   cannot be resynchronized, so continuing would interpret body bytes as
 //   headers (permanent desync cascade).
 
-use crate::{log_error, log_warn};
+use crate::{MAX_HEADER_SIZE, MAX_MESSAGE_SIZE, log_error, log_warn};
 use std::io::BufRead;
-
-/// Hard cap on the header section of one frame.
-pub(crate) const MAX_HEADER_SIZE: usize = 32 * 1024; // 32 KiB
-/// Cap on one JSON-RPC message body; larger bodies are drained and skipped.
-pub(crate) const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
 
 fn parse_content_length(headers: &str) -> Option<usize> {
     let mut found: Option<usize> = None;

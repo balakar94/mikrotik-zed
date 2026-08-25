@@ -47,7 +47,7 @@ Protocol: `Content-Length` framing, `textDocumentSync = {"openClose": true, "cha
 | `lsp/src/symbols.rs` | `compute_document_symbols` — flat symbol list: menu commands → Object(19), `:local`/`:global` → Variable(13) named by identifier, other `:verb` → Function(12); skips bare fragments/comments |
 | `lsp/src/navigation.rs` | Variable navigation primitives: `build_variable_index` (declarations via `declared_variable`, quote-aware `$usage` scan ignoring `$$`/strings/comments), `choose_definition` (deterministic closest-preceding rule), `collect_references` (cap 1000), `word_at` (delegates to hover's word extraction) |
 | `lsp/src/folding.rs` | `compute_folding_ranges` — quote/comment-aware brace regions (kind `"region"`), kindless folds for `\` continuations; only when `startLine < endLine` |
-| `lsp/src/server.rs` | Helper module: URI validation (`is_valid_file_uri`), mirrored caps + enclosure/capacity invariant tests |
+| `lsp/src/server.rs` | Helper module: URI-validation & enclosure/capacity invariant tests over the shared caps (`caps.rs`) |
 | `data/commands.toml` | Generated command table (header: version/timestamp/SHA256), truth source `llms-full.txt` |
 | `extension.toml` | Manifest: `grammars[rsc]` + `language_servers[rsc-ls]` |
 
@@ -123,21 +123,22 @@ All diagnostics: `source="rsc-ls"`. Types: `Diagnostic{range, severity, code, so
 
 ## Performance & Limits
 
-Canonical values live in `main.rs`; `server.rs` mirrors them and asserts equality in tests. Check the source if in doubt — do not trust this table blindly.
+Canonical values live in `caps.rs` (single source of truth, re-exported from the crate root). Feature-internal micro-caps stay beside their features. Check the source if in doubt — do not trust this table blindly.
 
 | Constant | Value | Defined in | Purpose |
 |----------|-------|------------|---------|
-| `MAX_MESSAGE_SIZE` | 10 MiB | `main.rs` | Drop oversized JSON-RPC bodies |
-| `MAX_HEADER_SIZE` | 32 KiB | `main.rs` | Prevent header slowloris, drain+resync |
-| `MAX_DOC_SIZE` | 5 MiB | `main.rs` | Truncate `didOpen`/`didChange` text at `floor_char_boundary` |
-| `MAX_DOCS` | 100 | `main.rs` | Reject new URIs when cap reached |
-| `MAX_DIAG_LINES` | 3000 | `diagnostics.rs` | Only first N lines diagnosed |
-| `MAX_DIAG_BYTES` | 500 KB | `diagnostics.rs` | Truncate doc for diagnostics at char boundary |
+| `MAX_MESSAGE_SIZE` | 10 MiB | `caps.rs` | Drop oversized JSON-RPC bodies |
+| `MAX_HEADER_SIZE` | 32 KiB | `caps.rs` | Prevent header slowloris, drain+resync |
+| `MAX_DOC_SIZE` | 5 MiB | `caps.rs` | Truncate `didOpen`/`didChange` text at `floor_char_boundary` |
+| `MAX_DOCS` | 100 | `caps.rs` | Reject new URIs when cap reached |
+| `MAX_CODE_ACTIONS` | 8 | `caps.rs` | Cap one `textDocument/codeAction` response |
+| `MAX_DIAG_LINES` | 3000 | `caps.rs` | Only first N lines diagnosed |
+| `MAX_DIAG_BYTES` | 500 KB | `caps.rs` | Truncate doc for diagnostics at char boundary |
 | `MAX_SYNTAX_DIAGNOSTICS` | 10 | `diagnostics.rs` | Cap on unclosed/unmatched brace + quote diagnostics per publish (oldest-first) |
 | `MAX_BRACE_DEPTH` | 4096 | `parser.rs` | Open-brace stack bound shared by folding + syntax diagnostics |
 | `MAX_REFERENCES` | 1000 | `navigation.rs` | Cap on one `textDocument/references` result list (declaration included) |
 
-Incremental edits: `lsp_position_to_offset` + `apply_incremental_edit` (`main.rs`) handle `range` patches; on `InvalidRange`/`OutOfBounds` fall back to full replace. `floor_char_boundary` polyfill for UTF-8 safety. Large docs still publish diagnostics (capped) without OOM. URI validation helper: `server.rs` (`is_valid_file_uri`).
+Incremental edits: `lsp_position_to_offset` + `apply_incremental_edit` (`main.rs`) handle `range` patches; on `InvalidRange`/`OutOfBounds` fall back to full replace. `floor_char_boundary` polyfill for UTF-8 safety. Large docs still publish diagnostics (capped) without OOM. URI validation helper: `main.rs` (`is_valid_file_uri`, single definition).
 
 ## Testing Strategy
 
