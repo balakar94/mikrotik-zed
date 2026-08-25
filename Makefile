@@ -23,7 +23,7 @@ SUDO      := $(shell [ "$$(id -u)" -eq 0 ] || echo sudo)
 DNF       := $(shell command -v dnf 2>/dev/null || command -v yum 2>/dev/null)
 APT       := $(shell command -v apt-get 2>/dev/null)
 
-.PHONY: help generate test test-grammar test-rust test-python test-all parse highlight extract sync sync-check build build-lsp build-wasm check check-wasm check-lsp fmt fmt-fix clippy audit clean clean-generated install install-deps install-tools install-lsp install-dev validate check-tools bump
+.PHONY: help generate test-grammar test-rust test-python test-all parse highlight extract sync sync-check check-manifest build build-lsp build-wasm check check-wasm check-lsp fmt fmt-fix clippy audit clean clean-artifacts clean-generated install install-deps install-tools install-lsp install-dev validate check-tools bump
 
 # Default target
 help: ## Show this help
@@ -50,9 +50,10 @@ generate-check: ## Verify parser.c is up-to-date (CI: fails if stale)
 	git -C $(GRAMMAR_DIR) diff --exit-code -- src/parser.c src/grammar.json src/node-types.json || \
 		(echo "parser.c stale — run 'make generate' and commit" && false)
 
-test: test-grammar ## Alias for test-grammar
+# NOTE: there is deliberately no `make test` alias — use test-all (everything)
+# or the individual test-grammar / test-rust / test-python targets.
 
-test-grammar: ## Run tree-sitter grammar tests (corpus tests, 67)
+test-grammar: ## Run tree-sitter grammar corpus tests
 	@command -v npx >/dev/null || (echo "error: npx not found" && false)
 	cd $(GRAMMAR_DIR) && npx tree-sitter test
 
@@ -61,7 +62,7 @@ test-rust: ## Run Rust tests (all workspace members)
 	# (wasm extension) and lsp (rsc-ls).
 	cargo test --workspace
 
-test-python: ## Run Python extraction tests (216)
+test-python: ## Run Python test suite
 	@command -v $(PYTHON) >/dev/null || (echo "skip: $(PYTHON) not found" && exit 0)
 	@command -v pytest >/dev/null 2>&1 || $(PYTHON) -m pytest --version >/dev/null 2>&1 || (echo "skip: pytest not found (pip install pytest)" && exit 0)
 	$(PYTHON) -m pytest tests/ -v
@@ -93,6 +94,7 @@ highlight: ## Highlight a file (usage: make highlight FILE=grammars/rsc/test/exa
 # ── Command extraction ─────────────────────────────────────────
 
 extract: ## Regenerate data/commands.toml from llms-full.txt
+	@test -f llms-full.txt || (echo "error: llms-full.txt not found — fetch it first with 'make sync'" && false)
 	@command -v $(PYTHON) >/dev/null || (echo "error: $(PYTHON) not found — Python 3.12+ required for extraction" && false)
 	$(PYTHON) scripts/extract_commands.py
 
@@ -100,13 +102,17 @@ sync: ## Fetch latest llms.txt and llms-full.txt from upstream (manual.mikrotik.
 	@command -v $(PYTHON) >/dev/null || (echo "error: $(PYTHON) not found" && false)
 	$(PYTHON) scripts/sync_llms.py
 
-sync-check: ## Check if llms files are stale (CI, no write, exit 2 if updates available)
+sync-check: ## Check if llms files are stale vs upstream (CI gate; standalone use — refresh with 'make sync')
 	@command -v $(PYTHON) >/dev/null || (echo "error: $(PYTHON) not found" && false)
 	$(PYTHON) scripts/sync_llms.py --check
 
+check-manifest: ## Check the extension against Zed's requirements (manifest schema + registry policy)
+	@command -v $(PYTHON) >/dev/null || (echo "error: $(PYTHON) not found" && false)
+	$(PYTHON) scripts/check_zed_requirements.py
+
 # ── Build ──────────────────────────────────────────────────────
 
-build: ## Build WASM extension (Zed will encode as component on Install Dev Extension)
+build: ## Compile WASM extension only (to stage extension.wasm use build-wasm)
 	cargo build --target $(WASM_TARGET) --release
 	@echo "WASM built: $(WASM_OUT)"
 	@echo "Note: Zed's extension_builder encodes as component on 'Install Dev Extension'."
@@ -196,7 +202,9 @@ install-tools: ## Install language toolchains: rustup+wasm32-wasip2, Python venv
 		python3 -m venv $(VENV_DIR); \
 	fi
 	$(VENV_DIR)/bin/pip install --upgrade pip pytest requests paramiko
-	@if command -v npm >/dev/null 2>&1; then \
+	@if [ ! -d "$(GRAMMAR_DIR)" ]; then \
+		echo "hint: $(GRAMMAR_DIR) not present — skipping tree-sitter-cli setup (run 'make grammar-clone' first, then re-run install-tools)"; \
+	elif command -v npm >/dev/null 2>&1; then \
 		echo "==> Installing tree-sitter-cli (npm install --ignore-scripts in $(GRAMMAR_DIR))"; \
 		cd $(GRAMMAR_DIR) && npm install --ignore-scripts && \
 		{ [ -x node_modules/tree-sitter-cli/tree-sitter ] || \
@@ -221,29 +229,32 @@ install: install-deps install-tools install-lsp ## Full bootstrap: system deps +
 
 bump: ## Bump version (usage: make bump VERSION=0.2.0)
 	@test -n "$(VERSION)" || (echo "usage: make bump VERSION=0.2.0" && false)
+	@echo "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$$' || \
+		(echo "error: VERSION must be semver x.y.z" && false)
 	@echo "Bumping to $(VERSION) ..."
 	@sed -i '' 's/^version = ".*"/version = "$(VERSION)"/' Cargo.toml lsp/Cargo.toml 2>/dev/null || sed -i 's/^version = ".*"/version = "$(VERSION)"/' Cargo.toml lsp/Cargo.toml
 	@echo "Note: grammar versions live in the separate tree-sitter-rsc repo"
 	@echo "      (untracked grammars/rsc working copy) — never bumped from here:"
 	@echo "      publish_grammar.py would auto-commit them into that repo."
 	@sed -i '' 's/^version = ".*"/version = "$(VERSION)"/' extension.toml 2>/dev/null || sed -i 's/^version = ".*"/version = "$(VERSION)"/' extension.toml
+	@echo "Note: Cargo.lock refreshes on the next cargo command — commit it with the bumps."
 	@echo "Bumped. Now run: cargo check && git diff"
 
 # ── Cleanup ────────────────────────────────────────────────────
 
-clean: ## Remove build artifacts (preserves Cargo.lock and parser.c)
+# Shared artifact removal core for clean / clean-generated (kept out of `make help`).
+clean-artifacts:
 	rm -rf target/
 	rm -f extension.wasm
 	rm -f grammars/rsc.wasm
 	cd $(GRAMMAR_DIR) && rm -f parser.dylib tree-sitter-rsc.wasm
+
+clean: clean-artifacts ## Remove build artifacts (preserves Cargo.lock and parser.c)
 	cd $(GRAMMAR_DIR) && rm -rf target/ build/ node_modules/ 2>/dev/null || true
 
-clean-generated: ## Remove ALL generated files including parser.c (use with care, asks confirmation)
+clean-generated: ## Remove ALL generated files including parser.c (use with care, asks confirmation first)
 	@read -p "Remove parser.c, grammar.json, node-types.json? [y/N] " confirm && [ "$$confirm" = "y" ] || (echo "aborted" && exit 1)
-	rm -rf target/
-	rm -f extension.wasm
-	rm -f grammars/rsc.wasm
-	cd $(GRAMMAR_DIR) && rm -f parser.dylib tree-sitter-rsc.wasm
+	@$(MAKE) --no-print-directory clean-artifacts
 	cd $(GRAMMAR_DIR) && rm -rf target/ build/ src/grammar.json src/node-types.json src/parser.c
 	@echo "Note: parser.c removed — run 'make generate' to regenerate"
 
@@ -256,5 +267,5 @@ install-dev: ## Point Zed to this directory (manual: Zed > Install Dev Extension
 	@echo "  make build-lsp && make install-lsp"
 	@echo "  # or: cargo build -p rsc-ls --release && export PATH=\"\$$PWD/target/release:\$$PATH\" && open -a Zed ."
 
-validate: generate-check fmt clippy test-all sync-check extract ## Full validation (fmt, clippy, tests, stale checks, extract)
+validate: check-manifest generate-check fmt clippy test-all extract ## Full local gate (manifest, generate-check, fmt, clippy, tests, extract). Upstream-docs staleness is gated separately by sync-check in CI.
 	@echo "All checks passed. Ready to commit."

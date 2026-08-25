@@ -85,7 +85,8 @@ class TestShouldInclude:
 
     # ── Previously excluded menus — now INCLUDED under complete coverage ──
 
-    def test_excluded_certificate(self):
+    def test_certificate_menu_included(self):
+        """/certificate is a real RouterOS menu — must be extracted."""
         assert should_include("/certificate") is True
 
     # ── Now included under full extraction ────────────────────

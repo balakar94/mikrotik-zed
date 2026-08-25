@@ -36,11 +36,11 @@ def _read_extension_version_and_rev(path: Path) -> tuple[str | None, str | None]
     return (v.group(1) if v else None, r.group(1) if r else None)
 
 
-def _git_rev(submodule_path: str = "grammars/rsc") -> str | None:
-    """Try git rev-parse HEAD:grammars/rsc then grammars/rsc HEAD."""
+def _grammar_git_rev(grammar_dir: str = "grammars/rsc") -> str | None:
+    """Resolve the grammar working copy's HEAD rev, if git metadata is present."""
     for cmd in [
-        ["git", "rev-parse", f"HEAD:{submodule_path}"],
-        ["git", "-C", submodule_path, "rev-parse", "HEAD"],
+        ["git", "rev-parse", f"HEAD:{grammar_dir}"],
+        ["git", "-C", grammar_dir, "rev-parse", "HEAD"],
     ]:
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT), timeout=5)
@@ -78,7 +78,7 @@ class TestVersionCoherence:
         """
         grammar_cargo = ROOT / "grammars" / "rsc" / "Cargo.toml"
         if not grammar_cargo.exists():
-            pytest.skip("grammars/rsc/Cargo.toml not present (submodule not initialized)")
+            pytest.skip("grammars/rsc/Cargo.toml not present (run 'make grammar-clone')")
         g_v = _read_version_cargo(grammar_cargo)
         assert g_v is not None, "grammars/rsc/Cargo.toml missing version"
         assert SEMVER_RE.match(g_v), f"grammars/rsc/Cargo.toml version not semver: {g_v!r}"
@@ -102,7 +102,7 @@ class TestVersionCoherence:
         pkg = ROOT / "grammars" / "rsc" / "package.json"
         grammar_cargo = ROOT / "grammars" / "rsc" / "Cargo.toml"
         if not pkg.exists() or not grammar_cargo.exists():
-            pytest.skip("grammar metadata not present (submodule not initialized)")
+            pytest.skip("grammar metadata not present (run 'make grammar-clone')")
         g_v = _read_version_cargo(grammar_cargo)
         pkg_v = _read_version_package_json(pkg)
         assert g_v is not None, "grammars/rsc/Cargo.toml missing version"
@@ -188,12 +188,12 @@ class TestExtensionRev:
         assert not rev.startswith("000"), f"rev is placeholder 000...: {rev!r}"
         assert rev != "0" * 40, "rev is all zeros placeholder"
 
-    def test_rev_matches_git_submodule(self):
+    def test_rev_matches_grammar_checkout(self):
         _, rev = _read_extension_version_and_rev(ROOT / "extension.toml")
         assert rev is not None
-        git_rev = _git_rev("grammars/rsc")
+        git_rev = _grammar_git_rev("grammars/rsc")
         if git_rev is None:
-            pytest.skip("cannot determine git rev (no git or submodule not initialized)")
+            pytest.skip("cannot determine grammar rev (no git metadata — run 'make grammar-clone')")
         assert rev == git_rev, f"extension.toml rev {rev!r} != git HEAD {git_rev!r} (run scripts/publish_grammar.py)"
 
     def test_rev_lowercase_hex(self):
@@ -211,18 +211,25 @@ class TestReleaseYml:
         assert self.path.exists(), ".github/workflows/release.yml missing"
         self.text = self.path.read_text(encoding="utf-8")
 
-    def test_matrix_has_4_targets(self):
+    def test_matrix_has_all_six_targets(self):
+        """release.yml must build every triple the extension can request.
+
+        Mirrors src/platform.rs asset_triple(): two darwin, two linux-gnu and
+        two windows-msvc triples. A missing entry means auto-download breaks
+        on that platform at install time.
+        """
         expected = [
             "x86_64-unknown-linux-gnu",
             "aarch64-unknown-linux-gnu",
             "aarch64-apple-darwin",
             "x86_64-apple-darwin",
+            "x86_64-pc-windows-msvc",
+            "aarch64-pc-windows-msvc",
         ]
         for target in expected:
             assert target in self.text, f"release.yml missing target {target!r}"
-        # Count occurrences — each target should appear at least once in matrix
         found = sum(1 for t in expected if t in self.text)
-        assert found == 4, f"expected 4 targets, found {found}"
+        assert found == 6, f"expected 6 targets, found {found}"
 
     def test_release_yml_has_wasm_target(self):
         assert "wasm32-wasip2" in self.text, "release.yml missing wasm32-wasip2 target"

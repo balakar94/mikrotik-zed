@@ -24,9 +24,6 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+([-.+][0-9A-Za-z.-]+)?$")
-HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
-
 
 def _load_toml(path: Path) -> dict:
     """Load TOML via stdlib tomllib (3.11+) or tomli fallback."""
@@ -64,7 +61,7 @@ def _strip_git_suffix(url: str) -> str:
 class TestRustToolchain:
     """Validate rust-toolchain.toml pins and components."""
 
-    def test_channel_is_1_94_and_files_exist(self):
+    def test_channel_is_1_90_and_files_exist(self):
         p = PROJECT_ROOT / "rust-toolchain.toml"
         assert p.is_file(), f"missing {p}"
         data = _load_toml(p)
@@ -113,33 +110,21 @@ class TestCargoVersions:
 
 
 class TestExtensionToml:
+    """Repo-specific manifest sanity (id, language server registration).
+
+    Format rules (semver, 40-hex rev, schema_version, unknown keys) are owned
+    by scripts/check_zed_requirements.py (`make check-manifest`); cross-file
+    version coherence is owned by tests/test_release.py. Only the checks that
+    belong to neither live here.
+    """
+
     def test_id_is_mikrotik_rsc(self):
         data = _load_toml(PROJECT_ROOT / "extension.toml")
         assert data.get("id") == "mikrotik-rsc"
 
-    def test_version_is_semver(self):
-        data = _load_toml(PROJECT_ROOT / "extension.toml")
-        ver = data.get("version")
-        assert isinstance(ver, str) and SEMVER_RE.match(ver), f"version {ver!r} not semver"
-
-    def test_grammars_rev_is_40_hex(self):
-        data = _load_toml(PROJECT_ROOT / "extension.toml")
-        rev = data.get("grammars", {}).get("rsc", {}).get("rev")
-        assert isinstance(rev, str) and HEX40_RE.match(rev), f"rev {rev!r} not 40-char hex"
-        assert rev != "0" * 40, "rev is placeholder"
-
-    def test_language_servers_and_schema_version(self):
+    def test_language_server_registered(self):
         data = _load_toml(PROJECT_ROOT / "extension.toml")
         assert "rsc-ls" in data.get("language_servers", {}), "missing language_servers.rsc-ls"
-        assert isinstance(data.get("schema_version"), int), "schema_version missing"
-
-    def test_tmp_copy_parses(self, tmp_path: Path):
-        src = PROJECT_ROOT / "extension.toml"
-        dst = tmp_path / "extension.toml"
-        dst.write_bytes(src.read_bytes())
-        data = _load_toml(dst)
-        assert data["id"] == "mikrotik-rsc"
-        assert SEMVER_RE.match(data["version"])
 
 
 # ---------------------------------------------------------------------------

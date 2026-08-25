@@ -28,6 +28,7 @@ Breaking any of these breaks Zed registry review or runtime behavior:
 7. **The LSP stays defensive:** capped message/doc/diagnostic sizes, bounded tracked documents, strict `file://` URI validation, no filesystem access beyond its cache.
 8. **Everything persisted is English** — code, comments, docs, commits, PRs.
 9. Apache-2.0 `LICENSE` stays in the repo root.
+10. **`extension.toml` carries only schema-known keys** — validated by `make check-manifest`; unknown keys are silently ignored by Zed and mask typos.
 
 ## Daily loop
 
@@ -42,7 +43,8 @@ make install                              # full bootstrap (SKIP_SYSTEM=1 skips 
 
 ```bash
 make check      # fast compile gate (WASM + LSP)
-make validate   # full pre-commit/pre-PR gate: generate-check, fmt, clippy, all tests, sync-check, extract
+make validate   # full local pre-commit/pre-PR gate: manifest, generate-check, fmt, clippy, all tests, extract
+                # (upstream-docs staleness is a separate CI gate: make sync-check)
 ```
 
 Individual suites: `make test-grammar` · `make test-rust` · `make test-python`.
@@ -103,6 +105,7 @@ Untracked locals: `llms.txt`, `llms-full.txt` (fetch via `make sync`), `extensio
 - **Grammar:** `python scripts/publish_grammar.py --dry-run`, then `--push`. It validates generation, pushes the grammar working copy to GitHub, and updates the pinned revision in `extension.toml` itself — **never hand-edit `rev`**.
 - **Version:** `make bump VERSION=x.y.z`. Grammar crate/package.json versions (`grammars/rsc/`) are independent of extension releases — version coherence is enforced only within each group, never across groups.
 - **Binaries:** pushing a `v*.*.*` tag triggers `.github/workflows/release.yml` (multi-platform `rsc-ls` + WASM → GitHub Release).
+- **Registry:** follow [`docs/publishing-runbook.md`](docs/publishing-runbook.md) for submission/update PRs (rules: one extension per PR, ≤3 open, reply ≤3 weeks).
 
 ## Device deploy (optional, local only)
 
