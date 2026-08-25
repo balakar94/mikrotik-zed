@@ -1,11 +1,1275 @@
-// ── Server enclosure / caps / URI validation tests ──────────────────
+// ── LSP server core (protocol boundary) ───────────────────────────
 //
-// This module groups enclosure, resource-cap, and URI-validation
-// coverage separately from the main LSP loop.  The `Server` itself and
-// the canonical helpers live elsewhere on purpose: shared resource caps
-// are declared once in `caps.rs` (re-exported via the crate root) and
-// `is_valid_file_uri` lives in `main.rs`.  The tests here exercise them
-// through the `crate::` paths so they pin real wire-visible behavior.
+// Owns the wire-facing half of rsc-ls: the `Server` state machine
+// (stdio read/write loop, `handle_message` method dispatch, tracked-
+// document store), the quick-fix payload type, the variable-navigation
+// request adapters, and the canonical `is_valid_file_uri` guard.
+//
+// Split of responsibilities:
+// - Feature logic (completion, hover, diagnostics, symbols, folding,
+//   signature help, suggestions, navigation math) lives in dedicated
+//   sibling modules behind pure functions; this file only marshals
+//   JSON-RPC params/results around those calls.
+// - Shared resource caps are declared once in `caps.rs` and reach this
+//   module through `crate::` paths (re-exported at the crate root).
+// - Everything here is `pub(crate)` and re-exported from the crate root
+//   (`main.rs`) so the root test modules and these unit tests exercise
+//   real wire-visible behavior without reaching into private items.
+
+use crate::caps::{MAX_CODE_ACTIONS, MAX_DOC_SIZE, MAX_DOCS};
+use crate::completion;
+use crate::diagnostics;
+use crate::encoding::{
+    PositionEncoding, apply_incremental_edit, convert_diagnostic_ranges, floor_char_boundary,
+    lsp_character_to_byte_offset, lsp_position_to_offset,
+};
+use crate::folding;
+use crate::framing::{Frame, FrameError, read_message};
+use crate::hover;
+use crate::logging::{log_debug, log_error, log_warn};
+use crate::menus::MenuData;
+use crate::navigation;
+use crate::parser::{build_before_cursor, parse_line, tokenize_with_spans};
+use crate::signature;
+use crate::suggest;
+use crate::symbols;
+use std::collections::HashMap;
+use std::io::{BufReader, Write};
+
+/// Resolved payload of one quick-fix suggestion: the candidate shown in
+/// the action title and the text actually spliced into the document.
+///
+/// The two differ only for enum-value repairs, where the replacement
+/// re-wraps the suggested member in the offending value's original quote
+/// style while the title stays bare (`Did you mean 'input'?` repairing
+/// `"inpt"` splices `"input"`).
+pub(crate) struct Suggestion {
+    /// Candidate rendered inside `Did you mean '<…>'?`.
+    title_subject: String,
+    /// Replacement text for the diagnostic's own range.
+    new_text: String,
+}
+
+impl Suggestion {
+    /// A suggestion whose title subject and replacement text coincide.
+    pub(crate) fn plain(candidate: String) -> Self {
+        Self {
+            new_text: candidate.clone(),
+            title_subject: candidate,
+        }
+    }
+}
+/// Validate that a URI is an allowed `file://` URI.
+///
+/// Rejects non-file schemes (e.g., `untitled://`, `http://`) and
+/// suspicious file URIs containing path traversal (`..`) or null bytes.
+pub(crate) fn is_valid_file_uri(uri: &str) -> bool {
+    if !uri.starts_with("file://") {
+        return false;
+    }
+    if uri.contains('\0') {
+        return false;
+    }
+    if uri.contains("..") {
+        return false;
+    }
+    true
+}
+
+/// LSP 3.17 exit semantics: the server must exit with status 0 when the
+/// `shutdown` request was received before `exit`, and with status 1 otherwise.
+pub(crate) fn exit_code(shutdown_received: bool) -> i32 {
+    if shutdown_received { 0 } else { 1 }
+}
+
+/// Build a JSON-RPC `-32602 Invalid params` error response for a REQUEST.
+///
+/// Requests (messages carrying an `id`) must always receive a response —
+/// dropping one leaves the client awaiting it until timeout.
+pub(crate) fn invalid_params_response(
+    id: &serde_json::Value,
+    message: &str,
+) -> Option<serde_json::Value> {
+    Some(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32602,
+            "message": message,
+        },
+    }))
+}
+
+/// Extract a `(line, character)` pair from a JSON LSP Position object,
+/// or [`None`] when the object is missing or mistyped (non-numeric
+/// fields). Values stay in wire units — callers convert per the
+/// negotiated encoding at the document boundary.
+pub(crate) fn wire_position(v: Option<&serde_json::Value>) -> Option<(usize, usize)> {
+    let v = v?;
+    let line = v.get("line").and_then(|p| p.as_u64())?;
+    let character = v.get("character").and_then(|p| p.as_u64())?;
+    Some((line as usize, character as usize))
+}
+
+// ── Variable navigation adapters ────────────────────────────────────
+//
+// Thin protocol-boundary wrappers around the pure `navigation` module.
+// Free functions over plain data so they are testable without a Server;
+// every wire→byte conversion goes through encoding.rs and every logical→
+// physical mapping through `LogicalLine::map_range`.
+
+/// Serialize one indexed occurrence as an LSP `Location` for `uri`,
+/// converting its physical byte range into the negotiated wire encoding.
+pub(crate) fn navigation_location_value(
+    uri: &str,
+    lines: &[&str],
+    logicals: &[diagnostics::LogicalLine],
+    hit: &navigation::VariableHit,
+    enc: PositionEncoding,
+) -> serde_json::Value {
+    let mut range = logicals[hit.logical_line].map_range(hit.start, hit.end);
+    crate::convert_position(&mut range.start, lines, enc);
+    crate::convert_position(&mut range.end, lines, enc);
+    serde_json::json!({ "uri": uri, "range": range })
+}
+
+/// Everything both navigation requests need after resolving a position.
+///
+/// `logical_line`/`cursor` locate the request inside the caller's joined
+/// logical lines; `name` is the variable identifier under the cursor
+/// (usage or declaration — never a mere same-spelling property).
+pub(crate) struct CursorOccurrence {
+    logical_line: usize,
+    cursor: usize,
+    name: String,
+}
+
+/// Shared resolution step of both navigation requests.
+///
+/// `logicals` is the ONE continuation-aware join per request (owned by the
+/// caller) and `index` was built from that same join, so cursor mapping and
+/// occurrence lookup can never disagree about document coordinates.
+/// Wire character → byte offset via [`lsp_character_to_byte_offset`];
+/// cursor mapped into logical coordinates via
+/// [`diagnostics::LogicalLine::logical_offset_from_physical`]; word
+/// extracted with hover's helpers ([`navigation::word_at`]); the word must
+/// overlap a real indexed occurrence of itself or resolution fails.
+///
+/// Returns `None` when no variable sits under this position — callers
+/// answer with their shape's empty result (definition → null result,
+/// references → empty list).
+pub(crate) fn resolve_cursor_occurrence(
+    doc: &str,
+    logicals: &[diagnostics::LogicalLine],
+    index: &[navigation::VariableHit],
+    enc: PositionEncoding,
+    line: usize,
+    character: usize,
+) -> Option<CursorOccurrence> {
+    let ll_idx = diagnostics::covering_logical_line_index(logicals, line)?;
+    let ll = &logicals[ll_idx];
+    let phys_text = doc.lines().nth(line).unwrap_or("");
+    let char_byte = lsp_character_to_byte_offset(phys_text, character, enc);
+    let cursor = ll.logical_offset_from_physical(line, char_byte)?;
+    let word = navigation::word_at(ll.text(), cursor);
+    let hit = navigation::hit_at_cursor(index, word, ll_idx, cursor)?;
+    Some(CursorOccurrence {
+        logical_line: ll_idx,
+        cursor,
+        name: hit.name.clone(),
+    })
+}
+
+/// Compute the `textDocument/definition` RESULT for an already-validated
+/// request: `null`, or one `Location` at the exact name-token span of the
+/// declaration chosen by `navigation::choose_definition`'s deterministic
+/// rule (closest preceding same-name declaration; first one if none
+/// precedes).
+pub(crate) fn goto_definition_result(
+    doc: &str,
+    enc: PositionEncoding,
+    uri: &str,
+    line: usize,
+    character: usize,
+) -> serde_json::Value {
+    // ONE continuation-aware join per request, feeding both the index and
+    // the cursor resolution below.
+    let logicals = diagnostics::logical_lines(doc);
+    let index = navigation::build_variable_index(&logicals);
+    let Some(occ) = resolve_cursor_occurrence(doc, &logicals, &index, enc, line, character) else {
+        return serde_json::Value::Null;
+    };
+    let Some(decl) =
+        navigation::choose_definition(&index, &occ.name, (occ.logical_line, occ.cursor))
+    else {
+        // A usage exists but no declaration shares its name — nothing
+        // honest to point at.
+        return serde_json::Value::Null;
+    };
+    let lines: Vec<&str> = doc.lines().collect();
+    navigation_location_value(uri, &lines, &logicals, decl, enc)
+}
+
+/// Compute the `textDocument/references` RESULT: the chosen declaration
+/// first when `include_declaration` is set, then every `$usage` of the
+/// name in document order, capped at `navigation::MAX_REFERENCES` total.
+pub(crate) fn references_result(
+    doc: &str,
+    enc: PositionEncoding,
+    uri: &str,
+    line: usize,
+    character: usize,
+    include_declaration: bool,
+) -> Vec<serde_json::Value> {
+    // ONE continuation-aware join per request, feeding both the index and
+    // the cursor resolution below.
+    let logicals = diagnostics::logical_lines(doc);
+    let index = navigation::build_variable_index(&logicals);
+    let Some(occ) = resolve_cursor_occurrence(doc, &logicals, &index, enc, line, character) else {
+        return Vec::new();
+    };
+    let declaration = if include_declaration {
+        navigation::choose_definition(&index, &occ.name, (occ.logical_line, occ.cursor))
+    } else {
+        None
+    };
+    let refs = navigation::collect_references(&index, &occ.name, declaration);
+    let lines: Vec<&str> = doc.lines().collect();
+    refs.iter()
+        .map(|h| navigation_location_value(uri, &lines, &logicals, h, enc))
+        .collect()
+}
+
+// ── Server state ────────────────────────────────────────────────
+pub(crate) struct Server {
+    pub(crate) data: MenuData,
+    pub(crate) docs: HashMap<String, String>, // URI → document text
+    /// Position encoding negotiated during `initialize`; defaults to UTF-16
+    /// (the spec default) until then.
+    pub(crate) position_encoding: PositionEncoding,
+    /// Whether the `shutdown` request was answered before `exit`.
+    /// LSP 3.17 requires exit status 0 only when shutdown preceded exit.
+    pub(crate) shutdown_received: bool,
+}
+
+impl Server {
+    pub(crate) fn new(data: MenuData) -> Self {
+        Server {
+            data,
+            docs: HashMap::new(),
+            position_encoding: PositionEncoding::default(),
+            shutdown_received: false,
+        }
+    }
+
+    pub(crate) fn run(&mut self) {
+        let stdin = std::io::stdin();
+        let mut reader = BufReader::new(stdin.lock());
+
+        loop {
+            // Read one framed message. A Protocol framing failure is terminal
+            // (exit code 1 — no shutdown was received): the stream cannot be
+            // resynchronized, so terminate and let the client's supervisor
+            // restart a clean server. I/O failures exit cleanly as before.
+            let body = match read_message(&mut reader) {
+                Ok(Frame::Message(body)) => body,
+                Ok(Frame::Eof) => return,
+                Ok(Frame::Skipped) => continue,
+                Err(FrameError::Io(e)) => {
+                    log_error!("read error: {e}");
+                    return;
+                }
+                Err(FrameError::Protocol(why)) => {
+                    log_error!(
+                        "unrecoverable framing error ({why}) — terminating with code {} \
+                         so the client supervisor restarts a clean server",
+                        exit_code(false)
+                    );
+                    std::process::exit(exit_code(false));
+                }
+            };
+
+            let msg: serde_json::Value = match serde_json::from_slice(&body) {
+                Ok(v) => v,
+                Err(e) => {
+                    log_warn!("JSON parse error: {e}");
+                    continue;
+                }
+            };
+
+            let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
+
+            let response = self.handle_message(method, &msg);
+
+            if let Some(resp) = response {
+                let json = match serde_json::to_string(&resp) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        eprintln!("[rsc-ls] failed to serialize response: {e}");
+                        continue;
+                    }
+                };
+                let header = format!("Content-Length: {}\r\n\r\n", json.len());
+                let mut stdout = std::io::stdout().lock();
+                if let Err(e) = stdout.write_all(header.as_bytes()) {
+                    eprintln!("[rsc-ls] write header error: {e}");
+                    return;
+                }
+                if let Err(e) = stdout.write_all(json.as_bytes()) {
+                    eprintln!("[rsc-ls] write body error: {e}");
+                    return;
+                }
+                if let Err(e) = stdout.flush() {
+                    eprintln!("[rsc-ls] flush error: {e}");
+                    return;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn handle_message(
+        &mut self,
+        method: &str,
+        params: &serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        let id = params.get("id").cloned().unwrap_or(serde_json::Value::Null);
+
+        match method {
+            "initialize" => {
+                let id = params.get("id").cloned().unwrap_or(serde_json::Value::Null);
+                // Negotiate the position encoding (LSP 3.17): prefer utf-8
+                // (internal positions are byte offsets); otherwise fall back
+                // to utf-16, which is also the mandated default when the
+                // client sends no capability. NOTE: per LSP 3.17 the array
+                // lives at InitializeParams.capabilities.general.positionEncodings.
+                let client_offers_utf8 =
+                    params["params"]["capabilities"]["general"]["positionEncodings"]
+                        .as_array()
+                        .map(|encodings| encodings.iter().any(|v| v.as_str() == Some("utf-8")))
+                        .unwrap_or(false);
+                self.position_encoding = if client_offers_utf8 {
+                    PositionEncoding::Utf8
+                } else {
+                    PositionEncoding::Utf16
+                };
+                log_debug!(
+                    "negotiated position encoding: {}",
+                    self.position_encoding.as_str()
+                );
+                Some(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "capabilities": {
+                            "positionEncoding": self.position_encoding.as_str(),
+                            // Incremental sync (change = 2): the patching
+                            // path (apply_incremental_edit) is authoritative;
+                            // full-text changes remain supported as fallback.
+                            "textDocumentSync": {
+                                "openClose": true,
+                                "change": 2
+                            },
+                            // ':' opens script-word completions (statement
+                            // snippets / script globals);
+                            // compute_completions filters that context to
+                            // ':'-prefixed labels only.
+                            "completionProvider": {
+                                "triggerCharacters": ["/", " ", "=", ":"],
+                            },
+                            "hoverProvider": true,
+                            "documentSymbolProvider": true,
+                            "foldingRangeProvider": true,
+                            // Variable navigation: go-to-definition and
+                            // find-references for `:local`/`:global`
+                            // declarations vs `$name` usages — pure logic
+                            // lives in navigation.rs.
+                            "definitionProvider": true,
+                            "referencesProvider": true,
+                            // Quick-fixes ("Did you mean …?") for
+                            // unknown-property / unknown-menu /
+                            // invalid-enum-value diagnostics.
+                            "codeActionProvider": true,
+                            // Named-parameter signature popup; same space/=
+                            // triggers completion uses (typing a new property
+                            // or its `=` re-issues the request).
+                            "signatureHelpProvider": {
+                                "triggerCharacters": [" ", "="]
+                            },
+                            "diagnosticProvider": {
+                                "interFileDependencies": false,
+                                "workspaceDiagnostics": false
+                            }
+                        },
+                        "serverInfo": {
+                            "name": "mikrotik-rsc-ls",
+                            "version": env!("CARGO_PKG_VERSION"),
+                        },
+                    },
+                }))
+            }
+
+            "shutdown" => {
+                // Latch that shutdown was answered: the subsequent `exit` must
+                // then terminate with status 0 (LSP 3.17 exit semantics).
+                self.shutdown_received = true;
+                Some(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": null,
+                }))
+            }
+
+            "exit" => {
+                let code = exit_code(self.shutdown_received);
+                if code != 0 {
+                    log_warn!("exit without prior shutdown (LSP 3.17) — exiting with code {code}");
+                }
+                std::process::exit(code);
+            }
+
+            "textDocument/didOpen" => {
+                let uri = params["params"]["textDocument"]["uri"].as_str()?;
+                // Validate URI scheme — only file:// URIs are expected; reject others to avoid
+                // leaking path handling or storing attacker-controlled arbitrary schemes.
+                if !is_valid_file_uri(uri) {
+                    eprintln!("[rsc-ls] rejecting didOpen with non-file URI: {uri:?}");
+                    return None;
+                }
+                let text = params["params"]["textDocument"]["text"].as_str()?;
+                let uri_owned = uri.to_string();
+                if text.len() > MAX_DOC_SIZE {
+                    eprintln!(
+                        "[rsc-ls] document too large ({} bytes > {MAX_DOC_SIZE}), truncating: {uri:?}",
+                        text.len()
+                    );
+                    // Truncate at char boundary to avoid invalid UTF-8
+                    let trunc_idx = floor_char_boundary(text, MAX_DOC_SIZE);
+                    self.docs
+                        .insert(uri_owned.clone(), text[..trunc_idx].to_string());
+                } else {
+                    if self.docs.len() >= MAX_DOCS && !self.docs.contains_key(&uri_owned) {
+                        eprintln!(
+                            "[rsc-ls] too many open documents ({} >= {MAX_DOCS}), rejecting: {uri:?}",
+                            self.docs.len()
+                        );
+                        return None;
+                    }
+                    self.docs.insert(uri_owned.clone(), text.to_string());
+                }
+                // Publish diagnostics (push) after open
+                let doc_text = self.docs.get(&uri_owned).cloned().unwrap_or_default();
+                let diags = self.encoded_diagnostics(&doc_text, &uri_owned);
+                Self::publish_diagnostics(&uri_owned, diags);
+                None
+            }
+
+            "textDocument/didChange" => {
+                // This server advertises textDocumentSync change = 2
+                // (Incremental), so clients normally send range-scoped edits.
+                // For robustness, handle both:
+                // - Incremental sync: changes contain "range" + "text" (patch doc).
+                // - Full sync: each change contains only "text" (replace doc).
+                let uri = params["params"]["textDocument"]["uri"].as_str()?;
+                if !is_valid_file_uri(uri) {
+                    eprintln!("[rsc-ls] rejecting didChange with non-file URI: {uri:?}");
+                    return None;
+                }
+                let changes = params["params"]["contentChanges"].as_array()?;
+                if changes.is_empty() {
+                    return None;
+                }
+                // Enforce doc count cap on first insert via didChange (client may skip didOpen)
+                if !self.docs.contains_key(uri) && self.docs.len() >= MAX_DOCS {
+                    eprintln!(
+                        "[rsc-ls] too many open documents ({} >= {MAX_DOCS}), rejecting didChange: {uri:?}",
+                        self.docs.len()
+                    );
+                    return None;
+                }
+                for change in changes {
+                    let text = change.get("text").and_then(|t| t.as_str())?;
+                    // Reject or truncate oversize incremental payloads early
+                    if text.len() > MAX_DOC_SIZE {
+                        eprintln!(
+                            "[rsc-ls] change text too large ({} > {MAX_DOC_SIZE}), truncating",
+                            text.len()
+                        );
+                        let trunc_idx = floor_char_boundary(text, MAX_DOC_SIZE);
+                        let truncated = &text[..trunc_idx];
+                        if let Some(range) = change.get("range") {
+                            let needs_insert: bool;
+                            let mut truncate_needed = false;
+                            {
+                                if let Some(doc) = self.docs.get_mut(uri) {
+                                    if apply_incremental_edit(
+                                        doc,
+                                        range,
+                                        truncated,
+                                        self.position_encoding,
+                                    )
+                                    .is_err()
+                                    {
+                                        needs_insert = true;
+                                    } else {
+                                        needs_insert = false;
+                                        if doc.len() > MAX_DOC_SIZE {
+                                            truncate_needed = true;
+                                        }
+                                    }
+                                    if truncate_needed {
+                                        let ti = floor_char_boundary(doc, MAX_DOC_SIZE);
+                                        doc.truncate(ti);
+                                    }
+                                } else {
+                                    needs_insert = true;
+                                }
+                            }
+                            if needs_insert {
+                                self.docs.insert(uri.to_string(), truncated.to_string());
+                            }
+                        } else {
+                            self.docs.insert(uri.to_string(), truncated.to_string());
+                        }
+                        continue;
+                    }
+                    if let Some(range) = change.get("range") {
+                        let mut fallback_insert: Option<String> = None;
+                        let mut truncate_doc = false;
+                        {
+                            if let Some(doc) = self.docs.get_mut(uri) {
+                                if apply_incremental_edit(doc, range, text, self.position_encoding)
+                                    .is_err()
+                                {
+                                    // Fallback: replace whole document if incremental patch fails.
+                                    if text.len() > MAX_DOC_SIZE {
+                                        let ti = floor_char_boundary(text, MAX_DOC_SIZE);
+                                        fallback_insert = Some(text[..ti].to_string());
+                                    } else {
+                                        fallback_insert = Some(text.to_string());
+                                    }
+                                } else if doc.len() > MAX_DOC_SIZE {
+                                    truncate_doc = true;
+                                }
+                            } else {
+                                // No existing doc — treat as full insert.
+                                fallback_insert = Some(text.to_string());
+                            }
+                        }
+                        if let Some(s) = fallback_insert {
+                            self.docs.insert(uri.to_string(), s);
+                            // Check resulting doc size after fallback insert
+                            if let Some(d) = self.docs.get_mut(uri)
+                                && d.len() > MAX_DOC_SIZE
+                            {
+                                let ti = floor_char_boundary(d, MAX_DOC_SIZE);
+                                d.truncate(ti);
+                            }
+                        } else if truncate_doc && let Some(doc) = self.docs.get_mut(uri) {
+                            let ti = floor_char_boundary(doc, MAX_DOC_SIZE);
+                            doc.truncate(ti);
+                        }
+                    } else {
+                        // Full sync — last change wins.
+                        self.docs.insert(uri.to_string(), text.to_string());
+                    }
+                }
+                // Publish diagnostics after changes (incremental or full)
+                let uri_owned = uri.to_string();
+                let doc_text = self.docs.get(&uri_owned).cloned().unwrap_or_default();
+                let diags = self.encoded_diagnostics(&doc_text, &uri_owned);
+                Self::publish_diagnostics(&uri_owned, diags);
+                None
+            }
+
+            "textDocument/didClose" => {
+                if let Some(uri) = params["params"]["textDocument"]["uri"].as_str() {
+                    self.docs.remove(uri);
+                    // Clear diagnostics for closed file
+                    Self::publish_diagnostics(uri, Vec::new());
+                }
+                None
+            }
+
+            "textDocument/completion" => {
+                // Requests must always be answered: malformed params →
+                // -32602, untracked URI (never opened, closed, or rejected
+                // at MAX_DOCS) → spec-permitted null result. Never silence.
+                let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
+                    return invalid_params_response(&id, "missing textDocument.uri");
+                };
+                let pos = &params["params"]["position"];
+                let Some(line) = pos["line"].as_u64() else {
+                    return invalid_params_response(&id, "missing position.line");
+                };
+                let Some(character) = pos["character"].as_u64() else {
+                    return invalid_params_response(&id, "missing position.character");
+                };
+                let Some(doc) = self.docs.get(uri) else {
+                    log_debug!("completion for untracked URI, returning null result: {uri:?}");
+                    return Some(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": null,
+                    }));
+                };
+
+                // Convert the wire `character` ONCE into a byte offset within
+                // the cursor line, extracted with the same `str::lines()` split
+                // that `build_before_cursor` uses internally, so encoding math
+                // cannot diverge from the string being sliced.
+                let line_idx = line as usize;
+                let current_line = doc.lines().nth(line_idx).unwrap_or("");
+                let char_byte = lsp_character_to_byte_offset(
+                    current_line,
+                    character as usize,
+                    self.position_encoding,
+                );
+                let before_cursor = build_before_cursor(doc, line_idx, char_byte);
+                let items = completion::compute_completions(&self.data, &before_cursor);
+
+                Some(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "isIncomplete": false,
+                        "items": items,
+                    },
+                }))
+            }
+
+            "textDocument/hover" => {
+                // Same response guarantees as completion: -32602 for
+                // malformed params, null result for untracked URIs.
+                let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
+                    return invalid_params_response(&id, "missing textDocument.uri");
+                };
+                let pos = &params["params"]["position"];
+                let Some(line) = pos["line"].as_u64() else {
+                    return invalid_params_response(&id, "missing position.line");
+                };
+                let Some(character) = pos["character"].as_u64() else {
+                    return invalid_params_response(&id, "missing position.character");
+                };
+                let Some(doc) = self.docs.get(uri) else {
+                    log_debug!("hover for untracked URI, returning null result: {uri:?}");
+                    return Some(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": null,
+                    }));
+                };
+                let line = line as usize;
+                let current_line = doc.lines().nth(line).unwrap_or("");
+
+                // Same single boundary conversion as completion: the wire
+                // `character` becomes a byte offset within `current_line`,
+                // which is exactly the slice `compute_hover` inspects and the
+                // line `build_before_cursor` re-slices internally.
+                let char_byte = lsp_character_to_byte_offset(
+                    current_line,
+                    character as usize,
+                    self.position_encoding,
+                );
+
+                let hover = hover::compute_hover(&self.data, current_line, char_byte, doc, line);
+
+                let result = match hover {
+                    Some(h) => match serde_json::to_value(h) {
+                        Ok(v) => Some(v),
+                        Err(e) => {
+                            eprintln!("[rsc-ls] hover serialize error: {e}");
+                            None
+                        }
+                    },
+                    None => None,
+                };
+
+                Some(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": result,
+                }))
+            }
+
+            "textDocument/signatureHelp" => {
+                // Same response guarantees as completion/hover: -32602 for
+                // malformed params (echoed id), null result for untracked
+                // URIs. Null is ALSO the anti-noise contract's answer when
+                // the line resolves to no menu+verb pair — no verb, no popup.
+                let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
+                    return invalid_params_response(&id, "missing textDocument.uri");
+                };
+                let pos = &params["params"]["position"];
+                let Some(line) = pos["line"].as_u64() else {
+                    return invalid_params_response(&id, "missing position.line");
+                };
+                let Some(character) = pos["character"].as_u64() else {
+                    return invalid_params_response(&id, "missing position.character");
+                };
+                let Some(doc) = self.docs.get(uri) else {
+                    log_debug!("signatureHelp for untracked URI, returning null result: {uri:?}");
+                    return Some(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": null,
+                    }));
+                };
+
+                // Wire `character` → byte offset within the cursor's
+                // PHYSICAL line, using the exact same lines() split the
+                // logical-line join consumes below.
+                let line_idx = line as usize;
+                let current_line = doc.lines().nth(line_idx).unwrap_or("");
+                let char_byte = lsp_character_to_byte_offset(
+                    current_line,
+                    character as usize,
+                    self.position_encoding,
+                );
+
+                // ONE continuation-aware join per REQUEST (same cost profile
+                // as codeAction), shared by the covering lookup, menu
+                // resolution, tokenization, and cursor mapping — all of which
+                // must agree on what "the command under the cursor" is.
+                let logicals = diagnostics::logical_lines(doc);
+                let help = diagnostics::covering_logical_line(&logicals, line_idx).and_then(|ll| {
+                    let ctx = parse_line(&self.data, ll.text());
+                    let menu = self.data.menu_by_path.get(&ctx.path)?;
+                    let tokens = tokenize_with_spans(ll.text());
+                    let verb_idx = signature::resolve_verb_token(&self.data, &tokens)?;
+                    let cursor_logical = ll.logical_offset_from_physical(line_idx, char_byte)?;
+                    signature::compute_signature_help(menu, &tokens, verb_idx, cursor_logical)
+                });
+
+                let result = match help {
+                    Some(h) => match serde_json::to_value(h) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("[rsc-ls] signatureHelp serialize error: {e}");
+                            serde_json::Value::Null
+                        }
+                    },
+                    None => serde_json::Value::Null,
+                };
+
+                Some(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": result,
+                }))
+            }
+
+            "textDocument/documentSymbol" => {
+                // Same response guarantees as completion: -32602 for
+                // malformed params, null result for untracked URIs.
+                let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
+                    return invalid_params_response(&id, "missing textDocument.uri");
+                };
+                let Some(doc) = self.docs.get(uri) else {
+                    log_debug!("documentSymbol for untracked URI, returning null result: {uri:?}");
+                    return Some(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": null,
+                    }));
+                };
+                let symbols = symbols::compute_document_symbols(&self.data, doc);
+
+                // Symbol ranges are computed in byte coordinates; convert
+                // every endpoint into the negotiated wire encoding, exactly
+                // like the diagnostic pipeline does before emission.
+                let lines: Vec<&str> = doc.lines().collect();
+                let mut wire_symbols = symbols;
+                for sym in &mut wire_symbols {
+                    crate::convert_position(&mut sym.range.start, &lines, self.position_encoding);
+                    crate::convert_position(&mut sym.range.end, &lines, self.position_encoding);
+                    crate::convert_position(
+                        &mut sym.selection_range.start,
+                        &lines,
+                        self.position_encoding,
+                    );
+                    crate::convert_position(
+                        &mut sym.selection_range.end,
+                        &lines,
+                        self.position_encoding,
+                    );
+                }
+
+                let result = match serde_json::to_value(&wire_symbols) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        // Unserializable output is a bug, not a client error:
+                        // degrade to an empty list rather than dropping the
+                        // request (requests must be answered).
+                        eprintln!("[rsc-ls] documentSymbol serialize error: {e}");
+                        serde_json::Value::Array(Vec::new())
+                    }
+                };
+
+                Some(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": result,
+                }))
+            }
+
+            "textDocument/definition" => {
+                // Same response guarantees as hover: -32602 for malformed
+                // params (echoed id), null result for untracked URIs. Null
+                // is ALSO the answer when the cursor does not sit on a
+                // RouterOS script variable — a definition must never be
+                // invented that cannot be grounded in an indexed
+                // `:local`/`:global` declaration.
+                let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
+                    return invalid_params_response(&id, "missing textDocument.uri");
+                };
+                let pos = &params["params"]["position"];
+                let Some(line) = pos["line"].as_u64() else {
+                    return invalid_params_response(&id, "missing position.line");
+                };
+                let Some(character) = pos["character"].as_u64() else {
+                    return invalid_params_response(&id, "missing position.character");
+                };
+                let Some(doc) = self.docs.get(uri) else {
+                    log_debug!("definition for untracked URI, returning null result: {uri:?}");
+                    return Some(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": null,
+                    }));
+                };
+
+                let result = goto_definition_result(
+                    doc,
+                    self.position_encoding,
+                    uri,
+                    line as usize,
+                    character as usize,
+                );
+
+                Some(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": result,
+                }))
+            }
+
+            "textDocument/references" => {
+                // List-shaped like codeAction: -32602 for malformed params,
+                // empty array (a valid Location[] result) for untracked
+                // URIs and variable-less positions. `context.includeDeclaration`
+                // is REQUIRED by LSP ReferenceParams, so an absent or
+                // non-bool context mirrors the sibling handlers' -32602
+                // strictness instead of silently guessing false.
+                let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
+                    return invalid_params_response(&id, "missing textDocument.uri");
+                };
+                let pos = &params["params"]["position"];
+                let Some(line) = pos["line"].as_u64() else {
+                    return invalid_params_response(&id, "missing position.line");
+                };
+                let Some(character) = pos["character"].as_u64() else {
+                    return invalid_params_response(&id, "missing position.character");
+                };
+                let Some(include_declaration) =
+                    params["params"]["context"]["includeDeclaration"].as_bool()
+                else {
+                    return invalid_params_response(&id, "missing context.includeDeclaration");
+                };
+                let Some(doc) = self.docs.get(uri) else {
+                    log_debug!("references for untracked URI, returning empty list: {uri:?}");
+                    return Some(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": [],
+                    }));
+                };
+
+                let result = references_result(
+                    doc,
+                    self.position_encoding,
+                    uri,
+                    line as usize,
+                    character as usize,
+                    include_declaration,
+                );
+
+                Some(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": result,
+                }))
+            }
+
+            "textDocument/foldingRange" => {
+                // Same response guarantees as documentSymbol. Folding
+                // ranges are line-only, so no position-encoding conversion
+                // applies.
+                let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
+                    return invalid_params_response(&id, "missing textDocument.uri");
+                };
+                let Some(doc) = self.docs.get(uri) else {
+                    log_debug!("foldingRange for untracked URI, returning null result: {uri:?}");
+                    return Some(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": null,
+                    }));
+                };
+                let ranges = folding::compute_folding_ranges(doc);
+                let result = match serde_json::to_value(&ranges) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("[rsc-ls] foldingRange serialize error: {e}");
+                        serde_json::Value::Array(Vec::new())
+                    }
+                };
+                Some(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": result,
+                }))
+            }
+
+            "textDocument/diagnostic" => {
+                // Pull diagnostics (LSP 3.17+)
+                let uri = params["params"]["textDocument"]["uri"]
+                    .as_str()
+                    .unwrap_or("");
+                if !uri.is_empty() && !is_valid_file_uri(uri) {
+                    return Some(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "kind": "full",
+                            "items": []
+                        }
+                    }));
+                }
+                let doc_text = self
+                    .docs
+                    .get(uri)
+                    .cloned()
+                    .unwrap_or_else(|| "".to_string());
+                // Cap large docs same as push
+                let diags = self.encoded_diagnostics(&doc_text, uri);
+                Some(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "kind": "full",
+                        "items": diags
+                    }
+                }))
+            }
+
+            "workspace/diagnostic" => {
+                // Workspace diagnostics not supported (interFileDependencies false)
+                Some(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "items": []
+                    }
+                }))
+            }
+
+            "textDocument/codeAction" => {
+                // Quick-fixes ("Did you mean …?") for our own
+                // unknown-property / unknown-menu / invalid-enum-value
+                // diagnostics. Same response
+                // guarantees as the other request handlers: -32602 for
+                // malformed params; an untracked URI answers with an EMPTY
+                // action list (a valid CodeAction[] result), never an error.
+                let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
+                    return invalid_params_response(&id, "missing textDocument.uri");
+                };
+                let Some(client_diags) = params["params"]["context"]["diagnostics"].as_array()
+                else {
+                    return invalid_params_response(&id, "missing context.diagnostics");
+                };
+                let Some(doc) = self.docs.get(uri) else {
+                    log_debug!("codeAction for untracked URI, returning empty list: {uri:?}");
+                    return Some(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": [],
+                    }));
+                };
+                let actions = self.compute_code_actions(uri, doc, client_diags);
+                Some(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": actions,
+                }))
+            }
+
+            _ => {
+                // Unknown method
+                if !id.is_null() {
+                    Some(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {
+                            "code": -32601,
+                            "message": format!("Method not found: {method}"),
+                        },
+                    }))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Compute diagnostics for `doc` and convert emitted range characters
+    /// from internal byte-offset semantics to the negotiated position
+    /// encoding. Shared by both push paths (didOpen / didChange) and the
+    /// pull handler so they can never diverge.
+    pub(crate) fn encoded_diagnostics(
+        &self,
+        doc_text: &str,
+        uri: &str,
+    ) -> Vec<diagnostics::Diagnostic> {
+        let diags = diagnostics::compute_diagnostics(&self.data, doc_text, uri);
+        convert_diagnostic_ranges(diags, doc_text, self.position_encoding)
+    }
+
+    /// Build `quickfix` CodeActions for client-echoed diagnostics.
+    ///
+    /// Eligibility: `source == "rsc-ls"` AND code `unknown-property`,
+    /// `unknown-menu`, or `invalid-enum-value`. Anything else — foreign
+    /// sources, other codes, missing or mistyped fields — is ignored by
+    /// design: a quick-fix must never be invented that cannot be grounded
+    /// in the document.
+    ///
+    /// For each eligible diagnostic the mistyped token is recovered from
+    /// the tracked document at the diagnostic's own range (never by
+    /// re-parsing our message text) and [`suggest::best_candidate`] picks
+    /// a deterministic replacement under the length-aware threshold. The
+    /// candidate SET depends on the code:
+    ///
+    /// - `unknown-property`: the property names of THE menu the
+    ///   diagnostic's line belongs to, resolved with the same
+    ///   line-resolution machinery the diagnostic pipeline uses
+    ///   ([`diagnostics::resolve_menu_for_line`]).
+    /// - `unknown-menu`: every known menu path.
+    /// - `invalid-enum-value`: the enum members of the argument named by
+    ///   the `key=value` token pair whose value span overlaps the
+    ///   diagnostic range. The pair is located WITHOUT touching the
+    ///   message: the covering logical line is tokenized with spans
+    ///   (exactly like signature help), wire positions are mapped into
+    ///   logical coordinates via [`diagnostics::LogicalLine::logical_offset_from_physical`],
+    ///   and only the pair's KEY is consumed — the replacement text is
+    ///   derived from the recovered range slice itself, so even a stale
+    ///   range can never splice mismatched text. A quoted typo is
+    ///   repaired to a quoted member in the SAME quote style; every
+    ///   unresolved link (no menu, no pair, no argument, no members) or
+    ///   candidate beyond threshold yields no action rather than a guess.
+    ///
+    /// Total actions are capped at [`MAX_CODE_ACTIONS`].
+    pub(crate) fn compute_code_actions(
+        &self,
+        uri: &str,
+        doc: &str,
+        client_diags: &[serde_json::Value],
+    ) -> Vec<serde_json::Value> {
+        let mut actions = Vec::new();
+        if client_diags.is_empty() {
+            return actions;
+        }
+        // One continuation-aware logical-line join per REQUEST, shared by
+        // every diagnostic below — not one join per diagnostic.
+        let logicals = diagnostics::logical_lines(doc);
+
+        for diag in client_diags {
+            if actions.len() >= MAX_CODE_ACTIONS {
+                break;
+            }
+            if diag.get("source").and_then(|s| s.as_str()) != Some(diagnostics::DIAGNOSTIC_SOURCE) {
+                continue;
+            }
+            // LSP Diagnostic.code is number|string; ours are strings, so a
+            // numeric or absent code fails this binding and is skipped.
+            let Some(code) = diag.get("code").and_then(|c| c.as_str()) else {
+                continue;
+            };
+            // The offending-token range, echoed verbatim into the edit.
+            let Some(range) = diag.get("range") else {
+                continue;
+            };
+            let Some((start_line, start_char)) = wire_position(range.get("start")) else {
+                continue;
+            };
+            let Some((end_line, end_char)) = wire_position(range.get("end")) else {
+                continue;
+            };
+
+            // Recover the mistyped token text from the document itself.
+            // Stale ranges (pointing outside the current text) and absurdly
+            // long spans yield no suggestion rather than a wild guess.
+            let start_off =
+                lsp_position_to_offset(doc, start_line, start_char, self.position_encoding);
+            let end_off = lsp_position_to_offset(doc, end_line, end_char, self.position_encoding);
+            let (start_off, end_off) = match (start_off, end_off) {
+                (Ok(s), Ok(e)) if e > s && e - s <= suggest::MAX_SUGGEST_INPUT_BYTES => (s, e),
+                _ => continue,
+            };
+            let input = &doc[start_off..end_off];
+
+            let fix = match code {
+                // Candidate set: the property names of THE menu the
+                // diagnostic's line belongs to. If that menu cannot be
+                // resolved (implicit parent, stale range), skip — never
+                // guess across all menus.
+                "unknown-property" => {
+                    let Some(menu) =
+                        diagnostics::resolve_menu_for_line(&self.data, &logicals, start_line)
+                    else {
+                        continue;
+                    };
+                    suggest::best_candidate(
+                        input,
+                        menu.arguments
+                            .iter()
+                            .chain(menu.flags.iter())
+                            .chain(menu.read_only.iter())
+                            .map(|a| &a.name),
+                    )
+                    .map(Suggestion::plain)
+                }
+                // Candidate set: every known menu path. best_candidate is
+                // deterministic, so HashMap iteration order is irrelevant.
+                "unknown-menu" => suggest::best_candidate(input, self.data.menu_by_path.keys())
+                    .map(Suggestion::plain),
+                // Candidate set: the enum members of the `key=value` pair
+                // the diagnostic points at, recovered WITHOUT parsing the
+                // message. The Rule 5 range covers exactly the value part
+                // (quotes included), so the pair is found by matching that
+                // range against token VALUE spans in logical coordinates —
+                // the same tokenize-the-logical-line walk signature help
+                // performs.
+                "invalid-enum-value" => {
+                    let Some(menu) =
+                        diagnostics::resolve_menu_for_line(&self.data, &logicals, start_line)
+                    else {
+                        continue;
+                    };
+                    let Some(ll) = diagnostics::covering_logical_line(&logicals, start_line) else {
+                        continue;
+                    };
+                    // Wire characters → byte offsets within their own
+                    // physical lines → logical offsets (the conversion
+                    // chain the signature-help handler uses); token spans
+                    // live in logical coordinates, so the comparison must
+                    // happen there.
+                    let lines: Vec<&str> = doc.lines().collect();
+                    let to_logical = |line_idx: usize, character: usize| -> Option<usize> {
+                        let text = lines.get(line_idx)?;
+                        let byte =
+                            lsp_character_to_byte_offset(text, character, self.position_encoding);
+                        ll.logical_offset_from_physical(line_idx, byte)
+                    };
+                    let (Some(log_start), Some(log_end)) = (
+                        to_logical(start_line, start_char),
+                        to_logical(end_line, end_char),
+                    ) else {
+                        continue;
+                    };
+                    // First key=value token whose VALUE part overlaps the
+                    // diagnostic range; only its KEY is consumed — the
+                    // repaired text comes from `input`, the exact slice
+                    // this edit replaces.
+                    let tokens = tokenize_with_spans(ll.text());
+                    let Some(key) = tokens.iter().find_map(|t| {
+                        let eq = t.text.find('=')?;
+                        let value_start = t.start + eq + 1;
+                        (log_start < t.end && log_end > value_start).then(|| &t.text[..eq])
+                    }) else {
+                        continue;
+                    };
+                    // Mirror the Rule 5 emitter: only `arguments` carry
+                    // enum-typed values, and an argument without resolvable
+                    // members never guesses.
+                    let Some(arg) = menu.arguments.iter().find(|a| a.name == *key) else {
+                        continue;
+                    };
+                    let members = arg.enum_members();
+                    if members.is_empty() {
+                        continue;
+                    }
+                    // Strip quotes exactly like the Rule 5 emitter did
+                    // before validating, so distance is measured against
+                    // the bare member.
+                    let trimmed_input = input.trim();
+                    let stripped = trimmed_input.trim_matches('"').trim_matches('\'');
+                    let Some(member) = suggest::best_candidate(stripped, members.iter()) else {
+                        continue;
+                    };
+                    // Preserve the value's quote style: a quoted typo is
+                    // repaired to a quoted member, a bare one stays bare.
+                    // Only a symmetric pair of quotes counts; anything
+                    // else (debris, unterminated string) edits as bare.
+                    let quote_style = trimmed_input.chars().next().filter(|&q| {
+                        (q == '"' || q == '\'')
+                            && trimmed_input.len() >= 2
+                            && trimmed_input.ends_with(q)
+                    });
+                    Some(Suggestion {
+                        new_text: match quote_style {
+                            Some(q) => format!("{q}{member}{q}"),
+                            None => member.clone(),
+                        },
+                        title_subject: member,
+                    })
+                }
+                _ => continue,
+            };
+            let Some(fix) = fix else {
+                continue;
+            };
+
+            // serde_json's json! macro cannot take the dynamic URI as a map
+            // key, so the per-URI change list is inserted explicitly.
+            let mut changes = serde_json::Map::new();
+            changes.insert(
+                uri.to_string(),
+                serde_json::json!([{
+                    "range": range,
+                    "newText": fix.new_text,
+                }]),
+            );
+            actions.push(serde_json::json!({
+                "title": format!("Did you mean '{}'?", fix.title_subject),
+                "kind": "quickfix",
+                "diagnostics": [diag],
+                "edit": { "changes": changes },
+            }));
+        }
+        actions
+    }
+
+    pub(crate) fn publish_diagnostics(uri: &str, diagnostics: Vec<diagnostics::Diagnostic>) {
+        // Avoid spamming stdout during `cargo test` (test harness captures stdout)
+        if cfg!(test) {
+            return;
+        }
+        let notif = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": uri,
+                "diagnostics": diagnostics
+            }
+        });
+        if let Ok(json) = serde_json::to_string(&notif) {
+            let header = format!("Content-Length: {}\r\n\r\n", json.len());
+            let mut stdout = std::io::stdout().lock();
+            let _ = stdout.write_all(header.as_bytes());
+            let _ = stdout.write_all(json.as_bytes());
+            let _ = stdout.flush();
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

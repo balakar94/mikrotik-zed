@@ -17,7 +17,7 @@ Working end-to-end: workspace member `lsp/` (native binary `rsc-ls`) + WASM `cdy
 ### Data Flow
 
 ```
-.rsc file → Zed → WASM Extension (src/lib.rs) → stdio JSON-RPC 2.0 → rsc-ls (lsp/src/main.rs)
+.rsc file → Zed → WASM Extension (src/lib.rs) → stdio JSON-RPC 2.0 → rsc-ls (lsp/src/main.rs → server.rs)
   language_server_command(): worktree.which("rsc-ls") → cached ext dir → current_platform() → download
   rsc-ls: BufReader stdin → parse Content-Length → JSON-RPC dispatch → docs: HashMap<uri, String>
        → parse_line/build_before_cursor → MenuData lookup → completion/hover/diagnostics
@@ -32,7 +32,8 @@ Protocol: `Content-Length` framing, `textDocumentSync = {"openClose": true, "cha
 | File | Role |
 |------|------|
 | `src/lib.rs` | WASM extension; `RscExtension::language_server_command` (PATH→cache→download), `platform_triple`, `LanguageServerInstallationStatus` |
-| `lsp/src/main.rs` | LSP stdio loop + `Server::handle_message` (all method dispatch), doc store caps, `publish_diagnostics`; re-exports the extracted modules |
+| `lsp/src/main.rs` | Binary bootstrap: CLI dispatch, logging/banner setup, `Server::new(data)` + `run()`; declares all modules and re-exports shared paths (incl. `Server`, `exit_code`, `is_valid_file_uri`); hosts the child-of-root test modules (`main_tests/`) |
+| `lsp/src/server.rs` | Server core: `Server` struct + full `impl` — stdio loop (`run`), `handle_message` (all method dispatch), tracked-doc store with caps, `publish_diagnostics`, `compute_code_actions`, navigation request adapters, canonical `is_valid_file_uri`; items `pub(crate)`, re-exported at crate root |
 | `lsp/src/cli.rs` | CLI flags (`--version`/`-V`, `--help`/`-h`, usage errors exit 2), `version_string()` (`RSC_LS_BUILD_SHA` → ` (build <sha7>)`); handled before any logging/loading |
 | `lsp/src/framing.rs` | `Frame`/`FrameError`/`read_message` — Content-Length framing with header/body caps; unparsable headers are terminal (`FrameError::Protocol`) to prevent desync cascades |
 | `lsp/src/parser.rs` | Quote-aware `scan_token`/`SpanToken`/`tokenize_with_spans`/`tokenize`, `parse_line`, multi-line `build_before_cursor`; whole-document `walk_structure` + `StructureEvent` (quote/comment state machine shared by folding and the syntax diagnostics) |
@@ -92,7 +93,7 @@ V1 scope — document-local, deterministic, honest about limits. **Declarations*
 
 `publish_diagnostics` called after `didOpen`/`didChange` (full+incremental), `didClose` clears. `diagnosticProvider` advertised in `initialize`. Skips `#` comments, `:` globals, `}`/`{`/`..`. Unknown menu suppresses further property checks on that line (no cascade).
 
-### Code Actions (`textDocument/codeAction`, `compute_code_actions` in `main.rs` + `suggest.rs`)
+### Code Actions (`textDocument/codeAction`, `compute_code_actions` in `server.rs` + `suggest.rs`)
 
 Returns `quickfix` actions ("Did you mean 'X'?") for client-echoed diagnostics with `source="rsc-ls"` and code `unknown-property`/`unknown-menu`/`invalid-enum-value`; the edit replaces the diagnostic's own range with the candidate. The typo'd token is recovered from the tracked document at the diagnostic range (never by parsing message text), and its governing menu is resolved with the same continuation-aware machinery as the diagnostic pipeline (`diagnostics::logical_lines` + `parse_line` + `menu_by_path`, factored as `diagnostics::resolve_menu_for_line`) — unknown-property candidates are that menu's `arguments ∪ flags ∪ read_only` names, unknown-menu candidates are all known paths, an unresolvable menu yields no action rather than a cross-menu guess. For `invalid-enum-value` (Rule 5, whose range covers exactly the value part of `key=value`, quotes included) candidates come from that argument's `enum_members()`: the covering logical line is tokenized with spans (same walk as signature help), wire positions are mapped into logical coordinates via `logical_offset_from_physical`, and the first token whose VALUE span overlaps the diagnostic range donates only its KEY — replacement text is derived from the recovered range slice itself, so a stale range can never splice mismatched text; a quoted typo is re-wrapped in the SAME quote style while the title stays bare, and any unresolved link (no menu, no pair, no argument, empty members) or candidate beyond threshold yields nothing. Suggestion policy: Damerau-Levenshtein (optimal string alignment) distance must be ≤ 1 for inputs of ≤ 4 characters and ≤ 2 otherwise (short identifiers must not pick up noisy matches), distance-0 "identity fixes" for stale diagnostics are rejected, and ties break to the lexicographically smallest candidate so results never depend on HashMap iteration order. Capped at 8 actions per request ACROSS all codes; untracked URI → empty array; malformed params → `-32602`.
 
@@ -112,7 +113,7 @@ All diagnostics: `source="rsc-ls"`. Types: `Diagnostic{range, severity, code, so
 
 ## Adding a New LSP Feature
 
-1. **Choose handler**: add match arm in `Server::handle_message` (`main.rs`) (e.g., `textDocument/definition`, `textDocument/formatting`). Advertise in `initialize` capabilities.
+1. **Choose handler**: add match arm in `Server::handle_message` (`lsp/src/server.rs`) (e.g., `textDocument/definition`, `textDocument/formatting`). Advertise in `initialize` capabilities.
 2. **Reuse context**: call `build_before_cursor(doc, line, char)` → `parse_line(&data, &before)` → `LineContext{path, command, properties, last_token}`. For hover-like word precision, use `find_word_start/end` from `hover.rs`.
 3. **Query MenuData**: `data.menu_by_path.get(&ctx.path)` for exact menu, `data.child_names_by_parent.get(&ctx.path)` for children/implicit parents, `data.menus` for prefix scans. Check `menu_type` (`Directory`/`Settings Directory`/`Command`) and `arg.required`/`arg_type`.
 4. **Implement module**: create `lsp/src/<feature>.rs` (like `completion.rs`/`hover.rs`/`diagnostics.rs`/`symbols.rs`/`folding.rs`), expose a pure `compute_<feature>(...) -> Vec<T>/Option<Value>` function (no I/O) for testability. Register `mod <feature>` alongside the others in `main.rs`.
@@ -138,7 +139,7 @@ Canonical values live in `caps.rs` (single source of truth, re-exported from the
 | `MAX_BRACE_DEPTH` | 4096 | `parser.rs` | Open-brace stack bound shared by folding + syntax diagnostics |
 | `MAX_REFERENCES` | 1000 | `navigation.rs` | Cap on one `textDocument/references` result list (declaration included) |
 
-Incremental edits: `lsp_position_to_offset` + `apply_incremental_edit` (`main.rs`) handle `range` patches; on `InvalidRange`/`OutOfBounds` fall back to full replace. `floor_char_boundary` polyfill for UTF-8 safety. Large docs still publish diagnostics (capped) without OOM. URI validation helper: `main.rs` (`is_valid_file_uri`, single definition).
+Incremental edits: `lsp_position_to_offset` + `apply_incremental_edit` (`encoding.rs`, called from the didChange handler in `server.rs`) handle `range` patches; on `InvalidRange`/`OutOfBounds` fall back to full replace. `floor_char_boundary` polyfill for UTF-8 safety. Large docs still publish diagnostics (capped) without OOM. URI validation helper: `server.rs` (`is_valid_file_uri`, single definition).
 
 ## Testing Strategy
 
@@ -157,12 +158,12 @@ make validate                         # generate-check + fmt + clippy + test-all
 | Tokenize/parse | `lsp/src/parser.rs` | `test_tokenize_*`, `test_build_before_cursor_*`, `test_parse_line_*`, `test_walk_structure_*` |
 | Framing | `lsp/src/framing.rs` | golden streams: valid frames, garbage/malformed/duplicate headers terminal, oversized drained, EOF semantics |
 | Encoding/patching | `lsp/src/encoding.rs` | `test_lsp_position_to_offset_*`, `test_apply_incremental_edit_*`, UTF-16 round-trips, CRLF |
-| Caps/URI validation | `lsp/src/server.rs` | enclosure/capacity invariant tests, `is_valid_file_uri` sync with `crate::` |
+| Caps/URI validation | `lsp/src/server.rs` | enclosure/capacity invariant tests; `is_valid_file_uri` defined here, re-exported via `crate::` |
 | Completion | `lsp/src/completion.rs` | `test_root_*`, `test_submenu_*`, `test_arg_*`, `test_value_*`, `test_snippets_*` / `test_at_statement_start_gating` (B3), real-data `test_real_data_*` |
 | Hover | `lsp/src/hover.rs` | `test_hover_menu_*`, `test_hover_property_*`, `test_hover_flag_*`, `test_hover_verb_*`, `test_find_word_*` |
 | Diagnostics | `lsp/src/diagnostics.rs` | `test_unknown_menu`, `test_missing_required`, `test_duplicate`, `test_invalid_enum`, `test_large_doc_capped`, `test_implicit_parent` |
-| Symbols/folding | `lsp/src/symbols.rs`, `lsp/src/folding.rs` | unit fixtures + server-level integration in `main.rs` (`test_document_symbols_*`, `test_folding_ranges_*`) incl. untracked-null and `-32602` cases |
-| Navigation | `lsp/src/navigation.rs` | unit: declaration extraction (incl. continuation-split), usage scan (`$$`, strings, comments, parens/arithmetic), definition-choice rule, references counts/cap; server-level in `main.rs` (`test_server_definition_*`, `test_server_references_*`, UTF-16 emoji pin); E2E wire tests |
+| Symbols/folding | `lsp/src/symbols.rs`, `lsp/src/folding.rs` | unit fixtures + server-level integration in root test modules (`main_tests/`, declared in `main.rs`: `test_document_symbols_*`, `test_folding_ranges_*`) incl. untracked-null and `-32602` cases |
+| Navigation | `lsp/src/navigation.rs` | unit: declaration extraction (incl. continuation-split), usage scan (`$$`, strings, comments, parens/arithmetic), definition-choice rule, references counts/cap; server-level in root test modules (`main_tests/`: `test_server_definition_*`, `test_server_references_*`, UTF-16 emoji pin); E2E wire tests |
 | Manual E2E | Zed | `Install Dev Extension` → open `.rsc` → trigger `/` ` ` `=` `:` completion, hover, folding gutter, outline/document symbols, verify `publishDiagnostics` |
 
 ### E2E harness (`lsp/tests/e2e.rs`)

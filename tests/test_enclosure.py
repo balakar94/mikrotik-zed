@@ -19,6 +19,7 @@ import pytest
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 LSP_SRC = REPO_ROOT / "lsp" / "src"
 LSP_MAIN = REPO_ROOT / "lsp" / "src" / "main.rs"
+LSP_SERVER = REPO_ROOT / "lsp" / "src" / "server.rs"
 LSP_CAPS = REPO_ROOT / "lsp" / "src" / "caps.rs"
 LSP_DIAG = REPO_ROOT / "lsp" / "src" / "diagnostics.rs"
 LSP_MENUS = REPO_ROOT / "lsp" / "src" / "menus.rs"
@@ -146,7 +147,7 @@ class TestLspCaps:
 # ----------------------------------------------------------------------
 class TestUriValidation:
     def test_rust_uri_validation_only_file_scheme(self):
-        txt = _read(LSP_MAIN)
+        txt = _read(LSP_SERVER)
         # Should contain file:// validation via helper or direct checks
         # Newer code uses is_valid_file_uri; older uses starts_with directly
         has_helper = "is_valid_file_uri" in txt
@@ -171,18 +172,19 @@ class TestUriValidation:
 
     def test_rust_uri_validator_single_source_and_guards(self):
         """Structural pin: exactly ONE canonical validator definition across
-        lsp/src, defined in main.rs, with all three enclosure guards in its
-        body (file:// prefix, null/control-char rejection, ".." rejection).
+        lsp/src, defined in server.rs (alongside the dispatch loop that calls
+        it), with all three enclosure guards in its body (file:// prefix,
+        null/control-char rejection, ".." rejection).
         Behavioral coverage of the validator lives in the Rust unit tests."""
         matches = []
         for p in sorted(LSP_SRC.glob("*.rs")):
             for lineno, line in enumerate(_read(p).splitlines(), start=1):
                 if "pub(crate) fn is_valid_file_uri" in line:
                     matches.append((p.name, lineno))
-        assert len(matches) == 1 and matches[0][0] == "main.rs", (
-            f"is_valid_file_uri must be defined exactly once, in main.rs; found {matches}"
+        assert len(matches) == 1 and matches[0][0] == "server.rs", (
+            f"is_valid_file_uri must be defined exactly once, in server.rs; found {matches}"
         )
-        txt = _read(LSP_MAIN)
+        txt = _read(LSP_SERVER)
         assert 'starts_with("file://")' in txt, "Must check file:// scheme prefix"
         assert (
             "contains('\\0')" in txt or "contains('\0')" in txt

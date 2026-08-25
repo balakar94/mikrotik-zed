@@ -136,7 +136,7 @@ Also: `make clippy` fails → `cargo clippy -- -D warnings` must be clean for bo
 | Grammar publisher | `scripts/publish_grammar.py` (push + update `extension.toml` rev) |
 | Test corpus | `grammars/rsc/test/corpus/*.txt` (regenerate expectations with native `npx tree-sitter test -u`) |
 | Extension manifest / WASM | `extension.toml` (grammar `rev`), `src/lib.rs` (auto-download + PATH fallback, `platform_triple`) |
-| LSP binary (native) | `lsp/Cargo.toml`, `lsp/src/main.rs` (stdio JSON-RPC), `lsp/src/caps.rs` (all resource limits) |
-| LSP modules | `lsp/src/menus.rs` (indices), `server.rs` (URI-validation & enclosure tests), `completion.rs`, `hover.rs`, `diagnostics.rs` (5 rules, capped) |
+| LSP binary (native) | `lsp/Cargo.toml`, `lsp/src/main.rs` (bootstrap + re-exports), `lsp/src/server.rs` (stdio JSON-RPC: `Server`, dispatch loop, doc store, URI validation), `lsp/src/caps.rs` (all resource limits) |
+| LSP modules | `lsp/src/menus.rs` (indices), `completion.rs`, `hover.rs`, `diagnostics.rs` (5 rules, capped); server enclosure/URI tests live in `server.rs`'s test module |
 | Workspace / build | `Cargo.toml` (workspace `lsp`, `wasm32-wasip2`), `Makefile`, `extension.wasm` |
 | CI / Release | `.github/workflows/ci.yml`, `release.yml` (4 triples + WASM + GitHub Release) |
