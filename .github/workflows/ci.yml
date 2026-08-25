@@ -162,7 +162,10 @@ jobs:
           pip install pytest tomli 2>/dev/null || pip install pytest
           pip freeze | grep -E "pytest|tomli" || true
 
-      - name: Run Python tests (make test-python, 216 tests)
+      - name: Manifest schema check (make check-manifest)
+        run: make check-manifest
+
+      - name: Run Python tests (make test-python)
         run: make test-python
 
       # llms.txt / llms-full.txt are gitignored and fetched from manual.mikrotik.com.
@@ -285,7 +288,7 @@ jobs:
       - name: Check parser is up-to-date (make generate-check)
         run: make generate-check
 
-      - name: Run corpus tests (make test-grammar, 59 tests)
+      - name: Run corpus tests (make test-grammar)
         run: make test-grammar
 
       - name: Verify grammar working copy matches pinned rev

@@ -134,3 +134,22 @@ git tag v<version> && git push origin v<version>
 - Zed extension docs: https://zed.dev/docs/extensions/developing-extensions — languages: https://zed.dev/docs/extensions/languages
 - `zed_extension_api`: https://docs.rs/crate/zed_extension_api/latest
 - Registry: https://github.com/zed-industries/extensions
+
+## Registry Submission & Updates
+
+Submission and update PRs follow [`docs/publishing-runbook.md`](../../docs/publishing-runbook.md) —
+the authoritative checklist, kept current against the official Zed publishing docs. Non-negotiables:
+
+- **PR rules:** exactly one extension per PR; at most 3 open PRs; reply to maintainer feedback
+  within 3 weeks or the PR is closed.
+- **Mechanics:** fork `zed-industries/extensions`; add the submodule over HTTPS at
+  `extensions/mikrotik-rsc` with the pinned commit on a branch (never detached); add a
+  `[mikrotik-rsc]` entry to top-level `extensions.toml` whose `version` equals the `version` in
+  `extension.toml` at that commit; run `pnpm sort-extensions`.
+- **Prerequisite:** manually test in Zed (_Install Dev Extension_) at the exact submodule commit being submitted.
+- **Local gates:** `make validate`, plus `make check-manifest` — `extension.toml` may contain only keys
+  known to Zed's manifest schema; unknown keys are silently ignored and hide typos.
+- **Compatibility:** built against the latest `zed_extension_api` (0.7.x); newer-API builds do not load
+  in older Zed. Check the official table
+  ([extension_api README](https://github.com/zed-industries/zed/blob/main/crates/extension_api/README.md))
+  before promising a minimum Zed version, and mention API bumps in release notes.

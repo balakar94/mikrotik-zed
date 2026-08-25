@@ -279,7 +279,7 @@ Updating the language server's knowledge therefore reduces to: sync, extract, co
 
 ## 🛠️ Development
 
-Everything runs through `make`, so contributor workflows mirror CI one-to-one: `make validate` replays the entire gate locally — formatting, clippy on both targets with warnings denied, all three test suites, upstream-sync check and extraction idempotency. The combined suite is 838 tests: 67 grammar corpus tests, 555 Rust tests (537 unit + 4 CLI + 14 end-to-end) and 216 Python tests.
+Everything runs through `make`, so contributor workflows mirror CI one-to-one: `make validate` replays the entire gate locally — manifest schema compliance, formatting, clippy on both targets with warnings denied, all three test suites and extraction idempotency. (Upstream-docs staleness is gated separately by `make sync-check`, which CI runs; run `make sync && make extract` when MikroTik publishes updates.)
 
 ```bash
 make generate      # regenerate parser.c from grammar.js
@@ -321,7 +321,7 @@ Those digests are exactly what the extension's auto-download verifies at install
 
 **2 · Zed Marketplace — human reviewed**
 
-A pull request to [`zed-industries/extensions`](https://github.com/zed-industries/extensions) carrying the extension metadata and the pinned grammar revision. `extension.toml` stays marketplace-ready at all times; preparing this PR never blocks on track 1, but merging makes sense only once the release exists.
+A pull request to [`zed-industries/extensions`](https://github.com/zed-industries/extensions) carrying the extension metadata and the pinned grammar revision. `extension.toml` stays marketplace-ready at all times; preparing this PR never blocks on track 1, but merging makes sense only once the release exists. [`docs/publishing-runbook.md`](docs/publishing-runbook.md) is the authoritative checklist for both submission and update PRs; locally, `make check-manifest` checks the extension against Zed's published requirements (manifest schema + registry policy).
 
 ---
 
@@ -330,6 +330,7 @@ A pull request to [`zed-industries/extensions`](https://github.com/zed-industrie
 - RouterOS CLI: https://manual.mikrotik.com/docs/cli-reference/
 - Truth source: https://manual.mikrotik.com/llms-full.txt
 - Zed extensions: https://zed.dev/docs/extensions/developing-extensions
+- Publishing runbook: [docs/publishing-runbook.md](docs/publishing-runbook.md)
 - Grammar repo: https://github.com/balakar94/tree-sitter-rsc
 
 ---

@@ -424,10 +424,11 @@ jobs:
           set -eu
           echo "Checking extension.toml..."
           cat extension.toml
-          # Basic validation: id, name, version, grammars rev, language_servers
+          # Schema validation: required keys, no unknown keys, id policy, semver,
+          # grammar/rev format, language-server/language cross-references.
+          python3 scripts/check_zed_requirements.py
+          # Release-specific assertions beyond the generic schema.
           grep -q '^id = "mikrotik-rsc"' extension.toml || { echo "::error::id must be mikrotik-rsc"; exit 1; }
-          grep -q '^\[grammars.rsc\]' extension.toml || { echo "::error::missing [grammars.rsc]"; exit 1; }
-          grep -q '^\[language_servers.rsc-ls\]' extension.toml || { echo "::error::missing [language_servers.rsc-ls]"; exit 1; }
           if grep -q 'rev = "000' extension.toml; then echo "::error::rev placeholder 000... found — run scripts/publish_grammar.py --push"; exit 1; fi
           # Version should match release tag (warn, not fail, for manual runs without tag).
           TAG="${{ needs.meta.outputs.tag }}"
@@ -437,9 +438,6 @@ jobs:
           if [ -n "$VERSION" ] && [ "$EXT_VER" != "$VERSION" ]; then
             echo "::warning::extension.toml version $EXT_VER != tag $TAG"
           fi
-          # Schema and required keys
-          grep -q '^version = ' extension.toml || { echo "::error::version missing"; exit 1; }
-          grep -q '^schema_version' extension.toml || { echo "::error::schema_version missing"; exit 1; }
           echo "extension.toml OK"
 
       - name: WASM artifact info
