@@ -36,7 +36,7 @@
 | **Sync**         | Keeps the built-in command database aligned with MikroTik's published CLI reference                       |
 | **Grammar**      | A dedicated tree-sitter grammar, developed in its own repository and pinned by revision                   |
 
-**Coverage:** the command database models the complete RouterOS v7.20+ CLI — **1038 menus**, directories and executable commands alike, spanning every context of the hierarchy from interfaces and networking to queues, users and system tools. It is extracted automatically from MikroTik's official machine-readable documentation, so completion, hover and diagnostics work anywhere in the tree rather than on a hand-picked subset.
+**Coverage:** the command database models the complete RouterOS v7.20+ CLI — **1066 menus**, directories and executable commands alike, spanning every context of the hierarchy from interfaces and networking to queues, users and system tools. It is extracted automatically from MikroTik's official machine-readable documentation, so completion, hover and diagnostics work anywhere in the tree rather than on a hand-picked subset.
 
 <details>
 <summary>Example <code>.rsc</code> — hover, completion, diagnostics</summary>
@@ -231,7 +231,7 @@ Zed tasks live per-worktree: copy `languages/rsc/tasks.json` to `.zed/tasks.json
 
 ## 🧠 Language Server
 
-The heart of the extension is **rsc-ls**, a self-contained language server written in pure Rust — no Node runtime, no external processes: one binary speaking the Language Server Protocol over stdio. Its entire knowledge of RouterOS, the 1038-menu database, is compiled into the executable itself, which means instant startup and zero data files to lose track of.
+The heart of the extension is **rsc-ls**, a self-contained language server written in pure Rust — no Node runtime, no external processes: one binary speaking the Language Server Protocol over stdio. Its entire knowledge of RouterOS, the 1066-menu database, is compiled into the executable itself, which means instant startup and zero data files to lose track of.
 
 That database drives everything contextual the editor experiences:
 
@@ -271,7 +271,7 @@ Publishing a grammar change is scripted: `python scripts/publish_grammar.py` pus
 
 RouterOS evolves, and a hardcoded command table would rot silently. MikroTik mitigates this by publishing its CLI reference in machine-readable form (`llms-full.txt`), and this project builds directly on that source of truth.
 
-The pipeline has two steps. `scripts/sync_llms.py` fetches the upstream files and compares them against what the database was built from — with `--check` it writes nothing and exits non-zero when upstream moved, which is exactly how CI notices drift. `scripts/extract_commands.py` then distills the fetched documentation into `data/commands.toml`: currently 1038 menus, regenerated idempotently. Each generation records the RouterOS version, the UTC timestamp and the hash of the source document in its header, so any database snapshot can be traced back to the exact documentation it came from.
+The pipeline has two steps. `scripts/sync_llms.py` fetches the upstream files and compares them against what the database was built from — with `--check` it writes nothing and exits non-zero when upstream moved, which is exactly how CI notices drift. `scripts/extract_commands.py` then distills the fetched documentation into `data/commands.toml`: currently 1066 menus, regenerated idempotently. Each generation records the RouterOS version, the UTC timestamp and the hash of the source document in its header, so any database snapshot can be traced back to the exact documentation it came from.
 
 Updating the language server's knowledge therefore reduces to: sync, extract, commit — the TOML is embedded into the binary at compile time, and the next build carries the fresh data everywhere.
 

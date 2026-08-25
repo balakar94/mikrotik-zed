@@ -15,7 +15,10 @@ from extract_commands import (
     parse_llms_full,
     extract_enum_values,
     write_if_changed,
+    synthesize_directories,
+    finalize_menus,
     _extract_heading_path,
+    _strip_generated_line,
     _MAX_COVERED_ROOTS,
 )
 
@@ -411,6 +414,128 @@ class TestCoversHeader:
         result = generate_toml(menus)
         covers_line = next(l for l in result.split("\n") if l.startswith("# Covers:"))
         assert covers_line == "# Covers: /ip (2 menus)"
+
+
+class TestSynthesizeDirectories:
+    """Missing ancestor Directories are filled in before serialization.
+
+    Upstream docs dropped pure-Directory sections, so parents like /ip or
+    /routing/ospf vanish while their children keep their own pages. The
+    synthesizer restores hierarchy integrity for prefix completion and
+    unknown-menu diagnostics — gaps only, never overwrites.
+    """
+
+    @staticmethod
+    def _menu(path: str, **extra) -> dict:
+        base = {"path": path, "type": "Directory", "flags": [], "arguments": [], "read_only": []}
+        base.update(extra)
+        return base
+
+    def test_child_only_synthesizes_single_parent(self):
+        result = synthesize_directories([self._menu("/ip/address")])
+        paths = [m["path"] for m in result]
+        assert paths == ["/ip/address", "/ip"]
+        synthesized = next(m for m in result if m["path"] == "/ip")
+        assert synthesized["type"] == "Directory"
+        assert synthesized["flags"] == []
+        assert synthesized["arguments"] == []
+        assert synthesized["read_only"] == []
+
+    def test_deep_chain_synthesizes_every_level(self):
+        # /a/b/c implies both /a/b and /a — recursion through all prefixes.
+        result = synthesize_directories([self._menu("/a/b/c")])
+        by_path = {m["path"]: m for m in result}
+        assert sorted(by_path) == ["/a", "/a/b", "/a/b/c"]
+        assert by_path["/a"]["type"] == "Directory"
+        assert by_path["/a/b"]["type"] == "Directory"
+        assert by_path["/a/b"]["arguments"] == []
+
+    def test_explicit_parent_not_duplicated_nor_overwritten(self):
+        explicit_parent = self._menu(
+            "/routing",
+            type="Command",
+            arguments=[{"name": "gateway", "type": "ipAddr"}],
+        )
+        result = synthesize_directories([
+            explicit_parent,
+            self._menu("/routing/ospf/area"),
+        ])
+        matches = [m for m in result if m["path"] == "/routing"]
+        assert len(matches) == 1, "explicit parent must not be duplicated"
+        # Explicit entry survives untouched: type override and arguments kept.
+        assert matches[0]["type"] == "Command"
+        assert matches[0]["arguments"] == [{"name": "gateway", "type": "ipAddr"}]
+        # The still-missing mid-level ancestor is synthesized as a gap fill.
+        paths = [m["path"] for m in result]
+        assert "/routing/ospf" in paths
+
+    def test_single_segment_menu_has_no_ancestors(self):
+        result = synthesize_directories([self._menu("/certificate")])
+        assert [m["path"] for m in result] == ["/certificate"]
+
+    def test_shared_parent_synthesized_once(self):
+        result = synthesize_directories([
+            self._menu("/ip/address"),
+            self._menu("/ip/arp"),
+        ])
+        assert [m["path"] for m in result].count("/ip") == 1
+
+    def test_input_list_not_mutated(self):
+        menus = [self._menu("/ip/address")]
+        original = [dict(m) for m in menus]
+        synthesize_directories(menus)
+        assert menus == original
+
+
+class TestSynthesisPipeline:
+    """Child-only docs flow end-to-end: parse → finalize → generate_toml."""
+
+    def _write_temp(self, content: str) -> str:
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+        tmp.write(content)
+        tmp.flush()
+        tmp.close()
+        return tmp.name
+
+    def test_child_only_doc_yields_child_and_parent_in_toml(self):
+        import tomllib
+
+        # New upstream heading format: no leading slash; trailing space tolerated.
+        content = (
+            "## ip/address \n"
+            "\n"
+            "<ArgTable c1=\"Argument\" c2=\"Type\" c3=\"Description\">\n"
+            '<ArgTableRow arg="address" typ="ipPrefix">Addr</ArgTableRow>\n'
+            "</ArgTable>\n"
+        )
+        path = self._write_temp(content)
+        try:
+            menus = parse_llms_full(path)
+        finally:
+            os.unlink(path)
+        result = generate_toml(finalize_menus(menus))
+
+        parsed = tomllib.loads(result)
+        entries = {m["path"]: m["type"] for m in parsed["menus"]}
+        assert entries == {"/ip/address": "Directory", "/ip": "Directory"}
+        # The synthesized parent stays bare: no argument rows leak into it.
+        blocks = result.split("[[menus]]")[1:]
+        parent_block = next(b for b in blocks if b.startswith('\npath = "/ip"\n'))
+        assert "arguments" not in parent_block
+
+    def test_generation_twice_is_byte_identical_modulo_timestamp(self):
+        content = "## routing/ospf/area\n\n## system/note\n"
+        path = self._write_temp(content)
+        try:
+            menus = parse_llms_full(path)
+        finally:
+            os.unlink(path)
+        first = generate_toml(finalize_menus(list(menus)))
+        second = generate_toml(finalize_menus(list(menus)))
+        # Only the # Generated: timestamp may differ between runs (the same
+        # tolerance write_if_changed applies); everything else must match byte
+        # for byte, including the placement of synthesized directories.
+        assert _strip_generated_line(first) == _strip_generated_line(second)
 
 
 class TestWriteIfChanged:

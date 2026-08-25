@@ -1,9 +1,13 @@
 # MikroTik RouterOS CLI Command Table
 # Auto-generated from llms-full.txt
-# Covers: /app, /caps-man, /certificate, /console, /container, /disk, /dude, /file, /interface, /iot, /ip, /ipv6, … (1038 menus)
+# Covers: /app, /caps-man, /certificate, /console, /container, /disk, /dude, /file, /interface, /iot, /ip, /ipv6, … (1066 menus)
 # RouterOS version: 7.22+
-# Generated: 2026-08-23T12:40:32.615036Z
-# Source hash (sha256[:16]): 0be433369e9189c8
+# Generated: 2026-08-25T20:21:01.208467Z
+# Source hash (sha256[:16]): 44043d3ad9d4a6eb
+
+[[menus]]
+path = "/app"
+type = "Directory"
 
 [[menus]]
 path = "/app/cleanup"
@@ -142,6 +146,10 @@ description = "Duration of the sound in seconds"
 name = "duration"
 type = "time"
 description = "Duration of blinking in seconds"
+
+[[menus]]
+path = "/caps-man"
+type = "Directory"
 
 [[menus]]
 path = "/caps-man/aaa"
@@ -1526,6 +1534,10 @@ type = "bool"
 unset = true
 
 [[menus]]
+path = "/certificate"
+type = "Directory"
+
+[[menus]]
 path = "/certificate/acme-renew"
 type = "Command"
 
@@ -2123,7 +2135,7 @@ description = "CRL storage location"
 
 [[menus]]
 path = "/certificate/sign"
-type = "Directory"
+type = "Command"
 [[menus.arguments]]
 name = "name"
 type = "string"
@@ -2158,6 +2170,10 @@ type = "num"
 name = "digest-algorithm"
 type = "enum (md5 | sha1 | sha256 | sha384 | sha512)"
 enum_values = ["md5", "sha1", "sha256", "sha384", "sha512"]
+
+[[menus]]
+path = "/console"
+type = "Directory"
 
 [[menus]]
 path = "/console/inspect"
@@ -2229,6 +2245,10 @@ description = "write background script failures to log"
 name = "tab-width"
 type = "num"
 description = "default tab width in fullscreen editor"
+
+[[menus]]
+path = "/container"
+type = "Directory"
 
 [[menus]]
 path = "/container/config"
@@ -2630,6 +2650,10 @@ type = "Command"
 [[menus]]
 path = "/container/update"
 type = "Command"
+
+[[menus]]
+path = "/disk"
+type = "Directory"
 
 [[menus]]
 path = "/disk/blink"
@@ -3608,6 +3632,10 @@ type = "string"
 [[menus]]
 path = "/disk/trim"
 type = "Command"
+
+[[menus]]
+path = "/dude"
+type = "Directory"
 
 [[menus]]
 path = "/dude/agent"
@@ -4662,6 +4690,10 @@ name = "status"
 type = "string"
 
 [[menus]]
+path = "/file"
+type = "Directory"
+
+[[menus]]
 path = "/file/copy"
 type = "Directory"
 [[menus.flags]]
@@ -4817,6 +4849,10 @@ description = "simulate import without making any configuration changes"
 [[menus.read_only]]
 name = "lines"
 type = ""
+
+[[menus]]
+path = "/interface"
+type = "Directory"
 
 [[menus]]
 path = "/interface/6to4"
@@ -5104,6 +5140,9 @@ type = "num"
 name = "last-member-interval"
 type = "time"
 [[menus.arguments]]
+name = "last-member-query-interval"
+type = "time"
+[[menus.arguments]]
 name = "membership-interval"
 type = "time"
 [[menus.arguments]]
@@ -5208,9 +5247,6 @@ enum_values = ["short", "long"]
 name = "mvrp"
 type = "bool"
 [[menus.arguments]]
-name = "msrp"
-type = "bool"
-[[menus.arguments]]
 name = "forward-reserved-addresses"
 type = "bool"
 [[menus.arguments]]
@@ -5232,6 +5268,9 @@ type = "time"
 [[menus.arguments]]
 name = "mlag-lacp-fallback"
 type = "bool"
+[[menus.arguments]]
+name = "msrp"
+type = ""
 [[menus.read_only]]
 name = "actual-mtu"
 type = "num"
@@ -5772,179 +5811,6 @@ description = "The MLAG state."
 name = "mlag-active-role"
 type = "enum (primary | secondary)"
 description = "The peer with the lowest `priority` will act as the primary device. If the priorities are the same, the peer with the lowest bridge MAC address will become the primary. The `system-id` of the primary device is used for sending the (R/M)STP BPDU bridge identifier and LACP system ID."
-
-[[menus]]
-path = "/interface/bridge/msrp"
-type = "Directory"
-[[menus.flags]]
-name = "X"
-description = "disabled"
-[[menus.flags]]
-name = "D"
-description = "dynamic"
-[[menus.arguments]]
-name = "bridge"
-type = "iface_enum"
-required = true
-[[menus.arguments]]
-name = "rank"
-type = "num"
-[[menus.arguments]]
-name = "stream-id"
-type = ""
-[[menus.arguments]]
-name = "talker"
-type = "iface_enum { none }"
-[[menus.arguments]]
-name = "listener"
-type = "iface_enum { none }"
-[[menus.arguments]]
-name = "dst-mac"
-type = "macAddr"
-[[menus.arguments]]
-name = "vid"
-type = "num"
-[[menus.arguments]]
-name = "max-frame-size"
-type = "num"
-[[menus.arguments]]
-name = "max-interval-frames"
-type = "num"
-[[menus.arguments]]
-name = "priority"
-type = "num"
-[[menus.read_only]]
-name = "age"
-type = "time"
-[[menus.read_only]]
-name = "active-talker"
-type = "iface_enum { none }"
-[[menus.read_only]]
-name = "active-listener"
-type = "iface_enum { none }"
-[[menus.read_only]]
-name = "debug-info"
-type = "string"
-
-[[menus]]
-path = "/interface/bridge/msrp/attributes"
-type = "Directory"
-[[menus.read_only]]
-name = "bridge"
-type = "iface_enum"
-[[menus.read_only]]
-name = "port"
-type = "iface_enum"
-[[menus.read_only]]
-name = "type"
-type = "enum (TLKA | TLKF | LSTN-I | LSTN-AF | LSTN-R | LSTN-RF) { TLKA:1, TLKF:2, LSTN-I:3, LSTN-AF:4, L..."
-[[menus.read_only]]
-name = "registrar-state"
-type = "enum (IN | LV | MT) { IN:1, LV:2, MT:3 }"
-[[menus.read_only]]
-name = "applicant-state"
-type = "enum (Very anxious Observer | Very anxious Passive | Very anxious New | Anxious New | Anxious Act..."
-[[menus.read_only]]
-name = "last-event"
-type = "enum (New | JoinIn | In | JoinEmpty | Empty | Leave) { New:0, JoinIn:1, In:2, JoinEmpty:3, Empty:..."
-[[menus.read_only]]
-name = "stream-id"
-type = ""
-[[menus.read_only]]
-name = "dst-mac"
-type = "macAddr"
-[[menus.read_only]]
-name = "vid"
-type = "num"
-[[menus.read_only]]
-name = "max-frame-size"
-type = "num"
-[[menus.read_only]]
-name = "max-interval-frames"
-type = "num"
-[[menus.read_only]]
-name = "priority"
-type = "num"
-[[menus.read_only]]
-name = "rank"
-type = "num"
-[[menus.read_only]]
-name = "code"
-type = "num"
-
-[[menus]]
-path = "/interface/bridge/msrp/domain"
-type = "Directory"
-[[menus.flags]]
-name = "X"
-description = "disabled"
-[[menus.flags]]
-name = "D"
-description = "dynamic"
-[[menus.arguments]]
-name = "bridge"
-type = "iface_enum"
-required = true
-[[menus.arguments]]
-name = "id"
-type = "num"
-required = true
-[[menus.arguments]]
-name = "priority"
-type = "num"
-[[menus.arguments]]
-name = "vlan-id"
-type = "num"
-
-[[menus]]
-path = "/interface/bridge/msrp/domain/attributes"
-type = "Directory"
-[[menus.read_only]]
-name = "bridge"
-type = "iface_enum"
-[[menus.read_only]]
-name = "port"
-type = "iface_enum"
-[[menus.read_only]]
-name = "registrar-state"
-type = "enum (IN | LV | MT) { IN:1, LV:2, MT:3 }"
-[[menus.read_only]]
-name = "applicant-state"
-type = "enum (Very anxious Observer | Very anxious Passive | Very anxious New | Anxious New | Anxious Act..."
-[[menus.read_only]]
-name = "last-event"
-type = "enum (New | JoinIn | In | JoinEmpty | Empty | Leave) { New:0, JoinIn:1, In:2, JoinEmpty:3, Empty:..."
-[[menus.read_only]]
-name = "id"
-type = "num"
-[[menus.read_only]]
-name = "priority"
-type = "num"
-[[menus.read_only]]
-name = "vid"
-type = "num"
-
-[[menus]]
-path = "/interface/bridge/msrp/domain/monitor"
-type = "Command"
-[[menus.read_only]]
-name = "bridge"
-type = "iface_enum"
-[[menus.read_only]]
-name = "id"
-type = "num"
-[[menus.read_only]]
-name = "priority"
-type = "num"
-[[menus.read_only]]
-name = "vlan-id"
-type = "num"
-[[menus.read_only]]
-name = "core-ports"
-type = ""
-[[menus.read_only]]
-name = "boundary-ports"
-type = ""
 
 [[menus]]
 path = "/interface/bridge/msti"
@@ -10856,14 +10722,24 @@ description = "Changes the VLAN priority (priority code point). Requires `vlan-f
 [[menus.arguments]]
 name = "new-vrf"
 type = "enum"
-description = "Assigns ingress traffic to a specified VRF. Requires [hardware-offloaded VRF](../../../../bridging-and-switching/l3-hardware-offloading.md#l3hw-feature-support) support on the switch chip. On VRF-unaware switches (98DX3xxx and 98DX2xxx series), setting `new-vrf` to anything other than `main` will be treated as `redirect-to-cpu=yes`."
+description = "Assigns ingress traffic to a specified VRF. Requires [hardware-offloaded VRF](../../../../../bridging-and-switching/l3-hardware-offloading.md#l3hw-feature-support) support on the switch chip. On VRF-unaware switches (98DX3xxx and 98DX2xxx series), setting `new-vrf` to anything other than `main` will be treated as `redirect-to-cpu=yes`."
 [[menus.arguments]]
 name = "rate"
 type = "num"
 description = "Sets ingress traffic limitation (bits per second) for matched traffic."
 [[menus.read_only]]
+name = "packets"
+type = "num"
+[[menus.read_only]]
+name = "bytes"
+type = "num"
+[[menus.read_only]]
 name = "internal-priority"
 type = "num"
+
+[[menus]]
+path = "/interface/ethernet/switch/rule/reset-counters"
+type = "Command"
 
 [[menus]]
 path = "/interface/ethernet/switch/shaper"
@@ -12268,8 +12144,8 @@ type = "bool"
 description = "This setting is ignored if any interface is enabled in /tool/sms"
 [[menus.arguments]]
 name = "sms-protocol"
-type = "enum (mbim | at | auto)"
-enum_values = ["mbim", "at", "auto"]
+type = "enum (mbim | at | qmi | auto)"
+enum_values = ["mbim", "at", "qmi", "auto"]
 [[menus.arguments]]
 name = "network-mode"
 type = ""
@@ -12724,7 +12600,15 @@ name = "firmware-path"
 type = "string"
 [[menus.arguments]]
 name = "log-dir"
-type = "string"
+type = "file"
+[[menus.arguments]]
+name = "log-file-count"
+type = "num"
+description = "number of rotated modem log files kept in log-dir"
+[[menus.arguments]]
+name = "log-filter-file"
+type = "file"
+description = "filter file to use for modem log capture"
 [[menus.arguments]]
 name = "info-polling-interval"
 type = "num"
@@ -21414,6 +21298,10 @@ name = "mtu"
 type = "num"
 
 [[menus]]
+path = "/iot"
+type = "Directory"
+
+[[menus]]
 path = "/iot/bluetooth"
 type = "Directory"
 [[menus.flags]]
@@ -22209,8 +22097,8 @@ type = "num"
 description = "Radio TX frequency in MHz (e.g.868500000)"
 [[menus.arguments]]
 name = "bandwidth"
-type = "enum (125KHZ | 250KHZ | 500KHZ) { 125KHZ:125, 250KHZ:250, 500KHZ:500 }"
-enum_values = ["125KHZ", "250KHZ", "500KHZ"]
+type = "enum (125kHz | 250kHz | 500kHz) { 125kHz:125, 250kHz:250, 500kHz:500 }"
+enum_values = ["125kHz", "250kHz", "500kHz"]
 description = "LoRa bandwidth in khz [125, 250, 500]"
 [[menus.arguments]]
 name = "spread-factor"
@@ -22831,6 +22719,10 @@ enum_values = ["none"]
 [[menus]]
 path = "/iot/wiliot/servers/defaults"
 type = "Command"
+
+[[menus]]
+path = "/ip"
+type = "Directory"
 
 [[menus]]
 path = "/ip/address"
@@ -24017,6 +23909,10 @@ type = "bool"
 [[menus.arguments]]
 name = "address-list"
 type = "string"
+
+[[menus]]
+path = "/ip/firewall"
+type = "Directory"
 
 [[menus]]
 path = "/ip/firewall/address-list"
@@ -28241,6 +28137,9 @@ name = "max-block-size"
 type = "enum (512 | 1454 | 4096 | 8192) { 512:512, 1454:1454, 4096:4096, 8192:8192 }"
 enum_values = ["512", "1454", "4096", "8192"]
 description = "maximum block size allowed to negotiate"
+[[menus.arguments]]
+name = "vrf"
+type = "enum"
 
 [[menus]]
 path = "/ip/traffic-flow"
@@ -28476,6 +28375,10 @@ required = true
 [[menus.arguments]]
 name = "interfaces"
 type = ""
+
+[[menus]]
+path = "/ipv6"
+type = "Directory"
 
 [[menus]]
 path = "/ipv6/address"
@@ -28995,6 +28898,10 @@ required = true
 [[menus.arguments]]
 name = "options"
 type = ""
+
+[[menus]]
+path = "/ipv6/firewall"
+type = "Directory"
 
 [[menus]]
 path = "/ipv6/firewall/address-list"
@@ -30357,6 +30264,10 @@ type = "num"
 description = "Total number of bytes that have been processed through IPv6 fasttrack."
 
 [[menus]]
+path = "/lcd"
+type = "Directory"
+
+[[menus]]
 path = "/lcd/backlight"
 type = "Command"
 [[menus.arguments]]
@@ -30495,6 +30406,10 @@ type = "string"
 [[menus.read_only]]
 name = "extra-info"
 type = "string"
+
+[[menus]]
+path = "/mpls"
+type = "Directory"
 
 [[menus]]
 path = "/mpls/forwarding-table"
@@ -31210,6 +31125,10 @@ path = "/mpls/traffic-eng/tunnel/reoptimize"
 type = "Command"
 
 [[menus]]
+path = "/openflow"
+type = "Directory"
+
+[[menus]]
 path = "/openflow/flow"
 type = "Directory"
 [[menus.flags]]
@@ -31426,6 +31345,10 @@ type = "num"
 description = "Number of packets received on the interface."
 
 [[menus]]
+path = "/partitions"
+type = "Directory"
+
+[[menus]]
 path = "/partitions/activate"
 type = "Command"
 
@@ -31525,6 +31448,10 @@ name = "line-state"
 type = ""
 
 [[menus]]
+path = "/port"
+type = "Directory"
+
+[[menus]]
 path = "/port/remote-access"
 type = "Directory"
 [[menus.flags]]
@@ -31570,6 +31497,10 @@ type = "ip6Addr"
 [[menus.read_only]]
 name = "active-peer-port"
 type = "num"
+
+[[menus]]
+path = "/ppp"
+type = "Directory"
 
 [[menus]]
 path = "/ppp/aaa"
@@ -31813,6 +31744,10 @@ type = "string"
 [[menus.read_only]]
 name = "last-disconnect-reason"
 type = "enum (peer-request | hung-up | idle-timeout | session-timeout | reset | reboot | port-error | nas..."
+
+[[menus]]
+path = "/queue"
+type = "Directory"
 
 [[menus]]
 path = "/queue/interface"
@@ -32220,6 +32155,10 @@ name = "cake-memlimit"
 type = "num"
 
 [[menus]]
+path = "/radius"
+type = "Directory"
+
+[[menus]]
 path = "/radius/incoming"
 type = "Settings Directory"
 [[menus.arguments]]
@@ -32337,10 +32276,18 @@ type = "string"
 
 [[menus]]
 path = "/radius/reset-counters"
+type = "Command"
+
+[[menus]]
+path = "/root"
 type = "Directory"
 
 [[menus]]
 path = "/root/terminal"
+type = "Directory"
+
+[[menus]]
+path = "/routing"
 type = "Directory"
 
 [[menus]]
@@ -36589,6 +36536,10 @@ type = "string"
 description = "safe mode session owner"
 
 [[menus]]
+path = "/snmp"
+type = "Directory"
+
+[[menus]]
 path = "/snmp/community"
 type = "Directory"
 [[menus.flags]]
@@ -36695,6 +36646,10 @@ name = "engine-id"
 type = "string"
 
 [[menus]]
+path = "/system"
+type = "Directory"
+
+[[menus]]
 path = "/system/backup"
 type = "Directory"
 
@@ -36776,12 +36731,15 @@ type = "Command"
 [[menus.arguments]]
 name = "name"
 type = "file"
+description = "File name for the backup file."
 [[menus.arguments]]
 name = "password"
 type = "string"
+description = "Password for the encrypted backup file."
 [[menus.arguments]]
 name = "force-v6-to-v7-configuration-upgrade"
 type = "bool"
+description = "This setting after loading the config (if backup has the ROSv6 config) is forcing to run configuration conversion to v7."
 
 [[menus]]
 path = "/system/backup/save"
@@ -36789,16 +36747,20 @@ type = "Command"
 [[menus.arguments]]
 name = "name"
 type = "file"
+description = "The filename for the backup file."
 [[menus.arguments]]
 name = "password"
 type = "string"
+description = "Password for the encrypted backup file. Since RouterOS v6.43, without a provided password, the backup file is unencrypted."
 [[menus.arguments]]
 name = "dont-encrypt"
 type = "bool"
+description = "Disable backup file encryption. Since RouterOS v6.43, without a provided password, the backup file is unencrypted."
 [[menus.arguments]]
 name = "encryption"
 type = "enum (aes-sha256 | rc4) { aes-sha256:0, rc4:1 }"
 enum_values = ["aes-sha256", "rc4"]
+description = "The encryption algorithm to use for encrypting the backup file. `rc4` is not a secure encryption method and is only available for compatibility with older RouterOS versions."
 
 [[menus]]
 path = "/system/check-disk"
@@ -38026,7 +37988,7 @@ description = "Protocol for connecting to the MikroTik download server. Use `htt
 name = "check-certificate"
 type = "enum (no | yes | yes-without-crl)"
 enum_values = ["no", "yes", "yes-without-crl"]
-description = "Whether and how to validate the server SSL certificate. Always use `yes` to ensure a secure connection."
+description = "Whether and how to validate the server SSL certificate. Always use `yes` to ensure a secure connection. `yes-without-crl` can be used to skip CRL validation."
 [[menus.arguments]]
 name = "ip-version"
 type = "enum (auto | ipv4 | ipv6)"
@@ -38177,6 +38139,10 @@ required = true
 name = "interface"
 type = "iface_enum"
 required = true
+[[menus.arguments]]
+name = "role"
+type = "enum (bmca | master | slave)"
+enum_values = ["bmca", "master", "slave"]
 
 [[menus]]
 path = "/system/ptp/status"
@@ -38465,30 +38431,37 @@ type = "Settings Directory"
 [[menus.read_only]]
 name = "routerboard"
 type = "bool"
+description = "Indicates whether the device is a RouterBOARD unit."
 [[menus.read_only]]
 name = "board-name"
 type = "string"
 [[menus.read_only]]
 name = "model"
 type = "string"
+description = "The RouterBOARD model number."
 [[menus.read_only]]
 name = "revision"
 type = "string"
 [[menus.read_only]]
 name = "serial-number"
 type = "string"
+description = "The unique serial number of the device."
 [[menus.read_only]]
 name = "firmware-type"
 type = "string"
+description = "The type of bootloader firmware used by the device."
 [[menus.read_only]]
 name = "minimum-firmware"
 type = "string"
+description = "The firmware version installed at the factory."
 [[menus.read_only]]
 name = "current-firmware"
 type = "string"
+description = "The version of the RouterBOOT loader currently in use. This should not be confused with the RouterOS operating system version."
 [[menus.read_only]]
 name = "upgrade-firmware"
 type = "string"
+description = "RouterOS upgrades may include a new RouterBOOT version file, but it must be applied manually. This line indicates whether a new RouterBOOT file has been found on the device. The file may be included with a recent RouterOS upgrade or uploaded manually as an FWF file. In both cases, the newest available version is shown here."
 [[menus.read_only]]
 name = "factory-firmware"
 type = ""
@@ -38499,6 +38472,7 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "enabled"
 type = "bool"
+description = "Enables or disables the button."
 [[menus.arguments]]
 name = "hold-time"
 type = ""
@@ -38512,6 +38486,7 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "enabled"
 type = "bool"
+description = "Enables or disables the button."
 [[menus.arguments]]
 name = "hold-time"
 type = ""
@@ -38525,20 +38500,25 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "auto-upgrade"
 type = "bool"
+description = "Whether to upgrade firmware automatically after a RouterOS upgrade. The latest firmware will be applied after an additional reboot."
 [[menus.arguments]]
 name = "baud-rate"
 type = "enum (115200 | 57600 | 38400 | 19200 | 9600 | 4800 | 2400 | 1200) { 115200:0, 57600:1, 38400:2, 1..."
 enum_values = ["115200", "57600", "38400", "19200", "9600", "4800", "2400", "1200"]
+description = "Choose the onboard RS232 speed in bits per second, if installed. The **off** option disables the serial interface."
 [[menus.arguments]]
 name = "boot-delay"
 type = "time"
+description = "How much time to wait for a keystroke while booting."
 [[menus.arguments]]
 name = "init-delay"
 type = "time"
+description = "Used only for mPCIe modems on RB9xx series devices. If your modem is not recognized after a soft reboot, set a delay before the USB port is initialized."
 [[menus.arguments]]
 name = "enter-setup-on"
 type = "enum (any-key | delete-key) { any-key:0, delete-key:1 }"
 enum_values = ["any-key", "delete-key"]
+description = "key instead."
 [[menus.arguments]]
 name = "boot-device"
 type = "enum"
@@ -38552,49 +38532,63 @@ type = ""
 name = "etherboot-port"
 type = "enum (ether1 | ether2) { ether1:0, ether2:1 }"
 enum_values = ["ether1", "ether2"]
+description = "Selects the Etherboot/Netinstall interface. Applies only to CRS520, CRS804, and CRS812. The default port depends on the model."
 [[menus.arguments]]
 name = "boot-os"
 type = "enum (router-os | swos) { router-os:0, swos:1 }"
 enum_values = ["router-os", "swos"]
+description = "Changes the boot operating system for CRS3xx series switches."
 [[menus.arguments]]
 name = "regulatory-domain-ce"
 type = "bool"
+description = "Enables extra-low TX power for high antenna gain devices (requires a reboot)."
 [[menus.arguments]]
 name = "cpu-mode"
 type = "enum (power-save | regular) { power-save:0, regular:1 }"
 enum_values = ["power-save", "regular"]
+description = "Whether the CPU enters suspend mode on the HLT instruction. Most operating systems use the HLT instruction during the CPU idle cycle. When the CPU is in suspend mode, it consumes less power. In low-temperature conditions, you should choose the regular mode, so the overall system temperature is higher."
 [[menus.arguments]]
 name = "cpu-frequency"
 type = "enum"
+description = "in RouterOS version 7 at this prompt."
 [[menus.arguments]]
 name = "memory-frequency"
 type = "enum"
+description = "in RouterOS version 7 at this prompt."
 [[menus.arguments]]
 name = "memory-data-rate"
 type = "enum"
+description = "in RouterOS version 7 at this prompt."
 [[menus.arguments]]
 name = "preferred-architecture"
 type = "enum (arm32 | arm64) { arm32:0, arm64:1 }"
 enum_values = ["arm32", "arm64"]
+description = "Specific setting for L009 devices. Updates the device to use the ARM64 architecture."
 [[menus.arguments]]
 name = "boot-protocol"
 type = "enum (bootp | dhcp) { bootp:0, dhcp:1 }"
 enum_values = ["bootp", "dhcp"]
+description = "The boot protocol to use:- **bootp** — the default option for booting RouterOS.- **dhcp** — used for OpenWrt and possibly other operating systems."
 [[menus.arguments]]
 name = "enable-jumper-reset"
 type = "bool"
+description = "Disable this option to prevent an accidental settings reset through the onboard jumper."
 [[menus.arguments]]
 name = "force-backup-booter"
 type = "bool"
+description = "Whether to use the backup RouterBOOT. This setting is useful only if the main loader is corrupted and cannot be fixed. Instead of booting the device with a pressed reset button (which loads the backup loader), you can use this setting to load it on every boot."
 [[menus.arguments]]
 name = "silent-boot"
 type = "bool"
+description = "This option disables beeping sounds during boot (does not disable the RouterOS `beep` command)."
 [[menus.arguments]]
 name = "disable-pci"
 type = "bool"
+description = "Specific setting for devices with the MT7621 chip. Disables PCI."
 [[menus.arguments]]
 name = "gpio-function"
 type = "ubit (serial1)"
+description = "Specific setting for M33 devices. By default, pins 12, 13, 15, and 16 are configured for use of the second `serial1` port. You can reassign them for GPIO use in the `/iot/gpio/digital` menu."
 [[menus.arguments]]
 name = "protected-routerboot"
 type = "enum (disabled | enabled)"
@@ -38651,6 +38645,7 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "enabled"
 type = "bool"
+description = "Enables or disables the button."
 [[menus.arguments]]
 name = "hold-time"
 type = ""
@@ -39109,6 +39104,10 @@ name = "send-smtp-server"
 type = ""
 
 [[menus]]
+path = "/task"
+type = "Directory"
+
+[[menus]]
 path = "/task/add"
 type = "Command"
 [[menus.arguments]]
@@ -39191,6 +39190,10 @@ type = "Command"
 [[menus.arguments]]
 name = "id"
 type = "num"
+
+[[menus]]
+path = "/tool"
+type = "Directory"
 
 [[menus]]
 path = "/tool/bandwidth-server"
@@ -42006,6 +42009,10 @@ type = "macAddr"
 description = "MAC address of the target computer"
 
 [[menus]]
+path = "/tr069-client"
+type = "Directory"
+
+[[menus]]
 path = "/tr069-client/reset-tr069-config"
 type = "Command"
 [[menus.arguments]]
@@ -42056,6 +42063,14 @@ type = "string"
 [[menus.read_only]]
 name = "retry-count"
 type = "num"
+
+[[menus]]
+path = "/user"
+type = "Directory"
+
+[[menus]]
+path = "/user-manager"
+type = "Directory"
 
 [[menus]]
 path = "/user-manager/advanced"
@@ -42797,6 +42812,10 @@ type = "string"
 [[menus.arguments]]
 name = "info"
 type = "string"
+
+[[menus]]
+path = "/zerotier"
+type = "Directory"
 
 [[menus]]
 path = "/zerotier/controller"

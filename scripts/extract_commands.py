@@ -277,6 +277,64 @@ def _covers_line(menus: list[dict]) -> str:
     return f"# Covers: ({len(menus)} menus)"
 
 
+def synthesize_directories(menus: list[dict]) -> list[dict]:
+    """Return `menus` plus a bare Directory entry for every missing ancestor.
+
+    WHY: upstream RouterOS docs no longer publish standalone Directory
+    sections, so intermediate menus (/ip, /routing/ospf, ...) vanish from
+    llms-full.txt whenever only their children have their own pages.
+    Prefix completion and unknown-menu diagnostics still need every level
+    of the hierarchy, so each proper ancestor prefix absent from the
+    explicit set is added as `{path, type: "Directory"}` — no flags, no
+    arguments, no read-only rows, hence no description in the output.
+    (The empty lists keep the entry shape-compatible with generate_toml;
+    they emit nothing.)
+
+    Gaps only: explicitly parsed entries are never overwritten or merged
+    into. Multi-level chains are handled transitively (/a/b/c implies
+    /a/b and /a). Input order does not matter; callers sort afterwards.
+    """
+    known_paths = {m["path"] for m in menus}
+    synthesized: dict[str, dict] = {}
+    for menu in menus:
+        segments = menu["path"].split("/")[1:]  # drop "" before the leading "/"
+        # Proper ancestors only: /a/b/c contributes /a and /a/b, never itself.
+        for i in range(1, len(segments)):
+            ancestor_path = "/" + "/".join(segments[:i])
+            if ancestor_path not in known_paths:
+                synthesized[ancestor_path] = {
+                    "path": ancestor_path,
+                    "type": "Directory",
+                    "flags": [],
+                    "arguments": [],
+                    "read_only": [],
+                }
+    return menus + list(synthesized.values())
+
+
+def finalize_menus(menus: list[dict]) -> list[dict]:
+    """Normalize parsed menus for serialization: dedupe, fill gaps, sort.
+
+    Applies, in order:
+      1. Deduplicate by path (first occurrence wins).
+      2. Synthesize Directory entries for ancestors missing upstream.
+      3. Sort by path — what keeps repeated runs byte-identical.
+
+    One function so main() and the tests share a single definition of the
+    pre-serialization pipeline instead of duplicating its steps.
+    """
+    seen: set[str] = set()
+    unique = []
+    for m in menus:
+        if m["path"] not in seen:
+            seen.add(m["path"])
+            unique.append(m)
+
+    unique = synthesize_directories(unique)
+    unique.sort(key=lambda m: m["path"])
+    return unique
+
+
 def generate_toml(menus: list[dict], llms_path: Path | None = None) -> str:
     """Generate TOML output from parsed menus."""
     lines = []
@@ -400,16 +458,7 @@ def main():
     menus = parse_llms_full(str(input_file))
     print(f"Parsed {len(menus)} CLI-path menus.")
 
-    # Deduplicate by path
-    seen = set()
-    unique = []
-    for m in menus:
-        if m["path"] not in seen:
-            seen.add(m["path"])
-            unique.append(m)
-
-    # Sort by path
-    unique.sort(key=lambda m: m["path"])
+    unique = finalize_menus(menus)
 
     toml_content = generate_toml(unique, llms_path=input_file)
 
