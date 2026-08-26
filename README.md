@@ -16,7 +16,7 @@
 
 ---
 
-**Contents:** [Features](#-features) · [Install](#-install) · [Quick start](#-quick-start) · [Dependencies](#-dependencies) · [Deploy](#-deploy) · [Language Server](#-language-server) · [Grammar](#-grammar) · [Sync & Extraction](#-sync--extraction) · [Development](#️-development) · [Release](#-release) · [Reference](#-reference) · [License](#-license)
+**Contents:** [Features](#-features) · [Install](#-install) · [Quick start](#-quick-start) · [Dependencies](#-dependencies) · [Deploy](#-deploy) · [Language Server](#-language-server) · [Grammar](#-grammar) · [Sync & Extraction](#-sync--extraction) · [Development](#️-development) · [Release](#-release) · [Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) · [Reference](#-reference) · [License](#-license)
 
 ---
 
@@ -332,6 +332,8 @@ A pull request to [`zed-industries/extensions`](https://github.com/zed-industrie
 - Zed extensions: https://zed.dev/docs/extensions/developing-extensions
 - Publishing runbook: [docs/publishing-runbook.md](docs/publishing-runbook.md)
 - Grammar repo: https://github.com/balakar94/tree-sitter-rsc
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
+- Roadmap: [ROADMAP.md](ROADMAP.md)
 
 ---
 
