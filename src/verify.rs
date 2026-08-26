@@ -106,7 +106,7 @@ fn fetch_companion_digest(download_url: &str) -> std::result::Result<String, Ver
 /// `binary_name` is the work-dir-relative path `download_file` wrote to.
 /// Read-back stays within the extension work dir (repo hard rule #7).
 ///
-/// On success returns the verified digest prefix (for logging); on any
+/// On success returns the verified digest (full lowercase hex); on any
 /// failure returns a [`VerificationFailure`] — callers must fail closed.
 pub(crate) fn verify_downloaded_binary(
     binary_name: &str,
@@ -130,7 +130,7 @@ pub(crate) fn verify_downloaded_binary(
     if !sha256::digests_match(&expected, &actual) {
         return Err(VerificationFailure::Mismatch { expected, actual });
     }
-    Ok(short_digest(&actual).to_string())
+    Ok(actual)
 }
 
 /// First [`DIGEST_LOG_PREFIX`] hex characters of a digest, for log/status text.

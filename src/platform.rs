@@ -1,14 +1,24 @@
 //! Platform naming for auto-downloaded language-server binaries.
 //!
-//! Two names are derived from `zed::current_platform()`:
+//! Three names derive from `zed::current_platform()`:
 //!
 //! * [`asset_triple`] — the `<triple>` in the GitHub release asset name
 //!   (`rsc-ls-<triple>`). Assets are extension-less byte blobs so one scheme
 //!   covers every platform.
-//! * [`server_binary_name`] — the local file/spawn name inside the extension
-//!   work dir. Windows cannot spawn an executable image whose file lacks the
-//!   `.exe` suffix, so downloads there are stored, cached and spawned as
-//!   `rsc-ls.exe`; every other platform keeps the plain name.
+//! * [`server_binary_name`] — the unversioned name used to probe PATH (a
+//!   developer build or manual install carries no version suffix). Windows
+//!   cannot spawn an executable image whose file lacks the `.exe` suffix, so
+//!   the Windows probe name is `rsc-ls.exe`.
+//! * [`stored_binary_name`] — the versioned work-dir storage name for
+//!   downloaded binaries. Zed keys the extension work dir by manifest id, not
+//!   by extension version, so the version must live in the filename itself;
+//!   otherwise an updated extension would keep finding and reusing a stale
+//!   binary forever.
+//!
+//! Honesty note on [`is_executable`]: in the shipped wasm32-wasip2 component
+//! `cfg(unix)` is false, so it reduces to an existence check on every host
+//! OS. Integrity of cached binaries is enforced by the [`crate::cache`]
+//! digest-marker gate instead; exec bits only matter in native test builds.
 
 use zed_extension_api::{self as zed};
 
@@ -40,7 +50,8 @@ pub(crate) fn asset_triple(
 }
 
 /// Local file/spawn name of the language-server binary for a platform
-/// (`rsc-ls.exe` on Windows, plain [`BINARY_NAME`] elsewhere).
+/// (`rsc-ls.exe` on Windows, plain [`BINARY_NAME`] elsewhere). Used only for
+/// PATH probing; work-dir storage uses [`stored_binary_name`].
 pub(crate) fn server_binary_name(os: zed::Os) -> &'static str {
     match os {
         zed::Os::Windows => "rsc-ls.exe",
@@ -48,14 +59,46 @@ pub(crate) fn server_binary_name(os: zed::Os) -> &'static str {
     }
 }
 
+/// Versioned work-dir storage name for a downloaded binary
+/// (`rsc-ls-<version>.exe` on Windows, `rsc-ls-<version>` elsewhere).
+///
+/// Zed keys the extension work dir by manifest id only, so the version must
+/// be part of the filename: with a fixed name, an extension update shipping a
+/// newer language server would find and reuse the previous release's binary
+/// silently forever.
+pub(crate) fn stored_binary_name(os: zed::Os, version: &str) -> String {
+    match os {
+        zed::Os::Windows => format!("{BINARY_NAME}-{version}.exe"),
+        _ => format!("{BINARY_NAME}-{version}"),
+    }
+}
+
+/// Accepts a GitHub-API asset `download_url` only when it points into this
+/// extension's own release namespace on github.com; anything else yields
+/// `None` so the caller falls back to the URL it constructs itself from
+/// [`GITHUB_REPO`] and the pinned crate version. Defense in depth: it stops
+/// a tampered API response from redirecting the download to attacker-chosen
+/// content (which would then face — and fail — checksum verification anyway).
+pub(crate) fn pinned_release_url(candidate: &str) -> Option<String> {
+    let prefix = format!("https://github.com/{GITHUB_REPO}/releases/download/");
+    if candidate.starts_with(&prefix) {
+        Some(candidate.to_string())
+    } else {
+        None
+    }
+}
+
 /// True when `path` exists and is spawnable as-is.
 ///
-/// On unix that means the file carries at least one exec bit; on Windows any
-/// existing readable file is spawnable, so existence suffices. Callers use
-/// this instead of `zed::make_file_executable().is_ok()`, which the host turns
-/// into an unconditional no-op-Ok on non-unix platforms (it says nothing about
-/// presence), and instead of bare `fs::metadata` when a lost exec bit should
-/// trigger self-healing via re-download rather than a doomed spawn.
+/// Honest semantics: in the shipped wasm32-wasip2 component `cfg(unix)` is
+/// false, so this reduces to an existence check on every host OS; integrity
+/// is enforced by the [`crate::cache`] digest-marker gate, and exec bits only
+/// matter in native test builds (where the unix arm below does check them).
+/// Callers use this instead of `zed::make_file_executable().is_ok()`, which
+/// the host turns into an unconditional no-op-Ok on non-unix platforms (it
+/// says nothing about presence), and instead of bare `fs::metadata` when a
+/// lost exec bit should trigger re-download rather than a doomed spawn in
+/// native builds.
 pub(crate) fn is_executable(path: &str) -> bool {
     #[cfg(unix)]
     {
@@ -147,5 +190,71 @@ mod tests {
         assert!(is_executable(path.to_str().unwrap()));
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn stored_names_are_version_keyed_per_platform() {
+        assert_eq!(
+            stored_binary_name(zed::Os::Windows, "0.5.0"),
+            "rsc-ls-0.5.0.exe"
+        );
+        assert_eq!(stored_binary_name(zed::Os::Mac, "0.5.0"), "rsc-ls-0.5.0");
+        assert_eq!(stored_binary_name(zed::Os::Linux, "0.5.0"), "rsc-ls-0.5.0");
+    }
+
+    #[test]
+    fn stored_names_never_collide_across_versions() {
+        // The whole point of version keying: an updated extension must not
+        // find (and silently reuse) the previous release's binary.
+        assert_ne!(
+            stored_binary_name(zed::Os::Mac, "0.4.0"),
+            stored_binary_name(zed::Os::Mac, "0.5.0")
+        );
+        assert_ne!(
+            stored_binary_name(zed::Os::Windows, "0.4.0"),
+            stored_binary_name(zed::Os::Windows, "0.5.0")
+        );
+    }
+
+    #[test]
+    fn release_urls_are_pinned_to_this_repo_namespace() {
+        let good = format!(
+            "https://github.com/{GITHUB_REPO}/releases/download/v0.5.0/rsc-ls-x86_64-unknown-linux-gnu"
+        );
+        assert_eq!(pinned_release_url(&good), Some(good.clone()));
+
+        // Foreign repo under the same host.
+        assert_eq!(
+            pinned_release_url(
+                "https://github.com/attacker/mikrotik-zed/releases/download/v0.5.0/rsc-ls"
+            ),
+            None
+        );
+        // Scheme downgrade.
+        assert_eq!(
+            pinned_release_url(
+                "http://github.com/balakar94/mikrotik-zed/releases/download/v0.5.0/rsc-ls"
+            ),
+            None
+        );
+        // Prefix look-alike: the repo name is a prefix of a different path.
+        assert_eq!(
+            pinned_release_url(
+                "https://github.com/balakar94/mikrotik-zed.evil/releases/download/v0.5.0/rsc-ls"
+            ),
+            None
+        );
+        // Host look-alike.
+        assert_eq!(
+            pinned_release_url(
+                "https://github.com.evil.com/balakar94/mikrotik-zed/releases/download/v0.5.0/rsc-ls"
+            ),
+            None
+        );
+        assert_eq!(pinned_release_url(""), None);
+        assert_eq!(
+            pinned_release_url("https://github.com/balakar94/mikrotik-zed/releases/download/"),
+            Some("https://github.com/balakar94/mikrotik-zed/releases/download/".to_string())
+        );
     }
 }

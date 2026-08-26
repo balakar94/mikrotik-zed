@@ -1,5 +1,6 @@
 use zed_extension_api::{self as zed, LanguageServerId, Result, Worktree};
 
+mod cache;
 mod platform;
 mod sha256;
 mod verify;
@@ -14,6 +15,20 @@ struct RscExtension {
     cached_binary: Option<String>,
 }
 
+/// Best-effort removal of a cached binary and its integrity marker. Every
+/// caller treats individual removal failures as non-fatal warnings: leftover
+/// files cost disk space, never correctness, because the reuse gate in step 3
+/// re-verifies bytes against the marker before anything is spawned.
+fn remove_cached_artifacts(stored_name: &str) {
+    if let Err(e) = std::fs::remove_file(stored_name) {
+        eprintln!("[mikrotik-zed] warning: could not remove {stored_name}: {e}");
+    }
+    let marker = cache::marker_path(stored_name);
+    if let Err(e) = std::fs::remove_file(&marker) {
+        eprintln!("[mikrotik-zed] warning: could not remove {marker}: {e}");
+    }
+}
+
 impl zed::Extension for RscExtension {
     fn new() -> Self {
         Self {
@@ -26,9 +41,19 @@ impl zed::Extension for RscExtension {
         language_server_id: &LanguageServerId,
         worktree: &Worktree,
     ) -> Result<zed::Command> {
-        // Local file/spawn name for this platform (`rsc-ls.exe` on Windows).
         let (os, arch) = zed::current_platform();
+        // Compile-time crate version (`env!` expands at build time; runtime
+        // environment access stays banned in the WASM component). Keying the
+        // stored binary by version is what lets an extension update replace
+        // its language server instead of silently reusing the old one.
+        let version = env!("CARGO_PKG_VERSION");
+        // Unversioned name for probing PATH only (developer installs carry no
+        // version suffix).
         let binary_name = platform::server_binary_name(os);
+        // Versioned work-dir storage name. Every filesystem operation on the
+        // cached download — download target, verification, chmod, marker,
+        // cleanup, spawn — goes through this variable, never a bare constant.
+        let stored_name = platform::stored_binary_name(os, version);
 
         // 1) Fast path: binary in PATH (developer local build or manual install).
         //    The plain name is probed everywhere; Windows manual installs keep
@@ -46,15 +71,17 @@ impl zed::Extension for RscExtension {
             });
         }
 
-        // 2) Reuse cached binary from previous successful resolution in this session
+        // 2) Reuse cached binary from previous successful resolution in this session.
+        // `cached` is either an absolute PATH result or the versioned work-dir
+        // name recorded by a prior download in this session. Only the work-dir
+        // flavor is re-probed, and its gate is two-fold: spawnability (an
+        // existence check in the shipped WASM build — see platform.rs) AND
+        // byte-integrity against the digest marker written right after
+        // verification. A file truncated or swapped since then is never
+        // respawned; control falls through to a fresh download.
         if let Some(cached) = &self.cached_binary {
-            // `cached` may be an absolute PATH result or the platform-relative
-            // spawn name ("rsc-ls" / "rsc-ls.exe") from a prior download.
-            // Spawnability is probed directly: Zed's host turns
-            // `make_file_executable` into an unconditional no-op on non-unix
-            // platforms, so its `Ok` says nothing about presence or exec bits.
-            let probe = if cached.as_str() == binary_name {
-                platform::is_executable(cached)
+            let probe = if cached.as_str() == stored_name.as_str() {
+                platform::is_executable(cached) && cache::cached_binary_is_intact(cached)
             } else {
                 // Absolute path from PATH – assume it still exists; worktree.which already failed
                 // so this is a stale cache; fall through to download.
@@ -71,19 +98,34 @@ impl zed::Extension for RscExtension {
         }
 
         // 3) Reuse a previously downloaded binary from the extension work dir.
-        // Downloaded binaries are stored (uncompressed) under the platform spawn
-        // name — `rsc-ls`, or `rsc-ls.exe` on Windows — and must already carry
-        // their exec bits from installation. If something stripped them since,
-        // fall through to a fresh download instead of a doomed spawn: its
-        // strict post-download gate either repairs the file or fails loudly.
-        if platform::is_executable(binary_name) {
-            eprintln!("[mikrotik-zed] found cached {binary_name} in extension dir, reusing");
-            self.cached_binary = Some(binary_name.to_string());
-            return Ok(zed::Command {
-                command: binary_name.to_string(),
-                args: vec![],
-                env: worktree.shell_env(),
-            });
+        // Downloads are stored under the versioned name `rsc-ls-<version>`
+        // (`rsc-ls-<version>.exe` on Windows) beside an `.verified` digest
+        // marker recording the SHA-256 that passed checksum verification.
+        // This branch delivers the self-healing it promises: when the gate
+        // fails — missing/malformed marker, digest mismatch, oversize — the
+        // reason is logged, the stale pair is removed best-effort, and control
+        // falls through to a fresh, re-verified download instead of respawning
+        // a possibly corrupt file forever.
+        if platform::is_executable(&stored_name) {
+            match cache::integrity_problem(&stored_name) {
+                None => {
+                    eprintln!(
+                        "[mikrotik-zed] found cached {stored_name} in extension dir, reusing"
+                    );
+                    self.cached_binary = Some(stored_name.clone());
+                    return Ok(zed::Command {
+                        command: stored_name.clone(),
+                        args: vec![],
+                        env: worktree.shell_env(),
+                    });
+                }
+                Some(reason) => {
+                    eprintln!(
+                        "[mikrotik-zed] cached {stored_name} failed its integrity gate ({reason}); removing it and downloading afresh"
+                    );
+                    remove_cached_artifacts(&stored_name);
+                }
+            }
         }
 
         // 4) Auto-download from GitHub Releases
@@ -104,7 +146,6 @@ impl zed::Extension for RscExtension {
         );
 
         // Try GitHub API first (latest release), then fallback to versioned URL.
-        let version = env!("CARGO_PKG_VERSION");
         let mut download_url: Option<String> = None;
 
         // Attempt latest_github_release
@@ -125,13 +166,16 @@ impl zed::Extension for RscExtension {
                         "[mikrotik-zed] found asset in latest release {}: {}",
                         release.version, asset.name
                     );
-                    download_url = Some(asset.download_url.clone());
+                    // Only trust API-supplied URLs inside this repo's own
+                    // release namespace; anything else falls back to the
+                    // self-constructed URL below.
+                    download_url = platform::pinned_release_url(&asset.download_url);
                     break;
                 }
             }
             if download_url.is_none() {
                 eprintln!(
-                    "[mikrotik-zed] asset {asset_name} not in latest release {}, trying tag v{version}",
+                    "[mikrotik-zed] usable asset {asset_name} not in latest release {}, trying tag v{version}",
                     release.version
                 );
             }
@@ -146,7 +190,7 @@ impl zed::Extension for RscExtension {
                 for asset in &release.assets {
                     if asset.name == asset_name {
                         eprintln!("[mikrotik-zed] found asset in tag {tag}: {}", asset.name);
-                        download_url = Some(asset.download_url.clone());
+                        download_url = platform::pinned_release_url(&asset.download_url);
                         break;
                     }
                 }
@@ -164,17 +208,23 @@ impl zed::Extension for RscExtension {
             &zed::LanguageServerInstallationStatus::Downloading,
         );
 
-        // Destination uses the platform spawn name: on Windows the bytes must
-        // land in a file named `rsc-ls.exe` or the spawn will fail.
+        // Destination uses the versioned platform spawn name: on Windows the
+        // bytes must land in a `*.exe` file or the spawn will fail, and the
+        // version suffix isolates each extension release's artifact.
         let download_result =
-            zed::download_file(&url, binary_name, zed::DownloadedFileType::Uncompressed);
+            zed::download_file(&url, &stored_name, zed::DownloadedFileType::Uncompressed);
 
         if let Err(e) = download_result {
+            // The host writes downloads non-atomically: a mid-transfer failure
+            // can leave a TRUNCATED file at the final path. Remove it (and any
+            // stale marker) so neither this nor a later session mistakes
+            // residue for a usable binary.
+            remove_cached_artifacts(&stored_name);
             let msg = format!(
                 "Failed to download {BINARY_NAME} ({triple}) from {url}: {e}. \
                 Manual install: cargo build -p rsc-ls --release and add target/release to PATH, \
                 or download {asset_name} from https://github.com/{GITHUB_REPO}/releases \
-                and place as {binary_name} in PATH. Original error: {e}"
+                and place it in PATH."
             );
             eprintln!("[mikrotik-zed] {msg}");
             zed::set_language_server_installation_status(
@@ -188,17 +238,13 @@ impl zed::Extension for RscExtension {
         // release's `.sha256` companion BEFORE it is made executable or run.
         // Fail closed on any verification problem — never fall back to
         // executing an unverified binary.
-        let verified_digest = match verify::verify_downloaded_binary(binary_name, &url) {
-            Ok(prefix) => prefix,
+        let verified_digest = match verify::verify_downloaded_binary(&stored_name, &url) {
+            Ok(digest) => digest,
             Err(failure) => {
                 let msg = failure.describe(&url);
                 // Best-effort cleanup so neither this session nor a later one
                 // can pick up the unverified binary from the work dir.
-                if let Err(remove_err) = std::fs::remove_file(binary_name) {
-                    eprintln!(
-                        "[mikrotik-zed] warning: could not remove unverified {binary_name}: {remove_err}"
-                    );
-                }
+                remove_cached_artifacts(&stored_name);
                 eprintln!("[mikrotik-zed] {msg}");
                 zed::set_language_server_installation_status(
                     language_server_id,
@@ -207,10 +253,32 @@ impl zed::Extension for RscExtension {
                 return Err(msg);
             }
         };
-        eprintln!("[mikrotik-zed] sha256 verified {verified_digest} ({triple})");
+        eprintln!(
+            "[mikrotik-zed] sha256 verified {} ({triple})",
+            verify::short_digest(&verified_digest)
+        );
 
-        if let Err(e) = zed::make_file_executable(binary_name) {
-            let msg = format!("Downloaded {binary_name} but failed to make executable: {e}");
+        if let Err(e) = zed::make_file_executable(&stored_name) {
+            let msg = format!("Downloaded {stored_name} but failed to make executable: {e}");
+            eprintln!("[mikrotik-zed] {msg}");
+            zed::set_language_server_installation_status(
+                language_server_id,
+                &zed::LanguageServerInstallationStatus::Failed(msg.clone()),
+            );
+            return Err(msg);
+        }
+
+        // Record the integrity marker LAST: its presence certifies that these
+        // exact bytes passed checksum verification. Writing it is part of the
+        // transaction — if it cannot be persisted we fail closed and remove
+        // the binary, because an uncertifiable cache entry would bounce off
+        // the step-3 gate forever without ever healing itself.
+        if let Err(e) = cache::write_marker(&stored_name, &verified_digest) {
+            let msg = format!(
+                "Verified {BINARY_NAME} ({triple}) but could not record its integrity marker: {e}. \
+                Refusing to keep an uncertifiable cached binary."
+            );
+            remove_cached_artifacts(&stored_name);
             eprintln!("[mikrotik-zed] {msg}");
             zed::set_language_server_installation_status(
                 language_server_id,
@@ -224,13 +292,13 @@ impl zed::Extension for RscExtension {
             &zed::LanguageServerInstallationStatus::None,
         );
         eprintln!(
-            "[mikrotik-zed] {BINARY_NAME} downloaded and cached for {triple} -> {binary_name}"
+            "[mikrotik-zed] {BINARY_NAME} downloaded and cached for {triple} -> {stored_name}"
         );
 
-        self.cached_binary = Some(binary_name.to_string());
+        self.cached_binary = Some(stored_name.clone());
 
         Ok(zed::Command {
-            command: binary_name.to_string(),
+            command: stored_name,
             args: vec![],
             env: worktree.shell_env(),
         })
