@@ -68,6 +68,8 @@ manual.mikrotik.com ──sync_llms.py──▶ llms-full.txt ──extract_comm
 
 - Regenerate with `make sync` then `make extract`. CI gates staleness via `make sync-check`.
 - `data/commands.toml` carries a metadata header (RouterOS version, UTC timestamp, source SHA256). Never strip or hand-edit it.
+- `data/upstream-docs.toml` is the sync provenance manifest (SHA256 of both upstream files, RouterOS version, UTC timestamp), regenerated alongside `make sync` — never hand-edit it.
+- A weekly `docs-drift` workflow re-checks upstream against that snapshot and notifies via the `upstream-docs` labeled issue, auto-closed once re-synced.
 - Trust but verify: cross-check extracted commands against the upstream CLI reference or `/export` on a real router.
 
 ## Volatile facts — look them up, never quote from memory

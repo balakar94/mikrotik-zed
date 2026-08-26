@@ -1,0 +1,124 @@
+name: docs-drift
+
+# Weekly watchdog for upstream RouterOS documentation drift.
+#
+# Compares manual.mikrotik.com against the recorded snapshot via
+# scripts/sync_llms.py --check (exit 0 = ok, 2 = drift, 1 = fetch error):
+#   - drift → open (or comment on) an `upstream-docs` labeled issue embedding
+#     the detection date and the per-file remote hash/version hints printed by
+#     --check, plus exact maintainer fix instructions. One comment per run
+#     (weekly cadence caps noise; 24h dedup deliberately skipped).
+#   - ok    → auto-close any open drift issue as completed ("Resolved").
+#   - error → warn only; transient network failures must not paint the repo red.
+# Scheduled workflows only run on the default branch.
+
+on:
+  schedule:
+    - cron: "43 5 * * 1" # Mondays 05:43 UTC — offset from security-audit (06:17)
+  workflow_dispatch:
+
+# contents: read for checkout; issues: write so GITHUB_TOKEN can open/comment/close.
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watchdog:
+    name: Upstream docs drift watchdog
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # Map sync_llms.py exit codes to a step output consumed by the branches below.
+      - name: Compare upstream docs against recorded snapshot
+        id: check
+        run: |
+          set +e
+          python3 scripts/sync_llms.py --check > "$RUNNER_TEMP/check.out" 2>&1
+          ec=$?
+          set -e
+          cat "$RUNNER_TEMP/check.out"
+          case $ec in
+            0) result=ok ;;
+            2) result=drift ;;
+            *) result=error ;;
+          esac
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+          echo "result=$result"
+
+      # ── drift: notify maintainer via one labeled issue ──────────────
+      - name: Drift — open or update the upstream-docs issue
+        if: steps.check.outputs.result == 'drift'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          # Idempotent label bootstrap: gh issue create would fail on a missing label.
+          gh label create upstream-docs --color D93F0B \
+            --description "Upstream RouterOS docs drifted from the recorded snapshot" >/dev/null 2>&1 || true
+
+          number=$(gh issue list --state open --label upstream-docs \
+            --json number,title \
+            --jq '.[] | select(.title | startswith("Upstream RouterOS docs drifted")) | .number' \
+            | head -n1)
+
+          {
+            echo "Detection date (UTC): $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo ""
+            echo '```text'
+            cat "$RUNNER_TEMP/check.out"
+            echo '```'
+            echo ""
+            echo "### How to resolve"
+            echo ""
+            echo '```bash'
+            echo "python3 scripts/sync_llms.py && python3 scripts/extract_commands.py"
+            echo '```'
+            echo ""
+            echo "Review \`git diff data/\`, commit both regenerated files, and push — this watchdog"
+            echo "closes the issue automatically once \`sync_llms.py --check\` reports no drift."
+          } > "$RUNNER_TEMP/body.md"
+
+          if [ -n "$number" ]; then
+            echo "Open issue #$number found — appending this run's report."
+            gh issue comment "$number" --body-file "$RUNNER_TEMP/body.md"
+          else
+            echo "No open issue — creating one."
+            gh issue create \
+              --title "Upstream RouterOS docs drifted from the recorded snapshot" \
+              --label upstream-docs \
+              --body-file "$RUNNER_TEMP/body.md"
+          fi
+
+      # ── ok: auto-resolve a stale issue ──────────────────────────────
+      - name: No drift — close stale upstream-docs issue if open
+        if: steps.check.outputs.result == 'ok'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          number=$(gh issue list --state open --label upstream-docs \
+            --json number,title \
+            --jq '.[] | select(.title | startswith("Upstream RouterOS docs drifted")) | .number' \
+            | head -n1)
+          if [ -z "$number" ]; then
+            echo "No open upstream-docs issue — nothing to close."
+            exit 0
+          fi
+          echo "Closing #$number (snapshot re-synced)."
+          gh issue comment "$number" --body "Resolved (snapshot re-synced)"
+          gh issue close "$number" --reason completed
+
+      # ── error: transient failure stays green ────────────────────────
+      - name: Fetch error — warn only
+        if: steps.check.outputs.result == 'error'
+        run: echo "::warning::sync_llms.py --check failed (network/upstream error) — will retry next scheduled run"
