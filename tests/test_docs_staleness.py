@@ -71,7 +71,7 @@ class TestDriftWorkflow:
         return fields
 
     def test_name(self):
-        assert re.search(r"^name:\s*docs-drift\s*$", self.text, re.MULTILINE), "workflow name must be 'docs-drift'"
+        assert re.search(r"^name:\s*Docs Drift\s*$", self.text, re.MULTILINE), "workflow name must be 'Docs Drift'"
 
     def test_schedule_cron_is_valid_and_weekly(self):
         crons = re.findall(r'cron:\s*"([^"]+)"', self.text)
