@@ -1,5 +1,3 @@
-#![allow(unused_macros)]
-
 // ── MikroTik RouterOS Script Language Server ─────────────────────
 //
 // LSP over stdio, implemented in pure Rust.  Commands.toml is

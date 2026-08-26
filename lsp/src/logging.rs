@@ -81,15 +81,9 @@ macro_rules! log_debug {
     };
 }
 
-macro_rules! log_trace {
-    ($($arg:tt)*) => {
-        if $crate::logging::should_log($crate::logging::LogLevel::Trace) {
-            eprintln!("[rsc-ls][TRACE] {}", format!($($arg)*));
-        }
-    };
-}
-
-// `log_trace!` stays defined for future call sites but is intentionally NOT
-// re-exported here: an unused re-export would trip `unused_imports` under
-// `-D warnings`. Re-add it to this list together with its first caller.
+// Trace handling note: `log_level` still parses "trace" (mapping it to the
+// most verbose supported level, [`LogLevel::Trace`]), but the `log_trace!`
+// macro itself was deleted as dead machinery — it had no call sites. If a
+// trace-level emitter ever appears, re-add the macro here together with its
+// first caller and export it in the list below.
 pub(crate) use {log_debug, log_error, log_info, log_warn};

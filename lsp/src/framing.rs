@@ -14,7 +14,7 @@
 //   headers (permanent desync cascade).
 
 use crate::{MAX_HEADER_SIZE, MAX_MESSAGE_SIZE, log_error, log_warn};
-use std::io::BufRead;
+use std::io::{BufRead, Read};
 
 fn parse_content_length(headers: &str) -> Option<usize> {
     let mut found: Option<usize> = None;
@@ -33,22 +33,22 @@ fn parse_content_length(headers: &str) -> Option<usize> {
         let val_str = value_with_colon[1..].trim();
         // Reject empty, signed, or non-digit values (prevents smuggling via "  42  extra")
         if val_str.is_empty() || val_str.starts_with('+') || val_str.starts_with('-') {
-            eprintln!("[rsc-ls] malformed Content-Length value: {val_str:?}");
+            log_warn!("malformed Content-Length value: {val_str:?}");
             return None;
         }
         if !val_str.chars().all(|c| c.is_ascii_digit()) {
-            eprintln!("[rsc-ls] malformed Content-Length (non-digit): {val_str:?}");
+            log_warn!("malformed Content-Length (non-digit): {val_str:?}");
             return None;
         }
         let parsed: usize = match val_str.parse() {
             Ok(n) => n,
             Err(_) => {
-                eprintln!("[rsc-ls] Content-Length overflow or invalid: {val_str:?}");
+                log_warn!("Content-Length overflow or invalid: {val_str:?}");
                 return None;
             }
         };
         if found.is_some() {
-            eprintln!("[rsc-ls] duplicate Content-Length header, rejecting message");
+            log_warn!("duplicate Content-Length header, rejecting message");
             return None;
         }
         found = Some(parsed);
@@ -94,38 +94,124 @@ impl From<std::io::Error> for FrameError {
     }
 }
 
+/// Read one header line into `buf`, appending at most `budget` bytes
+/// (trailing `\n` included when it falls within the budget).
+///
+/// Returns the number of bytes appended; the line is complete iff the
+/// appended slice ends with `b'\n'`. Capping the read HERE — instead of
+/// letting [`std::io::BufRead::read_line`] buffer a whole newline-free run
+/// before any check — is what keeps the header walk memory-bounded: no
+/// single allocation can exceed `budget`, no matter how many bytes a peer
+/// streams between newlines.
+///
+/// Uses a borrowed [`std::io::Take`]: the temporary wrapper delegates
+/// `fill_buf` to the underlying reader's existing buffer and drops without
+/// consuming anything extra, so buffered bytes are never lost between calls
+/// (verified by the stream-resynchronization golden tests below).
+fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    budget: usize,
+    buf: &mut Vec<u8>,
+) -> std::io::Result<usize> {
+    debug_assert!(budget >= 1, "budget must allow at least one byte");
+    let before = buf.len();
+    (&mut *reader).take(budget as u64).read_until(b'\n', buf)?;
+    Ok(buf.len() - before)
+}
+
 /// Read exactly one length-prefixed JSON-RPC message from `reader`.
 ///
 /// Behavior-preserving extraction of the former inline loop in [`crate::Server::run`]
 /// with one deliberate change: when headers cannot be parsed into a
 /// Content-Length, this returns [`FrameError::Protocol`] instead of skipping
 /// ahead — skipping is what caused permanent header/body desync.
+///
+/// Header lines are read through a byte-capped window ([`read_bounded_line`])
+/// so a peer streaming unbounded bytes between newlines can never grow heap
+/// memory past [`MAX_HEADER_SIZE`]: once the running total crosses the cap
+/// the loop flips to discard mode and merely hunts for the terminating blank
+/// line. Line-level semantics match the former uncapped `read_line` walk:
+/// - EOF before any byte of a line → [`Frame::Eof`];
+/// - EOF mid-line processes the partial line exactly like a complete one
+///   (the next read then reports EOF, as before);
+/// - oversized block WITH a parsable Content-Length → drain that many body
+///   bytes, return [`Frame::Skipped`];
+/// - oversized block WITHOUT one → terminal [`FrameError::Protocol`].
 pub(crate) fn read_message<R: BufRead>(reader: &mut R) -> Result<Frame, FrameError> {
     // Read headers until an empty line. Handle both "\r\n" and "\n".
     let mut header_buf = String::new();
     let mut header_bytes: usize = 0;
     let mut header_too_large = false;
+    // Tracks whether the current physical line (which may be split across
+    // multiple bounded chunks) has seen any non-whitespace byte. A chunk that
+    // ends with `\n` is a blank terminator only when the whole physical line
+    // is whitespace-only. Without this accumulation a huge `X-Junk: AAA…\r\n`
+    // split into `budget`-sized pieces would misclassify its final single-byte
+    // `"\n"` chunk as a blank line and terminate headers prematurely.
+    let mut line_has_content = false;
     loop {
-        let mut line = String::new();
-        match reader.read_line(&mut line)? {
-            0 => return Ok(Frame::Eof),
-            _ => {
-                header_bytes += line.len();
-                if header_bytes > MAX_HEADER_SIZE {
-                    log_error!("header too large (> {MAX_HEADER_SIZE} bytes), discarding message");
-                    header_too_large = true;
-                    // Drain until empty line to resync framing
-                    if line == "\r\n" || line == "\n" || line.trim().is_empty() {
-                        break;
-                    } else {
-                        continue;
-                    }
-                }
-                header_buf.push_str(&line);
-                if line == "\r\n" || line == "\n" || line.trim().is_empty() {
-                    break;
-                }
+        // One byte past the remaining headroom so an overflowing line is
+        // DETECTED (the cap is crossed deterministically) instead of
+        // truncating silently at exactly the limit, which could leave
+        // half-trusted header text in `header_buf`.
+        let headroom = MAX_HEADER_SIZE - header_bytes.min(MAX_HEADER_SIZE);
+        let mut line = Vec::new();
+        let read = read_bounded_line(reader, headroom + 1, &mut line)?;
+        if read == 0 {
+            if header_bytes == 0 && !header_too_large && !line_has_content {
+                return Ok(Frame::Eof);
+            } else {
+                // EOF mid-header (no blank terminator seen). The former
+                // `read_line` walk would have returned the partial line then
+                // reported EOF on the *next* read; we mimic that by
+                // terminating the header scan here and letting the post-loop
+                // `header_too_large` / `parse_content_length` branches decide
+                // between Skipped and Protocol. This is what makes the
+                // newline-free flood test deterministic instead of returning
+                // a spurious `Eof` after an oversized, unparsable block.
+                break;
             }
+        }
+        // A chunk terminates the header section only when it is COMPLETE
+        // (ends with the newline). While the budget forces sub-line chunks,
+        // a physical "\r\n" arrives as two pieces; breaking on a lone "\r"
+        // would leave its "\n" unconsumed and permanently desync the
+        // stream. An incomplete final chunk therefore always continues —
+        // the next read reports EOF, matching how the former `read_line`
+        // walk handled unterminated garbage tails.
+        let ends_line = line.ends_with(b"\n");
+        let line = match String::from_utf8(line) {
+            Ok(s) => s,
+            Err(_) => {
+                // Mirror BufRead::read_line, which rejected non-UTF-8
+                // header bytes with this exact error kind.
+                return Err(FrameError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "stream did not contain valid UTF-8",
+                )));
+            }
+        };
+        if !line.trim().is_empty() {
+            line_has_content = true;
+        }
+        let blank = ends_line && !line_has_content;
+        if ends_line {
+            line_has_content = false;
+        }
+        header_bytes += line.len();
+        if header_bytes > MAX_HEADER_SIZE {
+            log_error!("header too large (> {MAX_HEADER_SIZE} bytes), discarding message");
+            header_too_large = true;
+            // Drain until empty line to resync framing
+            if blank {
+                break;
+            } else {
+                continue;
+            }
+        }
+        header_buf.push_str(&line);
+        if blank {
+            break;
         }
     }
 
@@ -356,6 +442,90 @@ mod tests {
         assert!(matches!(
             read_message(&mut stream).unwrap(),
             Frame::Message(_)
+        ));
+    }
+
+    // ── Oversized header blocks (bounded-read regression) ────────────
+    //
+    // The header walk must cap per-line buffering BEFORE a newline is ever
+    // found, so these streams exercise the exact branch the former
+    // `read_line`-based loop could not bound.
+
+    #[test]
+    fn test_read_message_oversized_headers_with_content_length_skips_and_resyncs() {
+        // Headers blow past MAX_HEADER_SIZE AFTER a valid Content-Length was
+        // seen: the message is skipped (its body drained), and the stream
+        // stays frame-aligned so the NEXT frame parses cleanly.
+        let junk_line = format!("X-Junk: {}\r\n", "A".repeat(MAX_HEADER_SIZE * 2));
+        let mut bytes = b"Content-Length: 5\r\n".to_vec();
+        bytes.extend_from_slice(junk_line.as_bytes());
+        bytes.extend_from_slice(b"\r\n");
+        bytes.extend_from_slice(b"hello");
+        bytes.extend_from_slice(&framed(br#"{"id":7}"#));
+        let mut stream = Cursor::new(bytes);
+
+        assert!(
+            matches!(read_message(&mut stream).unwrap(), Frame::Skipped),
+            "oversized-but-parsable headers must skip, not abort"
+        );
+        assert!(
+            matches!(
+                read_message(&mut stream).unwrap(),
+                Frame::Message(ref b) if b == br#"{"id":7}"#
+            ),
+            "stream must stay frame-aligned after a skipped oversized block"
+        );
+        assert!(matches!(read_message(&mut stream).unwrap(), Frame::Eof));
+    }
+
+    #[test]
+    fn test_read_message_oversized_headers_without_content_length_is_terminal() {
+        // Oversized header block WITHOUT any parsable Content-Length:
+        // terminal Protocol error naming the cap — the stream cannot be
+        // resynchronized, so skipping would cause header/body desync.
+        let junk_line = format!("X-Junk: {}\r\n", "B".repeat(MAX_HEADER_SIZE * 2));
+        let mut bytes = junk_line.into_bytes();
+        bytes.extend_from_slice(b"\r\n");
+        bytes.extend_from_slice(&framed(br#"{"id":8}"#));
+        let mut stream = Cursor::new(bytes);
+        match read_message(&mut stream).unwrap_err() {
+            FrameError::Protocol(why) => assert!(
+                why.contains("MAX_HEADER_SIZE"),
+                "error should name the exceeded cap, got: {why}"
+            ),
+            other => panic!("expected Protocol error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_read_message_newline_free_flood_terminates_deterministically() {
+        // The unbounded-allocation shape itself: one gigantic line with NO
+        // newline anywhere. The capped reader must terminate with bounded
+        // memory; with no parsable Content-Length in sight the outcome is
+        // still the terminal Protocol error.
+        let mut bytes = vec![b'A'; MAX_HEADER_SIZE * 4];
+        bytes.extend_from_slice(b"\r\n");
+        let mut stream = Cursor::new(bytes);
+        match read_message(&mut stream).unwrap_err() {
+            FrameError::Protocol(why) => assert!(
+                why.contains("MAX_HEADER_SIZE"),
+                "error should name the exceeded cap, got: {why}"
+            ),
+            other => panic!("expected Protocol error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_read_message_non_utf8_header_is_io_error_like_read_line() {
+        // Parity with the former BufRead::read_line behavior: invalid UTF-8
+        // in the header section is an I/O-class error, not a Protocol one.
+        let mut bytes = b"Content-Length: 5\r\nX-Junk: ".to_vec();
+        bytes.push(0xFF);
+        bytes.extend_from_slice(b"\r\n\r\nhello");
+        let mut stream = Cursor::new(bytes);
+        assert!(matches!(
+            read_message(&mut stream).unwrap_err(),
+            FrameError::Io(_)
         ));
     }
 }

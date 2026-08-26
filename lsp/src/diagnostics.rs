@@ -357,23 +357,64 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
 // that swallows the rest of the document) reports at most the root cause and
 // never cascades.
 
-/// Build an Error diagnostic whose range covers exactly one character.
-fn char_diag(code: &str, message: String, line: usize, character: usize) -> Diagnostic {
-    Diagnostic {
-        range: Range {
-            start: Position {
-                line: line as u32,
-                character: character as u32,
+/// Kind of one syntactic finding, resolved to its wire `code` and fixed
+/// message only when the surviving findings are materialized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyntaxFindingKind {
+    UnclosedBrace,
+    UnmatchedBrace,
+    UnclosedQuote,
+}
+
+impl SyntaxFindingKind {
+    fn code(self) -> &'static str {
+        match self {
+            Self::UnclosedBrace => "unclosed-brace",
+            Self::UnmatchedBrace => "unmatched-brace",
+            Self::UnclosedQuote => "unclosed-quote",
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::UnclosedBrace => "Brace '{' opened here is never closed",
+            Self::UnmatchedBrace => "Unmatched '}': no '{' is open at this point",
+            Self::UnclosedQuote => "Quoted string opened here is never closed",
+        }
+    }
+}
+
+/// One deferred syntactic finding: position plus kind, WITHOUT the built
+/// Diagnostic. The `message` String (plus code/source Strings) is the heap
+/// cost that made the former build-everything-then-truncate walk allocate
+/// one full Diagnostic per event on pathological input.
+struct SyntaxFinding {
+    line: usize,
+    character: usize,
+    kind: SyntaxFindingKind,
+}
+
+impl SyntaxFinding {
+    /// Materialize the wire diagnostic for one finding. Called only for the
+    /// ≤ [`MAX_SYNTAX_DIAGNOSTICS`] survivors, so heap traffic per publish
+    /// stays bounded regardless of document size.
+    fn into_diagnostic(self) -> Diagnostic {
+        Diagnostic {
+            range: Range {
+                start: Position {
+                    line: self.line as u32,
+                    character: self.character as u32,
+                },
+                end: Position {
+                    line: self.line as u32,
+                    character: self.character as u32 + 1,
+                },
             },
-            end: Position {
-                line: line as u32,
-                character: character as u32 + 1,
-            },
-        },
-        severity: Some(severity::ERROR),
-        code: Some(code.to_string()),
-        source: Some(DIAGNOSTIC_SOURCE.to_string()),
-        message,
+            severity: Some(severity::ERROR),
+            code: Some(self.kind.code().to_string()),
+            source: Some(DIAGNOSTIC_SOURCE.to_string()),
+            message: self.kind.message().to_string(),
+        }
     }
 }
 
@@ -384,8 +425,21 @@ fn char_diag(code: &str, message: String, line: usize, character: usize) -> Diag
 /// to wire encoding by the usual boundary conversion (`convert_diagnostic_ranges`),
 /// exactly like every other rule's output. Output is deterministic: sorted by
 /// document position ("oldest first"), capped at [`MAX_SYNTAX_DIAGNOSTICS`].
+///
+/// Memory-bounded by construction: the walk records lightweight
+/// (position, kind) pairs only; sorting, truncation, and Diagnostic
+/// materialization happen afterwards over those records. A pathological
+/// document (megabytes of stray `}`) therefore costs a small struct per
+/// finding instead of a full Diagnostic allocation per event. Sorting
+/// `(line, character)` usize pairs is order-identical to sorting
+/// `(range.start.line, range.start.character)` u32 pairs (monotone casts),
+/// and `sort_by_key` is stable, so emitted output matches the former
+/// implementation byte-for-byte — including tie order among findings that
+/// share a position. No ordering invariant between unclosed opens and
+/// unmatched closes is assumed: findings from all three sources are sorted
+/// globally by the same key the old code used.
 fn syntax_diagnostics(doc: &str) -> Vec<Diagnostic> {
-    let mut out = Vec::new();
+    let mut findings: Vec<SyntaxFinding> = Vec::new();
     // Stack of (line, character) positions of `{` still considered open.
     let mut opens: Vec<(usize, usize)> = Vec::new();
     // Latched once the stack overflows MAX_BRACE_DEPTH (pathological input).
@@ -404,42 +458,43 @@ fn syntax_diagnostics(doc: &str) -> Vec<Diagnostic> {
         }
         StructureEvent::CloseBrace { line, character } => {
             if opens.pop().is_none() && !saturated {
-                out.push(char_diag(
-                    "unmatched-brace",
-                    "Unmatched '}': no '{' is open at this point".to_string(),
+                findings.push(SyntaxFinding {
                     line,
                     character,
-                ));
+                    kind: SyntaxFindingKind::UnmatchedBrace,
+                });
             }
         }
         StructureEvent::UnterminatedQuote { line, character } => {
             // One error at the OPENING quote; everything after it is treated
             // as string content by the shared walker, so this never cascades.
-            out.push(char_diag(
-                "unclosed-quote",
-                "Quoted string opened here is never closed".to_string(),
+            findings.push(SyntaxFinding {
                 line,
                 character,
-            ));
+                kind: SyntaxFindingKind::UnclosedQuote,
+            });
         }
     });
 
     // Remaining opens are unclosed braces. The stack pops innermost-first,
     // so drain it reversed to recover document order.
     for (line, character) in opens.into_iter().rev() {
-        out.push(char_diag(
-            "unclosed-brace",
-            "Brace '{' opened here is never closed".to_string(),
+        findings.push(SyntaxFinding {
             line,
             character,
-        ));
+            kind: SyntaxFindingKind::UnclosedBrace,
+        });
     }
 
     // Deterministic ordering across the three sources, then a silent cap
-    // keeping the OLDEST ten (document order).
-    out.sort_by_key(|d| (d.range.start.line, d.range.start.character));
-    out.truncate(MAX_SYNTAX_DIAGNOSTICS);
-    out
+    // keeping the OLDEST ten (document order). Full Diagnostics — with
+    // their heap messages — are built only for the survivors.
+    findings.sort_by_key(|f| (f.line, f.character));
+    findings.truncate(MAX_SYNTAX_DIAGNOSTICS);
+    findings
+        .into_iter()
+        .map(SyntaxFinding::into_diagnostic)
+        .collect()
 }
 
 // ── RouterOS backslash line continuation ──────────────────────────
@@ -2207,6 +2262,65 @@ type = "bool"
         assert!(
             c.contains(&"unclosed-brace"),
             "syntax rule fired, got {c:?}"
+        );
+    }
+
+    #[test]
+    fn test_syntax_findings_from_all_three_kinds_sort_globally() {
+        // Ordering contract for the deferred-materialization walk: findings
+        // from all three sources (stray close, unclosed open, unterminated
+        // quote) are sorted globally by document position — no assumption
+        // about which kind precedes which is allowed.
+        //
+        // Lines 0–1 are stray '}' with an empty stack; lines 2–3 open '{'
+        // that never close; line 4 opens a quote that swallows only its own
+        // tail (it is last, so no later event is masked).
+        let doc = "}\n}\n{\n{\n:put \"x\n";
+        let diags = compute_diagnostics(&synth(), doc, "file:///a.rsc");
+        let starts: Vec<_> = diags
+            .iter()
+            .map(|d| (d.code.as_deref().unwrap_or(""), d.range.start.clone()))
+            .collect();
+        assert_eq!(
+            starts,
+            vec![
+                (
+                    "unmatched-brace",
+                    Position {
+                        line: 0,
+                        character: 0
+                    }
+                ),
+                (
+                    "unmatched-brace",
+                    Position {
+                        line: 1,
+                        character: 0
+                    }
+                ),
+                (
+                    "unclosed-brace",
+                    Position {
+                        line: 2,
+                        character: 0
+                    }
+                ),
+                (
+                    "unclosed-brace",
+                    Position {
+                        line: 3,
+                        character: 0
+                    }
+                ),
+                (
+                    "unclosed-quote",
+                    Position {
+                        line: 4,
+                        character: 5
+                    }
+                ),
+            ],
+            "all three kinds interleaved in one document-ordered publish, got {starts:?}"
         );
     }
 }

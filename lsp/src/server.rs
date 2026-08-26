@@ -85,19 +85,18 @@ pub(crate) fn exit_code(shutdown_received: bool) -> i32 {
 /// Build a JSON-RPC `-32602 Invalid params` error response for a REQUEST.
 ///
 /// Requests (messages carrying an `id`) must always receive a response —
-/// dropping one leaves the client awaiting it until timeout.
-pub(crate) fn invalid_params_response(
-    id: &serde_json::Value,
-    message: &str,
-) -> Option<serde_json::Value> {
-    Some(serde_json::json!({
+/// dropping one leaves the client awaiting it until timeout. Handlers wrap
+/// the returned value in `Some(...)` at their `Option<serde_json::Value>`
+/// return boundary.
+pub(crate) fn invalid_params_response(id: &serde_json::Value, message: &str) -> serde_json::Value {
+    serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
         "error": {
             "code": -32602,
             "message": message,
         },
-    }))
+    })
 }
 
 /// Extract a `(line, character)` pair from a JSON LSP Position object,
@@ -250,6 +249,12 @@ pub(crate) struct Server {
     /// Whether the `shutdown` request was answered before `exit`.
     /// LSP 3.17 requires exit status 0 only when shutdown preceded exit.
     pub(crate) shutdown_received: bool,
+    /// Test-only spy: publishDiagnostics notifications are recorded here
+    /// instead of written to stdout (see [`Server::publish_diagnostics`]),
+    /// letting tests assert that a publish actually fired. The field does
+    /// not exist in production builds.
+    #[cfg(test)]
+    pub(crate) published: Vec<(String, serde_json::Value)>,
 }
 
 impl Server {
@@ -259,6 +264,8 @@ impl Server {
             docs: HashMap::new(),
             position_encoding: PositionEncoding::default(),
             shutdown_received: false,
+            #[cfg(test)]
+            published: Vec::new(),
         }
     }
 
@@ -305,22 +312,22 @@ impl Server {
                 let json = match serde_json::to_string(&resp) {
                     Ok(j) => j,
                     Err(e) => {
-                        eprintln!("[rsc-ls] failed to serialize response: {e}");
+                        log_error!("failed to serialize response: {e}");
                         continue;
                     }
                 };
                 let header = format!("Content-Length: {}\r\n\r\n", json.len());
                 let mut stdout = std::io::stdout().lock();
                 if let Err(e) = stdout.write_all(header.as_bytes()) {
-                    eprintln!("[rsc-ls] write header error: {e}");
+                    log_error!("write header error: {e}");
                     return;
                 }
                 if let Err(e) = stdout.write_all(json.as_bytes()) {
-                    eprintln!("[rsc-ls] write body error: {e}");
+                    log_error!("write body error: {e}");
                     return;
                 }
                 if let Err(e) = stdout.flush() {
-                    eprintln!("[rsc-ls] flush error: {e}");
+                    log_error!("flush error: {e}");
                     return;
                 }
             }
@@ -336,7 +343,7 @@ impl Server {
 
         match method {
             "initialize" => {
-                let id = params.get("id").cloned().unwrap_or(serde_json::Value::Null);
+                // Reuses the request `id` extracted once above the dispatch.
                 // Negotiate the position encoding (LSP 3.17): prefer utf-8
                 // (internal positions are byte offsets); otherwise fall back
                 // to utf-16, which is also the mandated default when the
@@ -432,14 +439,14 @@ impl Server {
                 // Validate URI scheme — only file:// URIs are expected; reject others to avoid
                 // leaking path handling or storing attacker-controlled arbitrary schemes.
                 if !is_valid_file_uri(uri) {
-                    eprintln!("[rsc-ls] rejecting didOpen with non-file URI: {uri:?}");
+                    log_warn!("rejecting didOpen with non-file URI: {uri:?}");
                     return None;
                 }
                 let text = params["params"]["textDocument"]["text"].as_str()?;
                 let uri_owned = uri.to_string();
                 if text.len() > MAX_DOC_SIZE {
-                    eprintln!(
-                        "[rsc-ls] document too large ({} bytes > {MAX_DOC_SIZE}), truncating: {uri:?}",
+                    log_warn!(
+                        "document too large ({} bytes > {MAX_DOC_SIZE}), truncating: {uri:?}",
                         text.len()
                     );
                     // Truncate at char boundary to avoid invalid UTF-8
@@ -448,18 +455,22 @@ impl Server {
                         .insert(uri_owned.clone(), text[..trunc_idx].to_string());
                 } else {
                     if self.docs.len() >= MAX_DOCS && !self.docs.contains_key(&uri_owned) {
-                        eprintln!(
-                            "[rsc-ls] too many open documents ({} >= {MAX_DOCS}), rejecting: {uri:?}",
+                        log_warn!(
+                            "too many open documents ({} >= {MAX_DOCS}), rejecting: {uri:?}",
                             self.docs.len()
                         );
                         return None;
                     }
                     self.docs.insert(uri_owned.clone(), text.to_string());
                 }
-                // Publish diagnostics (push) after open
-                let doc_text = self.docs.get(&uri_owned).cloned().unwrap_or_default();
-                let diags = self.encoded_diagnostics(&doc_text, &uri_owned);
-                Self::publish_diagnostics(&uri_owned, diags);
+                // Publish diagnostics (push) after open. Borrow the stored
+                // text instead of cloning it — a full copy costs up to
+                // MAX_DOC_SIZE per keystroke-path open.
+                let diags = match self.docs.get(&uri_owned) {
+                    Some(doc_text) => self.encoded_diagnostics(doc_text, &uri_owned),
+                    None => Vec::new(),
+                };
+                self.publish_diagnostics(&uri_owned, diags);
                 None
             }
 
@@ -471,7 +482,7 @@ impl Server {
                 // - Full sync: each change contains only "text" (replace doc).
                 let uri = params["params"]["textDocument"]["uri"].as_str()?;
                 if !is_valid_file_uri(uri) {
-                    eprintln!("[rsc-ls] rejecting didChange with non-file URI: {uri:?}");
+                    log_warn!("rejecting didChange with non-file URI: {uri:?}");
                     return None;
                 }
                 let changes = params["params"]["contentChanges"].as_array()?;
@@ -480,18 +491,31 @@ impl Server {
                 }
                 // Enforce doc count cap on first insert via didChange (client may skip didOpen)
                 if !self.docs.contains_key(uri) && self.docs.len() >= MAX_DOCS {
-                    eprintln!(
-                        "[rsc-ls] too many open documents ({} >= {MAX_DOCS}), rejecting didChange: {uri:?}",
+                    log_warn!(
+                        "too many open documents ({} >= {MAX_DOCS}), rejecting didChange: {uri:?}",
                         self.docs.len()
                     );
                     return None;
                 }
                 for change in changes {
-                    let text = change.get("text").and_then(|t| t.as_str())?;
+                    // A malformed element must neither abandon the batch nor
+                    // skip the trailing publish: earlier edits were already
+                    // applied to the document, and later elements still
+                    // deserve processing. (Formerly `?` returned None out of
+                    // handle_message here — silently dropping the rest of the
+                    // batch AND the publish below, desynchronizing client and
+                    // server state.) Log the bad element and keep going.
+                    let Some(text) = change.get("text").and_then(|t| t.as_str()) else {
+                        log_warn!(
+                            "didChange: skipping contentChanges element without a string 'text' \
+                             for {uri:?}"
+                        );
+                        continue;
+                    };
                     // Reject or truncate oversize incremental payloads early
                     if text.len() > MAX_DOC_SIZE {
-                        eprintln!(
-                            "[rsc-ls] change text too large ({} > {MAX_DOC_SIZE}), truncating",
+                        log_warn!(
+                            "change text too large ({} > {MAX_DOC_SIZE}), truncating",
                             text.len()
                         );
                         let trunc_idx = floor_char_boundary(text, MAX_DOC_SIZE);
@@ -573,11 +597,16 @@ impl Server {
                         self.docs.insert(uri.to_string(), text.to_string());
                     }
                 }
-                // Publish diagnostics after changes (incremental or full)
+                // Publish diagnostics after changes (incremental or full) —
+                // reached even when individual elements above were skipped.
+                // Borrow the stored text instead of cloning it (up to
+                // MAX_DOC_SIZE per keystroke).
                 let uri_owned = uri.to_string();
-                let doc_text = self.docs.get(&uri_owned).cloned().unwrap_or_default();
-                let diags = self.encoded_diagnostics(&doc_text, &uri_owned);
-                Self::publish_diagnostics(&uri_owned, diags);
+                let diags = match self.docs.get(&uri_owned) {
+                    Some(doc_text) => self.encoded_diagnostics(doc_text, &uri_owned),
+                    None => Vec::new(),
+                };
+                self.publish_diagnostics(&uri_owned, diags);
                 None
             }
 
@@ -585,7 +614,7 @@ impl Server {
                 if let Some(uri) = params["params"]["textDocument"]["uri"].as_str() {
                     self.docs.remove(uri);
                     // Clear diagnostics for closed file
-                    Self::publish_diagnostics(uri, Vec::new());
+                    self.publish_diagnostics(uri, Vec::new());
                 }
                 None
             }
@@ -595,14 +624,14 @@ impl Server {
                 // -32602, untracked URI (never opened, closed, or rejected
                 // at MAX_DOCS) → spec-permitted null result. Never silence.
                 let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
-                    return invalid_params_response(&id, "missing textDocument.uri");
+                    return Some(invalid_params_response(&id, "missing textDocument.uri"));
                 };
                 let pos = &params["params"]["position"];
                 let Some(line) = pos["line"].as_u64() else {
-                    return invalid_params_response(&id, "missing position.line");
+                    return Some(invalid_params_response(&id, "missing position.line"));
                 };
                 let Some(character) = pos["character"].as_u64() else {
-                    return invalid_params_response(&id, "missing position.character");
+                    return Some(invalid_params_response(&id, "missing position.character"));
                 };
                 let Some(doc) = self.docs.get(uri) else {
                     log_debug!("completion for untracked URI, returning null result: {uri:?}");
@@ -641,14 +670,14 @@ impl Server {
                 // Same response guarantees as completion: -32602 for
                 // malformed params, null result for untracked URIs.
                 let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
-                    return invalid_params_response(&id, "missing textDocument.uri");
+                    return Some(invalid_params_response(&id, "missing textDocument.uri"));
                 };
                 let pos = &params["params"]["position"];
                 let Some(line) = pos["line"].as_u64() else {
-                    return invalid_params_response(&id, "missing position.line");
+                    return Some(invalid_params_response(&id, "missing position.line"));
                 };
                 let Some(character) = pos["character"].as_u64() else {
-                    return invalid_params_response(&id, "missing position.character");
+                    return Some(invalid_params_response(&id, "missing position.character"));
                 };
                 let Some(doc) = self.docs.get(uri) else {
                     log_debug!("hover for untracked URI, returning null result: {uri:?}");
@@ -677,7 +706,7 @@ impl Server {
                     Some(h) => match serde_json::to_value(h) {
                         Ok(v) => Some(v),
                         Err(e) => {
-                            eprintln!("[rsc-ls] hover serialize error: {e}");
+                            log_error!("hover serialize error: {e}");
                             None
                         }
                     },
@@ -697,14 +726,14 @@ impl Server {
                 // URIs. Null is ALSO the anti-noise contract's answer when
                 // the line resolves to no menu+verb pair — no verb, no popup.
                 let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
-                    return invalid_params_response(&id, "missing textDocument.uri");
+                    return Some(invalid_params_response(&id, "missing textDocument.uri"));
                 };
                 let pos = &params["params"]["position"];
                 let Some(line) = pos["line"].as_u64() else {
-                    return invalid_params_response(&id, "missing position.line");
+                    return Some(invalid_params_response(&id, "missing position.line"));
                 };
                 let Some(character) = pos["character"].as_u64() else {
-                    return invalid_params_response(&id, "missing position.character");
+                    return Some(invalid_params_response(&id, "missing position.character"));
                 };
                 let Some(doc) = self.docs.get(uri) else {
                     log_debug!("signatureHelp for untracked URI, returning null result: {uri:?}");
@@ -744,7 +773,7 @@ impl Server {
                     Some(h) => match serde_json::to_value(h) {
                         Ok(v) => v,
                         Err(e) => {
-                            eprintln!("[rsc-ls] signatureHelp serialize error: {e}");
+                            log_error!("signatureHelp serialize error: {e}");
                             serde_json::Value::Null
                         }
                     },
@@ -762,7 +791,7 @@ impl Server {
                 // Same response guarantees as completion: -32602 for
                 // malformed params, null result for untracked URIs.
                 let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
-                    return invalid_params_response(&id, "missing textDocument.uri");
+                    return Some(invalid_params_response(&id, "missing textDocument.uri"));
                 };
                 let Some(doc) = self.docs.get(uri) else {
                     log_debug!("documentSymbol for untracked URI, returning null result: {uri:?}");
@@ -800,7 +829,7 @@ impl Server {
                         // Unserializable output is a bug, not a client error:
                         // degrade to an empty list rather than dropping the
                         // request (requests must be answered).
-                        eprintln!("[rsc-ls] documentSymbol serialize error: {e}");
+                        log_error!("documentSymbol serialize error: {e}");
                         serde_json::Value::Array(Vec::new())
                     }
                 };
@@ -820,14 +849,14 @@ impl Server {
                 // invented that cannot be grounded in an indexed
                 // `:local`/`:global` declaration.
                 let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
-                    return invalid_params_response(&id, "missing textDocument.uri");
+                    return Some(invalid_params_response(&id, "missing textDocument.uri"));
                 };
                 let pos = &params["params"]["position"];
                 let Some(line) = pos["line"].as_u64() else {
-                    return invalid_params_response(&id, "missing position.line");
+                    return Some(invalid_params_response(&id, "missing position.line"));
                 };
                 let Some(character) = pos["character"].as_u64() else {
-                    return invalid_params_response(&id, "missing position.character");
+                    return Some(invalid_params_response(&id, "missing position.character"));
                 };
                 let Some(doc) = self.docs.get(uri) else {
                     log_debug!("definition for untracked URI, returning null result: {uri:?}");
@@ -861,19 +890,22 @@ impl Server {
                 // non-bool context mirrors the sibling handlers' -32602
                 // strictness instead of silently guessing false.
                 let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
-                    return invalid_params_response(&id, "missing textDocument.uri");
+                    return Some(invalid_params_response(&id, "missing textDocument.uri"));
                 };
                 let pos = &params["params"]["position"];
                 let Some(line) = pos["line"].as_u64() else {
-                    return invalid_params_response(&id, "missing position.line");
+                    return Some(invalid_params_response(&id, "missing position.line"));
                 };
                 let Some(character) = pos["character"].as_u64() else {
-                    return invalid_params_response(&id, "missing position.character");
+                    return Some(invalid_params_response(&id, "missing position.character"));
                 };
                 let Some(include_declaration) =
                     params["params"]["context"]["includeDeclaration"].as_bool()
                 else {
-                    return invalid_params_response(&id, "missing context.includeDeclaration");
+                    return Some(invalid_params_response(
+                        &id,
+                        "missing context.includeDeclaration",
+                    ));
                 };
                 let Some(doc) = self.docs.get(uri) else {
                     log_debug!("references for untracked URI, returning empty list: {uri:?}");
@@ -905,7 +937,7 @@ impl Server {
                 // ranges are line-only, so no position-encoding conversion
                 // applies.
                 let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
-                    return invalid_params_response(&id, "missing textDocument.uri");
+                    return Some(invalid_params_response(&id, "missing textDocument.uri"));
                 };
                 let Some(doc) = self.docs.get(uri) else {
                     log_debug!("foldingRange for untracked URI, returning null result: {uri:?}");
@@ -919,7 +951,7 @@ impl Server {
                 let result = match serde_json::to_value(&ranges) {
                     Ok(v) => v,
                     Err(e) => {
-                        eprintln!("[rsc-ls] foldingRange serialize error: {e}");
+                        log_error!("foldingRange serialize error: {e}");
                         serde_json::Value::Array(Vec::new())
                     }
                 };
@@ -945,13 +977,13 @@ impl Server {
                         }
                     }));
                 }
-                let doc_text = self
-                    .docs
-                    .get(uri)
-                    .cloned()
-                    .unwrap_or_else(|| "".to_string());
-                // Cap large docs same as push
-                let diags = self.encoded_diagnostics(&doc_text, uri);
+                // Borrow the stored text (an empty result for an untracked
+                // URI is identical to diagnosing an empty document, minus
+                // the pointless work).
+                let diags = match self.docs.get(uri) {
+                    Some(doc_text) => self.encoded_diagnostics(doc_text, uri),
+                    None => Vec::new(),
+                };
                 Some(serde_json::json!({
                     "jsonrpc": "2.0",
                     "id": id,
@@ -981,11 +1013,11 @@ impl Server {
                 // malformed params; an untracked URI answers with an EMPTY
                 // action list (a valid CodeAction[] result), never an error.
                 let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
-                    return invalid_params_response(&id, "missing textDocument.uri");
+                    return Some(invalid_params_response(&id, "missing textDocument.uri"));
                 };
                 let Some(client_diags) = params["params"]["context"]["diagnostics"].as_array()
                 else {
-                    return invalid_params_response(&id, "missing context.diagnostics");
+                    return Some(invalid_params_response(&id, "missing context.diagnostics"));
                 };
                 let Some(doc) = self.docs.get(uri) else {
                     log_debug!("codeAction for untracked URI, returning empty list: {uri:?}");
@@ -1248,11 +1280,25 @@ impl Server {
         actions
     }
 
-    pub(crate) fn publish_diagnostics(uri: &str, diagnostics: Vec<diagnostics::Diagnostic>) {
-        // Avoid spamming stdout during `cargo test` (test harness captures stdout)
-        if cfg!(test) {
-            return;
-        }
+    /// Emit one `textDocument/publishDiagnostics` notification.
+    ///
+    /// Write-failure policy (deliberate, documented): a failed write is
+    /// logged and SURVIVED — it must NOT kill the server loop. A
+    /// notification carries no `id` the client blocks on; transient stdout
+    /// backpressure or a momentarily closed client pipe should not take the
+    /// session down, and if stdout is truly dead the next request/response
+    /// write in [`Server::run`] fails and terminates cleanly anyway.
+    /// Request-path failures, by contrast, already surface as JSON-RPC
+    /// error responses (or fatal run-loop exits), preserving that split.
+    ///
+    /// Under `cargo test` the serialized notification is recorded on the
+    /// server instead of written (stdout writes would be swallowed by the
+    /// test harness capture), giving tests an observable spy.
+    pub(crate) fn publish_diagnostics(
+        &mut self,
+        uri: &str,
+        diagnostics: Vec<diagnostics::Diagnostic>,
+    ) {
         let notif = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "textDocument/publishDiagnostics",
@@ -1261,12 +1307,33 @@ impl Server {
                 "diagnostics": diagnostics
             }
         });
-        if let Ok(json) = serde_json::to_string(&notif) {
-            let header = format!("Content-Length: {}\r\n\r\n", json.len());
-            let mut stdout = std::io::stdout().lock();
-            let _ = stdout.write_all(header.as_bytes());
-            let _ = stdout.write_all(json.as_bytes());
-            let _ = stdout.flush();
+        #[cfg(test)]
+        {
+            self.published.push((uri.to_string(), notif));
+        }
+        #[cfg(not(test))]
+        {
+            match serde_json::to_string(&notif) {
+                Ok(json) => {
+                    let header = format!("Content-Length: {}\r\n\r\n", json.len());
+                    let mut stdout = std::io::stdout().lock();
+                    if let Err(e) = stdout
+                        .write_all(header.as_bytes())
+                        .and_then(|_| stdout.write_all(json.as_bytes()))
+                        .and_then(|_| stdout.flush())
+                    {
+                        // Non-fatal by policy — see the doc comment above.
+                        log_error!(
+                            "failed to write publishDiagnostics notification for {uri:?}: {e}"
+                        );
+                    }
+                }
+                Err(e) => {
+                    // Serialization failure is a bug, not a client
+                    // condition; non-fatal by the same policy.
+                    log_error!("failed to serialize publishDiagnostics notification: {e}");
+                }
+            }
         }
     }
 }
@@ -1469,6 +1536,49 @@ type = "enum (accept | drop | reject)"
     }
 
     #[test]
+    fn test_server_did_change_malformed_element_does_not_abort_batch_or_publish() {
+        // Regression: a contentChanges element without a "text" field must
+        // be skipped, not abort the whole didChange. The former `?` returned
+        // None out of handle_message mid-batch — abandoning already-applied
+        // edits and skipping the trailing diagnostics publish.
+        let mut server = Server::new(synthetic_data());
+        let open = serde_json::json!({
+            "params": {"textDocument": {"uri": "file:///batch.rsc", "text": "hello world"}}
+        });
+        server.handle_message("textDocument/didOpen", &open);
+        server.published.clear(); // drop the didOpen publish
+
+        let change = serde_json::json!({
+            "params": {"textDocument": {"uri": "file:///batch.rsc"}, "contentChanges": [
+                {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}}, "text": "hi"},
+                {"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 4}}},
+                {"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 8}}, "text": "Rust"}
+            ]}
+        });
+        let resp = server.handle_message("textDocument/didChange", &change);
+        assert!(resp.is_none());
+
+        // Both valid edits applied — including the one AFTER the malformed
+        // element ("hello world" → "hi world" → "hi Rust").
+        assert_eq!(
+            server.docs.get("file:///batch.rsc").unwrap(),
+            "hi Rust",
+            "the batch must survive a malformed element"
+        );
+
+        // The trailing diagnostics publish still fired, exactly once.
+        assert_eq!(
+            server.published.len(),
+            1,
+            "publish must run after the batch despite the malformed element"
+        );
+        let (published_uri, notif) = &server.published[0];
+        assert_eq!(published_uri, "file:///batch.rsc");
+        assert_eq!(notif["method"], "textDocument/publishDiagnostics");
+        assert_eq!(notif["params"]["uri"], "file:///batch.rsc");
+    }
+
+    #[test]
     fn test_server_did_close_removes_doc_and_clears() {
         let mut server = Server::new(synthetic_data());
         let open = serde_json::json!({
@@ -1538,23 +1648,16 @@ type = "enum (accept | drop | reject)"
             "params": {"textDocument": {"uri": "file:///a.rsc"}, "contentChanges": [{"text": large}]}
         });
         server.handle_message("textDocument/didChange", &change);
-        // Full sync last change wins — but handler truncates oversize payloads? Check implementation:
-        // didChange with text.len() > MAX_DOC_SIZE truncates to MAX_DOC_SIZE.
-        // However for non-range changes, the code does `self.docs.insert(uri.to_string(), text.to_string())`
-        // without truncation? The early `if text.len() > MAX_DOC_SIZE` handles range case, but for full sync
-        // it goes to `self.docs.insert(...)` without truncation? Let's test actual behavior.
-        // If not truncated, doc would be >5MiB, but we expect either truncated or stored.
+        // Full sync with an oversize payload takes the early truncation
+        // branch (text.len() > MAX_DOC_SIZE → truncate at a char boundary
+        // and store): the stored text is capped at EXACTLY MAX_DOC_SIZE.
+        // 'b' is ASCII, so the char boundary is byte-exact here.
         let stored = server.docs.get("file:///a.rsc").unwrap();
-        // The current implementation for full sync (no range) just inserts text.to_string() without check
-        // Wait check code: after early truncation for text.len() > MAX_DOC_SIZE, it does continue; but for full sync without range, the early branch only handles if with range? No, early check is before range check and does handle both? Let's read: if text.len() > MAX_DOC_SIZE { truncate and insert and continue } — so it should truncate.
-        // Assert capped
-        assert!(
-            stored.len() <= MAX_DOC_SIZE * 2,
-            "stored len {}",
-            stored.len()
+        assert_eq!(
+            stored.len(),
+            MAX_DOC_SIZE,
+            "full sync must truncate to exactly MAX_DOC_SIZE"
         );
-        // At minimum, ensure server didn't panic and doc exists
-        assert!(!stored.is_empty());
     }
 
     // ── MAX_DOCS enforcement ──────────────────────────────────────────
