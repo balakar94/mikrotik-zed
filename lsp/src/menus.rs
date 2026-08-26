@@ -531,6 +531,106 @@ type = "Directory"
         );
     }
 
+    // ── Manual-audit pins over the EMBEDDED dataset ───────────────
+    //
+    // The tests below guard what actually SHIPS to users (the table baked in
+    // via include_str!), end to end through the extraction pipeline. They
+    // mirror the audit that motivated gating bare-root CLI pages behind a
+    // **Type:** line in scripts/extract_commands.py.
+
+    #[test]
+    fn test_root_user_page_documents_mandatory_credentials() {
+        // The regenerated table must capture the bare-root `/user` page with
+        // its mandatory credential properties intact; losing them would
+        // degrade completions for basic user management.
+        let data = MenuData::load();
+        let user = data.menu_by_path.get("/user").expect("/user menu embedded");
+        for name in ["name", "group", "password"] {
+            let arg = user
+                .arguments
+                .iter()
+                .find(|a| a.name == name)
+                .unwrap_or_else(|| panic!("/user argument `{name}` missing"));
+            assert!(arg.required, "/user.{name} must stay required=true");
+        }
+    }
+
+    #[test]
+    fn test_log_read_only_columns_present() {
+        // /log documents only read-only output columns; they power hover on
+        // the most common print workflow, so losing any of them is a silent
+        // feature regression.
+        let data = MenuData::load();
+        let log = data.menu_by_path.get("/log").expect("/log menu embedded");
+        for name in ["buffer", "time", "topics", "message"] {
+            assert!(
+                log.read_only.iter().any(|r| r.name == name),
+                "/log read_only column `{name}` missing"
+            );
+        }
+    }
+
+    #[test]
+    fn test_root_level_cli_commands_embedded() {
+        // Root CLI commands were entirely absent before the bare-root fix;
+        // if any goes missing again the LSP silently loses real CLI surface.
+        let data = MenuData::load();
+        for path in [
+            "/import",
+            "/password",
+            "/quit",
+            "/redo",
+            "/undo",
+            "/beep",
+            "/blink",
+        ] {
+            let menu = data
+                .menu_by_path
+                .get(path)
+                .unwrap_or_else(|| panic!("root command {path} missing from embedded table"));
+            assert_eq!(menu.menu_type, "Command", "{path} must stay typed Command");
+        }
+        // /environment ships alongside the same fix but its upstream page
+        // types it as a Directory — pinned verbatim.
+        let environment = data
+            .menu_by_path
+            .get("/environment")
+            .expect("/environment embedded");
+        assert_eq!(environment.menu_type, "Directory");
+
+        let safe_mode = data
+            .menu_by_path
+            .get("/safe-mode")
+            .expect("/safe-mode embedded");
+        assert_eq!(safe_mode.menu_type, "Settings Directory");
+    }
+
+    #[test]
+    fn test_radius_root_owns_service_secrets_not_monitor() {
+        // Child pages ordered BEFORE their parent root upstream used to leak
+        // ArgTable rows into the previous entry. service/secret belong to the
+        // /radius root; /radius/monitor is stats-only and must stay clean.
+        let data = MenuData::load();
+        let radius = data
+            .menu_by_path
+            .get("/radius")
+            .expect("/radius menu embedded");
+        for name in ["service", "secret"] {
+            assert!(
+                radius.arguments.iter().any(|a| a.name == name),
+                "/radius argument `{name}` missing"
+            );
+        }
+        if let Some(monitor) = data.menu_by_path.get("/radius/monitor") {
+            for name in ["service", "secret"] {
+                assert!(
+                    !monitor.arguments.iter().any(|a| a.name == name),
+                    "/radius/monitor must not inherit /radius `{name}`"
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_children_index_built() {
         let data = MenuData::load();
