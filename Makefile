@@ -268,4 +268,5 @@ install-dev: ## Point Zed to this directory (manual: Zed > Install Dev Extension
 	@echo "  # or: cargo build -p rsc-ls --release && export PATH=\"\$$PWD/target/release:\$$PATH\" && open -a Zed ."
 
 validate: check-manifest generate-check fmt clippy test-all extract ## Full local gate (manifest, generate-check, fmt, clippy, tests, extract). Upstream-docs staleness is gated separately by sync-check in CI.
+	@git diff --exit-code data/commands.toml || (echo "data/commands.toml stale — run 'make extract' and commit" && false)
 	@echo "All checks passed. Ready to commit."

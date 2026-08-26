@@ -32,6 +32,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -78,6 +79,7 @@ def fetch_url(url: str) -> bytes:
             last_exc = e
             print(f"Attempt {attempt}/{RETRIES} failed for {url}: {e}", file=sys.stderr)
             if attempt < RETRIES:
+                time.sleep(2**attempt)
                 continue
     raise last_exc  # type: ignore[misc]
 
@@ -203,6 +205,8 @@ def main(argv: list[str] | None = None, *, project_root: Path | None = None, fet
 
     overall_changed = False
     has_error = False
+    # Staged writes for atomic two-file transaction (both held in memory until both fetches succeed).
+    pending_writes: list[tuple[Path, bytes]] = []
     # Provenance record per successfully fetched file, in FILES order (index first).
     fetched: list[dict] = []
     # RouterOS version hint from llms-full.txt ("" when unknown).
@@ -265,13 +269,30 @@ def main(argv: list[str] | None = None, *, project_root: Path | None = None, fet
             print(f"  {filename}: --check mode, not writing")
             continue
 
-        # Write file
-        try:
-            local_path.write_bytes(data)
-            print(f"  {filename}: wrote {len(data)} bytes")
-        except Exception as e:
-            print(f"ERROR: failed to write {local_path}: {e}", file=sys.stderr)
-            has_error = True
+        # Stage for atomic flush after both fetches (mixed-generation guard).
+        pending_writes.append((local_path, data))
+        print(f"  {filename}: staged {len(data)} bytes (will write after both fetches)")
+
+    # ── Atomic flush of staged upstream files ─────────
+    if args.check:
+        if pending_writes:
+            print(f"staged {len(pending_writes)} file(s) not written (--check)")
+    elif has_error:
+        if pending_writes:
+            print(
+                f"discarding {len(pending_writes)} staged file(s) due to fetch error (atomic guard)",
+                file=sys.stderr,
+            )
+            pending_writes.clear()
+    elif pending_writes:
+        for path, data in pending_writes:
+            try:
+                path.write_bytes(data)
+                print(f"  {path.name}: wrote {len(data)} bytes")
+            except Exception as e:
+                print(f"ERROR: failed to write {path}: {e}", file=sys.stderr)
+                has_error = True
+        pending_writes.clear()
 
     # ── Provenance manifest policy (data/upstream-docs.toml) ─────────
     # --check never writes anything. On real runs: rewrite whenever any file

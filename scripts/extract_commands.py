@@ -15,8 +15,11 @@ Output: data/commands.toml (TOML format for the Zed language server)
 """
 
 import hashlib
+import html
+import os
 import re
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -236,7 +239,7 @@ def parse_llms_full(filepath: str) -> list[dict]:
 
             # Extract description (text between > and </ArgTableRow>)
             desc_match = re.search(r">([^<]*)</ArgTableRow", line)
-            description = desc_match.group(1).strip() if desc_match else ""
+            description = html.unescape(desc_match.group(1).strip()) if desc_match else ""
 
             entry = {
                 "name": arg_match.group(1),
@@ -303,7 +306,20 @@ def escape_toml_string(s: str) -> str:
 
 
 def _extract_routeros_version(llms_path: Path) -> str:
-    """Extract RouterOS version string from llms-full.txt header if available."""
+    """Extract RouterOS version string, preferring the provenance manifest."""
+    # Prefer the synced manifest: it records the highest feature-gate mention
+    # across the whole corpus, not just the header, and stays in sync with
+    # data/upstream-docs.toml (see sync_llms.py). Fall back to scanning the
+    # llms-full.txt header only when the manifest is absent (e.g. fresh clone
+    # before first `make sync`).
+    try:
+        manifest = (llms_path.parent / "data" / "upstream-docs.toml")
+        if manifest.exists():
+            m = re.search(r'routeros_version\s*=\s*"([^"]+)"', manifest.read_text(encoding="utf-8"))
+            if m and m.group(1) not in ("", "unknown"):
+                return m.group(1)
+    except Exception:
+        pass
     try:
         text = llms_path.read_text(encoding="utf-8", errors="ignore")[:8192]
         # Try common patterns: "RouterOS 7.22", "RouterOS v7.22", "7.22" in first lines
@@ -507,7 +523,19 @@ def write_if_changed(output_file: Path, new_content: str) -> bool:
         return False
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    output_file.write_text(new_content, encoding="utf-8")
+    fd, tmp_name = tempfile.mkstemp(dir=str(output_file.parent), prefix=output_file.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as tmp:
+            tmp.write(new_content)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_name, output_file)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
     return True
 
 

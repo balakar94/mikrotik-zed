@@ -53,10 +53,10 @@ jobs:
         run: make test-rust
 
       - name: Build WASM (wasm32-wasip2)
-        run: cargo build --target wasm32-wasip2 --release
+        run: cargo build --locked --target wasm32-wasip2 --release
 
       - name: Build LSP (rsc-ls)
-        run: cargo build -p rsc-ls --release
+        run: cargo build -p rsc-ls --locked --release
 
       - name: Smoke — artifact sizes
         run: |
@@ -95,14 +95,13 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: lsp
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Tests (cargo test -p rsc-ls)
-        run: cargo test -p rsc-ls
+        run: cargo test -p rsc-ls --locked
 
       - name: Build LSP (rsc-ls.exe)
-        run: cargo build -p rsc-ls --release
+        run: cargo build -p rsc-ls --locked --release
 
       # Cross-compile smoke: the release workflow ships aarch64-pc-windows-msvc
       # built exactly this way on the same runner image — catch toolchain or
@@ -110,7 +109,7 @@ jobs:
       - name: Smoke — cross aarch64-pc-windows-msvc
         run: |
           rustup target add aarch64-pc-windows-msvc
-          cargo check -p rsc-ls --target aarch64-pc-windows-msvc
+          cargo check -p rsc-ls --locked --target aarch64-pc-windows-msvc
 
       - name: Smoke — artifact size
         shell: bash
@@ -158,21 +157,15 @@ jobs:
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
-          # tomli needed for Python <3.11; pytest for tests/
-          pip install pytest tomli 2>/dev/null || pip install pytest
+          pip install pytest tomli
           pip freeze | grep -E "pytest|tomli" || true
 
       - name: Manifest schema check (make check-manifest)
         run: make check-manifest
 
-      - name: Run Python tests (make test-python)
-        run: make test-python
-
       # llms.txt / llms-full.txt are gitignored and fetched from manual.mikrotik.com.
-      # On clean checkout they don't exist, so sync-check --check would always report
-      # "new file" (exit 2) and fail. Instead, fetch here (with retries) then let the
-      # next step verify data/commands.toml determinism. Network failure is a warning,
-      # not a hard fail — local extract determinism still guards drift.
+      # Fetch BEFORE tests so the staleness test (test_docs_staleness.py) can
+      # recompute hashes against local bytes instead of skipping on clean checkout.
       - name: Fetch upstream docs (make sync)
         run: |
           set +e
@@ -201,6 +194,9 @@ jobs:
             fi
           fi
           exit 0
+
+      - name: Run Python tests (make test-python)
+        run: make test-python
 
       - name: Verify commands.toml is up-to-date (deterministic)
         run: |

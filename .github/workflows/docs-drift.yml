@@ -22,6 +22,10 @@ permissions:
   contents: read
   issues: write
 
+concurrency:
+  group: docs-drift
+  cancel-in-progress: false
+
 jobs:
   watchdog:
     name: Upstream docs drift watchdog

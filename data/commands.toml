@@ -1,9 +1,9 @@
 # MikroTik RouterOS CLI Command Table
 # Auto-generated from llms-full.txt
 # Covers: /app, /beep, /blink, /caps-man, /certificate, /console, /container, /disk, /dude, /environment, /file, /import, … (1077 menus)
-# RouterOS version: 7.22+
-# Generated: 2026-08-25T23:38:40.778303Z
-# Source hash (sha256[:16]): 44043d3ad9d4a6eb
+# RouterOS version: 7.23.2
+# Generated: 2026-08-26T17:10:20.673625Z
+# Source hash (sha256[:16]): df1882575dc393fa
 
 [[menus]]
 path = "/app"
@@ -2378,7 +2378,7 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "sanitize-names"
 type = "bool"
-description = "replace reserved characters in file and script names with underscores"
+description = "Replace reserved characters (\\\\ / : * ? |) with underscores in file and script names."
 [[menus.arguments]]
 name = "log-script-errors"
 type = "bool"
@@ -24276,7 +24276,7 @@ type = ""
 [[menus.arguments]]
 name = "log"
 type = "bool"
-description = "Add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port-&gt;dst-ip:port, and length of the packet. Allows logging of packets even if the action is not `log`, useful for debugging the firewall."
+description = "Add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port->dst-ip:port, and length of the packet. Allows logging of packets even if the action is not `log`, useful for debugging the firewall."
 [[menus.arguments]]
 name = "log-prefix"
 type = "string"
@@ -24716,7 +24716,7 @@ type = ""
 [[menus.arguments]]
 name = "log"
 type = "bool"
-description = "Add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port-&gt;dst-ip:port, and length of the packet. Allows logging of packets even if the action is not `log`, useful for debugging the firewall."
+description = "Add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port->dst-ip:port, and length of the packet. Allows logging of packets even if the action is not `log`, useful for debugging the firewall."
 [[menus.arguments]]
 name = "log-prefix"
 type = "string"
@@ -24982,7 +24982,7 @@ type = ""
 [[menus.arguments]]
 name = "log"
 type = "bool"
-description = "Add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port-&gt;dst-ip:port, and length of the packet. Allows logging of packets even if the action is not `log`, useful for debugging the firewall."
+description = "Add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port->dst-ip:port, and length of the packet. Allows logging of packets even if the action is not `log`, useful for debugging the firewall."
 [[menus.arguments]]
 name = "log-prefix"
 type = "string"
@@ -25201,7 +25201,7 @@ type = ""
 [[menus.arguments]]
 name = "log"
 type = "bool"
-description = "Add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port-&gt;dst-ip:port, and length of the packet. Allows logging of packets even if the action is not `log`, useful for debugging the firewall."
+description = "Add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port->dst-ip:port, and length of the packet. Allows logging of packets even if the action is not `log`, useful for debugging the firewall."
 [[menus.arguments]]
 name = "log-prefix"
 type = "string"
@@ -25333,7 +25333,7 @@ type = ""
 [[menus.arguments]]
 name = "log"
 type = "bool"
-description = "Add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port-&gt;dst-ip:port, and length of the packet. Allows logging of packets even if the action is not `log`, useful for debugging the firewall."
+description = "Add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port->dst-ip:port, and length of the packet. Allows logging of packets even if the action is not `log`, useful for debugging the firewall."
 [[menus.arguments]]
 name = "log-prefix"
 type = "string"
@@ -28195,31 +28195,35 @@ type = ""
 name = "forwarding-enabled"
 type = "enum (no | local | remote | both)"
 enum_values = ["no", "local", "remote", "both"]
-description = "control which forwarding is allowed"
+description = "Control which SSH forwarding method to allow: `no` - SSH forwarding is disabled, `local` - allow SSH clients to originate connections from the server (router), this also controls dynamic forwarding, `remote` - allow SSH clients to listen on the server (router) and forward incoming connections, `both` - allow both local and remote forwarding methods."
 [[menus.arguments]]
 name = "password-authentication"
 type = "enum (yes | no | yes-if-no-key)"
 enum_values = ["yes", "no", "yes-if-no-key"]
+description = "Whether to allow password login when public key authorization is configured for a user."
 [[menus.arguments]]
 name = "publickey-authentication-options"
 type = "enum (none | touch-required | verify-required)"
 enum_values = ["none", "touch-required", "verify-required"]
+description = "Public key authentication options. The `touch-required` option causes public key authentication by using a FIDO authenticator algorithm to always require the signature to attest that a physically present user explicitly confirmed the authentication (usually by touching the authenticator). The `verify-required` option requires a FIDO key signature to attest that the user was verified, for example, by using a PIN."
 [[menus.arguments]]
 name = "strong-crypto"
 type = "bool"
-description = "use stronger encryption, HMAC algorithms, use bigger DH primes and disallow weaker ones"
+description = "Use stronger encryption, HMAC algorithms, use bigger DH primes and disallow weaker ones: use 256 and 192 bit encryption instead of 128 bits, disable null encryption, use sha256 for hashing instead of sha1, disable md5, use 2048bit prime for Diffie-Hellman exchange instead of 1024bit."
 [[menus.arguments]]
 name = "host-key-size"
 type = "enum (1024 | 1536 | 2048 | 4096 | 8192) { 1024:1024, 1536:1536, 2048:2048, 4096:4096, 8192:8192 }"
 enum_values = ["1024", "1536", "2048", "4096", "8192"]
-description = "RSA key size when host key is regenerated"
+description = "RSA key size when host key is regenerated."
 [[menus.arguments]]
 name = "host-key-type"
 type = "enum (rsa | ed25519) { rsa:0, ed25519:3 }"
 enum_values = ["rsa", "ed25519"]
+description = "Host key type."
 [[menus.read_only]]
 name = "host-key-fingerprint"
 type = "string"
+description = "Fingerprint of the current host key. Can be used to verify that you are connecting to the correct router."
 
 [[menus]]
 path = "/ip/ssh/export-host-key"
@@ -28227,9 +28231,11 @@ type = "Command"
 [[menus.arguments]]
 name = "key-file-prefix"
 type = "string"
+description = "Prefix for generated files. For example, prefix 'my' generates files 'my_rsa', 'my_rsa.pub'. Host keys are exported in PKCS#8 format."
 [[menus.arguments]]
 name = "passphrase"
 type = "string"
+description = "Private key passphrase."
 
 [[menus]]
 path = "/ip/ssh/import-host-key"
@@ -28237,9 +28243,11 @@ type = "Command"
 [[menus.arguments]]
 name = "private-key-file"
 type = "file"
+description = "Name of the private RSA/Ed25519 key file in PEM or PKCS#8 format."
 [[menus.arguments]]
 name = "passphrase"
 type = "string"
+description = "Private key passphrase."
 
 [[menus]]
 path = "/ip/ssh/regenerate-host-key"
@@ -29402,7 +29410,7 @@ type = ""
 [[menus.arguments]]
 name = "log"
 type = "bool"
-description = "Add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port-&gt;dst-ip:port, and length of the packet. Allows logging of packets even if the action is not `log`, useful for debugging the firewall."
+description = "Add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port->dst-ip:port, and length of the packet. Allows logging of packets even if the action is not `log`, useful for debugging the firewall."
 [[menus.arguments]]
 name = "log-prefix"
 type = "string"
@@ -29632,7 +29640,7 @@ type = ""
 [[menus.arguments]]
 name = "log"
 type = "bool"
-description = "Add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port-&gt;dst-ip:port, and length of the packet. Allows logging of packets even if the action is not `log`, useful for debugging the firewall."
+description = "Add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port->dst-ip:port, and length of the packet. Allows logging of packets even if the action is not `log`, useful for debugging the firewall."
 [[menus.arguments]]
 name = "log-prefix"
 type = "string"
@@ -29820,7 +29828,7 @@ type = ""
 [[menus.arguments]]
 name = "log"
 type = "bool"
-description = "Add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port-&gt;dst-ip:port, and length of the packet. Allows logging of packets even if the action is not `log`, useful for debugging the firewall."
+description = "Add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port->dst-ip:port, and length of the packet. Allows logging of packets even if the action is not `log`, useful for debugging the firewall."
 [[menus.arguments]]
 name = "log-prefix"
 type = "string"
@@ -29941,7 +29949,7 @@ type = ""
 [[menus.arguments]]
 name = "log"
 type = "bool"
-description = "Add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port-&gt;dst-ip:port, and length of the packet. Allows logging of packets even if the action is not `log`, useful for debugging the firewall."
+description = "Add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port->dst-ip:port, and length of the packet. Allows logging of packets even if the action is not `log`, useful for debugging the firewall."
 [[menus.arguments]]
 name = "log-prefix"
 type = "string"
@@ -33565,12 +33573,12 @@ unset = true
 [[menus.arguments]]
 name = "site-id"
 type = "num"
-description = "Unique site identifier. Each site must have a unique site-id. A parameter must be set for&nbsp;RFC 4761 style VPLS signaling."
+description = "Unique site identifier. Each site must have a unique site-id. A parameter must be set for RFC 4761 style VPLS signaling."
 unset = true
 [[menus.arguments]]
 name = "cisco-id"
 type = "address"
-description = "Unique identifier. A parameter must be set for cisco-style VPLS signaling. In most cases this should not be used, any modern software supports RFC 4761 style signaling (see site-id parameter). Parameter is a merge of l2-router-id and RD, for example: 10.155.155.1&amp;6550:123"
+description = "Unique identifier. A parameter must be set for cisco-style VPLS signaling. In most cases this should not be used, any modern software supports RFC 4761 style signaling (see site-id parameter). Parameter is a merge of l2-router-id and RD, for example: 10.155.155.1&6550:123"
 unset = true
 [[menus.arguments]]
 name = "import-route-targets"
@@ -37636,33 +37644,43 @@ type = "Settings Directory"
 [[menus.read_only]]
 name = "software-id"
 type = "string"
+description = "Unique identifier for MikroTik hardware and x86 systems, used for licensing. Bound to the device storage."
 [[menus.read_only]]
 name = "old-software-id"
 type = "string"
+description = "The previous Software ID, shown when the ID has changed."
 [[menus.read_only]]
 name = "nlevel"
 type = "num"
+description = "The license level number (0-6)."
 [[menus.read_only]]
 name = "features"
 type = "ubit (AP, synchronous, radiolan, wireless, extra-channels, , , )"
+description = "Bitmask of licensed features."
 [[menus.read_only]]
 name = "expires-in"
 type = "time"
+description = "Time remaining until the trial license expires."
 [[menus.read_only]]
 name = "system-id"
 type = "string"
+description = "Unique identifier for CHR instances, used for licensing. The license is tied directly to the CHR system ID."
 [[menus.read_only]]
 name = "level"
 type = "enum (free | p1 | p10 | p-unlimited) { free:0, p1:1, p10:2, p-unlimited:3 }"
+description = "Current CHR license level."
 [[menus.read_only]]
 name = "limited-upgrades"
 type = "bool"
+description = "Indicates whether RouterOS upgrades are limited. When the value is `yes`, RouterOS cannot be upgraded and package changes are disabled."
 [[menus.read_only]]
 name = "next-renewal-at"
 type = "date"
+description = "The next time the router attempts to contact the MikroTik license server."
 [[menus.read_only]]
 name = "deadline-at"
 type = "date"
+description = "The latest time by which successful communication with the license server must occur."
 
 [[menus]]
 path = "/system/license/generate-new-id"
@@ -37678,16 +37696,20 @@ type = "Command"
 [[menus.arguments]]
 name = "account"
 type = "string"
+description = "MikroTik.com account username."
 [[menus.arguments]]
 name = "password"
 type = "string"
+description = "MikroTik.com account password."
 [[menus.arguments]]
 name = "level"
 type = "enum (p1 | p10 | p-unlimited) { p1:1, p10:2, p-unlimited:3 }"
 enum_values = ["p1", "p10", "p-unlimited"]
+description = "The desired CHR license level."
 [[menus.read_only]]
 name = "status"
 type = "string"
+description = "Status of the renewal operation."
 
 [[menus]]
 path = "/system/logging"
@@ -37823,12 +37845,14 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "show-at-login"
 type = "bool"
+description = "Show the note after login to the router."
 [[menus.arguments]]
 name = "show-at-cli-login"
 type = "bool"
 [[menus.arguments]]
 name = "note"
 type = "string"
+description = "Message displayed at login, typically set by an administrator."
 
 [[menus]]
 path = "/system/ntp"
@@ -38973,9 +38997,11 @@ type = ""
 [[menus.arguments]]
 name = "command"
 type = "string"
+description = "Remote command to execute."
 [[menus.arguments]]
 name = "user"
 type = "string"
+description = "Username for the remote host. Defaults to the currently logged-in user."
 [[menus.arguments]]
 name = "port"
 type = "num"
@@ -38988,7 +39014,7 @@ type = "enum"
 [[menus.arguments]]
 name = "output-to-file"
 type = "string"
-description = "this output method does not accept password input, use key authentication"
+description = "Write output to file instead of terminal. Does not accept password input, use key authentication."
 
 [[menus]]
 path = "/system/ssh-exec"
@@ -38999,12 +39025,15 @@ type = ""
 [[menus.arguments]]
 name = "command"
 type = "string"
+description = "Remote command to execute."
 [[menus.arguments]]
 name = "user"
 type = "string"
+description = "Username for the remote host."
 [[menus.arguments]]
 name = "password"
 type = "string"
+description = "Password for the remote host. You should use SSH PKI authentication instead of plain text passwords."
 [[menus.arguments]]
 name = "port"
 type = "num"
@@ -39017,13 +39046,15 @@ type = "enum"
 [[menus.arguments]]
 name = "output-to-file"
 type = "string"
-description = "write output to file instead of 'output' variable"
+description = "Write output to file instead of 'output' variable."
 [[menus.read_only]]
 name = "exit-code"
 type = "num"
+description = "Returns 0 if the command execution succeeded."
 [[menus.read_only]]
 name = "output"
 type = "string"
+description = "Returns the output of the remotely executed command."
 
 [[menus]]
 path = "/system/sup-output"
@@ -40398,15 +40429,18 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "enabled"
 type = "bool"
+description = "Disable or enable the RoMON feature."
 [[menus.arguments]]
 name = "id"
 type = "macAddr"
+description = "MAC address to use as the ID of this router."
 [[menus.arguments]]
 name = "secrets"
 type = ""
 [[menus.read_only]]
 name = "current-id"
 type = "macAddr"
+description = "The RoMON ID currently in use, automatically selected from the port MAC address when `id` is not set."
 
 [[menus]]
 path = "/tool/romon/discover"
@@ -40506,13 +40540,16 @@ description = "dynamic"
 [[menus.arguments]]
 name = "interface"
 type = "iface_enum { all }"
+description = "Interface name or interface-list used for RoMON."
 required = true
 [[menus.arguments]]
 name = "forbid"
 type = "bool"
+description = "Whether the matched interface is allowed or forbidden to participate in the RoMON network."
 [[menus.arguments]]
 name = "cost"
 type = "num"
+description = "The port's cost. All specific port entries have higher priority than the wildcard entry with `interface=all`."
 [[menus.arguments]]
 name = "secrets"
 type = ""
