@@ -73,5 +73,5 @@ Baseline release tagged `v0.5.0` (`e167430`). Changes since `v0.4.0` (`62998ab`)
 - Local `TODO.md` ignored.
 
 [Unreleased]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.1...HEAD
-[0.5.1]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.0...HEAD
+[0.5.1]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/balakar94/mikrotik-zed/compare/v0.4.0...v0.5.0
