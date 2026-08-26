@@ -4,9 +4,7 @@
 
 No changes beyond `0.5.1` prerelease at this time.
 
-## [0.5.1] - Unreleased
-
-> Prerelease pending. Head is `87cc692` on `main`. Four commits were rewritten in English via rebase (`0cede40`..`87cc692`) on top of `0.5.0`. Date placeholder — will be set on tag `v0.5.1`.
+## [0.5.1] - 2026-08-26
 
 ### Added
 
