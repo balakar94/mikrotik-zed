@@ -4,8 +4,12 @@ Extract RouterOS CLI command data from llms-full.txt and generate commands.toml.
 
 Parses the CLI Reference section of llms-full.txt to extract menu paths,
 argument names, types, descriptions, and flags for the COMPLETE RouterOS
-CLI surface (~1017 menus). All roots are discovered via the CLI-path regex
-(^[a-z0-9][a-z0-9/_-]*$) rather than a hardcoded whitelist.
+CLI surface (~1000+ menus). All roots are discovered via the CLI-path regex
+(^[a-z0-9][a-z0-9/_-]*$) rather than a hardcoded whitelist. Child pages are
+titled WITH a slash (`## user/group`), but ROOT pages appear WITHOUT one
+(`## user`, `## log`); such bare candidates are kept only when a `**Type:**`
+line confirms them before the next heading of any level — prose subheadings
+(`balance-xor`, ...) never carry one.
 
 Output: data/commands.toml (TOML format for the Zed language server)
 """
@@ -73,21 +77,73 @@ def should_include(menu_path: str) -> bool:
 
 HEADING_RE = re.compile(r"^#{2,4}\s+(.+)")
 
+
+def _normalize_heading_text(line: str) -> str | None:
+    """Return normalized heading text for a ##..#### line, or None if not a heading.
+
+    Normalization: strip surrounding whitespace, remove markdown links, and
+    strip trailing dots. Shared by the slash-path and bare-root extractors so
+    both operate on identical text.
+    """
+    m = HEADING_RE.match(line)
+    if not m:
+        return None
+    text = m.group(1).strip()
+    text = re.sub(r"\[.*?\]\(.*?\)", "", text).strip()
+    return text.rstrip(".")
+
+
 def _extract_heading_path(line: str) -> str | None:
     """Extract a RouterOS menu path from a markdown heading, or None.
 
     Handles ##, ###, #### headings; strips markdown links and trailing dots;
     returns None for non-menu headings (no '/' or starts with '#').
     """
-    m = HEADING_RE.match(line)
-    if not m:
-        return None
-    path = m.group(1).strip()
-    path = re.sub(r"\[.*?\]\(.*?\)", "", path).strip()
-    path = path.rstrip(".")
-    if "/" in path and not path.startswith("#"):
+    path = _normalize_heading_text(line)
+    if path is not None and "/" in path and not path.startswith("#"):
         return path
     return None
+
+
+def _extract_bare_cli_root(line: str) -> str | None:
+    """Extract a slash-less CLI root word from a markdown heading, or None.
+
+    Upstream titles ROOT pages without a leading slash (`## user`, `## log`,
+    `## certificate`). A heading qualifies as a bare-root candidate only if,
+    after the same normalization as _extract_heading_path(), its text is a
+    single lowercase CLI word matching _CLI_PATH_RE with no '/' inside.
+    Slash-bearing headings belong to _extract_heading_path(); uppercase prose
+    (`Overview`) and multi-word prose (`print parameters`) fail the regex.
+
+    Being a candidate does NOT make a heading a menu — parse_llms_full()
+    additionally requires a `**Type:**` line before the next heading of any
+    level, which real root pages always carry and prose subheadings never do.
+    """
+    text = _normalize_heading_text(line)
+    if not text or text.startswith("#"):
+        return None
+    if "/" in text:
+        return None
+    if not _CLI_PATH_RE.match(text):
+        return None
+    return text
+
+
+def _is_includable_menu(menu: dict | None) -> bool:
+    """Decide whether a finished menu entry is appended to the result.
+
+    Two gates:
+      1. the path must pass should_include(), and
+      2. bare-root candidates must have been confirmed by a `**Type:**` line
+         (their "needs_type" flag cleared). Slash-derived menus never carry
+         the flag, so gate 2 is a no-op for them.
+    Used at both flush points (next accepted heading and end of file).
+    """
+    if not menu:
+        return False
+    if menu.get("needs_type"):
+        return False
+    return should_include(menu["path"])
 
 
 def extract_enum_values(typ: str) -> list[str]:
@@ -123,18 +179,29 @@ def parse_llms_full(filepath: str) -> list[dict]:
     for i, line in enumerate(lines):
         # Detect menu path from ##, ###, or #### headings containing "/"
         heading_path = _extract_heading_path(line)
-        if heading_path is not None:
-            # Save previous menu if it exists and should be included
-            if current_menu and should_include(current_menu["path"]):
+        # Root pages are titled WITHOUT a leading slash upstream ("## user").
+        # They open only a PENDING menu: a **Type:** line must confirm them
+        # before the next heading of any level (see needs_type below), which
+        # keeps lowercase prose subheadings ("balance-xor") out.
+        bare_root = _extract_bare_cli_root(line) if heading_path is None else None
+
+        if heading_path is not None or bare_root is not None:
+            # Save previous menu if it exists and qualifies for inclusion
+            if _is_includable_menu(current_menu):
                 menus.append(current_menu)
 
+            new_path = heading_path if heading_path is not None else bare_root
             current_menu = {
-                "path": "/" + heading_path,  # Add leading /
+                "path": "/" + new_path,  # Add leading /
                 "type": "Directory",
                 "flags": [],
                 "arguments": [],
                 "read_only": [],
             }
+            if bare_root is not None:
+                # Bare-root candidate: unconfirmed until a **Type:** line
+                # appears within this section. Slash paths never set the flag.
+                current_menu["needs_type"] = True
             current_section = None
             in_argtable = False
             continue
@@ -143,6 +210,9 @@ def parse_llms_full(filepath: str) -> list[dict]:
         type_match = re.match(r"^\*\*Type:\*\*\s+(.+)", line)
         if type_match and current_menu:
             current_menu["type"] = type_match.group(1).strip()
+            # Confirms a pending bare-root candidate; pop() keeps confirmed
+            # and slash-derived menus free of the flag key entirely.
+            current_menu.pop("needs_type", None)
             continue
 
         # Detect ArgTable end first (before start, since </ArgTable> also contains <ArgTable)
@@ -206,7 +276,7 @@ def parse_llms_full(filepath: str) -> list[dict]:
             continue
 
     # Save last menu
-    if current_menu and should_include(current_menu["path"]):
+    if _is_includable_menu(current_menu):
         menus.append(current_menu)
 
     return menus

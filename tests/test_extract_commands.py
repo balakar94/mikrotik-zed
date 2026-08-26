@@ -18,6 +18,7 @@ from extract_commands import (
     synthesize_directories,
     finalize_menus,
     _extract_heading_path,
+    _extract_bare_cli_root,
     _strip_generated_line,
     _MAX_COVERED_ROOTS,
 )
@@ -1131,3 +1132,298 @@ class TestParseLlmsFull:
             assert len(m["read_only"]) == 1
         finally:
             os.unlink(path)
+
+
+class TestExtractBareCliRoot:
+    """Unit tests for the slash-less root-heading extractor."""
+
+    def test_simple_root(self):
+        assert _extract_bare_cli_root("## user") == "user"
+
+    def test_trailing_whitespace_and_dot_normalized(self):
+        # Real upstream headings carry trailing spaces ("## user ").
+        assert _extract_bare_cli_root("## log  ") == "log"
+        assert _extract_bare_cli_root("## undo.") == "undo"
+
+    def test_h4_level_accepted(self):
+        assert _extract_bare_cli_root("#### import") == "import"
+
+    def test_hyphenated_word_accepted(self):
+        assert _extract_bare_cli_root("## safe-mode") == "safe-mode"
+
+    def test_slash_path_rejected(self):
+        # Slash-bearing headings belong to _extract_heading_path().
+        assert _extract_bare_cli_root("## user/group") is None
+        assert _extract_bare_cli_root("## /ip/address") is None
+
+    def test_uppercase_prose_rejected(self):
+        assert _extract_bare_cli_root("## Overview") is None
+
+    def test_multiword_prose_rejected(self):
+        assert _extract_bare_cli_root("## print parameters") is None
+
+    def test_non_heading_rejected(self):
+        assert _extract_bare_cli_root("plain text") is None
+        assert _extract_bare_cli_root("# single-hash") is None
+        assert _extract_bare_cli_root("##### five-hashes") is None
+
+
+class TestBareRootMenus:
+    """Root pages are titled WITHOUT a leading slash upstream (`## user`).
+
+    A bare CLI-word heading opens only a PENDING menu: it is kept only when
+    a `**Type:**` line appears before the next heading of any level (other
+    metadata lines such as `**Package:**` may precede it). Prose subheadings
+    (`balance-xor`) never carry one and must stay out. Slash-derived menus
+    never require the confirmation — missing **Type:** still defaults to
+    Directory for them.
+    """
+
+    def _write_temp(self, content: str) -> str:
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+        tmp.write(content)
+        tmp.flush()
+        tmp.close()
+        return tmp.name
+
+    def test_bare_root_with_package_then_type_captures_all_sections(self):
+        # Real upstream layout: **Package:** (and possibly **Syscap:** /
+        # **Conditions:**) precede **Type:** — a next-line check would miss
+        # these pages. All three ArgTable sections must attach.
+        content = """
+## user 
+
+**Package:** system
+
+**Type:** Directory
+
+<ArgTable c1="Flag" c2="Name" c3="Description">
+<ArgTableRow arg="X" typ="disabled">disabled</ArgTableRow>
+<ArgTableRow arg="E" typ="expired">expired</ArgTableRow>
+</ArgTable>
+
+<ArgTable c1="Argument" c2="Type" c3="Description">
+<ArgTableRow arg="name" typ="string" mandatory="1"></ArgTableRow>
+</ArgTable>
+
+<ArgTable c1="Read-only Argument" c2="Type" c3="Description">
+<ArgTableRow arg="last-logged-in" typ="date"></ArgTableRow>
+</ArgTable>
+"""
+        path = self._write_temp(content)
+        try:
+            menus = parse_llms_full(path)
+        finally:
+            os.unlink(path)
+        assert len(menus) == 1
+        m = menus[0]
+        assert m["path"] == "/user"
+        assert m["type"] == "Directory"
+        assert [f["name"] for f in m["flags"]] == ["X", "E"]
+        assert [a["name"] for a in m["arguments"]] == ["name"]
+        assert m["arguments"][0]["required"] is True
+        assert [r["name"] for r in m["read_only"]] == ["last-logged-in"]
+
+    def test_bare_word_without_type_not_captured(self):
+        # Prose subheadings match the CLI regex but never carry **Type:**
+        # before the next heading of any level — they must not become menus.
+        content = """
+## balance-xor
+
+Some prose about the balance-xor bonding mode.
+
+## interface/bonding
+
+**Type:** Directory
+"""
+        path = self._write_temp(content)
+        try:
+            menus = parse_llms_full(path)
+        finally:
+            os.unlink(path)
+        assert [m["path"] for m in menus] == ["/interface/bonding"]
+
+    def test_bare_word_before_slash_heading_not_captured(self):
+        # No **Type:** between the bare word and the next heading → dropped,
+        # while the slash menu itself is unaffected.
+        content = """
+## undo
+
+## ip/address
+
+**Type:** Directory
+"""
+        path = self._write_temp(content)
+        try:
+            menus = parse_llms_full(path)
+        finally:
+            os.unlink(path)
+        assert [m["path"] for m in menus] == ["/ip/address"]
+
+    def test_unconfirmed_bare_candidates_do_not_leak(self):
+        # Two consecutive unconfirmed bare words flush each other; neither
+        # lands in the result.
+        content = """
+## environment
+
+## redo
+
+Some prose.
+
+## system/note
+
+**Type:** Directory
+"""
+        path = self._write_temp(content)
+        try:
+            menus = parse_llms_full(path)
+        finally:
+            os.unlink(path)
+        assert [m["path"] for m in menus] == ["/system/note"]
+
+    def test_bare_root_command_captured_as_command(self):
+        # Root-level COMMANDS (not Directories): Type says "Command".
+        content = """
+## password
+
+**Type:** Command
+
+<ArgTable c1="Argument" c2="Type" c3="Description">
+<ArgTableRow arg="old-password" typ="string" mandatory="1">Old password</ArgTableRow>
+<ArgTableRow arg="new-password" typ="string" mandatory="1">New password</ArgTableRow>
+</ArgTable>
+"""
+        path = self._write_temp(content)
+        try:
+            menus = parse_llms_full(path)
+        finally:
+            os.unlink(path)
+        assert len(menus) == 1
+        m = menus[0]
+        assert m["path"] == "/password"
+        assert m["type"] == "Command"
+        assert [a["name"] for a in m["arguments"]] == ["old-password", "new-password"]
+        assert m["flags"] == []
+        assert m["read_only"] == []
+
+    def test_confirmed_bare_root_flushed_at_eof(self):
+        # The last section in the file goes through the same gate at EOF.
+        content = """
+## certificate 
+
+**Syscap:** PKI
+
+**Type:** Directory
+
+<ArgTable c1="Argument" c2="Type" c3="Description">
+<ArgTableRow arg="common-name" typ="string">CN</ArgTableRow>
+</ArgTable>
+"""
+        path = self._write_temp(content)
+        try:
+            menus = parse_llms_full(path)
+        finally:
+            os.unlink(path)
+        assert len(menus) == 1
+        assert menus[0]["path"] == "/certificate"
+        assert menus[0]["arguments"][0]["name"] == "common-name"
+
+    def test_duplicate_bare_root_first_occurrence_wins(self):
+        # Upstream titles `import` twice; only the first carries **Type:**.
+        # The unconfirmed duplicate must not shadow or duplicate it.
+        content = """
+## import 
+
+**Type:** Command
+
+<ArgTable c1="Argument" c2="Type" c3="Description">
+<ArgTableRow arg="file-name" typ="file">.rsc files</ArgTableRow>
+</ArgTable>
+
+## file/local
+
+**Type:** Directory
+
+#### import
+
+Prose-only reprise of the import command.
+
+```ros
+[admin@admin] > import file.rsc
+```
+"""
+        path = self._write_temp(content)
+        try:
+            menus = parse_llms_full(path)
+        finally:
+            os.unlink(path)
+        imports = [m for m in menus if m["path"] == "/import"]
+        assert len(imports) == 1
+        assert imports[0]["type"] == "Command"
+        assert [a["name"] for a in imports[0]["arguments"]] == ["file-name"]
+
+    # ── Regression pins: slash-path behavior unchanged ────────────────
+
+    def test_slash_menu_without_type_survives_adjacent_bare_heading(self):
+        # Slash-derived menus never set needs_type: a missing **Type:**
+        # still defaults to Directory even when flushed by a bare heading.
+        content = """
+## ip/route
+
+<ArgTable c1="Argument" c2="Type" c3="Description">
+<ArgTableRow arg="gateway" typ="ipAddr">Gateway</ArgTableRow>
+</ArgTable>
+
+## log 
+
+**Type:** Directory
+"""
+        path = self._write_temp(content)
+        try:
+            menus = parse_llms_full(path)
+        finally:
+            os.unlink(path)
+        by_path = {m["path"]: m for m in menus}
+        assert set(by_path) == {"/ip/route", "/log"}
+        assert by_path["/ip/route"]["type"] == "Directory"
+        assert by_path["/ip/route"]["arguments"][0]["name"] == "gateway"
+
+    def test_multiword_prose_heading_does_not_close_current_menu(self):
+        # Headings that are not path-like keep the old behavior: ignored
+        # WITHOUT closing the current menu, so rows after them still attach.
+        content = """
+## interface/bonding
+
+**Type:** Directory
+
+### print parameters
+
+<ArgTable c1="Argument" c2="Type" c3="Description">
+<ArgTableRow arg="count-only" typ="switch">Show only count</ArgTableRow>
+</ArgTable>
+"""
+        path = self._write_temp(content)
+        try:
+            menus = parse_llms_full(path)
+        finally:
+            os.unlink(path)
+        assert len(menus) == 1
+        assert menus[0]["path"] == "/interface/bonding"
+        assert menus[0]["arguments"][0]["name"] == "count-only"
+
+    def test_uppercase_prose_heading_never_a_candidate(self):
+        content = """
+## Overview
+
+Some overview text with a stray **Type:**-looking mention.
+
+## ip/firewall/filter
+
+**Type:** Directory
+"""
+        path = self._write_temp(content)
+        try:
+            menus = parse_llms_full(path)
+        finally:
+            os.unlink(path)
+        assert [m["path"] for m in menus] == ["/ip/firewall/filter"]

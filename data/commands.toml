@@ -1,13 +1,147 @@
 # MikroTik RouterOS CLI Command Table
 # Auto-generated from llms-full.txt
-# Covers: /app, /caps-man, /certificate, /console, /container, /disk, /dude, /file, /interface, /iot, /ip, /ipv6, … (1066 menus)
+# Covers: /app, /beep, /blink, /caps-man, /certificate, /console, /container, /disk, /dude, /environment, /file, /import, … (1077 menus)
 # RouterOS version: 7.22+
-# Generated: 2026-08-25T20:21:01.208467Z
+# Generated: 2026-08-25T23:38:40.778303Z
 # Source hash (sha256[:16]): 44043d3ad9d4a6eb
 
 [[menus]]
 path = "/app"
 type = "Directory"
+[[menus.flags]]
+name = "R"
+description = "Application is actively running and accessible"
+[[menus.flags]]
+name = "c"
+description = "Custom application created by the user"
+[[menus.flags]]
+name = "s"
+description = "Application installed from a custom app store"
+[[menus.arguments]]
+name = "container-command-lines"
+type = ""
+description = "Specifies the command-line argument(s) to pass to the application when starting the container"
+[[menus.arguments]]
+name = "auto-update"
+type = ""
+description = "Enables or disables automatic updating when a new container image version is available"
+[[menus.arguments]]
+name = "use-https"
+type = ""
+description = "Uses HTTPS for the application URL. This option will not work on devices that do not support cloud services"
+[[menus.arguments]]
+name = "network"
+type = ""
+description = "Specifies which network the container will use: internal (behind NAT), lan (on the LAN network), or default (varies per application)"
+[[menus.arguments]]
+name = "network-pvid"
+type = ""
+description = "Sets the Port VLAN ID (PVID) for the container's virtual Ethernet interface in the bridge"
+[[menus.arguments]]
+name = "network-outgoing-access"
+type = ""
+description = "Allows network outgoing access for the specific container app. When set to no, a mangle drop rule is created"
+[[menus.arguments]]
+name = "firewall-redirects"
+type = ""
+description = "Configures port redirection from the host device to the container"
+[[menus.arguments]]
+name = "yaml"
+type = ""
+description = "Provides the YAML composition for the application. See the documentation for configuration examples"
+[[menus.arguments]]
+name = "required-mounts"
+type = ""
+description = "Mount directories required for the container to start. Format: [dir-on-host]:[dir-in-app]"
+[[menus.arguments]]
+name = "extra-mounts"
+type = ""
+description = "Specifies additional mount points to attach to the container"
+[[menus.arguments]]
+name = "environment"
+type = ""
+description = "Defines environment variables to be available to the running application. Specify as a list of key-value pair(s)"
+[[menus.arguments]]
+name = "secrets"
+type = ""
+[[menus.arguments]]
+name = "required-hw-devices"
+type = ""
+description = "Hardware devices that must be present on the host for the container to start. Format: [host-hw-device]:[device-in-app]"
+[[menus.arguments]]
+name = "devices"
+type = ""
+description = "Specifies additional hardware devices to pass through to the container application"
+[[menus.read_only]]
+name = "app-store-url"
+type = ""
+description = "The URL of the app store from which the application was installed"
+[[menus.read_only]]
+name = "name"
+type = ""
+description = "The application name as defined in the YAML configuration"
+[[menus.read_only]]
+name = "description"
+type = ""
+description = "The application description as defined in the YAML configuration"
+[[menus.read_only]]
+name = "project-page"
+type = ""
+description = "The application project page URL as defined in the YAML configuration"
+[[menus.read_only]]
+name = "category"
+type = ""
+description = "Application functional classification"
+[[menus.read_only]]
+name = "ui-url"
+type = ""
+description = "The generated URL for the application web interface, if available"
+[[menus.read_only]]
+name = "default-credentials"
+type = ""
+description = "The default credentials required for the application"
+[[menus.read_only]]
+name = "status"
+type = ""
+description = "The current status of the application (acquire veth, configuring container(s), downloading/extracting, starting)"
+[[menus.read_only]]
+name = "default-network"
+type = ""
+description = "The default network used by the application (lan or internal)"
+[[menus.read_only]]
+name = "interface"
+type = ""
+description = "The VETH interface used by the application"
+[[menus.read_only]]
+name = "ip-address"
+type = ""
+description = "The IP address assigned to the VETH interface"
+[[menus.read_only]]
+name = "cmds"
+type = ""
+[[menus.read_only]]
+name = "cpu-usage"
+type = ""
+description = "The current CPU usage percentage by the application"
+[[menus.read_only]]
+name = "memory-current"
+type = ""
+description = "The amount of memory currently used by the application"
+[[menus.read_only]]
+name = "app-size"
+type = ""
+description = "The total size of the application"
+[[menus.read_only]]
+name = "data-size"
+type = ""
+description = "The size of the data stored by the application"
+[[menus.read_only]]
+name = "configs"
+type = ""
+[[menus.read_only]]
+name = "variables-to-use-in-environment"
+type = ""
+description = "A list of all variables present in the application environment"
 
 [[menus]]
 path = "/app/cleanup"
@@ -134,6 +268,10 @@ type = ""
 [[menus]]
 path = "/app/update"
 type = "Command"
+
+[[menus]]
+path = "/beep"
+type = "Command"
 [[menus.arguments]]
 name = "frequency"
 type = "num"
@@ -142,6 +280,10 @@ description = "Sound frequency in Hz"
 name = "length"
 type = "time"
 description = "Duration of the sound in seconds"
+
+[[menus]]
+path = "/blink"
+type = "Command"
 [[menus.arguments]]
 name = "duration"
 type = "time"
@@ -1536,6 +1678,146 @@ unset = true
 [[menus]]
 path = "/certificate"
 type = "Directory"
+[[menus.flags]]
+name = "K"
+description = "private-key"
+[[menus.flags]]
+name = "L"
+description = "crl"
+[[menus.flags]]
+name = "C"
+description = "smart-card-key"
+[[menus.flags]]
+name = "A"
+description = "authority"
+[[menus.flags]]
+name = "I"
+description = "issued"
+[[menus.flags]]
+name = "R"
+description = "revoked"
+[[menus.flags]]
+name = "E"
+description = "expired"
+[[menus.flags]]
+name = "T"
+description = "trusted"
+[[menus.flags]]
+name = "a"
+description = "acme-managed"
+[[menus.flags]]
+name = "D"
+description = "dynamic"
+[[menus.arguments]]
+name = "active"
+type = "switch"
+[[menus.arguments]]
+name = "inactive"
+type = "switch"
+[[menus.arguments]]
+name = "name"
+type = "string"
+[[menus.arguments]]
+name = "trust-store"
+type = ""
+[[menus.arguments]]
+name = "digest-algorithm"
+type = "enum (md5 | sha1 | sha256 | sha384 | sha512)"
+enum_values = ["md5", "sha1", "sha256", "sha384", "sha512"]
+[[menus.arguments]]
+name = "trusted"
+type = "bool"
+[[menus.arguments]]
+name = "common-name"
+type = "string"
+[[menus.arguments]]
+name = "organization"
+type = "string"
+[[menus.arguments]]
+name = "unit"
+type = "string"
+[[menus.arguments]]
+name = "locality"
+type = "string"
+[[menus.arguments]]
+name = "state"
+type = "string"
+[[menus.arguments]]
+name = "country"
+type = "string"
+[[menus.arguments]]
+name = "subject-alt-name"
+type = ""
+[[menus.arguments]]
+name = "key-size"
+type = "enum (prime256v1 | secp384r1 | secp521r1 | 1024 | 1536 | 2048 | 4096 | 8192) { 1024:1024, 1536:15..."
+enum_values = ["prime256v1", "secp384r1", "secp521r1", "1024", "1536", "2048", "4096", "8192"]
+[[menus.arguments]]
+name = "key-usage"
+type = "ubit (digital-signature, content-commitment, key-encipherment, data-encipherment, key-agreement, ..."
+[[menus.arguments]]
+name = "days-valid"
+type = "num"
+[[menus.read_only]]
+name = "ca-crl-host"
+type = "string"
+[[menus.read_only]]
+name = "ca"
+type = "enum"
+[[menus.read_only]]
+name = "scep-url"
+type = "string"
+[[menus.read_only]]
+name = "fingerprint"
+type = "string"
+[[menus.read_only]]
+name = "req-fingerprint"
+type = "string"
+[[menus.read_only]]
+name = "ca-fingerprint"
+type = "string"
+[[menus.read_only]]
+name = "expires-after"
+type = "time"
+[[menus.read_only]]
+name = "challenge-password"
+type = "string"
+[[menus.read_only]]
+name = "domain-names"
+type = "string"
+[[menus.read_only]]
+name = "directory-url"
+type = "string"
+[[menus.read_only]]
+name = "acme-status"
+type = "string"
+[[menus.read_only]]
+name = "revoked"
+type = "date"
+[[menus.read_only]]
+name = "status"
+type = "string"
+[[menus.read_only]]
+name = "issuer"
+type = ""
+[[menus.read_only]]
+name = "key-type"
+type = "enum (rsa | dsa | ec)"
+[[menus.read_only]]
+name = "invalid-before"
+type = "date"
+[[menus.read_only]]
+name = "invalid-after"
+type = "date"
+[[menus.read_only]]
+name = "serial-number"
+type = "string"
+[[menus.read_only]]
+name = "akid"
+type = "string"
+[[menus.read_only]]
+name = "skid"
+type = "string"
 
 [[menus]]
 path = "/certificate/acme-renew"
@@ -1653,149 +1935,9 @@ type = "string"
 
 [[menus]]
 path = "/certificate/card-verify"
-type = "Directory"
-[[menus.flags]]
-name = "K"
-description = "private-key"
-[[menus.flags]]
-name = "L"
-description = "crl"
-[[menus.flags]]
-name = "C"
-description = "smart-card-key"
-[[menus.flags]]
-name = "A"
-description = "authority"
-[[menus.flags]]
-name = "I"
-description = "issued"
-[[menus.flags]]
-name = "R"
-description = "revoked"
-[[menus.flags]]
-name = "E"
-description = "expired"
-[[menus.flags]]
-name = "T"
-description = "trusted"
-[[menus.flags]]
-name = "a"
-description = "acme-managed"
-[[menus.flags]]
-name = "D"
-description = "dynamic"
+type = "Command"
 [[menus.arguments]]
 name = "pin"
-type = "string"
-[[menus.arguments]]
-name = "active"
-type = "switch"
-[[menus.arguments]]
-name = "inactive"
-type = "switch"
-[[menus.arguments]]
-name = "name"
-type = "string"
-[[menus.arguments]]
-name = "trust-store"
-type = ""
-[[menus.arguments]]
-name = "digest-algorithm"
-type = "enum (md5 | sha1 | sha256 | sha384 | sha512)"
-enum_values = ["md5", "sha1", "sha256", "sha384", "sha512"]
-[[menus.arguments]]
-name = "trusted"
-type = "bool"
-[[menus.arguments]]
-name = "common-name"
-type = "string"
-[[menus.arguments]]
-name = "organization"
-type = "string"
-[[menus.arguments]]
-name = "unit"
-type = "string"
-[[menus.arguments]]
-name = "locality"
-type = "string"
-[[menus.arguments]]
-name = "state"
-type = "string"
-[[menus.arguments]]
-name = "country"
-type = "string"
-[[menus.arguments]]
-name = "subject-alt-name"
-type = ""
-[[menus.arguments]]
-name = "key-size"
-type = "enum (prime256v1 | secp384r1 | secp521r1 | 1024 | 1536 | 2048 | 4096 | 8192) { 1024:1024, 1536:15..."
-enum_values = ["prime256v1", "secp384r1", "secp521r1", "1024", "1536", "2048", "4096", "8192"]
-[[menus.arguments]]
-name = "key-usage"
-type = "ubit (digital-signature, content-commitment, key-encipherment, data-encipherment, key-agreement, ..."
-[[menus.arguments]]
-name = "days-valid"
-type = "num"
-[[menus.read_only]]
-name = "ca-crl-host"
-type = "string"
-[[menus.read_only]]
-name = "ca"
-type = "enum"
-[[menus.read_only]]
-name = "scep-url"
-type = "string"
-[[menus.read_only]]
-name = "fingerprint"
-type = "string"
-[[menus.read_only]]
-name = "req-fingerprint"
-type = "string"
-[[menus.read_only]]
-name = "ca-fingerprint"
-type = "string"
-[[menus.read_only]]
-name = "expires-after"
-type = "time"
-[[menus.read_only]]
-name = "challenge-password"
-type = "string"
-[[menus.read_only]]
-name = "domain-names"
-type = "string"
-[[menus.read_only]]
-name = "directory-url"
-type = "string"
-[[menus.read_only]]
-name = "acme-status"
-type = "string"
-[[menus.read_only]]
-name = "revoked"
-type = "date"
-[[menus.read_only]]
-name = "status"
-type = "string"
-[[menus.read_only]]
-name = "issuer"
-type = ""
-[[menus.read_only]]
-name = "key-type"
-type = "enum (rsa | dsa | ec)"
-[[menus.read_only]]
-name = "invalid-before"
-type = "date"
-[[menus.read_only]]
-name = "invalid-after"
-type = "date"
-[[menus.read_only]]
-name = "serial-number"
-type = "string"
-[[menus.read_only]]
-name = "akid"
-type = "string"
-[[menus.read_only]]
-name = "skid"
 type = "string"
 
 [[menus]]
@@ -2249,10 +2391,6 @@ description = "default tab width in fullscreen editor"
 [[menus]]
 path = "/container"
 type = "Directory"
-
-[[menus]]
-path = "/container/config"
-type = "Directory"
 [[menus.flags]]
 name = "S"
 description = ""
@@ -2283,30 +2421,6 @@ description = ""
 [[menus.flags]]
 name = "U"
 description = ""
-[[menus.arguments]]
-name = "registry-url"
-type = "string"
-[[menus.arguments]]
-name = "username"
-type = "string"
-[[menus.arguments]]
-name = "password"
-type = "string"
-[[menus.arguments]]
-name = "layer-dir"
-type = "file"
-[[menus.arguments]]
-name = "tmpdir"
-type = "file"
-[[menus.arguments]]
-name = "memory-high"
-type = "num"
-[[menus.arguments]]
-name = "memory-max"
-type = "num"
-[[menus.arguments]]
-name = "swap-max"
-type = "num"
 [[menus.arguments]]
 name = "file"
 type = "file"
@@ -2445,15 +2559,6 @@ type = "num"
 name = "healthcheck-status"
 type = "string"
 [[menus.read_only]]
-name = "assumed-registry-url"
-type = "string"
-[[menus.read_only]]
-name = "memory-current"
-type = "num"
-[[menus.read_only]]
-name = "swap-current"
-type = "num"
-[[menus.read_only]]
 name = "tag"
 type = "string"
 [[menus.read_only]]
@@ -2527,6 +2632,43 @@ name = "default-healthcheck-start-interval"
 type = "time"
 [[menus.read_only]]
 name = "default-healthcheck-retries"
+type = "num"
+
+[[menus]]
+path = "/container/config"
+type = "Settings Directory"
+[[menus.arguments]]
+name = "registry-url"
+type = "string"
+[[menus.arguments]]
+name = "username"
+type = "string"
+[[menus.arguments]]
+name = "password"
+type = "string"
+[[menus.arguments]]
+name = "layer-dir"
+type = "file"
+[[menus.arguments]]
+name = "tmpdir"
+type = "file"
+[[menus.arguments]]
+name = "memory-high"
+type = "num"
+[[menus.arguments]]
+name = "memory-max"
+type = "num"
+[[menus.arguments]]
+name = "swap-max"
+type = "num"
+[[menus.read_only]]
+name = "assumed-registry-url"
+type = "string"
+[[menus.read_only]]
+name = "memory-current"
+type = "num"
+[[menus.read_only]]
+name = "swap-current"
 type = "num"
 
 [[menus]]
@@ -2654,6 +2796,450 @@ type = "Command"
 [[menus]]
 path = "/disk"
 type = "Directory"
+[[menus.flags]]
+name = "X"
+description = "disabled"
+[[menus.flags]]
+name = "A"
+description = "acquired"
+[[menus.flags]]
+name = "E"
+description = "empty"
+[[menus.flags]]
+name = "B"
+description = "block-device"
+[[menus.flags]]
+name = "M"
+description = "mounted"
+[[menus.flags]]
+name = "F"
+description = "formatting"
+[[menus.flags]]
+name = "S"
+description = "swap-enabled"
+[[menus.flags]]
+name = "f"
+description = "raid-member-failed"
+[[menus.flags]]
+name = "r"
+description = "raid-member"
+[[menus.flags]]
+name = "c"
+description = "encrypted"
+[[menus.flags]]
+name = "g"
+description = "guid-partition-table"
+[[menus.flags]]
+name = "p"
+description = "partition"
+[[menus.flags]]
+name = "t"
+description = "nvme-tcp-export"
+[[menus.flags]]
+name = "i"
+description = "iscsi-export"
+[[menus.flags]]
+name = "s"
+description = "smb-sharing"
+[[menus.flags]]
+name = "n"
+description = "nfs-sharing"
+[[menus.flags]]
+name = "m"
+description = "media-sharing"
+[[menus.flags]]
+name = "L"
+description = "self-encrypted-and-locked"
+[[menus.flags]]
+name = "O"
+description = "self-encryption-enabled"
+[[menus.flags]]
+name = "o"
+description = "self-encryption-supported"
+[[menus.arguments]]
+name = "type"
+type = "enum (raid | nvme-tcp | iscsi | nfs | smb | partition | tmpfs | ramdisk | crypted | sshfs | file ..."
+enum_values = ["raid", "nvme-tcp", "iscsi", "nfs", "smb", "partition", "tmpfs", "ramdisk", "crypted", "sshfs", "file", "hardware"]
+required = true
+[[menus.arguments]]
+name = "slot"
+type = "string"
+[[menus.arguments]]
+name = "parent"
+type = "enum ()"
+[[menus.arguments]]
+name = "mount-point-template"
+type = "string"
+[[menus.arguments]]
+name = "mount-filesystem"
+type = "bool"
+[[menus.arguments]]
+name = "mount-read-only"
+type = "bool"
+[[menus.arguments]]
+name = "compress"
+type = "bool"
+[[menus.arguments]]
+name = "partition-number"
+type = "num"
+[[menus.arguments]]
+name = "partition-offset"
+type = "num"
+[[menus.arguments]]
+name = "partition-size"
+type = "num"
+[[menus.arguments]]
+name = "raid-type"
+type = "enum (0 | 1 | 4 | 5 | 6 | linear | faulty) { 0:0, 1:1, 4:4, 5:5, 6:6 }"
+enum_values = ["0", "1", "4", "5", "6", "linear", "faulty"]
+[[menus.arguments]]
+name = "raid-device-count"
+type = "num"
+[[menus.arguments]]
+name = "raid-max-component-size"
+type = "num"
+[[menus.arguments]]
+name = "raid-chunk-size"
+type = "enum (64K | 128K | 256K | 512K | 1M | 2M | 4M) { 64K:64, 128K:128, 256K:256, 512K:512, 1M:1024, 2..."
+enum_values = ["64K", "128K", "256K", "512K", "1M", "2M", "4M"]
+[[menus.arguments]]
+name = "raid-master"
+type = "enum (none)"
+enum_values = ["none"]
+[[menus.arguments]]
+name = "raid-role"
+type = "num"
+[[menus.arguments]]
+name = "raid-member-failed"
+type = "bool"
+[[menus.arguments]]
+name = "nvme-tcp-export"
+type = "bool"
+[[menus.arguments]]
+name = "nvme-tcp-server-port"
+type = "num"
+[[menus.arguments]]
+name = "nvme-tcp-server-nqn"
+type = "string"
+[[menus.arguments]]
+name = "nvme-tcp-server-allow-host-name"
+type = "string"
+[[menus.arguments]]
+name = "nvme-tcp-server-password"
+type = "string"
+[[menus.arguments]]
+name = "nvme-tcp-address"
+type = "ipAddr"
+[[menus.arguments]]
+name = "nvme-tcp-nqn"
+type = "string"
+[[menus.arguments]]
+name = "nvme-tcp-host-name"
+type = "string"
+[[menus.arguments]]
+name = "nvme-tcp-password"
+type = "string"
+[[menus.arguments]]
+name = "nvme-tcp-port"
+type = "num"
+[[menus.arguments]]
+name = "iscsi-export"
+type = "bool"
+[[menus.arguments]]
+name = "iscsi-server-port"
+type = "num"
+[[menus.arguments]]
+name = "iscsi-server-iqn"
+type = "string"
+[[menus.arguments]]
+name = "iscsi-port"
+type = "num"
+[[menus.arguments]]
+name = "iscsi-address"
+type = "ipAddr"
+[[menus.arguments]]
+name = "iscsi-iqn"
+type = "string"
+[[menus.arguments]]
+name = "nfs-sharing"
+type = "bool"
+[[menus.arguments]]
+name = "nfs-address"
+type = "ipAddr"
+[[menus.arguments]]
+name = "nfs-share"
+type = "string"
+[[menus.arguments]]
+name = "smb-sharing"
+type = "bool"
+[[menus.arguments]]
+name = "smb-server-user"
+type = "enum ()"
+[[menus.arguments]]
+name = "smb-server-password"
+type = "string"
+[[menus.arguments]]
+name = "smb-server-encryption"
+type = "bool"
+[[menus.arguments]]
+name = "smb-address"
+type = "ipAddr"
+[[menus.arguments]]
+name = "smb-share"
+type = "string"
+[[menus.arguments]]
+name = "smb-user"
+type = "string"
+[[menus.arguments]]
+name = "smb-password"
+type = "string"
+[[menus.arguments]]
+name = "smb-encryption"
+type = "bool"
+[[menus.arguments]]
+name = "media-sharing"
+type = "bool"
+[[menus.arguments]]
+name = "media-interface"
+type = "iface_enum { none }"
+[[menus.arguments]]
+name = "tmpfs-max-size"
+type = "num"
+[[menus.arguments]]
+name = "ramdisk-size"
+type = "num"
+[[menus.arguments]]
+name = "crypted-backend"
+type = "enum (none)"
+enum_values = ["none"]
+[[menus.arguments]]
+name = "encryption-key"
+type = "string"
+[[menus.arguments]]
+name = "self-encryption-password"
+type = "string"
+[[menus.arguments]]
+name = "sshfs-address"
+type = "string"
+[[menus.arguments]]
+name = "sshfs-port"
+type = "num"
+[[menus.arguments]]
+name = "sshfs-user"
+type = "string"
+[[menus.arguments]]
+name = "sshfs-password"
+type = "string"
+[[menus.arguments]]
+name = "sshfs-path"
+type = "string"
+[[menus.arguments]]
+name = "swap"
+type = "bool"
+[[menus.arguments]]
+name = "file-path"
+type = "file"
+[[menus.arguments]]
+name = "file-size"
+type = "num"
+[[menus.arguments]]
+name = "file-offset"
+type = "num"
+[[menus.read_only]]
+name = "slot-default"
+type = "string"
+[[menus.read_only]]
+name = "fs-label"
+type = "string"
+[[menus.read_only]]
+name = "fs-uuid"
+type = "string"
+[[menus.read_only]]
+name = "fs"
+type = "enum (fat32 | ext4 | btrfs | xfs | nfs | smb | wipe | wipe-quick | tmpfs | exfat | ntfs | sshfs |..."
+[[menus.read_only]]
+name = "model"
+type = "string"
+[[menus.read_only]]
+name = "serial"
+type = "string"
+[[menus.read_only]]
+name = "fw-version"
+type = "string"
+[[menus.read_only]]
+name = "size"
+type = "num"
+[[menus.read_only]]
+name = "free"
+type = "num"
+[[menus.read_only]]
+name = "total-inodes"
+type = "num"
+[[menus.read_only]]
+name = "free-inodes"
+type = "num"
+[[menus.read_only]]
+name = "use"
+type = "num"
+[[menus.read_only]]
+name = "mount-point"
+type = "string"
+[[menus.read_only]]
+name = "sector-size"
+type = "num"
+[[menus.read_only]]
+name = "interface"
+type = "string"
+[[menus.read_only]]
+name = "interface-speed"
+type = "num"
+[[menus.read_only]]
+name = "raid-member-state"
+type = "string"
+[[menus.read_only]]
+name = "state"
+type = "string"
+[[menus.read_only]]
+name = "last-seen"
+type = "string"
+[[menus.read_only]]
+name = "raid-uuid"
+type = "string"
+[[menus.read_only]]
+name = "nvme-tcp-server-secret"
+type = "string"
+[[menus.read_only]]
+name = "nvme-tcp-secret"
+type = "string"
+[[menus.read_only]]
+name = "sshfs-local-user"
+type = "string"
+[[menus.read_only]]
+name = "io-ops"
+type = "num"
+[[menus.read_only]]
+name = "io-errors"
+type = "num"
+[[menus.read_only]]
+name = "read-ops"
+type = "num"
+[[menus.read_only]]
+name = "read-ops-per-second"
+type = "num"
+[[menus.read_only]]
+name = "read-bytes"
+type = "num"
+[[menus.read_only]]
+name = "read-rate"
+type = "num"
+[[menus.read_only]]
+name = "read-merges"
+type = "num"
+[[menus.read_only]]
+name = "read-time"
+type = "time"
+[[menus.read_only]]
+name = "write-ops"
+type = "num"
+[[menus.read_only]]
+name = "write-ops-per-second"
+type = "num"
+[[menus.read_only]]
+name = "write-bytes"
+type = "num"
+[[menus.read_only]]
+name = "write-rate"
+type = "num"
+[[menus.read_only]]
+name = "write-merges"
+type = "num"
+[[menus.read_only]]
+name = "write-time"
+type = "time"
+[[menus.read_only]]
+name = "in-flight-ops"
+type = "num"
+[[menus.read_only]]
+name = "active-time"
+type = "time"
+[[menus.read_only]]
+name = "wait-time"
+type = "time"
+[[menus.read_only]]
+name = "discard-ops"
+type = "num"
+[[menus.read_only]]
+name = "discard-bytes"
+type = "num"
+[[menus.read_only]]
+name = "discard-merges"
+type = "num"
+[[menus.read_only]]
+name = "discard-time"
+type = "time"
+[[menus.read_only]]
+name = "flush-ops"
+type = "num"
+[[menus.read_only]]
+name = "flush-time"
+type = "time"
+[[menus.read_only]]
+name = "temperature"
+type = "num"
+[[menus.read_only]]
+name = "temperatures"
+type = ""
+[[menus.read_only]]
+name = "critical-warning"
+type = "ubit (spare-space, temperature, reliability-degraded, read-only, volatile-backup-failed)"
+[[menus.read_only]]
+name = "available-spare"
+type = "num"
+[[menus.read_only]]
+name = "available-spare-threshold"
+type = "num"
+[[menus.read_only]]
+name = "percentage-used"
+type = "num"
+[[menus.read_only]]
+name = "host-read-bytes"
+type = "num"
+[[menus.read_only]]
+name = "host-write-bytes"
+type = "num"
+[[menus.read_only]]
+name = "host-read-cmds"
+type = "num"
+[[menus.read_only]]
+name = "host-write-cmds"
+type = "num"
+[[menus.read_only]]
+name = "controller-busy-time"
+type = "time"
+[[menus.read_only]]
+name = "power-cycles"
+type = "num"
+[[menus.read_only]]
+name = "power-on-time"
+type = "time"
+[[menus.read_only]]
+name = "unsafe-shutdowns"
+type = "num"
+[[menus.read_only]]
+name = "unrecovered-integrity-errors"
+type = "num"
+[[menus.read_only]]
+name = "warning-temperature"
+type = "num"
+[[menus.read_only]]
+name = "warning-temperature-time"
+type = "time"
+[[menus.read_only]]
+name = "critical-temperature"
+type = "num"
+[[menus.read_only]]
+name = "critical-temperature-time"
+type = "time"
 
 [[menus]]
 path = "/disk/blink"
@@ -2933,67 +3519,7 @@ type = "string"
 
 [[menus]]
 path = "/disk/copy"
-type = "Directory"
-[[menus.flags]]
-name = "X"
-description = "disabled"
-[[menus.flags]]
-name = "A"
-description = "acquired"
-[[menus.flags]]
-name = "E"
-description = "empty"
-[[menus.flags]]
-name = "B"
-description = "block-device"
-[[menus.flags]]
-name = "M"
-description = "mounted"
-[[menus.flags]]
-name = "F"
-description = "formatting"
-[[menus.flags]]
-name = "S"
-description = "swap-enabled"
-[[menus.flags]]
-name = "f"
-description = "raid-member-failed"
-[[menus.flags]]
-name = "r"
-description = "raid-member"
-[[menus.flags]]
-name = "c"
-description = "encrypted"
-[[menus.flags]]
-name = "g"
-description = "guid-partition-table"
-[[menus.flags]]
-name = "p"
-description = "partition"
-[[menus.flags]]
-name = "t"
-description = "nvme-tcp-export"
-[[menus.flags]]
-name = "i"
-description = "iscsi-export"
-[[menus.flags]]
-name = "s"
-description = "smb-sharing"
-[[menus.flags]]
-name = "n"
-description = "nfs-sharing"
-[[menus.flags]]
-name = "m"
-description = "media-sharing"
-[[menus.flags]]
-name = "L"
-description = "self-encrypted-and-locked"
-[[menus.flags]]
-name = "O"
-description = "self-encryption-enabled"
-[[menus.flags]]
-name = "o"
-description = "self-encryption-supported"
+type = "Command"
 [[menus.arguments]]
 name = "src"
 type = "enum"
@@ -3009,393 +3535,9 @@ type = "num"
 [[menus.arguments]]
 name = "size"
 type = "num"
-[[menus.arguments]]
-name = "type"
-type = "enum (raid | nvme-tcp | iscsi | nfs | smb | partition | tmpfs | ramdisk | crypted | sshfs | file ..."
-enum_values = ["raid", "nvme-tcp", "iscsi", "nfs", "smb", "partition", "tmpfs", "ramdisk", "crypted", "sshfs", "file", "hardware"]
-required = true
-[[menus.arguments]]
-name = "slot"
-type = "string"
-[[menus.arguments]]
-name = "parent"
-type = "enum ()"
-[[menus.arguments]]
-name = "mount-point-template"
-type = "string"
-[[menus.arguments]]
-name = "mount-filesystem"
-type = "bool"
-[[menus.arguments]]
-name = "mount-read-only"
-type = "bool"
-[[menus.arguments]]
-name = "compress"
-type = "bool"
-[[menus.arguments]]
-name = "partition-number"
-type = "num"
-[[menus.arguments]]
-name = "partition-offset"
-type = "num"
-[[menus.arguments]]
-name = "partition-size"
-type = "num"
-[[menus.arguments]]
-name = "raid-type"
-type = "enum (0 | 1 | 4 | 5 | 6 | linear | faulty) { 0:0, 1:1, 4:4, 5:5, 6:6 }"
-enum_values = ["0", "1", "4", "5", "6", "linear", "faulty"]
-[[menus.arguments]]
-name = "raid-device-count"
-type = "num"
-[[menus.arguments]]
-name = "raid-max-component-size"
-type = "num"
-[[menus.arguments]]
-name = "raid-chunk-size"
-type = "enum (64K | 128K | 256K | 512K | 1M | 2M | 4M) { 64K:64, 128K:128, 256K:256, 512K:512, 1M:1024, 2..."
-enum_values = ["64K", "128K", "256K", "512K", "1M", "2M", "4M"]
-[[menus.arguments]]
-name = "raid-master"
-type = "enum (none)"
-enum_values = ["none"]
-[[menus.arguments]]
-name = "raid-role"
-type = "num"
-[[menus.arguments]]
-name = "raid-member-failed"
-type = "bool"
-[[menus.arguments]]
-name = "nvme-tcp-export"
-type = "bool"
-[[menus.arguments]]
-name = "nvme-tcp-server-port"
-type = "num"
-[[menus.arguments]]
-name = "nvme-tcp-server-nqn"
-type = "string"
-[[menus.arguments]]
-name = "nvme-tcp-server-allow-host-name"
-type = "string"
-[[menus.arguments]]
-name = "nvme-tcp-server-password"
-type = "string"
-[[menus.arguments]]
-name = "nvme-tcp-address"
-type = "ipAddr"
-[[menus.arguments]]
-name = "nvme-tcp-nqn"
-type = "string"
-[[menus.arguments]]
-name = "nvme-tcp-host-name"
-type = "string"
-[[menus.arguments]]
-name = "nvme-tcp-password"
-type = "string"
-[[menus.arguments]]
-name = "nvme-tcp-port"
-type = "num"
-[[menus.arguments]]
-name = "iscsi-export"
-type = "bool"
-[[menus.arguments]]
-name = "iscsi-server-port"
-type = "num"
-[[menus.arguments]]
-name = "iscsi-server-iqn"
-type = "string"
-[[menus.arguments]]
-name = "iscsi-port"
-type = "num"
-[[menus.arguments]]
-name = "iscsi-address"
-type = "ipAddr"
-[[menus.arguments]]
-name = "iscsi-iqn"
-type = "string"
-[[menus.arguments]]
-name = "nfs-sharing"
-type = "bool"
-[[menus.arguments]]
-name = "nfs-address"
-type = "ipAddr"
-[[menus.arguments]]
-name = "nfs-share"
-type = "string"
-[[menus.arguments]]
-name = "smb-sharing"
-type = "bool"
-[[menus.arguments]]
-name = "smb-server-user"
-type = "enum ()"
-[[menus.arguments]]
-name = "smb-server-password"
-type = "string"
-[[menus.arguments]]
-name = "smb-server-encryption"
-type = "bool"
-[[menus.arguments]]
-name = "smb-address"
-type = "ipAddr"
-[[menus.arguments]]
-name = "smb-share"
-type = "string"
-[[menus.arguments]]
-name = "smb-user"
-type = "string"
-[[menus.arguments]]
-name = "smb-password"
-type = "string"
-[[menus.arguments]]
-name = "smb-encryption"
-type = "bool"
-[[menus.arguments]]
-name = "media-sharing"
-type = "bool"
-[[menus.arguments]]
-name = "media-interface"
-type = "iface_enum { none }"
-[[menus.arguments]]
-name = "tmpfs-max-size"
-type = "num"
-[[menus.arguments]]
-name = "ramdisk-size"
-type = "num"
-[[menus.arguments]]
-name = "crypted-backend"
-type = "enum (none)"
-enum_values = ["none"]
-[[menus.arguments]]
-name = "encryption-key"
-type = "string"
-[[menus.arguments]]
-name = "self-encryption-password"
-type = "string"
-[[menus.arguments]]
-name = "sshfs-address"
-type = "string"
-[[menus.arguments]]
-name = "sshfs-port"
-type = "num"
-[[menus.arguments]]
-name = "sshfs-user"
-type = "string"
-[[menus.arguments]]
-name = "sshfs-password"
-type = "string"
-[[menus.arguments]]
-name = "sshfs-path"
-type = "string"
-[[menus.arguments]]
-name = "swap"
-type = "bool"
-[[menus.arguments]]
-name = "file-path"
-type = "file"
-[[menus.arguments]]
-name = "file-size"
-type = "num"
-[[menus.arguments]]
-name = "file-offset"
-type = "num"
 [[menus.read_only]]
 name = "status"
 type = "string"
-[[menus.read_only]]
-name = "slot-default"
-type = "string"
-[[menus.read_only]]
-name = "fs-label"
-type = "string"
-[[menus.read_only]]
-name = "fs-uuid"
-type = "string"
-[[menus.read_only]]
-name = "fs"
-type = "enum (fat32 | ext4 | btrfs | xfs | nfs | smb | wipe | wipe-quick | tmpfs | exfat | ntfs | sshfs |..."
-[[menus.read_only]]
-name = "model"
-type = "string"
-[[menus.read_only]]
-name = "serial"
-type = "string"
-[[menus.read_only]]
-name = "fw-version"
-type = "string"
-[[menus.read_only]]
-name = "size"
-type = "num"
-[[menus.read_only]]
-name = "free"
-type = "num"
-[[menus.read_only]]
-name = "total-inodes"
-type = "num"
-[[menus.read_only]]
-name = "free-inodes"
-type = "num"
-[[menus.read_only]]
-name = "use"
-type = "num"
-[[menus.read_only]]
-name = "mount-point"
-type = "string"
-[[menus.read_only]]
-name = "sector-size"
-type = "num"
-[[menus.read_only]]
-name = "interface"
-type = "string"
-[[menus.read_only]]
-name = "interface-speed"
-type = "num"
-[[menus.read_only]]
-name = "raid-member-state"
-type = "string"
-[[menus.read_only]]
-name = "state"
-type = "string"
-[[menus.read_only]]
-name = "last-seen"
-type = "string"
-[[menus.read_only]]
-name = "raid-uuid"
-type = "string"
-[[menus.read_only]]
-name = "nvme-tcp-server-secret"
-type = "string"
-[[menus.read_only]]
-name = "nvme-tcp-secret"
-type = "string"
-[[menus.read_only]]
-name = "sshfs-local-user"
-type = "string"
-[[menus.read_only]]
-name = "io-ops"
-type = "num"
-[[menus.read_only]]
-name = "io-errors"
-type = "num"
-[[menus.read_only]]
-name = "read-ops"
-type = "num"
-[[menus.read_only]]
-name = "read-ops-per-second"
-type = "num"
-[[menus.read_only]]
-name = "read-bytes"
-type = "num"
-[[menus.read_only]]
-name = "read-rate"
-type = "num"
-[[menus.read_only]]
-name = "read-merges"
-type = "num"
-[[menus.read_only]]
-name = "read-time"
-type = "time"
-[[menus.read_only]]
-name = "write-ops"
-type = "num"
-[[menus.read_only]]
-name = "write-ops-per-second"
-type = "num"
-[[menus.read_only]]
-name = "write-bytes"
-type = "num"
-[[menus.read_only]]
-name = "write-rate"
-type = "num"
-[[menus.read_only]]
-name = "write-merges"
-type = "num"
-[[menus.read_only]]
-name = "write-time"
-type = "time"
-[[menus.read_only]]
-name = "in-flight-ops"
-type = "num"
-[[menus.read_only]]
-name = "active-time"
-type = "time"
-[[menus.read_only]]
-name = "wait-time"
-type = "time"
-[[menus.read_only]]
-name = "discard-ops"
-type = "num"
-[[menus.read_only]]
-name = "discard-bytes"
-type = "num"
-[[menus.read_only]]
-name = "discard-merges"
-type = "num"
-[[menus.read_only]]
-name = "discard-time"
-type = "time"
-[[menus.read_only]]
-name = "flush-ops"
-type = "num"
-[[menus.read_only]]
-name = "flush-time"
-type = "time"
-[[menus.read_only]]
-name = "temperature"
-type = "num"
-[[menus.read_only]]
-name = "temperatures"
-type = ""
-[[menus.read_only]]
-name = "critical-warning"
-type = "ubit (spare-space, temperature, reliability-degraded, read-only, volatile-backup-failed)"
-[[menus.read_only]]
-name = "available-spare"
-type = "num"
-[[menus.read_only]]
-name = "available-spare-threshold"
-type = "num"
-[[menus.read_only]]
-name = "percentage-used"
-type = "num"
-[[menus.read_only]]
-name = "host-read-bytes"
-type = "num"
-[[menus.read_only]]
-name = "host-write-bytes"
-type = "num"
-[[menus.read_only]]
-name = "host-read-cmds"
-type = "num"
-[[menus.read_only]]
-name = "host-write-cmds"
-type = "num"
-[[menus.read_only]]
-name = "controller-busy-time"
-type = "time"
-[[menus.read_only]]
-name = "power-cycles"
-type = "num"
-[[menus.read_only]]
-name = "power-on-time"
-type = "time"
-[[menus.read_only]]
-name = "unsafe-shutdowns"
-type = "num"
-[[menus.read_only]]
-name = "unrecovered-integrity-errors"
-type = "num"
-[[menus.read_only]]
-name = "warning-temperature"
-type = "num"
-[[menus.read_only]]
-name = "warning-temperature-time"
-type = "time"
-[[menus.read_only]]
-name = "critical-temperature"
-type = "num"
-[[menus.read_only]]
-name = "critical-temperature-time"
-type = "time"
 
 [[menus]]
 path = "/disk/eject"
@@ -3635,7 +3777,16 @@ type = "Command"
 
 [[menus]]
 path = "/dude"
-type = "Directory"
+type = "Settings Directory"
+[[menus.arguments]]
+name = "enabled"
+type = "bool"
+[[menus.arguments]]
+name = "data-directory"
+type = "file"
+[[menus.read_only]]
+name = "status"
+type = "string"
 
 [[menus]]
 path = "/dude/agent"
@@ -3647,20 +3798,11 @@ required = true
 
 [[menus]]
 path = "/dude/device"
-type = "Settings Directory"
+type = "Directory"
 [[menus.arguments]]
 name = "name"
 type = "string"
 required = true
-[[menus.arguments]]
-name = "enabled"
-type = "bool"
-[[menus.arguments]]
-name = "data-directory"
-type = "file"
-[[menus.read_only]]
-name = "status"
-type = "string"
 
 [[menus]]
 path = "/dude/device-type"
@@ -4684,25 +4826,21 @@ type = "Settings Directory"
 
 [[menus]]
 path = "/dude/vacuum-db"
-type = "Directory"
+type = "Command"
 [[menus.read_only]]
 name = "status"
 type = "string"
 
 [[menus]]
-path = "/file"
+path = "/environment"
 type = "Directory"
 
 [[menus]]
-path = "/file/copy"
+path = "/file"
 type = "Directory"
 [[menus.flags]]
 name = "S"
 description = ""
-[[menus.arguments]]
-name = "name"
-type = "file"
-description = "destination file name"
 [[menus.arguments]]
 name = "name"
 type = "file"
@@ -4736,6 +4874,14 @@ type = "string"
 [[menus.read_only]]
 name = "url"
 type = "string"
+
+[[menus]]
+path = "/file/copy"
+type = "Command"
+[[menus.arguments]]
+name = "name"
+type = "file"
+description = "destination file name"
 
 [[menus]]
 path = "/file/head"
@@ -4831,6 +4977,13 @@ unset = true
 name = "numbered"
 type = "switch"
 description = "show line numbers"
+[[menus.read_only]]
+name = "lines"
+type = ""
+
+[[menus]]
+path = "/import"
+type = "Command"
 [[menus.arguments]]
 name = "file-name"
 type = "file"
@@ -4846,13 +4999,109 @@ enum_values = ["no", "yes", "progress"]
 name = "dry-run"
 type = "switch"
 description = "simulate import without making any configuration changes"
-[[menus.read_only]]
-name = "lines"
-type = ""
 
 [[menus]]
 path = "/interface"
 type = "Directory"
+[[menus.flags]]
+name = "D"
+description = ""
+[[menus.flags]]
+name = "X"
+description = ""
+[[menus.flags]]
+name = "I"
+description = ""
+[[menus.flags]]
+name = "R"
+description = ""
+[[menus.flags]]
+name = "S"
+description = ""
+[[menus.flags]]
+name = "P"
+description = ""
+[[menus.flags]]
+name = "w"
+description = ""
+[[menus.arguments]]
+name = "name"
+type = "string"
+[[menus.arguments]]
+name = "mtu"
+type = "num"
+[[menus.arguments]]
+name = "l2mtu"
+type = "num"
+[[menus.read_only]]
+name = "default-name"
+type = "string"
+[[menus.read_only]]
+name = "type"
+type = "string"
+[[menus.read_only]]
+name = "actual-mtu"
+type = "num"
+[[menus.read_only]]
+name = "max-l2mtu"
+type = "num"
+[[menus.read_only]]
+name = "vrf"
+type = "enum"
+[[menus.read_only]]
+name = "mac-address"
+type = "macAddr"
+[[menus.read_only]]
+name = "last-link-down-time"
+type = "date"
+[[menus.read_only]]
+name = "last-link-up-time"
+type = "date"
+[[menus.read_only]]
+name = "link-downs"
+type = "num"
+[[menus.read_only]]
+name = "rx-byte"
+type = "num"
+[[menus.read_only]]
+name = "tx-byte"
+type = "num"
+[[menus.read_only]]
+name = "rx-packet"
+type = "num"
+[[menus.read_only]]
+name = "tx-packet"
+type = "num"
+[[menus.read_only]]
+name = "rx-drop"
+type = "num"
+[[menus.read_only]]
+name = "tx-drop"
+type = "num"
+[[menus.read_only]]
+name = "tx-queue-drop"
+type = "num"
+[[menus.read_only]]
+name = "rx-error"
+type = "num"
+[[menus.read_only]]
+name = "tx-error"
+type = "num"
+[[menus.read_only]]
+name = "fp-rx-byte"
+type = "num"
+[[menus.read_only]]
+name = "fp-tx-byte"
+type = "num"
+[[menus.read_only]]
+name = "fp-rx-packet"
+type = "num"
+[[menus.read_only]]
+name = "fp-tx-packet"
+type = "num"
+[[menus.read_only]]
+name = "fp-rps-drop"
+type = "num"
 
 [[menus]]
 path = "/interface/6to4"
@@ -11331,27 +11580,6 @@ description = "disabled"
 [[menus.flags]]
 name = "R"
 description = "running"
-[[menus.flags]]
-name = "D"
-description = ""
-[[menus.flags]]
-name = "X"
-description = ""
-[[menus.flags]]
-name = "I"
-description = ""
-[[menus.flags]]
-name = "R"
-description = ""
-[[menus.flags]]
-name = "S"
-description = ""
-[[menus.flags]]
-name = "P"
-description = ""
-[[menus.flags]]
-name = "w"
-description = ""
 [[menus.arguments]]
 name = "name"
 type = "string"
@@ -11387,90 +11615,12 @@ type = "bool"
 name = "ipsec-secret"
 type = "string"
 description = "When a secret is specified, the router adds a dynamic IPsec peer to remote-address with a pre-shared key and policy (by default phase2 uses sha1/aes128cbc)."
-[[menus.arguments]]
-name = "name"
-type = "string"
-[[menus.arguments]]
-name = "mtu"
-type = "num"
-[[menus.arguments]]
-name = "l2mtu"
-type = "num"
 [[menus.read_only]]
 name = "actual-mtu"
 type = "num"
 [[menus.read_only]]
 name = "current-remote-address"
 type = "ip6Addr"
-[[menus.read_only]]
-name = "default-name"
-type = "string"
-[[menus.read_only]]
-name = "type"
-type = "string"
-[[menus.read_only]]
-name = "actual-mtu"
-type = "num"
-[[menus.read_only]]
-name = "max-l2mtu"
-type = "num"
-[[menus.read_only]]
-name = "vrf"
-type = "enum"
-[[menus.read_only]]
-name = "mac-address"
-type = "macAddr"
-[[menus.read_only]]
-name = "last-link-down-time"
-type = "date"
-[[menus.read_only]]
-name = "last-link-up-time"
-type = "date"
-[[menus.read_only]]
-name = "link-downs"
-type = "num"
-[[menus.read_only]]
-name = "rx-byte"
-type = "num"
-[[menus.read_only]]
-name = "tx-byte"
-type = "num"
-[[menus.read_only]]
-name = "rx-packet"
-type = "num"
-[[menus.read_only]]
-name = "tx-packet"
-type = "num"
-[[menus.read_only]]
-name = "rx-drop"
-type = "num"
-[[menus.read_only]]
-name = "tx-drop"
-type = "num"
-[[menus.read_only]]
-name = "tx-queue-drop"
-type = "num"
-[[menus.read_only]]
-name = "rx-error"
-type = "num"
-[[menus.read_only]]
-name = "tx-error"
-type = "num"
-[[menus.read_only]]
-name = "fp-rx-byte"
-type = "num"
-[[menus.read_only]]
-name = "fp-tx-byte"
-type = "num"
-[[menus.read_only]]
-name = "fp-rx-packet"
-type = "num"
-[[menus.read_only]]
-name = "fp-tx-packet"
-type = "num"
-[[menus.read_only]]
-name = "fp-rps-drop"
-type = "num"
 
 [[menus]]
 path = "/interface/ipip"
@@ -30265,7 +30415,31 @@ description = "Total number of bytes that have been processed through IPv6 fastt
 
 [[menus]]
 path = "/lcd"
-type = "Directory"
+type = "Settings Directory"
+[[menus.arguments]]
+name = "enabled"
+type = ""
+[[menus.arguments]]
+name = "touch-screen"
+type = ""
+[[menus.arguments]]
+name = "backlight-timeout"
+type = ""
+[[menus.arguments]]
+name = "read-only-mode"
+type = ""
+[[menus.arguments]]
+name = "time-interval"
+type = ""
+[[menus.arguments]]
+name = "default-screen"
+type = ""
+[[menus.arguments]]
+name = "color-scheme"
+type = ""
+[[menus.arguments]]
+name = "flip-screen"
+type = ""
 
 [[menus]]
 path = "/lcd/backlight"
@@ -30315,36 +30489,12 @@ type = "Command"
 
 [[menus]]
 path = "/lcd/interface/pages"
-type = "Settings Directory"
+type = "Directory"
 [[menus.flags]]
 name = "*"
 description = "default"
 [[menus.arguments]]
 name = "interfaces"
-type = ""
-[[menus.arguments]]
-name = "enabled"
-type = ""
-[[menus.arguments]]
-name = "touch-screen"
-type = ""
-[[menus.arguments]]
-name = "backlight-timeout"
-type = ""
-[[menus.arguments]]
-name = "read-only-mode"
-type = ""
-[[menus.arguments]]
-name = "time-interval"
-type = ""
-[[menus.arguments]]
-name = "default-screen"
-type = ""
-[[menus.arguments]]
-name = "color-scheme"
-type = ""
-[[menus.arguments]]
-name = "flip-screen"
 type = ""
 
 [[menus]]
@@ -30387,10 +30537,14 @@ enum_values = ["main-menu", "interfaces", "stats", "stat-slideshow", "informativ
 
 [[menus]]
 path = "/lcd/take-screenshot"
-type = "Directory"
+type = "Command"
 [[menus.arguments]]
 name = "file-name"
 type = "string"
+
+[[menus]]
+path = "/log"
+type = "Directory"
 [[menus.read_only]]
 name = "buffer"
 type = "enum"
@@ -31127,6 +31281,54 @@ type = "Command"
 [[menus]]
 path = "/openflow"
 type = "Directory"
+[[menus.flags]]
+name = "X"
+description = ""
+[[menus.arguments]]
+name = "name"
+type = "string"
+description = "Reference name of the entry"
+required = true
+[[menus.arguments]]
+name = "datapath-id"
+type = ""
+[[menus.arguments]]
+name = "version"
+type = "enum (default | 1 | 1.3)"
+enum_values = ["default", "1", "1.3"]
+description = "Version of the OpenFlow standard to be used."
+[[menus.arguments]]
+name = "passive-port"
+type = "num"
+description = "The port on which the OpenFlow agent listens for connections from the controller."
+[[menus.arguments]]
+name = "controllers"
+type = ""
+[[menus.arguments]]
+name = "certificate"
+type = "enum (none)"
+enum_values = ["none"]
+description = "[Certificate from certificate store](../../authentication-authorization-accounting/certificates). Used together with the `verify-peer` parameter."
+unset = true
+[[menus.arguments]]
+name = "verify-peer"
+type = "enum (required | none | if-cert-present)"
+enum_values = ["required", "none", "if-cert-present"]
+description = "Verify peer's identity against the router's [certificate store](../../authentication-authorization-accounting/certificates)."
+unset = true
+[[menus.arguments]]
+name = "isolate-controllers"
+type = "bool"
+description = "Whether to isolate the configured controllers from each other."
+unset = true
+[[menus.read_only]]
+name = "openflow-fast-path-packets"
+type = "num"
+description = "Number of packets sent to fast path."
+[[menus.read_only]]
+name = "openflow-fast-path-bytes"
+type = "num"
+description = "Number of bytes set to fast path."
 
 [[menus]]
 path = "/openflow/flow"
@@ -31224,46 +31426,6 @@ type = "Directory"
 [[menus.flags]]
 name = "I"
 description = ""
-[[menus.flags]]
-name = "X"
-description = ""
-[[menus.arguments]]
-name = "name"
-type = "string"
-description = "Reference name of the entry"
-required = true
-[[menus.arguments]]
-name = "datapath-id"
-type = ""
-[[menus.arguments]]
-name = "version"
-type = "enum (default | 1 | 1.3)"
-enum_values = ["default", "1", "1.3"]
-description = "Version of the OpenFlow standard to be used."
-[[menus.arguments]]
-name = "passive-port"
-type = "num"
-description = "The port on which the OpenFlow agent listens for connections from the controller."
-[[menus.arguments]]
-name = "controllers"
-type = ""
-[[menus.arguments]]
-name = "certificate"
-type = "enum (none)"
-enum_values = ["none"]
-description = "[Certificate from certificate store](../../authentication-authorization-accounting/certificates). Used together with the `verify-peer` parameter."
-unset = true
-[[menus.arguments]]
-name = "verify-peer"
-type = "enum (required | none | if-cert-present)"
-enum_values = ["required", "none", "if-cert-present"]
-description = "Verify peer's identity against the router's [certificate store](../../authentication-authorization-accounting/certificates)."
-unset = true
-[[menus.arguments]]
-name = "isolate-controllers"
-type = "bool"
-description = "Whether to isolate the configured controllers from each other."
-unset = true
 [[menus.read_only]]
 name = "switch"
 type = "enum"
@@ -31292,14 +31454,6 @@ description = "Number of packets processed by the meter."
 name = "duration"
 type = "time"
 description = "Time since the meter was installed."
-[[menus.read_only]]
-name = "openflow-fast-path-packets"
-type = "num"
-description = "Number of packets sent to fast path."
-[[menus.read_only]]
-name = "openflow-fast-path-bytes"
-type = "num"
-description = "Number of bytes set to fast path."
 
 [[menus]]
 path = "/openflow/port"
@@ -31347,14 +31501,6 @@ description = "Number of packets received on the interface."
 [[menus]]
 path = "/partitions"
 type = "Directory"
-
-[[menus]]
-path = "/partitions/activate"
-type = "Command"
-
-[[menus]]
-path = "/partitions/copy-to"
-type = "Directory"
 [[menus.flags]]
 name = "R"
 description = "running"
@@ -31362,14 +31508,22 @@ description = "running"
 name = "fallback-to"
 type = ""
 [[menus.read_only]]
-name = "status"
-type = "string"
-[[menus.read_only]]
 name = "version"
 type = ""
 [[menus.read_only]]
 name = "size"
 type = ""
+
+[[menus]]
+path = "/partitions/activate"
+type = "Command"
+
+[[menus]]
+path = "/partitions/copy-to"
+type = "Command"
+[[menus.read_only]]
+name = "status"
+type = "string"
 
 [[menus]]
 path = "/partitions/repartition"
@@ -31387,10 +31541,14 @@ type = "string"
 
 [[menus]]
 path = "/partitions/save-config-to"
-type = "Directory"
-[[menus.flags]]
-name = "I"
-description = "inactive"
+type = "Command"
+[[menus.read_only]]
+name = "status"
+type = "string"
+
+[[menus]]
+path = "/password"
+type = "Command"
 [[menus.arguments]]
 name = "old-password"
 type = "string"
@@ -31400,6 +31558,13 @@ type = "string"
 [[menus.arguments]]
 name = "confirm-new-password"
 type = "string"
+
+[[menus]]
+path = "/port"
+type = "Directory"
+[[menus.flags]]
+name = "I"
+description = "inactive"
 [[menus.arguments]]
 name = "name"
 type = "string"
@@ -31432,9 +31597,6 @@ name = "dtr"
 type = "enum (off | on)"
 enum_values = ["off", "on"]
 [[menus.read_only]]
-name = "status"
-type = "string"
-[[menus.read_only]]
 name = "used-by"
 type = "string"
 [[menus.read_only]]
@@ -31446,10 +31608,6 @@ type = "num"
 [[menus.read_only]]
 name = "line-state"
 type = ""
-
-[[menus]]
-path = "/port"
-type = "Directory"
 
 [[menus]]
 path = "/port/remote-access"
@@ -31991,7 +32149,7 @@ type = "Command"
 
 [[menus]]
 path = "/queue/type"
-type = "Command"
+type = "Directory"
 [[menus.flags]]
 name = "*"
 description = "default"
@@ -32155,44 +32313,11 @@ name = "cake-memlimit"
 type = "num"
 
 [[menus]]
+path = "/quit"
+type = "Command"
+
+[[menus]]
 path = "/radius"
-type = "Directory"
-
-[[menus]]
-path = "/radius/incoming"
-type = "Settings Directory"
-[[menus.arguments]]
-name = "accept"
-type = "bool"
-[[menus.arguments]]
-name = "port"
-type = "num"
-[[menus.arguments]]
-name = "vrf"
-type = "enum"
-
-[[menus]]
-path = "/radius/incoming/monitor"
-type = "Command"
-[[menus.read_only]]
-name = "requests"
-type = "num"
-[[menus.read_only]]
-name = "bad-requests"
-type = "num"
-[[menus.read_only]]
-name = "acks"
-type = "num"
-[[menus.read_only]]
-name = "naks"
-type = "num"
-
-[[menus]]
-path = "/radius/incoming/reset-counters"
-type = "Command"
-
-[[menus]]
-path = "/radius/monitor"
 type = "Directory"
 [[menus.flags]]
 name = "X"
@@ -32247,6 +32372,46 @@ name = "require-message-auth"
 type = "enum (no | yes-for-request-resp)"
 enum_values = ["no", "yes-for-request-resp"]
 [[menus.read_only]]
+name = "status"
+type = "string"
+
+[[menus]]
+path = "/radius/incoming"
+type = "Settings Directory"
+[[menus.arguments]]
+name = "accept"
+type = "bool"
+[[menus.arguments]]
+name = "port"
+type = "num"
+[[menus.arguments]]
+name = "vrf"
+type = "enum"
+
+[[menus]]
+path = "/radius/incoming/monitor"
+type = "Command"
+[[menus.read_only]]
+name = "requests"
+type = "num"
+[[menus.read_only]]
+name = "bad-requests"
+type = "num"
+[[menus.read_only]]
+name = "acks"
+type = "num"
+[[menus.read_only]]
+name = "naks"
+type = "num"
+
+[[menus]]
+path = "/radius/incoming/reset-counters"
+type = "Command"
+
+[[menus]]
+path = "/radius/monitor"
+type = "Command"
+[[menus.read_only]]
 name = "pending"
 type = "num"
 [[menus.read_only]]
@@ -32270,12 +32435,13 @@ type = "num"
 [[menus.read_only]]
 name = "last-request-rtt"
 type = "time"
-[[menus.read_only]]
-name = "status"
-type = "string"
 
 [[menus]]
 path = "/radius/reset-counters"
+type = "Command"
+
+[[menus]]
+path = "/redo"
 type = "Command"
 
 [[menus]]
@@ -36496,7 +36662,7 @@ type = "time"
 
 [[menus]]
 path = "/routing/table"
-type = "Settings Directory"
+type = "Directory"
 [[menus.flags]]
 name = "D"
 description = "dynamic"
@@ -36518,6 +36684,10 @@ name = "fib"
 type = "switch"
 description = "Flag indicating whether routes in this table will be installed in the [FIB](../../user-guides/routing-and-networking-protocols/routing-decision.md#forwarding-information-base)."
 unset = true
+
+[[menus]]
+path = "/safe-mode"
+type = "Settings Directory"
 [[menus.read_only]]
 name = "enabled"
 type = "bool"
@@ -36537,7 +36707,44 @@ description = "safe mode session owner"
 
 [[menus]]
 path = "/snmp"
-type = "Directory"
+type = "Settings Directory"
+[[menus.arguments]]
+name = "enabled"
+type = "bool"
+[[menus.arguments]]
+name = "contact"
+type = "string"
+[[menus.arguments]]
+name = "location"
+type = "string"
+[[menus.arguments]]
+name = "engine-id-suffix"
+type = "string"
+[[menus.arguments]]
+name = "src-address"
+type = ""
+[[menus.arguments]]
+name = "trap-target"
+type = ""
+[[menus.arguments]]
+name = "trap-community"
+type = "enum"
+[[menus.arguments]]
+name = "trap-version"
+type = "enum (1 | 2 | 3) { 1:0, 2:1, 3:3 }"
+enum_values = ["1", "2", "3"]
+[[menus.arguments]]
+name = "trap-generators"
+type = ""
+[[menus.arguments]]
+name = "trap-interfaces"
+type = ""
+[[menus.arguments]]
+name = "vrf"
+type = "enum"
+[[menus.read_only]]
+name = "engine-id"
+type = "string"
 
 [[menus]]
 path = "/snmp/community"
@@ -36584,10 +36791,7 @@ type = "string"
 
 [[menus]]
 path = "/snmp/send-trap"
-type = "Directory"
-[[menus.flags]]
-name = "X"
-description = "disabled"
+type = "Command"
 [[menus.arguments]]
 name = "oid"
 type = "string"
@@ -36598,40 +36802,13 @@ enum_values = ["integer", "string", "nullobj", "obj-id", "ip-address", "counter3
 [[menus.arguments]]
 name = "value"
 type = "string"
-[[menus.arguments]]
-name = "enabled"
-type = "bool"
-[[menus.arguments]]
-name = "contact"
-type = "string"
-[[menus.arguments]]
-name = "location"
-type = "string"
-[[menus.arguments]]
-name = "engine-id-suffix"
-type = "string"
-[[menus.arguments]]
-name = "src-address"
-type = ""
-[[menus.arguments]]
-name = "trap-target"
-type = ""
-[[menus.arguments]]
-name = "trap-community"
-type = "enum"
-[[menus.arguments]]
-name = "trap-version"
-type = "enum (1 | 2 | 3) { 1:0, 2:1, 3:3 }"
-enum_values = ["1", "2", "3"]
-[[menus.arguments]]
-name = "trap-generators"
-type = ""
-[[menus.arguments]]
-name = "trap-interfaces"
-type = ""
-[[menus.arguments]]
-name = "vrf"
-type = "enum"
+
+[[menus]]
+path = "/special-login"
+type = "Directory"
+[[menus.flags]]
+name = "X"
+description = "disabled"
 [[menus.arguments]]
 name = "user"
 type = "enum"
@@ -36641,9 +36818,6 @@ type = "enum"
 [[menus.arguments]]
 name = "channel"
 type = "num"
-[[menus.read_only]]
-name = "engine-id"
-type = "string"
 
 [[menus]]
 path = "/system"
@@ -39106,6 +39280,39 @@ type = ""
 [[menus]]
 path = "/task"
 type = "Directory"
+[[menus.flags]]
+name = "T"
+description = "terminated"
+[[menus.flags]]
+name = "C"
+description = "current"
+[[menus.flags]]
+name = "A"
+description = "autosave"
+[[menus.read_only]]
+name = "term-pid"
+type = "num"
+[[menus.read_only]]
+name = "task-id"
+type = "num"
+[[menus.read_only]]
+name = "user"
+type = "string"
+[[menus.read_only]]
+name = "name"
+type = "string"
+[[menus.read_only]]
+name = "source"
+type = "string"
+[[menus.read_only]]
+name = "file-name"
+type = "string"
+[[menus.read_only]]
+name = "save-interval"
+type = "time"
+[[menus.read_only]]
+name = "append"
+type = "switch"
 
 [[menus]]
 path = "/task/add"
@@ -39149,40 +39356,7 @@ description = "maximum save file size"
 
 [[menus]]
 path = "/task/next"
-type = "Directory"
-[[menus.flags]]
-name = "T"
-description = "terminated"
-[[menus.flags]]
-name = "C"
-description = "current"
-[[menus.flags]]
-name = "A"
-description = "autosave"
-[[menus.read_only]]
-name = "term-pid"
-type = "num"
-[[menus.read_only]]
-name = "task-id"
-type = "num"
-[[menus.read_only]]
-name = "user"
-type = "string"
-[[menus.read_only]]
-name = "name"
-type = "string"
-[[menus.read_only]]
-name = "source"
-type = "string"
-[[menus.read_only]]
-name = "file-name"
-type = "string"
-[[menus.read_only]]
-name = "save-interval"
-type = "time"
-[[menus.read_only]]
-name = "append"
-type = "switch"
+type = "Command"
 
 [[menus]]
 path = "/task/terminate"
@@ -42010,11 +42184,7 @@ description = "MAC address of the target computer"
 
 [[menus]]
 path = "/tr069-client"
-type = "Directory"
-
-[[menus]]
-path = "/tr069-client/reset-tr069-config"
-type = "Command"
+type = "Settings Directory"
 [[menus.arguments]]
 name = "enabled"
 type = "enum (yes | no)"
@@ -42065,12 +42235,77 @@ name = "retry-count"
 type = "num"
 
 [[menus]]
+path = "/tr069-client/reset-tr069-config"
+type = "Command"
+
+[[menus]]
+path = "/undo"
+type = "Command"
+
+[[menus]]
 path = "/user"
 type = "Directory"
+[[menus.flags]]
+name = "E"
+description = "expired"
+[[menus.flags]]
+name = "X"
+description = "disabled"
+[[menus.arguments]]
+name = "name"
+type = "string"
+required = true
+[[menus.arguments]]
+name = "group"
+type = "enum"
+required = true
+[[menus.arguments]]
+name = "password"
+type = "string"
+required = true
+[[menus.arguments]]
+name = "inactivity-timeout"
+type = "time"
+description = "period after which inactivity policy is applied"
+[[menus.arguments]]
+name = "inactivity-policy"
+type = "enum (none | logout | lockscreen)"
+enum_values = ["none", "logout", "lockscreen"]
+description = "specify action taken after inactivity timeout"
+[[menus.arguments]]
+name = "address"
+type = ""
+[[menus.read_only]]
+name = "last-logged-in"
+type = "date"
 
 [[menus]]
 path = "/user-manager"
-type = "Directory"
+type = "Settings Directory"
+[[menus.arguments]]
+name = "enabled"
+type = "bool"
+[[menus.arguments]]
+name = "authentication-port"
+type = "num"
+[[menus.arguments]]
+name = "accounting-port"
+type = "num"
+[[menus.arguments]]
+name = "certificate"
+type = "enum (none)"
+enum_values = ["none"]
+[[menus.arguments]]
+name = "radsec-certificate"
+type = "enum (none)"
+enum_values = ["none"]
+[[menus.arguments]]
+name = "use-profiles"
+type = "bool"
+[[menus.arguments]]
+name = "require-message-auth"
+type = "enum (no | yes-access-request)"
+enum_values = ["no", "yes-access-request"]
 
 [[menus]]
 path = "/user-manager/advanced"
@@ -42465,7 +42700,7 @@ type = "Command"
 
 [[menus]]
 path = "/user-manager/user"
-type = "Settings Directory"
+type = "Directory"
 [[menus.flags]]
 name = "X"
 description = ""
@@ -42493,30 +42728,6 @@ enum_values = ["bind"]
 [[menus.arguments]]
 name = "attributes"
 type = ""
-[[menus.arguments]]
-name = "enabled"
-type = "bool"
-[[menus.arguments]]
-name = "authentication-port"
-type = "num"
-[[menus.arguments]]
-name = "accounting-port"
-type = "num"
-[[menus.arguments]]
-name = "certificate"
-type = "enum (none)"
-enum_values = ["none"]
-[[menus.arguments]]
-name = "radsec-certificate"
-type = "enum (none)"
-enum_values = ["none"]
-[[menus.arguments]]
-name = "use-profiles"
-type = "bool"
-[[menus.arguments]]
-name = "require-message-auth"
-type = "enum (no | yes-access-request)"
-enum_values = ["no", "yes-access-request"]
 
 [[menus]]
 path = "/user-manager/user-profile"
@@ -42715,12 +42926,6 @@ type = "num"
 [[menus]]
 path = "/user/ssh-keys"
 type = "Directory"
-[[menus.flags]]
-name = "E"
-description = "expired"
-[[menus.flags]]
-name = "X"
-description = "disabled"
 [[menus.arguments]]
 name = "user"
 type = "enum"
@@ -42728,30 +42933,6 @@ type = "enum"
 name = "key"
 type = "string"
 description = "only for adding new keys"
-[[menus.arguments]]
-name = "name"
-type = "string"
-required = true
-[[menus.arguments]]
-name = "group"
-type = "enum"
-required = true
-[[menus.arguments]]
-name = "password"
-type = "string"
-required = true
-[[menus.arguments]]
-name = "inactivity-timeout"
-type = "time"
-description = "period after which inactivity policy is applied"
-[[menus.arguments]]
-name = "inactivity-policy"
-type = "enum (none | logout | lockscreen)"
-enum_values = ["none", "logout", "lockscreen"]
-description = "specify action taken after inactivity timeout"
-[[menus.arguments]]
-name = "address"
-type = ""
 [[menus.read_only]]
 name = "key-type"
 type = "enum (rsa | ed25519 | ed25519-sk)"
@@ -42764,9 +42945,6 @@ type = "string"
 [[menus.read_only]]
 name = "fingerprint"
 type = "string"
-[[menus.read_only]]
-name = "last-logged-in"
-type = "date"
 
 [[menus]]
 path = "/user/ssh-keys/import"
@@ -42816,6 +42994,52 @@ type = "string"
 [[menus]]
 path = "/zerotier"
 type = "Directory"
+[[menus.flags]]
+name = "X"
+description = "Whether an item is disabled."
+[[menus.flags]]
+name = "R"
+description = "Whether the instance is online."
+[[menus.flags]]
+name = "F"
+description = "Whether TCP fallback is active."
+[[menus.arguments]]
+name = "name"
+type = "string"
+description = "Instance name."
+[[menus.arguments]]
+name = "disabled"
+type = "bool"
+description = "Whether an item is disabled."
+[[menus.arguments]]
+name = "port"
+type = "num"
+description = "Port number the instance listens to."
+[[menus.arguments]]
+name = "identity"
+type = "string"
+description = "Instance 40-bit unique address."
+[[menus.arguments]]
+name = "interfaces"
+type = ""
+[[menus.arguments]]
+name = "route-distance"
+type = "num"
+description = "Route distance for routes obtained from planet/moon servers."
+[[menus.arguments]]
+name = "backup-priorities"
+type = ""
+[[menus.read_only]]
+name = "identity.public"
+type = "string"
+description = "Public identity of the instance."
+[[menus.read_only]]
+name = "state"
+type = "string"
+description = "Current state of the instance."
+[[menus.read_only]]
+name = "moons"
+type = ""
 
 [[menus]]
 path = "/zerotier/controller"
@@ -43011,41 +43235,6 @@ type = "Directory"
 [[menus.flags]]
 name = "B"
 description = "Whether the peer is bonded."
-[[menus.flags]]
-name = "X"
-description = "Whether an item is disabled."
-[[menus.flags]]
-name = "R"
-description = "Whether the instance is online."
-[[menus.flags]]
-name = "F"
-description = "Whether TCP fallback is active."
-[[menus.arguments]]
-name = "name"
-type = "string"
-description = "Instance name."
-[[menus.arguments]]
-name = "disabled"
-type = "bool"
-description = "Whether an item is disabled."
-[[menus.arguments]]
-name = "port"
-type = "num"
-description = "Port number the instance listens to."
-[[menus.arguments]]
-name = "identity"
-type = "string"
-description = "Instance 40-bit unique address."
-[[menus.arguments]]
-name = "interfaces"
-type = ""
-[[menus.arguments]]
-name = "route-distance"
-type = "num"
-description = "Route distance for routes obtained from planet/moon servers."
-[[menus.arguments]]
-name = "backup-priorities"
-type = ""
 [[menus.read_only]]
 name = "instance"
 type = "enum"
@@ -43068,17 +43257,6 @@ type = "string"
 description = "Role of the peer (PLANET, MOON, or LEAF)."
 [[menus.read_only]]
 name = "path"
-type = ""
-[[menus.read_only]]
-name = "identity.public"
-type = "string"
-description = "Public identity of the instance."
-[[menus.read_only]]
-name = "state"
-type = "string"
-description = "Current state of the instance."
-[[menus.read_only]]
-name = "moons"
 type = ""
 
 [[menus]]
