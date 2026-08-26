@@ -97,9 +97,9 @@
  (#eq? @diff.minus "false"))
 
 ; ── Control flow keywords ───────────────────────────────────────
-"do" @keyword.control
-"else" @keyword.control
-"while" @keyword.control
+"do" @keyword
+"else" @keyword
+"while" @keyword
 
 (do_block "=" @operator)
 (else_block "=" @operator)
@@ -112,12 +112,15 @@
 
 ; ── Function calls ──────────────────────────────────────────────
 (function_call
-  (identifier) @function.call)
+  (variable_reference
+    (identifier) @function))
 
 ; ── Variables ───────────────────────────────────────────────────
 (variable_reference
   "$" @punctuation.special
   (identifier) @variable.parameter)
+
+(variable_reference) @variable
 
 ; ── Strings ────────────────────────────────────────────────────
 (string) @string
@@ -128,6 +131,8 @@
 ; ── IP addresses / prefixes ─────────────────────────────────────
 (ip_address) @number
 (ip_prefix) @number
+(mac_address) @number
+(duration) @number
 
 ; ── Arrays ──────────────────────────────────────────────────────
 (array
@@ -149,7 +154,7 @@
 (line_continuation) @punctuation.special
 
 ; ── Parent navigation ───────────────────────────────────────────
-(parent_navigation) @string.special.path
+(parent_navigation) @string.special
 
 ; ── Command substitution ────────────────────────────────────────
 (command_substitution
