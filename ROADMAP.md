@@ -17,8 +17,8 @@ This roadmap is intentionally coarse; details live in issues and PRs.
 
 Focus is correctness, hardening, and release hygiene before any feature expansion.
 
-- **0.5.2 — shipped 2026-08-27** (tag `v0.5.2`, `e5e36db`): stability and docs sync — deduplicated wifi args, flag type emission, hover fallback, version docs clarified (snapshot 7.23.2), upstream sync `5503bd5`.
-- **0.5.1 prerelease — shipped 2026-08-26** (tag `v0.5.1`, `d9a8ffd`): published as a prerelease GitHub Release with all six platform binaries + SHA-256 companions + `extension.wasm`. Registry submission is deferred until the marketplace review window; see [docs/publishing-runbook.md](docs/publishing-runbook.md).
+- **0.5.2 — shipped 2026-08-27** (tag `v0.5.2`): stability and docs sync — deduplicated wifi args, flag type emission, hover fallback, version docs clarified (snapshot 7.23.2), upstream sync.
+- **0.5.1 prerelease — shipped 2026-08-26** (tag `v0.5.1`): published as a prerelease GitHub Release with all six platform binaries + SHA-256 companions + `extension.wasm`. Registry submission is deferred until the marketplace review window; see [docs/publishing-runbook.md](docs/publishing-runbook.md).
 - **Shim cache integrity / download verification** (`feat/shim-download-verification`, Phase 1 in `src/cache.rs` / `src/verify.rs`): versioned layout `rsc-ls-<version>` (`.exe` on Windows), `.verified` marker, re-hash on reuse, clean abort on mismatch.
 - **Grammar token and highlight fixes** in prerelease: `mac_address` / `duration`, `$1` positional, `boolean_literal` / `array_access` precedence, `highlights.scm` corrections (`feat/multiline-string-grammar`, `feat/highlight-field-colors`) — mirrored to `grammars/rsc/queries/` and covered by corpus `68/68`.
 - **LSP framing / diagnostics hardening:** bounded `MAX_HEADER_SIZE`, `SyntaxFinding` deferred materialization for backslash continuations, `didChange` batch handling, duplicate `id` detection.
@@ -39,6 +39,18 @@ Candidate set drawn from active `feat/` branches; each ships behind tests and `m
 - **Incremental `unset` adoption:** per [ADR 0001](docs/adr/0001-incremental-unset-field-adoption.md), consumers of `ArgEntry.unset` land one per PR (hover / diagnostic / completion) until `#[allow(dead_code)]` can be removed. See also [docs/adr/](docs/adr/).
 
 Windows support landed in 0.5.0/0.5.1 (auto-download, `.exe` handling, `windows-arm64` + `x86_64-pc-windows-msvc` via `feat/windows-auto-download`, `feat/windows-arm64`, `feat/windows-support`); no further Windows work planned for 0.6.0 unless regressions appear.
+
+## Vision — Live Data (early, opt-in) — `feat/live-data`
+
+> **Early vision, not committed.** Branch `feat/live-data` explores live enrichment without touching `data/commands.toml`.
+
+**Goal:** when the user opts in, Zed asks for MikroTik credentials once (via task input / settings) and `rsc-ls` enriches completion/hover with **live values from the device** (interfaces, addresses, bridges) via REST, cached in memory with TTL. The snapshot (`data/commands.toml` 7.23.2) stays the single source of truth for structure; live data never overwrites the file.
+
+**How it would surface in Zed (no file modification):**
+* **No `data/commands.toml` edit** — live values live only in `rsc-ls` memory (or `data/live-cache.toml` gitignored if persisted), never committed. `make extract` stays idempotent.
+* **Contextual menu / task is the Zed-native way:** `languages/rsc/tasks.json` already exposes `task: spawn` with `inputs` prompts (`host`, `user`, `pass` → `MIKROTIK_HOST` env). WASM shim cannot show a native `prompt()` dialog, but a `context_menu` entry / slash command that triggers the `MikroTik: Connect Live` task gives the same UX: right-click `.rsc` → Connect Live → Zed shows input boxes, sets env for the LSP, live cache warms. No file is dirtied.
+
+**Scope if validated:** `interface=` / `bridge=` / `address=` live completions, hover with `actual-interface` from device, diagnostics `unknown interface (not on this device)` — all behind `live=false` default, fallback to snapshot on fetch failure. See `docs/adr/` for future ADR.
 
 ## Later — 1.0+
 
