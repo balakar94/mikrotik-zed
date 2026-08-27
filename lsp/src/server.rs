@@ -26,6 +26,7 @@ use crate::encoding::{
 use crate::folding;
 use crate::framing::{Frame, FrameError, read_message};
 use crate::hover;
+use crate::live::{LiveCache, LiveConfig, get_cached_or_fetch_blocking};
 use crate::logging::{log_debug, log_error, log_warn};
 use crate::menus::MenuData;
 use crate::navigation;
@@ -35,6 +36,7 @@ use crate::suggest;
 use crate::symbols;
 use std::collections::HashMap;
 use std::io::{BufReader, Write};
+use std::sync::{Arc, Mutex};
 
 /// Resolved payload of one quick-fix suggestion: the candidate shown in
 /// the action title and the text actually spliced into the document.
@@ -249,6 +251,10 @@ pub(crate) struct Server {
     /// Whether the `shutdown` request was answered before `exit`.
     /// LSP 3.17 requires exit status 0 only when shutdown preceded exit.
     pub(crate) shutdown_received: bool,
+    /// Live device config (opt-in, never contains pass in logs).
+    pub(crate) live_config: LiveConfig,
+    /// Shared live cache (TTL-scoped, in-memory only, capped).
+    pub(crate) live_cache: Arc<Mutex<LiveCache>>,
     /// Test-only spy: publishDiagnostics notifications are recorded here
     /// instead of written to stdout (see [`Server::publish_diagnostics`]),
     /// letting tests assert that a publish actually fired. The field does
@@ -258,15 +264,66 @@ pub(crate) struct Server {
 }
 
 impl Server {
+    /// Production constructor: live config and cache are provided by `main.rs`
+    /// (parsed from env, TTL 60 s, caps from `caps.rs`).
+    #[cfg(not(test))]
+    pub(crate) fn new(
+        data: MenuData,
+        live_config: LiveConfig,
+        live_cache: Arc<Mutex<LiveCache>>,
+    ) -> Self {
+        Server {
+            data,
+            docs: HashMap::new(),
+            position_encoding: PositionEncoding::default(),
+            shutdown_received: false,
+            live_config,
+            live_cache,
+        }
+    }
+
+    /// Test constructor: live is disabled, cache is empty (honest placeholders).
+    #[cfg(test)]
     pub(crate) fn new(data: MenuData) -> Self {
         Server {
             data,
             docs: HashMap::new(),
             position_encoding: PositionEncoding::default(),
             shutdown_received: false,
-            #[cfg(test)]
+            live_config: LiveConfig::from_env_with(|_| None),
+            live_cache: Arc::new(Mutex::new(LiveCache::with_default_ttl())),
             published: Vec::new(),
         }
+    }
+
+    /// Test helper: create a server with explicit live config/cache.
+    #[cfg(test)]
+    pub(crate) fn new_with_live(
+        data: MenuData,
+        live_config: LiveConfig,
+        live_cache: Arc<Mutex<LiveCache>>,
+    ) -> Self {
+        Server {
+            data,
+            docs: HashMap::new(),
+            position_encoding: PositionEncoding::default(),
+            shutdown_received: false,
+            live_config,
+            live_cache,
+            published: Vec::new(),
+        }
+    }
+
+    /// Production helper: construct with explicit live values (used by
+    /// non-test code that needs to build a server without env).
+    #[cfg(not(test))]
+    #[allow(dead_code)]
+    pub(crate) fn new_with_live(
+        data: MenuData,
+        live_config: LiveConfig,
+        live_cache: Arc<Mutex<LiveCache>>,
+    ) -> Self {
+        Self::new(data, live_config, live_cache)
     }
 
     pub(crate) fn run(&mut self) {
@@ -654,7 +711,23 @@ impl Server {
                     self.position_encoding,
                 );
                 let before_cursor = build_before_cursor(doc, line_idx, char_byte);
-                let items = completion::compute_completions(&self.data, &before_cursor);
+                // Live enrichment: refresh cache if needed (capped at 2 s) then
+                // compute completions with whatever is cached. Never blocks
+                // more than LIVE_FETCH_BLOCKING_TIMEOUT_SECS and never logs pass.
+                if self.live_config.is_active() {
+                    // Blocking refresh capped at 2 s; fresh cache returns instantly.
+                    let _ = get_cached_or_fetch_blocking(&self.live_cache, &self.live_config);
+                }
+                let live_guard = self.live_cache.lock().ok();
+                let items = if let Some(ref cache) = live_guard {
+                    completion::compute_completions_with_live(
+                        &self.data,
+                        &before_cursor,
+                        Some(cache as &LiveCache),
+                    )
+                } else {
+                    completion::compute_completions(&self.data, &before_cursor)
+                };
 
                 Some(serde_json::json!({
                     "jsonrpc": "2.0",

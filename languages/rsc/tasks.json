@@ -44,5 +44,53 @@
     "use_new_terminal": false,
     "reveal": "never",
     "tags": ["mikrotik-validate"]
+  },
+  {
+    "label": "MikroTik: Live — Check connectivity (opt-in)",
+    "command": "python3",
+    "args": [
+      "scripts/mikrotik-deploy.py",
+      "$ZED_FILE",
+      "--dry-run",
+      "--host",
+      "${input:mikrotik_host}",
+      "--user",
+      "${input:mikrotik_user}",
+      "--method",
+      "rest"
+    ],
+    "inputs": [
+      {
+        "id": "mikrotik_host",
+        "type": "prompt",
+        "description": "MikroTik Host (IP/hostname)"
+      },
+      {
+        "id": "mikrotik_user",
+        "type": "prompt",
+        "description": "MikroTik User",
+        "default": "admin"
+      }
+    ],
+    "env": {},
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": true,
+    "allow_concurrent_runs": false,
+    "reveal": "always",
+    "hide": "on_success",
+    "tags": ["mikrotik-live", "mikrotik-deploy"]
+  },
+  {
+    "label": "MikroTik: Live — Enable enrichment (set RSC_LS_LIVE=1)",
+    "command": "echo",
+    "args": [
+      "Set env RSC_LS_LIVE=1 MIKROTIK_HOST=... MIKROTIK_PASS=... and restart Zed. Live enrichment is in-memory only, never touches data/commands.toml. Pass via env/keychain only — never stored in tasks.json. See lsp/src/live.rs for caps/TTL."
+    ],
+    "env": {},
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": true,
+    "allow_concurrent_runs": true,
+    "reveal": "always",
+    "tags": ["mikrotik-live"]
   }
 ]

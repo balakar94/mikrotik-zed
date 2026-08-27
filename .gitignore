@@ -43,6 +43,12 @@ venv/
 coverage.xml
 htmlcov/
 
+# Live cache — gitignored, never commit, in-memory preferred
+data/live-cache.json
+data/live-cache.toml
+.mikrotik-live.json
+.cache/mikrotik-zed/
+
 # Secrets / env — never commit
 .env
 .env.*

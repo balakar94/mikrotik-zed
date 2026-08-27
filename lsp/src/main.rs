@@ -23,6 +23,7 @@ mod encoding;
 mod folding;
 mod framing;
 mod hover;
+mod live;
 mod logging;
 mod menus;
 mod navigation;
@@ -92,7 +93,13 @@ fn main() {
         MAX_DOCS
     );
 
-    let mut server = Server::new(data);
+    // Live device data (opt-in, TTL-scoped, in-memory only).
+    let live_config = live::LiveConfig::from_env();
+    live_config.log_status();
+    let live_cache =
+        std::sync::Arc::new(std::sync::Mutex::new(live::LiveCache::with_default_ttl()));
+
+    let mut server = Server::new_with_live(data, live_config, live_cache);
     server.run();
     log_info!("language server exiting");
 }

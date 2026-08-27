@@ -38,3 +38,50 @@ pub(crate) const MAX_CODE_ACTIONS: usize = 8;
 
 pub(crate) const MAX_DIAG_LINES: usize = 3000;
 pub(crate) const MAX_DIAG_BYTES: usize = 500_000; // cap per-doc bytes considered for diagnostics
+
+// ── Live device data caps ─────────────────────────────────────────
+// These bound the in-memory, TTL-scoped cache for RouterOS live data
+// (never persisted, never overwrites `data/commands.toml`). They keep
+// completion enrichment safe against hostile or oversized device responses.
+
+/// Maximum number of live interface names retained per cache entry.
+///
+/// Truncation keeps completion payloads bounded and the client fuzzy
+/// filter responsive; 500 covers even large CCR deployments with headroom.
+pub(crate) const MAX_LIVE_ITEMS: usize = 500;
+
+/// Maximum byte length of a single live value (interface name).
+///
+/// Matches RouterOS interface-name limits and prevents a single rogue
+/// entry from dominating the cache.
+pub(crate) const MAX_LIVE_VALUE_LEN: usize = 64;
+
+/// Maximum bytes accepted from a live device response before it is
+/// discarded.
+///
+/// Protects against OOM on a malicious or misconfigured endpoint
+/// returning an unbounded JSON array.
+pub(crate) const MAX_LIVE_RESPONSE_BYTES: usize = 512 * 1024; // 512 KiB
+
+/// Maximum number of distinct cache keys retained in memory.
+///
+/// Each key maps to one live collection (e.g. `"interfaces"`); eight
+/// entries keeps the cache small while allowing future keys without
+/// unbounded growth.
+pub(crate) const MAX_CACHE_ENTRIES: usize = 8;
+
+/// Time-to-live for a cached live entry before it is considered stale.
+///
+/// Sixty seconds balances freshness for rapidly changing interface sets
+/// against request amplification on flapping completions.
+pub(crate) const LIVE_TTL_SECS: u64 = 60;
+
+/// Default per-request timeout for live device fetches (seconds).
+///
+/// Shorter than the deploy companion's 60 s (see `scripts/mikrotik-deploy.py`)
+/// because completion is latency-sensitive; clamped to 1..30 s.
+pub(crate) const LIVE_TIMEOUT_SECS: u64 = 5;
+
+/// Maximum blocking time the completion handler may spend waiting for
+/// a live fetch before falling back to the honest (no live data) result.
+pub(crate) const LIVE_FETCH_BLOCKING_TIMEOUT_SECS: u64 = 2;

@@ -388,7 +388,28 @@ class TestTasksJson:
         for p in [ROOT / "languages" / "rsc" / "tasks.json", ROOT / ".zed" / "tasks.json"]:
             data = json.loads(p.read_text(encoding="utf-8"))
             assert isinstance(data, list), f"{p} should be a JSON array"
-            assert len(data) == 4, f"{p} should have 4 tasks, found {len(data)}"
+            # 4 base tasks + 2 live opt-in tasks (feat/live-data: platform/runtime side)
+            # Keep backward-compatible: at least 4, but expected 6 with live enrichment opt-in
+            assert len(data) >= 4, f"{p} should have at least 4 tasks, found {len(data)}"
+            assert len(data) == 6, f"{p} should have 6 tasks (4 base + 2 live opt-in), found {len(data)}"
+            labels = [t.get("label", "") for t in data]
+            assert any("Live" in lbl and "Check connectivity" in lbl for lbl in labels), f"{p} missing live Check connectivity task"
+            assert any("Live" in lbl and "Enable enrichment" in lbl for lbl in labels), f"{p} missing live Enable enrichment task"
+            # Secrets must not be stored: only echo placeholder may mention MIKROTIK_PASS
+            text = p.read_text(encoding="utf-8")
+            assert text.count("MIKROTIK_PASS") <= 1, f"{p} should not store MIKROTIK_PASS more than once (echo placeholder), found {text.count('MIKROTIK_PASS')}"
+            for task in data:
+                if "Live" in task.get("label", "") and "Check connectivity" in task.get("label", ""):
+                    assert "inputs" in task, f"live Check connectivity task missing inputs"
+                    ids = [i.get("id") for i in task["inputs"]]
+                    assert "mikrotik_host" in ids, "live task missing mikrotik_host input"
+                    assert "mikrotik_user" in ids, "live task missing mikrotik_user input"
+                    assert not any("pass" in str(i).lower() for i in task["inputs"]), "live inputs must not include pass"
+                    assert "mikrotik-live" in task.get("tags", []), "live task missing mikrotik-live tag"
+                    assert task.get("env") == {}, "live task env must be empty (relies on shell_env passthrough)"
+                    assert task.get("cwd") == "$ZED_WORKTREE_ROOT"
+                    assert "${input:mikrotik_host}" in str(task.get("args", []))
+                    assert "${input:mikrotik_user}" in str(task.get("args", []))
 
     def test_tasks_labels(self):
         expected_substrings = ["REST", "SSH", "Dry-run", "Validate"]

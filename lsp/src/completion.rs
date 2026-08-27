@@ -11,6 +11,7 @@
 //   with that typed token — script globals and statement snippets. Menu
 //   paths and property names make no sense after a colon.
 
+use crate::live::{LiveCache, live_values_for_property};
 use crate::menus::{ArgEntry, LineContext, MenuData};
 
 /// LSP CompletionItemKind values (mirrors the LSP spec)
@@ -65,9 +66,21 @@ impl CompletionItem {
 }
 
 pub fn compute_completions(data: &MenuData, before_cursor: &str) -> Vec<CompletionItem> {
+    compute_completions_with_live(data, before_cursor, None)
+}
+
+/// Live-aware completion entry point. When `live_cache` is `Some` and the
+/// property being completed is live-enrichable (`interface`/`bridge`/
+/// `actual-interface` or any `iface`-typed argument), live interface names
+/// are merged into the value suggestions (see [`get_value_completions_with_live`]).
+pub fn compute_completions_with_live(
+    data: &MenuData,
+    before_cursor: &str,
+    live_cache: Option<&LiveCache>,
+) -> Vec<CompletionItem> {
     let context = crate::parse_line(data, before_cursor);
 
-    let mut items = match_context(data, &context, before_cursor);
+    let mut items = match_context_with_live(data, &context, before_cursor, live_cache);
 
     // The partially typed `:`-prefixed token under the cursor, if any.
     // `:` fires completion requests; detecting it here (instead of earlier)
@@ -105,10 +118,20 @@ pub fn compute_completions(data: &MenuData, before_cursor: &str) -> Vec<Completi
 
 /// The pre-snippet dispatch of [`compute_completions`], kept as its own step
 /// so snippet appending can wrap whatever base candidate set applies.
+#[allow(dead_code)]
 fn match_context(
     data: &MenuData,
     context: &LineContext,
     before_cursor: &str,
+) -> Vec<CompletionItem> {
+    match_context_with_live(data, context, before_cursor, None)
+}
+
+fn match_context_with_live(
+    data: &MenuData,
+    context: &LineContext,
+    before_cursor: &str,
+    live_cache: Option<&LiveCache>,
 ) -> Vec<CompletionItem> {
     // No path yet (or a bare "/") → suggest root menus. "/" parses to path
     // "/" which has no child index entry of its own, so it must be treated
@@ -127,7 +150,7 @@ fn match_context(
     {
         let key = &context.last_token[..eq_pos];
         let typed_suffix = &context.last_token[eq_pos + 1..];
-        let items = get_value_completions(data, context, key);
+        let items = get_value_completions_with_live(data, context, key, live_cache);
         return filter_by_typed_prefix(items, typed_suffix);
     }
 
@@ -395,11 +418,23 @@ fn get_arg_completion_items(data: &MenuData, ctx: &LineContext) -> Vec<Completio
 ///
 /// Only types with a universally valid representative get an item; anything
 /// device-specific (interface names, script variables) returns zero items
-/// rather than fabricated suggestions like `ether1`.
+/// rather than fabricated suggestions like `ether1`. Live enrichment (when
+/// a `LiveCache` is supplied) merges device interface names on top without
+/// fabricating.
+#[allow(dead_code)]
 fn get_value_completions(
     data: &MenuData,
     ctx: &LineContext,
     property_key: &str,
+) -> Vec<CompletionItem> {
+    get_value_completions_with_live(data, ctx, property_key, None)
+}
+
+fn get_value_completions_with_live(
+    data: &MenuData,
+    ctx: &LineContext,
+    property_key: &str,
+    live_cache: Option<&LiveCache>,
 ) -> Vec<CompletionItem> {
     let menu = match data.menu_by_path.get(&ctx.path) {
         Some(m) => m,
@@ -443,6 +478,27 @@ fn get_value_completions(
         items.push(ip_placeholder(arg, "0.0.0.0/0"));
     } else if arg.arg_type.starts_with("ipAddr") || arg.arg_type == "address" {
         items.push(ip_placeholder(arg, "0.0.0.0"));
+    }
+
+    // Live enrichment: merge device interface names when the property is
+    // live-enrichable and a fresh cache entry exists. Deduplicates against
+    // static items and prefers live (sort_text "0live_<name>" ranks above
+    // static placeholders).
+    if let Some(cache) = live_cache
+        && let Some(live_vals) = live_values_for_property(cache, property_key, &arg.arg_type)
+        && !live_vals.is_empty()
+    {
+        let live_set: std::collections::HashSet<&String> = live_vals.iter().collect();
+        // Prefer live: remove static duplicates.
+        items.retain(|it| !live_set.contains(&it.label));
+        for val in live_vals {
+            let mut item = CompletionItem::new(val.clone(), kind::ENUM_MEMBER);
+            item.detail = Some("live — interface on device".to_string());
+            item.insert_text = Some(val.clone());
+            item.insert_text_format = Some(1);
+            item.sort_text = Some(format!("0live_{val}"));
+            items.push(item);
+        }
     }
 
     items
@@ -1872,5 +1928,190 @@ type = "string"
         // …and root navigation via '/'.
         let slash = compute_completions(&data, "/");
         assert!(slash.iter().any(|i| i.label == "/ip"));
+    }
+}
+
+#[cfg(test)]
+mod live_merge {
+    use super::*;
+    use crate::live::{LiveCache, live_values_for_property};
+    use crate::menus::MenuData;
+    use std::time::Duration;
+
+    fn synth() -> MenuData {
+        MenuData::from_toml_str(
+            r#"
+[[menus]]
+path = "/ip/address"
+type = "Directory"
+[[menus.arguments]]
+name = "address"
+type = "ipPrefix"
+[[menus.arguments]]
+name = "interface"
+type = "iface_enum"
+[[menus.arguments]]
+name = "comment"
+type = "string"
+[[menus]]
+path = "/interface/bridge/port"
+type = "Directory"
+[[menus.arguments]]
+name = "interface"
+type = "iface_enum"
+[[menus.arguments]]
+name = "bridge"
+type = "string"
+"#,
+        )
+    }
+
+    #[test]
+    fn test_iface_enum_without_live_returns_empty_honest() {
+        let data = synth();
+        // Honest placeholder: no fabricated items when live disabled.
+        let items = compute_completions(&data, "/ip/address add interface=");
+        assert!(
+            items.is_empty(),
+            "iface_enum without live must be empty, got {:?}",
+            items.iter().map(|i| &i.label).collect::<Vec<_>>()
+        );
+        // Via the live-aware entry point with None.
+        let items2 = compute_completions_with_live(&data, "/ip/address add interface=", None);
+        assert!(items2.is_empty());
+    }
+
+    #[test]
+    fn test_iface_enum_with_live_returns_live_items() {
+        let data = synth();
+        let mut cache = LiveCache::new(Duration::from_secs(60));
+        cache.insert(
+            "interfaces".to_string(),
+            vec![
+                "ether1".to_string(),
+                "wlan1".to_string(),
+                "bridge1".to_string(),
+            ],
+        );
+        let items =
+            compute_completions_with_live(&data, "/ip/address add interface=", Some(&cache));
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"ether1"));
+        assert!(labels.contains(&"wlan1"));
+        assert!(labels.contains(&"bridge1"));
+        assert_eq!(items.len(), 3);
+        for item in &items {
+            assert_eq!(item.kind, Some(kind::ENUM_MEMBER));
+            assert_eq!(item.detail.as_deref(), Some("live — interface on device"));
+            assert_eq!(item.insert_text.as_deref(), Some(item.label.as_str()));
+            assert!(
+                item.sort_text.as_deref().unwrap().starts_with("0live_"),
+                "sort_text must be 0live_, got {:?}",
+                item.sort_text
+            );
+            assert_eq!(item.insert_text_format, Some(1));
+        }
+        // Prefix filter still applies: typing "eth" narrows to ether1.
+        let filtered =
+            compute_completions_with_live(&data, "/ip/address add interface=eth", Some(&cache));
+        let fl: Vec<&str> = filtered.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(fl, vec!["ether1"]);
+    }
+
+    #[test]
+    fn test_live_dedup_prefers_live_over_static() {
+        // Synthetic enum that happens to contain a value also present as a live interface.
+        let data = MenuData::from_toml_str(
+            r#"
+[[menus]]
+path = "/ip/address"
+type = "Directory"
+[[menus.arguments]]
+name = "interface"
+type = "enum (ether1 | ether2)"
+"#,
+        );
+        let mut cache = LiveCache::new(Duration::from_secs(60));
+        cache.insert(
+            "interfaces".to_string(),
+            vec!["ether1".to_string(), "wlan1".to_string()],
+        );
+        let items =
+            compute_completions_with_live(&data, "/ip/address add interface=", Some(&cache));
+        // ether1 appears only once, with live detail (not enum detail).
+        let ether1_items: Vec<_> = items.iter().filter(|i| i.label == "ether1").collect();
+        assert_eq!(ether1_items.len(), 1);
+        assert_eq!(
+            ether1_items[0].detail.as_deref(),
+            Some("live — interface on device")
+        );
+        assert!(
+            ether1_items[0]
+                .sort_text
+                .as_deref()
+                .unwrap()
+                .starts_with("0live_")
+        );
+        // ether2 remains as static enum value, wlan1 as live.
+        assert!(items.iter().any(|i| i.label == "ether2"));
+        assert!(items.iter().any(|i| i.label == "wlan1"));
+    }
+
+    #[test]
+    fn test_non_live_property_ignores_cache() {
+        let data = synth();
+        let mut cache = LiveCache::new(Duration::from_secs(60));
+        cache.insert("interfaces".to_string(), vec!["ether1".to_string()]);
+        // address is ipPrefix, not live-enrichable, so cache is ignored.
+        let items = compute_completions_with_live(&data, "/ip/address add address=", Some(&cache));
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, vec!["0.0.0.0/0"]);
+        assert!(!labels.contains(&"ether1"));
+    }
+
+    #[test]
+    fn test_bridge_property_uses_live_cache() {
+        let data = synth();
+        let mut cache = LiveCache::new(Duration::from_secs(60));
+        cache.insert("interfaces".to_string(), vec!["ether1".to_string()]);
+        // /interface/bridge/port interface= is iface_enum -> live
+        let items = compute_completions_with_live(
+            &data,
+            "/interface/bridge/port add interface=",
+            Some(&cache),
+        );
+        assert!(items.iter().any(|i| i.label == "ether1"));
+        // bridge property name itself is also live-mapped
+        let items2 = compute_completions_with_live(
+            &data,
+            "/interface/bridge/port add bridge=",
+            Some(&cache),
+        );
+        assert!(items2.iter().any(|i| i.label == "ether1"));
+    }
+
+    #[test]
+    fn test_live_values_for_property_direct() {
+        let mut cache = LiveCache::new(Duration::from_secs(60));
+        cache.insert(
+            "interfaces".to_string(),
+            vec!["a".to_string(), "b".to_string()],
+        );
+        assert!(live_values_for_property(&cache, "interface", "string").is_some());
+        assert!(live_values_for_property(&cache, "bridge", "string").is_some());
+        assert!(live_values_for_property(&cache, "actual-interface", "string").is_some());
+        assert!(live_values_for_property(&cache, "foo", "iface_enum").is_some());
+        assert!(live_values_for_property(&cache, "address", "ipPrefix").is_none());
+    }
+
+    #[test]
+    fn test_stale_cache_returns_empty() {
+        let data = synth();
+        let mut cache = LiveCache::new(Duration::from_secs(0)); // TTL 0 => always stale
+        cache.insert("interfaces".to_string(), vec!["ether1".to_string()]);
+        // Even though an entry exists, it is stale so no live values.
+        let items =
+            compute_completions_with_live(&data, "/ip/address add interface=", Some(&cache));
+        assert!(items.is_empty(), "stale cache must behave like absent");
     }
 }
