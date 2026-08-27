@@ -20,7 +20,7 @@
 
 ---
 
-**Contents:** [Features](#-features) · [Install](#-install) · [Quick start](#-quick-start) · [Dependencies](#-dependencies) · [Deploy](#-deploy) · [Language Server](#-language-server) · [Grammar](#-grammar) · [Sync & Extraction](#-sync--extraction) · [Development](#️-development) · [Release](#-release) · [Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) · [Reference](#-reference) · [License](#-license)
+**Contents:** [Features](#-features) · [Install](#-install) · [Quick start](#-quick-start) · [Dependencies](#-dependencies) · [Deploy](#-deploy) · [Live Enrichment](#-live-device-enrichment-opt-in) · [Language Server](#-language-server) · [Grammar](#-grammar) · [Sync & Extraction](#-sync--extraction) · [Development](#️-development) · [Release](#-release) · [Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) · [Reference](#-reference) · [License](#-license)
 
 ---
 
@@ -30,6 +30,7 @@
 | ---------------- | --------------------------------------------------------------------------------------------------------- |
 | **Highlighting** | Full RouterOS syntax highlighting powered by a dedicated tree-sitter grammar                              |
 | **Completion**   | Context-aware suggestions for menus, verbs, properties and values, with snippets and inline documentation |
+| **Live Data**    | Opt-in real-time autocomplete from your router (interfaces, IPs, firewall lists/chains, pools)            |
 | **Hover**        | Reference documentation for menus, properties and verbs, shown right where you type                       |
 | **Diagnostics**  | Live semantic and syntax validation of your script while you write it                                     |
 | **Outlining**    | Document outline of menus and script variables, plus code folding                                         |
@@ -230,6 +231,89 @@ python scripts/mikrotik-deploy.py demo.rsc --dry-run
 ```
 
 Zed tasks live per-worktree: copy `languages/rsc/tasks.json` to `.zed/tasks.json` and you get **REST / SSH / Dry-run / Validate** entries that operate on `$ZED_FILE`.
+
+---
+
+## ⚡ Live Device Enrichment (Opt-in)
+
+<details>
+<summary><b>Click to expand Live Device Enrichment documentation</b> (disabled by default)</summary>
+<br>
+
+When enabled, `rsc-ls` connects directly to your MikroTik router over the RouterOS REST API and enriches completion suggestions with **real-time device data** as you type, without ever leaving Zed or opening WinBox.
+
+### Enriched Modules
+
+When connected to a router, the hydrator automatically extracts and autocompletes live configuration entities across:
+
+- **Interfaces & Bridges:** Physical ports, VLANs, bridges, wireguard peers, tunnels (`interface`, `bridge`, `in-interface`, `out-interface`, `parent`)
+- **IP Addresses & Networks:** Assigned IPv4 and IPv6 addresses, subnets, gateways (`address`, `network`, `src-address`, `dst-address`, `gateway`)
+- **Firewall & Lists:** Defined address lists and rules across Filter, NAT, Mangle, and Raw (`src-address-list`, `dst-address-list`, `address-list`, `chain`, `jump-target`)
+- **IP Pools:** Configured IPv4 and IPv6 address pools (`pool`, `address-pool`, `remote-pool`)
+
+Live suggestions appear in the autocomplete dropdown with the `live — ...` label and highest sorting priority (`0live_...`).
+
+### How to Configure
+
+Live enrichment is **strictly opt-in** and disabled by default. 
+
+#### Recommended: Configure in Zed `settings.json`
+
+The most reliable way to configure Live Data (working whether you launch Zed from the Dock, Spotlight, Finder, or terminal) is via Zed's settings:
+
+- **Per-project:** Create or edit `.zed/settings.json` in your workspace repository root.
+- **Global:** Edit your global Zed settings (`~/.config/zed/settings.json` or `Cmd + ,` in Zed).
+
+```json
+{
+  "lsp": {
+    "rsc-ls": {
+      "binary": {
+        "env": {
+          "RSC_LS_LIVE": "1",
+          "MIKROTIK_HOST": "192.168.88.1",
+          "MIKROTIK_USER": "admin",
+          "MIKROTIK_PASS": "your_password",
+          "MIKROTIK_HTTP": "1",
+          "MIKROTIK_PORT": "80"
+        }
+      }
+    }
+  }
+}
+```
+
+> [!TIP]
+> **HTTP vs HTTPS in RouterOS:**
+> - Most local routers use plain **HTTP on port 80** (`"MIKROTIK_HTTP": "1"`, `"MIKROTIK_PORT": "80"`).
+> - If your router uses **HTTPS on port 443** with a self-signed certificate, set `"MIKROTIK_PORT": "443"` and `"MIKROTIK_SSL": "0"`.
+> - You can add `"RSC_LS_LOG": "debug"` to view real-time fetch logs in Zed via `Cmd + Shift + P` → `zed: open language server logs` → `rsc-ls`.
+
+#### Alternative: Environment Variables (CLI / Shell)
+
+You can also pass environment variables in your shell profile (`~/.zshrc`, `~/.bashrc`) or when launching Zed from the terminal:
+
+```bash
+export RSC_LS_LIVE=1                  # or MIKROTIK_LIVE=1
+export MIKROTIK_HOST="192.168.88.1"   # Router IP or hostname
+export MIKROTIK_USER="admin"          # Router username (default: admin)
+export MIKROTIK_PASS="your_password"  # Router password (never logged or persisted)
+export MIKROTIK_HTTP=1                # 1 to use plain HTTP (recommended for port 80)
+export MIKROTIK_PORT=80               # REST port (default: 443)
+export MIKROTIK_SSL=0                 # 0 to disable TLS verification (self-signed certs)
+export MIKROTIK_TIMEOUT=5             # Per-request timeout in seconds (1..30, default: 5)
+```
+
+Alternatively, you can test connectivity from Zed's task runner using the **"MikroTik: Live — Check connectivity"** task in `.zed/tasks.json`.
+
+### Safety & Defensive Invariants
+
+- **Zero Disk Modifications:** Live data is stored strictly in an in-memory TTL cache (60 seconds) and never touches `data/commands.toml` or any files on disk.
+- **Never Blocks Typing:** Network fetches have a strict 2-second blocking budget; if the router is unreachable or slow, completion falls back instantly to static placeholders without hanging the editor.
+- **Credential Protection:** `MIKROTIK_PASS` is strictly redacted from all logs and error messages.
+- **Strict Caps:** Responses are capped at 512 KiB and 500 items to prevent memory exhaustion.
+
+</details>
 
 ---
 

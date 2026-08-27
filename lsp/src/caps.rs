@@ -65,10 +65,10 @@ pub(crate) const MAX_LIVE_RESPONSE_BYTES: usize = 512 * 1024; // 512 KiB
 
 /// Maximum number of distinct cache keys retained in memory.
 ///
-/// Each key maps to one live collection (e.g. `"interfaces"`); eight
-/// entries keeps the cache small while allowing future keys without
-/// unbounded growth.
-pub(crate) const MAX_CACHE_ENTRIES: usize = 8;
+/// Each key maps to one live collection (e.g. `"interfaces"`, `"ip_addresses"`,
+/// `"address_lists"`, `"firewall_chains"`, `"ip_pools"`); sixteen entries
+/// keeps the cache small while supporting all live resources concurrently.
+pub(crate) const MAX_CACHE_ENTRIES: usize = 16;
 
 /// Time-to-live for a cached live entry before it is considered stale.
 ///

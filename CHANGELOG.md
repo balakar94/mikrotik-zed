@@ -2,7 +2,20 @@
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **Live Device Data Enrichment (`lsp/src/live.rs`, `lsp/src/completion.rs`)**:
+  - Opt-in live RouterOS data enrichment for LSP autocompletion over REST (`RSC_LS_LIVE=1` or `MIKROTIK_LIVE=1`).
+  - **Generic Live Resource Dispatcher (`ResourceKind`)** supporting:
+    - **Interfaces & Bridges**: `interface`, `bridge`, `in-interface`, `out-interface`, `parent`, and all `iface`-typed properties.
+    - **IP Addresses & Networks**: `address`, `network`, `src-address`, `dst-address`, `gateway`, `to-addresses`, with IPv4, IPv6, and CIDR prefix sanitization.
+    - **Firewall & Lists**: `src-address-list`, `dst-address-list`, `address-list`, `list`, `chain`, `jump-target` across Filter, NAT, Mangle, and Raw.
+    - **IP Pools**: `pool`, `address-pool`, `pool-name`, `remote-pool` (IPv4 and IPv6).
+  - In-memory `LiveCache` (TTL 60s, max 16 collections, max 500 items, max 64 chars per value, max 512 KiB response payload) with LRU eviction and zero disk persistence.
+  - Bounded 2-second blocking fetch budget with silent honest fallback when router is offline or unreachable.
+  - Strict host validation rejecting control characters and URI delimiters; passwords strictly redacted from all debug logs and errors.
+  - Interactive Zed tasks in `languages/rsc/tasks.json` for live connectivity checks.
+  - Comprehensive QA coverage: 46 Python tests in `tests/test_live_opt_in.py` and dedicated Rust unit tests.
 
 ## [0.5.2] - 2026-08-27
 

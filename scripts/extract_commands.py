@@ -411,13 +411,18 @@ def synthesize_directories(menus: list[dict]) -> list[dict]:
     return menus + list(synthesized.values())
 
 
-def _dedupe_entries(entries: list[dict], path: str, section: str) -> list[dict]:
+def _dedupe_entries(
+    entries: list[dict],
+    path: str,
+    section: str,
+    duplicates: list[tuple[str, str, str]] | None = None,
+) -> list[dict]:
     """Deduplicate entries by name, first-wins — weight/speed optimization.
 
     Upstream llms-full.txt concatenates two generations of docs for
     /interface/wifi (ssid/mode/etc appear twice with different types).
     Keeping duplicates bloats TOML and completion lists. First-wins preserves
-    backwards compat with existing snapshots; duplicates are warned to stderr.
+    backwards compat with existing snapshots; duplicates are tracked and summarized.
     Single source of truth: applied only at the TOML generation boundary.
     """
     seen: set[str] = set()
@@ -425,7 +430,8 @@ def _dedupe_entries(entries: list[dict], path: str, section: str) -> list[dict]:
     for e in entries:
         name = e.get("name", "")
         if name in seen:
-            print(f"warn: duplicate {section} {name} in {path} — keeping first", file=sys.stderr)
+            if duplicates is not None:
+                duplicates.append((path, section, name))
             continue
         seen.add(name)
         unique.append(e)
@@ -481,17 +487,18 @@ def generate_toml(menus: list[dict], llms_path: Path | None = None) -> str:
     empty_args = 0
     total_ro = 0
     empty_ro = 0
+    resolved_duplicates: list[tuple[str, str, str]] = []
 
     for menu in menus:
         path = menu["path"]
-        menu_type = menu["type"]
+        menu_type = menu.get("type", "Directory")
         lines.append("[[menus]]")
         lines.append(f'path = "{escape_toml_string(path)}"')
         lines.append(f'type = "{escape_toml_string(menu_type)}"')
 
         # Flags — deduplicated (first-wins) to avoid TOML weight bloat
         # Type is emitted as single source of truth (additive, not breaking).
-        flags = _dedupe_entries(menu.get("flags", []), path, "flag")
+        flags = _dedupe_entries(menu.get("flags", []), path, "flag", resolved_duplicates)
         if flags:
             for flag in flags:
                 name = escape_toml_string(flag["name"])
@@ -506,7 +513,7 @@ def generate_toml(menus: list[dict], llms_path: Path | None = None) -> str:
                     lines.append("required = true")
 
         # Arguments — deduplicated, type escaped
-        arguments = _dedupe_entries(menu.get("arguments", []), path, "arg")
+        arguments = _dedupe_entries(menu.get("arguments", []), path, "arg", resolved_duplicates)
         total_args += len(arguments)
         empty_args += sum(1 for a in arguments if not a.get("description"))
         if arguments:
@@ -531,7 +538,7 @@ def generate_toml(menus: list[dict], llms_path: Path | None = None) -> str:
                     lines.append("unset = true")
 
         # Read-only arguments — type escaped, deduped
-        read_only = _dedupe_entries(menu.get("read_only", []), path, "read_only")
+        read_only = _dedupe_entries(menu.get("read_only", []), path, "read_only", resolved_duplicates)
         total_ro += len(read_only)
         empty_ro += sum(1 for a in read_only if not a.get("description"))
         if read_only:
@@ -546,6 +553,35 @@ def generate_toml(menus: list[dict], llms_path: Path | None = None) -> str:
                     lines.append(f'description = "{desc}"')
 
         lines.append("")
+
+    # Summary trace for upstream duplicate arguments — stderr only
+    if resolved_duplicates:
+        paths_involved = sorted({p for p, _, _ in resolved_duplicates})
+        if len(paths_involved) == 1:
+            scope = paths_involved[0]
+        elif len(paths_involved) <= 3:
+            try:
+                common = os.path.commonpath(paths_involved)
+                if common and common != "/" and len(common.strip("/").split("/")) >= 2:
+                    scope = f"/{common}" if not common.startswith("/") else common
+                else:
+                    scope = ", ".join(paths_involved)
+            except ValueError:
+                scope = ", ".join(paths_involved)
+        else:
+            try:
+                common = os.path.commonpath(paths_involved)
+                if common and common != "/" and len(common.strip("/").split("/")) >= 2:
+                    scope = f"/{common}" if not common.startswith("/") else common
+                else:
+                    scope = f"{len(paths_involved)} menus ({', '.join(paths_involved[:2])}, ...)"
+            except ValueError:
+                scope = f"{len(paths_involved)} menus ({', '.join(paths_involved[:2])}, ...)"
+
+        print(
+            f"info: {len(resolved_duplicates)} upstream duplicate arguments resolved across {scope}",
+            file=sys.stderr,
+        )
 
     # Hygiene trace — stderr only, never pollutes TOML stdout
     if total_args or total_ro:

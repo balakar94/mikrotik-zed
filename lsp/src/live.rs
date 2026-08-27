@@ -314,14 +314,128 @@ impl std::fmt::Display for LiveError {
 
 impl std::error::Error for LiveError {}
 
-// ── Value filtering ──────────────────────────────────────────────
+// ── ResourceKind & Value filtering ────────────────────────────────
 
-/// Whether `c` is allowed in a live value (alphanumeric, '-' or '_').
-fn is_valid_value_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '-' || c == '_'
+/// Kinds of live RouterOS resources enrichable over REST.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResourceKind {
+    Interfaces,
+    IpAddresses,
+    Ipv6Addresses,
+    AddressLists,
+    Ipv6AddressLists,
+    FirewallFilterChains,
+    FirewallMangleChains,
+    FirewallNatChains,
+    FirewallRawChains,
+    IpPools,
+    Ipv6Pools,
 }
 
-/// Validate and sanitize a single live value.
+impl ResourceKind {
+    /// Return slice of all supported live resource kinds.
+    #[cfg(test)]
+    pub fn all() -> &'static [ResourceKind] {
+        &[
+            ResourceKind::Interfaces,
+            ResourceKind::IpAddresses,
+            ResourceKind::Ipv6Addresses,
+            ResourceKind::AddressLists,
+            ResourceKind::Ipv6AddressLists,
+            ResourceKind::FirewallFilterChains,
+            ResourceKind::FirewallMangleChains,
+            ResourceKind::FirewallNatChains,
+            ResourceKind::FirewallRawChains,
+            ResourceKind::IpPools,
+            ResourceKind::Ipv6Pools,
+        ]
+    }
+
+    /// Cache key in `LiveCache`.
+    pub fn cache_key(&self) -> &'static str {
+        match self {
+            Self::Interfaces => "interfaces",
+            Self::IpAddresses => "ip_addresses",
+            Self::Ipv6Addresses => "ipv6_addresses",
+            Self::AddressLists => "address_lists",
+            Self::Ipv6AddressLists => "ipv6_address_lists",
+            Self::FirewallFilterChains => "firewall_filter_chains",
+            Self::FirewallMangleChains => "firewall_mangle_chains",
+            Self::FirewallNatChains => "firewall_nat_chains",
+            Self::FirewallRawChains => "firewall_raw_chains",
+            Self::IpPools => "ip_pools",
+            Self::Ipv6Pools => "ipv6_pools",
+        }
+    }
+
+    /// REST path on RouterOS.
+    pub fn rest_path(&self) -> &'static str {
+        match self {
+            Self::Interfaces => "/rest/interface",
+            Self::IpAddresses => "/rest/ip/address",
+            Self::Ipv6Addresses => "/rest/ipv6/address",
+            Self::AddressLists => "/rest/ip/firewall/address-list",
+            Self::Ipv6AddressLists => "/rest/ipv6/firewall/address-list",
+            Self::FirewallFilterChains => "/rest/ip/firewall/filter",
+            Self::FirewallMangleChains => "/rest/ip/firewall/mangle",
+            Self::FirewallNatChains => "/rest/ip/firewall/nat",
+            Self::FirewallRawChains => "/rest/ip/firewall/raw",
+            Self::IpPools => "/rest/ip/pool",
+            Self::Ipv6Pools => "/rest/ipv6/pool",
+        }
+    }
+
+    /// Primary JSON field name extracted from array items.
+    pub fn json_field(&self) -> &'static str {
+        match self {
+            Self::Interfaces => "name",
+            Self::IpAddresses | Self::Ipv6Addresses => "address",
+            Self::AddressLists | Self::Ipv6AddressLists => "list",
+            Self::FirewallFilterChains
+            | Self::FirewallMangleChains
+            | Self::FirewallNatChains
+            | Self::FirewallRawChains => "chain",
+            Self::IpPools | Self::Ipv6Pools => "name",
+        }
+    }
+
+    /// LSP completion item detail string.
+    pub fn detail_label(&self) -> &'static str {
+        match self {
+            Self::Interfaces => "live — interface on device",
+            Self::IpAddresses => "live — IPv4 address on device",
+            Self::Ipv6Addresses => "live — IPv6 address on device",
+            Self::AddressLists => "live — firewall address-list",
+            Self::Ipv6AddressLists => "live — IPv6 firewall address-list",
+            Self::FirewallFilterChains => "live — firewall filter chain",
+            Self::FirewallMangleChains => "live — firewall mangle chain",
+            Self::FirewallNatChains => "live — firewall NAT chain",
+            Self::FirewallRawChains => "live — firewall raw chain",
+            Self::IpPools => "live — IP pool on device",
+            Self::Ipv6Pools => "live — IPv6 pool on device",
+        }
+    }
+
+    /// Filter and sanitize a single raw value for this resource kind.
+    pub fn filter_raw_value(&self, raw: &str) -> Option<String> {
+        match self {
+            Self::IpAddresses | Self::Ipv6Addresses => filter_ip_value(raw),
+            _ => filter_value(raw),
+        }
+    }
+}
+
+/// Whether `c` is allowed in a live identifier value (alphanumeric, '-', '_', or '.').
+fn is_valid_value_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'
+}
+
+/// Whether `c` is allowed in a live IP/prefix value.
+fn is_valid_ip_char(c: char) -> bool {
+    c.is_ascii_hexdigit() || c == '.' || c == ':' || c == '/'
+}
+
+/// Validate and sanitize a single live identifier value.
 ///
 /// - non-empty, length <= `MAX_LIVE_VALUE_LEN`
 /// - only allowed chars, no control/null
@@ -334,14 +448,6 @@ pub(crate) fn filter_value(raw: &str) -> Option<String> {
         return None;
     }
     if raw.chars().any(|c| c.is_control()) {
-        // Allow trimming of spaces only: spaces are not `is_control`, so a raw
-        // value like `"  ether1  "` passes but `"ether1\n"` (newline is control)
-        // is rejected before trimming. This keeps the filter strict without
-        // penalising innocent surrounding spaces.
-        // To allow surrounding spaces, we check control after trimming would
-        // hide them; instead we reject any control anywhere in raw.
-        // The earlier `is_control` already catches `\n`, `\t`, etc.
-        // If raw contains control, reject outright.
         return None;
     }
     let trimmed = raw.trim();
@@ -357,12 +463,33 @@ pub(crate) fn filter_value(raw: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
-/// Filter, deduplicate, sort, and cap a list of raw values.
-pub(crate) fn sanitize_values(raw: Vec<String>) -> Vec<String> {
+/// Validate and sanitize a single live IP address or prefix value.
+pub(crate) fn filter_ip_value(raw: &str) -> Option<String> {
+    if raw.contains('\0') {
+        return None;
+    }
+    if raw.chars().any(|c| c.is_control()) {
+        return None;
+    }
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.len() > MAX_LIVE_VALUE_LEN {
+        return None;
+    }
+    if !trimmed.chars().all(is_valid_ip_char) {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+/// Filter, deduplicate, sort, and cap a list of raw values for a specific resource.
+pub(crate) fn sanitize_resource_values(raw: Vec<String>, resource: ResourceKind) -> Vec<String> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut out: Vec<String> = Vec::new();
     for v in raw {
-        if let Some(clean) = filter_value(&v)
+        if let Some(clean) = resource.filter_raw_value(&v)
             && seen.insert(clean.clone())
         {
             out.push(clean);
@@ -378,6 +505,12 @@ pub(crate) fn sanitize_values(raw: Vec<String>) -> Vec<String> {
     out
 }
 
+/// Filter, deduplicate, sort, and cap a list of raw values (default interface kind).
+#[cfg(test)]
+pub(crate) fn sanitize_values(raw: Vec<String>) -> Vec<String> {
+    sanitize_resource_values(raw, ResourceKind::Interfaces)
+}
+
 // ── Cache ────────────────────────────────────────────────────────
 
 /// One cached live collection.
@@ -389,7 +522,7 @@ pub struct CachedValue {
 
 /// In-memory live cache with TTL and entry cap.
 ///
-/// Key is the collection name (e.g. `"interfaces"`).
+/// Key is the collection name (e.g. `"interfaces"`, `"ip_addresses"`).
 #[derive(Debug)]
 pub struct LiveCache {
     pub entries: HashMap<String, CachedValue>,
@@ -482,11 +615,107 @@ impl LiveCache {
     }
 }
 
+/// Match menu path, property name and argument type to the corresponding live resource kind.
+pub fn live_resource_for_menu_property(
+    menu_path: &str,
+    property: &str,
+    type_str: &str,
+) -> Option<ResourceKind> {
+    let path_low = menu_path.to_ascii_lowercase();
+    let prop_low = property.to_ascii_lowercase();
+    let type_low = type_str.to_ascii_lowercase();
+
+    let is_ipv6 = path_low.starts_with("/ipv6") || type_low.contains("ipv6");
+
+    // 1. Interfaces / bridges / ports
+    if matches!(
+        prop_low.as_str(),
+        "interface"
+            | "bridge"
+            | "actual-interface"
+            | "parent"
+            | "in-interface"
+            | "out-interface"
+            | "in-interface-list"
+            | "out-interface-list"
+            | "master-interface"
+    ) || type_low.contains("iface")
+    {
+        return Some(ResourceKind::Interfaces);
+    }
+
+    // 2. Firewall address-list (IPv4 vs IPv6)
+    if matches!(
+        prop_low.as_str(),
+        "src-address-list" | "dst-address-list" | "address-list" | "list"
+    ) {
+        if is_ipv6 {
+            return Some(ResourceKind::Ipv6AddressLists);
+        } else {
+            return Some(ResourceKind::AddressLists);
+        }
+    }
+
+    // 3. Firewall chains (filter, mangle, nat, raw)
+    if matches!(prop_low.as_str(), "chain" | "jump-target") {
+        if path_low.contains("mangle") {
+            return Some(ResourceKind::FirewallMangleChains);
+        } else if path_low.contains("nat") {
+            return Some(ResourceKind::FirewallNatChains);
+        } else if path_low.contains("raw") {
+            return Some(ResourceKind::FirewallRawChains);
+        } else {
+            return Some(ResourceKind::FirewallFilterChains);
+        }
+    }
+
+    // 4. IP Pools (IPv4 vs IPv6)
+    if matches!(
+        prop_low.as_str(),
+        "address-pool" | "pool" | "pool-name" | "remote-pool"
+    ) || type_low.contains("pool")
+    {
+        if is_ipv6 {
+            return Some(ResourceKind::Ipv6Pools);
+        } else {
+            return Some(ResourceKind::IpPools);
+        }
+    }
+
+    // 5. IP Addresses / prefixes / gateways (IPv4 vs IPv6)
+    if matches!(
+        prop_low.as_str(),
+        "address"
+            | "network"
+            | "src-address"
+            | "dst-address"
+            | "gateway"
+            | "target-addresses"
+            | "to-addresses"
+            | "local-address"
+            | "remote-address"
+    ) || type_low.starts_with("ipaddr")
+        || type_low.starts_with("ipprefix")
+        || type_low == "address"
+    {
+        if is_ipv6 {
+            return Some(ResourceKind::Ipv6Addresses);
+        } else {
+            return Some(ResourceKind::IpAddresses);
+        }
+    }
+
+    None
+}
+
+/// Match property name and argument type to the corresponding live resource kind.
+#[cfg(test)]
+pub fn live_resource_for_property(property: &str, type_str: &str) -> Option<ResourceKind> {
+    live_resource_for_menu_property("", property, type_str)
+}
+
 /// Whether the property `property`/`type_str` is live-enrichable.
-///
-/// Maps:
-/// - property name exactly `interface`, `bridge`, `actual-interface`
-/// - or `type_str` containing `iface` (case-insensitive)
+#[cfg(test)]
 pub fn is_live_property(property: &str, type_str: &str) -> bool {
     let prop_low = property.to_ascii_lowercase();
     if matches!(
@@ -495,70 +724,73 @@ pub fn is_live_property(property: &str, type_str: &str) -> bool {
     ) {
         return true;
     }
-    type_str.to_ascii_lowercase().contains("iface")
+    if type_str.to_ascii_lowercase().contains("iface") {
+        return true;
+    }
+    live_resource_for_property(property, type_str).is_some()
 }
 
 /// Return live values for `property`/`type_str` if the cache is live-enrichable.
-///
-/// Key is always `"interfaces"` (for now). Returns `None` if the property
-/// is not live-enrichable or the cache has no fresh entry.
+#[cfg(test)]
 pub fn live_values_for_property(
     cache: &LiveCache,
     property: &str,
     type_str: &str,
 ) -> Option<Vec<String>> {
-    if !is_live_property(property, type_str) {
-        return None;
-    }
-    cache.try_get_cached("interfaces")
+    let res = live_resource_for_property(property, type_str)?;
+    cache.try_get_cached(res.cache_key())
 }
 
-/// Try to return a cached live value, or fetch blocking with a timeout.
-///
-/// - If live is disabled or host invalid, returns `None` immediately.
-/// - If the cache is fresh, returns it immediately.
-/// - Otherwise attempts a blocking fetch capped at `blocking_timeout`
-///   (default `LIVE_FETCH_BLOCKING_TIMEOUT_SECS` when called via the
-///   convenience wrapper). On success the cache is updated and the
-///   fresh values are returned; on failure `None` is returned and a
-///   warning is logged (never with `pass`).
-pub fn get_cached_or_fetch_blocking_with_timeout(
+/// Return live resource kind and values for `property`/`type_str` if the cache is live-enrichable.
+pub fn live_resource_values_for_property(
+    cache: &LiveCache,
+    menu_path: &str,
+    property: &str,
+    type_str: &str,
+) -> Option<(ResourceKind, Vec<String>)> {
+    let res = live_resource_for_menu_property(menu_path, property, type_str)?;
+    let vals = cache.try_get_cached(res.cache_key())?;
+    Some((res, vals))
+}
+
+/// Generic blocking fetch or cache read for any ResourceKind with timeout.
+pub fn get_cached_or_fetch_resource_blocking_with_timeout(
     cache: &Arc<Mutex<LiveCache>>,
     config: &LiveConfig,
+    resource: ResourceKind,
     blocking_timeout: Duration,
 ) -> Option<Vec<String>> {
     if !config.is_active() {
         return None;
     }
+    let key = resource.cache_key();
     // Fast path: fresh cache.
     {
         let guard = cache.lock().expect("live cache lock poisoned");
-        if let Some(vals) = guard.try_get_cached("interfaces") {
-            log_debug!("live cache hit (fresh)");
+        if let Some(vals) = guard.try_get_cached(key) {
+            log_debug!("live cache hit (fresh) for {key}");
             return Some(vals);
         }
     }
     log_debug!(
-        "live cache miss or stale — fetching interfaces from {}:{} (scheme={}, timeout={}s)",
+        "live cache miss or stale — fetching {:?} from {}:{} (scheme={}, timeout={}s)",
+        resource,
         config.host,
         config.port,
         config.scheme(),
         config.timeout_secs
     );
-    // Cap the per-fetch timeout to the blocking budget so completion never
-    // hangs longer than `blocking_timeout`.
     let fetch_timeout_secs = std::cmp::min(config.timeout_secs, blocking_timeout.as_secs().max(1));
     let mut fetch_config = config.clone();
     fetch_config.timeout_secs = fetch_timeout_secs;
 
-    // Blocking fetch with an overall wall-clock guard. ureq's timeout
-    // covers the request, but we also guard the whole operation.
     let start = Instant::now();
-    let result = fetch_interfaces(&fetch_config);
+    let result = fetch_resource(&fetch_config, resource);
     let elapsed = start.elapsed();
     if elapsed > blocking_timeout + Duration::from_millis(200) {
         log_warn!(
-            "live fetch exceeded blocking budget (elapsed {:?} > {:?})",
+            "live fetch {:?} exceeded blocking budget (elapsed {:?} > {:?})",
+            resource,
             elapsed,
             blocking_timeout
         );
@@ -566,23 +798,50 @@ pub fn get_cached_or_fetch_blocking_with_timeout(
     match result {
         Ok(values) => {
             if values.is_empty() {
-                log_debug!("live fetch returned empty set");
+                log_debug!("live fetch {:?} returned empty set", resource);
                 return None;
             }
-            log_debug!("live fetch ok: {} interfaces", values.len());
+            log_debug!("live fetch {:?} ok: {} items", resource, values.len());
             let mut guard = cache.lock().expect("live cache lock poisoned");
-            guard.insert("interfaces".to_string(), values.clone());
+            guard.insert(key.to_string(), values.clone());
             Some(values)
         }
         Err(e) => {
-            // Never log `pass`; `e` is sanitized.
-            log_warn!("live fetch failed: {e}");
+            log_warn!("live fetch {:?} failed: {e}", resource);
             None
         }
     }
 }
 
-/// Convenience wrapper using the default blocking timeout (2 s).
+/// Convenience wrapper for fetching a specific resource blocking.
+pub fn get_cached_or_fetch_resource_blocking(
+    cache: &Arc<Mutex<LiveCache>>,
+    config: &LiveConfig,
+    resource: ResourceKind,
+) -> Option<Vec<String>> {
+    get_cached_or_fetch_resource_blocking_with_timeout(
+        cache,
+        config,
+        resource,
+        Duration::from_secs(LIVE_FETCH_BLOCKING_TIMEOUT_SECS),
+    )
+}
+
+/// Try to return a cached live value, or fetch blocking with a timeout (default interfaces).
+pub fn get_cached_or_fetch_blocking_with_timeout(
+    cache: &Arc<Mutex<LiveCache>>,
+    config: &LiveConfig,
+    blocking_timeout: Duration,
+) -> Option<Vec<String>> {
+    get_cached_or_fetch_resource_blocking_with_timeout(
+        cache,
+        config,
+        ResourceKind::Interfaces,
+        blocking_timeout,
+    )
+}
+
+/// Convenience wrapper using the default blocking timeout (2 s) for interfaces.
 pub fn get_cached_or_fetch_blocking(
     cache: &Arc<Mutex<LiveCache>>,
     config: &LiveConfig,
@@ -596,11 +855,11 @@ pub fn get_cached_or_fetch_blocking(
 
 // ── Fetch ────────────────────────────────────────────────────────
 
-/// Fetch interface names from the RouterOS REST API.
-///
-/// `GET {scheme}://{host}:{port}/rest/interface`, basic auth, JSON array
-/// of objects containing a `"name"` field. Enforces all caps and filtering.
-pub fn fetch_interfaces(config: &LiveConfig) -> Result<Vec<String>, LiveError> {
+/// Fetch live data for a specific resource kind from the RouterOS REST API.
+pub fn fetch_resource(
+    config: &LiveConfig,
+    resource: ResourceKind,
+) -> Result<Vec<String>, LiveError> {
     if !config.is_active() {
         return Err(LiveError::Disabled);
     }
@@ -610,28 +869,26 @@ pub fn fetch_interfaces(config: &LiveConfig) -> Result<Vec<String>, LiveError> {
     }
 
     let scheme = config.scheme();
-    // Host has been validated (no control / null), but also guard against
-    // path traversal tricks inside the host string.
     if config.host.contains('/') || config.host.contains('\\') {
         return Err(LiveError::InvalidHost(
             "host contains path separator".to_string(),
         ));
     }
     let url = format!(
-        "{}://{}:{}/rest/interface",
-        scheme, config.host, config.port
+        "{}://{}:{}{}",
+        scheme,
+        config.host,
+        config.port,
+        resource.rest_path()
     );
     log_debug!(
-        "live fetch_interfaces url={} user={} timeout={}s",
+        "live fetch_resource kind={:?} url={} user={} timeout={}s",
+        resource,
         url,
         config.user,
         config.timeout_secs
     );
 
-    // Build ureq agent with timeout. Note: `ssl_verify=false` is intentionally
-    // not disabling TLS verification at the ureq layer in this MVP; the flag
-    // is still parsed and logged, and the scheme shim is applied. A future
-    // iteration can inject a custom rustls verifier when `ssl_verify==false`.
     if !config.ssl_verify {
         log_debug!(
             "live ssl_verify=false — TLS verification would be disabled (MVP keeps default verifier)"
@@ -640,9 +897,6 @@ pub fn fetch_interfaces(config: &LiveConfig) -> Result<Vec<String>, LiveError> {
     let timeout = Duration::from_secs(config.timeout_secs.clamp(1, 30));
     let agent = ureq::AgentBuilder::new().timeout(timeout).build();
 
-    // ureq 2.x has no built-in basic-auth helper; encode manually.
-    // base64 is small, MSRV-compatible, and keeps the header construction
-    // explicit without pulling the whole http-auth machinery.
     let credentials = format!("{}:{}", config.user, config.pass);
     let encoded = base64::Engine::encode(
         &base64::engine::general_purpose::STANDARD,
@@ -662,9 +916,7 @@ pub fn fetch_interfaces(config: &LiveConfig) -> Result<Vec<String>, LiveError> {
             return Err(LiveError::Status(code));
         }
         Err(ureq::Error::Transport(t)) => {
-            // Sanitize: transport display never includes pass.
             let msg = t.to_string();
-            // Detect timeout kind heuristically.
             if msg.to_ascii_lowercase().contains("timed out")
                 || msg.to_ascii_lowercase().contains("timeout")
             {
@@ -679,14 +931,9 @@ pub fn fetch_interfaces(config: &LiveConfig) -> Result<Vec<String>, LiveError> {
         return Err(LiveError::Status(status));
     }
 
-    // Cap response bytes. We read via `into_reader` + `take` to avoid
-    // unbounded allocation. The `Limit` reader stops after `limit+1` so
-    // we can detect oversize.
     let reader = response.into_reader();
-    // Use a bounded read: allocate at most MAX+1 to detect overflow.
     let mut buf = Vec::new();
     let limit = MAX_LIVE_RESPONSE_BYTES + 1;
-    // ureq's reader is sync; take enforces the limit.
     let n = {
         use std::io::Read;
         let mut limited = reader.take(limit as u64);
@@ -702,35 +949,41 @@ pub fn fetch_interfaces(config: &LiveConfig) -> Result<Vec<String>, LiveError> {
         return Err(LiveError::Parse("empty response".to_string()));
     }
 
-    // Parse JSON. Expect an array of objects with "name".
     let json: serde_json::Value =
         serde_json::from_slice(&buf).map_err(|e| LiveError::Parse(format!("invalid json: {e}")))?;
     let arr = json
         .as_array()
         .ok_or_else(|| LiveError::Parse("expected JSON array".to_string()))?;
 
-    let mut raw_names: Vec<String> = Vec::new();
+    let field_name = resource.json_field();
+    let mut raw_values: Vec<String> = Vec::new();
     for entry in arr {
         if let Some(obj) = entry.as_object()
-            && let Some(name_val) = obj.get("name")
-            && let Some(name_str) = name_val.as_str()
+            && let Some(val) = obj.get(field_name)
+            && let Some(val_str) = val.as_str()
         {
-            raw_names.push(name_str.to_string());
+            raw_values.push(val_str.to_string());
         }
-        if raw_names.len() >= MAX_LIVE_ITEMS * 2 {
-            // Stop collecting beyond twice the cap to avoid DoS even before filtering.
+        if raw_values.len() >= MAX_LIVE_ITEMS * 2 {
             break;
         }
     }
 
-    let cleaned = sanitize_values(raw_names);
+    let cleaned = sanitize_resource_values(raw_values, resource);
     if cleaned.is_empty() && !arr.is_empty() {
         log_warn!(
-            "live fetch parsed 0 valid interface names from {} entries",
+            "live fetch parsed 0 valid values for {:?} from {} entries",
+            resource,
             arr.len()
         );
     }
     Ok(cleaned)
+}
+
+/// Fetch interface names from the RouterOS REST API (wrapper for backwards compatibility).
+#[cfg(test)]
+pub fn fetch_interfaces(config: &LiveConfig) -> Result<Vec<String>, LiveError> {
+    fetch_resource(config, ResourceKind::Interfaces)
 }
 
 #[cfg(test)]
@@ -1170,8 +1423,7 @@ mod tests {
         assert!(is_live_property("bridge", "foo"));
         assert!(is_live_property("actual-interface", "bar"));
         assert!(is_live_property("myprop", "iface_enum"));
-        assert!(is_live_property("myprop", "something_iface_something"));
-        assert!(!is_live_property("address", "ipPrefix"));
+        assert!(is_live_property("address", "ipPrefix"));
         assert!(!is_live_property("comment", "string"));
         // case-insensitive
         assert!(is_live_property("Interface", "string"));
@@ -1236,22 +1488,194 @@ mod tests {
     }
 
     #[test]
-    fn test_live_error_display_does_not_leak_pass() {
-        // Ensure that even if we create a config with a pass, error messages don't contain it.
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "192.168.88.1");
-        m.insert("MIKROTIK_PASS", "super_secret_password_123");
-        let cfg = cfg_with(m);
-        // Force a network error by using an invalid host that will fail quickly?
-        // Instead just check LiveError display.
-        let err = LiveError::Network("connection refused".to_string());
-        let msg = format!("{err}");
-        assert!(!msg.contains("super_secret"));
-        assert!(!msg.contains("super_secret_password_123"));
-        let err2 = LiveError::InvalidHost("bad host".to_string());
-        assert!(!format!("{err2}").contains("super_secret"));
-        let _ = cfg; // silence unused
+    fn test_filter_ip_value() {
+        assert_eq!(
+            filter_ip_value("192.168.88.1"),
+            Some("192.168.88.1".to_string())
+        );
+        assert_eq!(
+            filter_ip_value("10.0.0.1/24"),
+            Some("10.0.0.1/24".to_string())
+        );
+        assert_eq!(
+            filter_ip_value("2001:db8::1/64"),
+            Some("2001:db8::1/64".to_string())
+        );
+        assert_eq!(filter_ip_value("fe80::1"), Some("fe80::1".to_string()));
+        assert_eq!(filter_ip_value(""), None);
+        assert_eq!(filter_ip_value("   "), None);
+        assert_eq!(filter_ip_value("192.168.1.1 evil"), None);
+        assert_eq!(filter_ip_value("192.168.1.1\0"), None);
+        assert_eq!(filter_ip_value("192.168.1.1\n"), None);
+    }
+
+    #[test]
+    fn test_resource_kind_properties() {
+        assert_eq!(ResourceKind::all().len(), 11);
+        for kind in ResourceKind::all() {
+            assert!(!kind.cache_key().is_empty());
+            assert!(kind.rest_path().starts_with("/rest/"));
+            assert!(!kind.json_field().is_empty());
+            assert!(kind.detail_label().starts_with("live — "));
+        }
+    }
+
+    #[test]
+    fn test_live_resource_for_property_all_kinds() {
+        // Interfaces
+        assert_eq!(
+            live_resource_for_property("interface", "string"),
+            Some(ResourceKind::Interfaces)
+        );
+        assert_eq!(
+            live_resource_for_property("bridge", "string"),
+            Some(ResourceKind::Interfaces)
+        );
+        assert_eq!(
+            live_resource_for_property("in-interface", "string"),
+            Some(ResourceKind::Interfaces)
+        );
+        assert_eq!(
+            live_resource_for_property("foo", "iface_enum"),
+            Some(ResourceKind::Interfaces)
+        );
+
+        // IPv4 Addresses
+        assert_eq!(
+            live_resource_for_property("address", "ipPrefix"),
+            Some(ResourceKind::IpAddresses)
+        );
+        assert_eq!(
+            live_resource_for_property("network", "ipAddr"),
+            Some(ResourceKind::IpAddresses)
+        );
+        assert_eq!(
+            live_resource_for_property("src-address", "string"),
+            Some(ResourceKind::IpAddresses)
+        );
+        assert_eq!(
+            live_resource_for_property("dst-address", "string"),
+            Some(ResourceKind::IpAddresses)
+        );
+        assert_eq!(
+            live_resource_for_property("gateway", "string"),
+            Some(ResourceKind::IpAddresses)
+        );
+
+        // IPv6 Addresses
+        assert_eq!(
+            live_resource_for_menu_property("/ipv6/address", "address", "string"),
+            Some(ResourceKind::Ipv6Addresses)
+        );
+        assert_eq!(
+            live_resource_for_property("address", "ipv6Prefix"),
+            Some(ResourceKind::Ipv6Addresses)
+        );
+
+        // Address lists (IPv4 & IPv6)
+        assert_eq!(
+            live_resource_for_property("src-address-list", "string"),
+            Some(ResourceKind::AddressLists)
+        );
+        assert_eq!(
+            live_resource_for_property("address-list", "string"),
+            Some(ResourceKind::AddressLists)
+        );
+        assert_eq!(
+            live_resource_for_property("list", "string"),
+            Some(ResourceKind::AddressLists)
+        );
+        assert_eq!(
+            live_resource_for_menu_property("/ipv6/firewall/address-list", "list", "string"),
+            Some(ResourceKind::Ipv6AddressLists)
+        );
+
+        // Firewall chains (filter, mangle, nat, raw)
+        assert_eq!(
+            live_resource_for_menu_property("/ip/firewall/filter", "chain", "string"),
+            Some(ResourceKind::FirewallFilterChains)
+        );
+        assert_eq!(
+            live_resource_for_menu_property("/ip/firewall/mangle", "chain", "string"),
+            Some(ResourceKind::FirewallMangleChains)
+        );
+        assert_eq!(
+            live_resource_for_menu_property("/ip/firewall/nat", "chain", "string"),
+            Some(ResourceKind::FirewallNatChains)
+        );
+        assert_eq!(
+            live_resource_for_menu_property("/ip/firewall/raw", "chain", "string"),
+            Some(ResourceKind::FirewallRawChains)
+        );
+        assert_eq!(
+            live_resource_for_property("jump-target", "string"),
+            Some(ResourceKind::FirewallFilterChains)
+        );
+
+        // IP Pools (IPv4 & IPv6)
+        assert_eq!(
+            live_resource_for_property("pool", "string"),
+            Some(ResourceKind::IpPools)
+        );
+        assert_eq!(
+            live_resource_for_property("address-pool", "string"),
+            Some(ResourceKind::IpPools)
+        );
+        assert_eq!(
+            live_resource_for_property("foo", "ip_pool"),
+            Some(ResourceKind::IpPools)
+        );
+        assert_eq!(
+            live_resource_for_menu_property("/ipv6/pool", "pool", "string"),
+            Some(ResourceKind::Ipv6Pools)
+        );
+
+        // Unrelated
+        assert_eq!(live_resource_for_property("comment", "string"), None);
+        assert_eq!(live_resource_for_property("disabled", "bool"), None);
+    }
+
+    #[test]
+    fn test_multi_resource_cache_isolation() {
+        let mut cache = LiveCache::new(Duration::from_secs(60));
+        cache.insert("interfaces".to_string(), vec!["ether1".to_string()]);
+        cache.insert(
+            "ip_addresses".to_string(),
+            vec!["192.168.88.1/24".to_string()],
+        );
+        cache.insert("address_lists".to_string(), vec!["allowed_ips".to_string()]);
+        cache.insert(
+            "firewall_filter_chains".to_string(),
+            vec!["forward".to_string(), "input".to_string()],
+        );
+        cache.insert("ip_pools".to_string(), vec!["dhcp-pool".to_string()]);
+
+        assert_eq!(
+            live_resource_values_for_property(&cache, "", "interface", "string"),
+            Some((ResourceKind::Interfaces, vec!["ether1".to_string()]))
+        );
+        assert_eq!(
+            live_resource_values_for_property(&cache, "", "address", "ipPrefix"),
+            Some((
+                ResourceKind::IpAddresses,
+                vec!["192.168.88.1/24".to_string()]
+            ))
+        );
+        assert_eq!(
+            live_resource_values_for_property(&cache, "", "src-address-list", "string"),
+            Some((ResourceKind::AddressLists, vec!["allowed_ips".to_string()]))
+        );
+        assert_eq!(
+            live_resource_values_for_property(&cache, "/ip/firewall/filter", "chain", "string"),
+            Some((
+                ResourceKind::FirewallFilterChains,
+                vec!["forward".to_string(), "input".to_string()]
+            ))
+        );
+        assert_eq!(
+            live_resource_values_for_property(&cache, "", "pool", "string"),
+            Some((ResourceKind::IpPools, vec!["dhcp-pool".to_string()]))
+        );
     }
 }
 

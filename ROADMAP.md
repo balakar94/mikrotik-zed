@@ -42,15 +42,26 @@ Windows support landed in 0.5.0/0.5.1 (auto-download, `.exe` handling, `windows-
 
 ## Vision — Live Data (early, opt-in) — `feat/live-data`
 
-> **Early vision, not committed.** Branch `feat/live-data` explores live enrichment without touching `data/commands.toml`.
+> **Opt-in live device enrichment via Generic Resource Dispatcher.** Explores live enrichment directly from RouterOS devices over REST without touching `data/commands.toml`.
 
-**Goal:** when the user opts in, Zed asks for MikroTik credentials once (via task input / settings) and `rsc-ls` enriches completion/hover with **live values from the device** (interfaces, addresses, bridges) via REST, cached in memory with TTL. The snapshot (`data/commands.toml` 7.23.2) stays the single source of truth for structure; live data never overwrites the file.
+**Goal:** when the user opts in, `rsc-ls` connects to a configured RouterOS device over REST and dynamically enriches autocomplete with **real-time values from the device**:
+- **Interfaces & Bridges:** `interface`, `bridge`, `in-interface`, `out-interface`, `parent`
+- **IP Addresses & Networks:** `address`, `network`, `src-address`, `dst-address`, `gateway`, `to-addresses`
+- **Firewall & Lists:** `src-address-list`, `dst-address-list`, `address-list`, `list`, `chain`, `jump-target` across Filter, NAT, Mangle, and Raw
+- **IP Pools:** `pool`, `address-pool`, `remote-pool` (IPv4 and IPv6)
 
-**How it would surface in Zed (no file modification):**
-* **No `data/commands.toml` edit** — live values live only in `rsc-ls` memory (or `data/live-cache.toml` gitignored if persisted), never committed. `make extract` stays idempotent.
-* **Contextual menu / task is the Zed-native way:** `languages/rsc/tasks.json` already exposes `task: spawn` with `inputs` prompts (`host`, `user`, `pass` → `MIKROTIK_HOST` env). WASM shim cannot show a native `prompt()` dialog, but a `context_menu` entry / slash command that triggers the `MikroTik: Connect Live` task gives the same UX: right-click `.rsc` → Connect Live → Zed shows input boxes, sets env for the LSP, live cache warms. No file is dirtied.
+**Future Hydration Vectors (Post-0.6.0 candidate vectors):**
+* **Routing & BGP:** Dynamic BGP peers, AS numbers, VRF instances, and routing tables (`routing-table`, `vrf`, `instance`, `peer`).
+* **Wireless & CAPsMAN:** Wi-Fi channel profiles, security profiles, datapaths, and steering rules (`configuration`, `security`, `channel`, `datapath`).
+* **Queues & QoS:** Simple queue targets, queue tree parents, packet marks, and connection marks (`packet-mark`, `connection-mark`, `routing-mark`).
+* **Certificates & Security:** Installed TLS certificates, trust chains, and user groups (`certificate`, `ca-certificate`, `group`).
+* **DHCP & Network Services:** DHCP servers, option sets, and static DNS hostnames (`dhcp-server`, `dhcp-options`).
 
-**Scope if validated:** `interface=` / `bridge=` / `address=` live completions, hover with `actual-interface` from device, diagnostics `unknown interface (not on this device)` — all behind `live=false` default, fallback to snapshot on fetch failure. See `docs/adr/` for future ADR.
+**Architectural & Security Guarantees:**
+* **Zero disk modifications:** Live values live strictly in an in-memory `LiveCache` (TTL 60s, max 16 collections, max 500 items, max 64 chars per value). The static snapshot (`data/commands.toml` 7.23.2) remains the single source of truth for command grammar and structure.
+* **Bounded execution budget:** Blocking live fetches during completion are strictly capped at a 2-second timeout budget to ensure the editor never stutters or hangs if the router is slow or unreachable.
+* **Credential safety:** Credentials (`MIKROTIK_PASS`) are read from process environment / keychain only and are strictly redacted from all debug logs and errors.
+* **Zed configuration:** Opt-in via `RSC_LS_LIVE=1` / `MIKROTIK_LIVE=1` with host/user/pass configured via Zed `settings.json`, shell environment, or interactive Zed tasks in `languages/rsc/tasks.json`.
 
 ## Later — 1.0+
 

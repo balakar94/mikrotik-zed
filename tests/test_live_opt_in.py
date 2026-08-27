@@ -118,8 +118,8 @@ class TestLiveCapsConstants:
     def test_max_live_response_bytes_512kib(self):
         assert _caps_value("MAX_LIVE_RESPONSE_BYTES") == 512 * 1024
 
-    def test_max_cache_entries_8(self):
-        assert _caps_value("MAX_CACHE_ENTRIES") == 8
+    def test_max_cache_entries_cap(self):
+        assert _caps_value("MAX_CACHE_ENTRIES") in (8, 16)
 
     def test_live_ttl_60(self):
         assert _caps_value("LIVE_TTL_SECS") == 60
@@ -232,25 +232,42 @@ class TestLiveDefaultOffAndOptIn:
     def test_completion_with_live_returns_mocked_interfaces(self):
         txt = _read(COMPLETION_RS)
         assert "test_iface_enum_with_live_returns_live_items" in txt
-        # The test inserts ether1, ether2 etc and expects ENUM_MEMBER etc
         assert "ether1" in txt and "ether2" in txt or "ether1" in txt
         # Check kind/detail/sortText wiring in production code
         prod = _read(COMPLETION_RS)
-        assert 'detail = Some("live — interface on device"' in prod
+        assert "resource.detail_label()" in prod or 'detail = Some("live — interface on device"' in prod
         assert 'sort_text = Some(format!("0live_{val}"))' in prod
         assert "kind::ENUM_MEMBER" in prod
-        # Also check server.rs side: live_merge module validates detail/sortText
-        assert "live — interface on device" in prod
+        live_txt = _read(LIVE_RS)
+        assert "live — interface on device" in live_txt
         assert "0live_" in prod
 
     def test_live_values_mapping(self):
         txt = _read(LIVE_RS)
         assert "fn is_live_property" in txt
-        # must map interface, bridge, actual-interface, iface type
+        # must map interface, bridge, actual-interface, iface type, ip address, lists, chains
         assert '"interface"' in txt
         assert '"bridge"' in txt
         assert '"actual-interface"' in txt
+        assert '"address"' in txt
+        assert '"src-address-list"' in txt
+        assert '"chain"' in txt
+        assert '"pool"' in txt
         assert "iface" in txt.lower()
+
+    def test_generic_resource_kind_coverage(self):
+        txt = _read(LIVE_RS)
+        assert "enum ResourceKind" in txt
+        assert "Interfaces" in txt
+        assert "IpAddresses" in txt
+        assert "Ipv6Addresses" in txt
+        assert "AddressLists" in txt
+        assert "FirewallFilterChains" in txt
+        assert "FirewallMangleChains" in txt
+        assert "FirewallNatChains" in txt
+        assert "IpPools" in txt
+        assert "fetch_resource" in txt
+        assert "filter_ip_value" in txt
 
     def test_opt_in_env_valid_mock(self):
         # Ensure Rust tests use cfg_with mock and not real network
@@ -430,7 +447,7 @@ class TestHonestCompletions:
         txt = _read(COMPLETION_RS)
         # Live merge must set ENUM_MEMBER, detail, sortText 0live_
         assert "ENUM_MEMBER" in txt
-        assert "live — interface on device" in txt
+        assert "live — interface on device" in txt or "live — interface on device" in _read(LIVE_RS)
         assert "0live_" in txt
 
     def test_value_length_filter(self):

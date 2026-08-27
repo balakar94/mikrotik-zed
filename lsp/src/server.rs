@@ -716,7 +716,40 @@ impl Server {
                 // more than LIVE_FETCH_BLOCKING_TIMEOUT_SECS and never logs pass.
                 if self.live_config.is_active() {
                     // Blocking refresh capped at 2 s; fresh cache returns instantly.
-                    let _ = get_cached_or_fetch_blocking(&self.live_cache, &self.live_config);
+                    let context = parse_line(&self.data, &before_cursor);
+                    let target_resource = if let Some(last_tok) =
+                        crate::parser::tokenize(&before_cursor).last()
+                        && last_tok.contains('=')
+                    {
+                        let key = last_tok
+                            .split('=')
+                            .next()
+                            .unwrap_or("")
+                            .trim_start_matches(':');
+                        if let Some(menu) = self.data.menu_by_path.get(&context.path)
+                            && let Some(arg) = menu.arguments.iter().find(|a| a.name == key)
+                        {
+                            crate::live::live_resource_for_menu_property(
+                                &context.path,
+                                key,
+                                &arg.arg_type,
+                            )
+                        } else {
+                            crate::live::live_resource_for_menu_property(&context.path, key, "")
+                        }
+                    } else {
+                        Some(crate::live::ResourceKind::Interfaces)
+                    };
+
+                    if let Some(res) = target_resource {
+                        let _ = crate::live::get_cached_or_fetch_resource_blocking(
+                            &self.live_cache,
+                            &self.live_config,
+                            res,
+                        );
+                    } else {
+                        let _ = get_cached_or_fetch_blocking(&self.live_cache, &self.live_config);
+                    }
                 }
                 let live_guard = self.live_cache.lock().ok();
                 let items = if let Some(ref cache) = live_guard {

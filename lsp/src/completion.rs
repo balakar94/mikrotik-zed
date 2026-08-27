@@ -11,7 +11,7 @@
 //   with that typed token — script globals and statement snippets. Menu
 //   paths and property names make no sense after a colon.
 
-use crate::live::{LiveCache, live_values_for_property};
+use crate::live::{LiveCache, live_resource_values_for_property};
 use crate::menus::{ArgEntry, LineContext, MenuData};
 
 /// LSP CompletionItemKind values (mirrors the LSP spec)
@@ -480,12 +480,12 @@ fn get_value_completions_with_live(
         items.push(ip_placeholder(arg, "0.0.0.0"));
     }
 
-    // Live enrichment: merge device interface names when the property is
-    // live-enrichable and a fresh cache entry exists. Deduplicates against
-    // static items and prefers live (sort_text "0live_<name>" ranks above
-    // static placeholders).
+    // Live enrichment: merge device values (interfaces, IP addresses, address lists, chains, pools)
+    // when the property is live-enrichable and a fresh cache entry exists. Deduplicates against
+    // static items and prefers live (sort_text "0live_<name>" ranks above static placeholders).
     if let Some(cache) = live_cache
-        && let Some(live_vals) = live_values_for_property(cache, property_key, &arg.arg_type)
+        && let Some((resource, live_vals)) =
+            live_resource_values_for_property(cache, &ctx.path, property_key, &arg.arg_type)
         && !live_vals.is_empty()
     {
         let live_set: std::collections::HashSet<&String> = live_vals.iter().collect();
@@ -493,7 +493,7 @@ fn get_value_completions_with_live(
         items.retain(|it| !live_set.contains(&it.label));
         for val in live_vals {
             let mut item = CompletionItem::new(val.clone(), kind::ENUM_MEMBER);
-            item.detail = Some("live — interface on device".to_string());
+            item.detail = Some(resource.detail_label().to_string());
             item.insert_text = Some(val.clone());
             item.insert_text_format = Some(1);
             item.sort_text = Some(format!("0live_{val}"));
@@ -2058,15 +2058,38 @@ type = "enum (ether1 | ether2)"
     }
 
     #[test]
-    fn test_non_live_property_ignores_cache() {
+    fn test_non_cached_live_property_returns_static_placeholder() {
         let data = synth();
         let mut cache = LiveCache::new(Duration::from_secs(60));
         cache.insert("interfaces".to_string(), vec!["ether1".to_string()]);
-        // address is ipPrefix, not live-enrichable, so cache is ignored.
+        // address is mapped to ip_addresses, but cache only has interfaces -> returns static placeholder
         let items = compute_completions_with_live(&data, "/ip/address add address=", Some(&cache));
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert_eq!(labels, vec!["0.0.0.0/0"]);
         assert!(!labels.contains(&"ether1"));
+    }
+
+    #[test]
+    fn test_ip_address_live_completion() {
+        let data = synth();
+        let mut cache = LiveCache::new(Duration::from_secs(60));
+        cache.insert(
+            "ip_addresses".to_string(),
+            vec!["192.168.88.1/24".to_string(), "10.0.0.1/8".to_string()],
+        );
+        let items = compute_completions_with_live(&data, "/ip/address add address=", Some(&cache));
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"192.168.88.1/24"));
+        assert!(labels.contains(&"10.0.0.1/8"));
+        let live_item = items.iter().find(|i| i.label == "192.168.88.1/24").unwrap();
+        assert_eq!(
+            live_item.detail.as_deref(),
+            Some("live — IPv4 address on device")
+        );
+        assert_eq!(
+            live_item.sort_text.as_deref(),
+            Some("0live_192.168.88.1/24")
+        );
     }
 
     #[test]
@@ -2097,11 +2120,13 @@ type = "enum (ether1 | ether2)"
             "interfaces".to_string(),
             vec!["a".to_string(), "b".to_string()],
         );
+        cache.insert("ip_addresses".to_string(), vec!["10.0.0.1".to_string()]);
         assert!(live_values_for_property(&cache, "interface", "string").is_some());
         assert!(live_values_for_property(&cache, "bridge", "string").is_some());
         assert!(live_values_for_property(&cache, "actual-interface", "string").is_some());
         assert!(live_values_for_property(&cache, "foo", "iface_enum").is_some());
-        assert!(live_values_for_property(&cache, "address", "ipPrefix").is_none());
+        assert!(live_values_for_property(&cache, "address", "ipPrefix").is_some());
+        assert!(live_values_for_property(&cache, "comment", "string").is_none());
     }
 
     #[test]
