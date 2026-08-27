@@ -157,7 +157,7 @@ fmt-fix: ## Format Rust code (write)
 
 clippy: ## Lint with clippy (wasm + native, -D warnings)
 	cargo clippy --target $(WASM_TARGET) -- -D warnings
-	cargo clippy -p rsc-ls -- -D warnings
+	cargo clippy -p rsc-ls --all-targets -- -D warnings
 
 audit: ## Audit dependencies (requires cargo-audit)
 	@command -v cargo-audit >/dev/null 2>&1 || (echo "install: cargo install cargo-audit" && false)

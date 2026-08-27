@@ -1409,6 +1409,17 @@ type = "bool"
     }
 
     #[test]
+    fn test_inline_comment_does_not_spawn_unknown_property_diagnostic() {
+        let data = synth();
+        let doc = "/ip/address add address=1.1.1.1/24 interface=ether1 # inline note: foo=bar invalid_key=123";
+        let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
+        assert!(
+            diags.is_empty(),
+            "inline comments must not trigger unknown property diagnostics: {diags:?}"
+        );
+    }
+
+    #[test]
     fn test_rule5_invalid_enum_hint_severity() {
         let data = synth();
         let diags = compute_diagnostics(

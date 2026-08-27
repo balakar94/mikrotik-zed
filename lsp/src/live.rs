@@ -1677,16 +1677,14 @@ mod tests {
             Some((ResourceKind::IpPools, vec!["dhcp-pool".to_string()]))
         );
     }
-}
 
-// Helper trait for sorted check in tests (stable in std from 1.82?).
-#[cfg(test)]
-trait IsSorted {
-    fn is_sorted(&self) -> bool;
-}
-#[cfg(test)]
-impl IsSorted for Vec<String> {
-    fn is_sorted(&self) -> bool {
-        self.windows(2).all(|w| w[0] <= w[1])
+    // Helper trait for sorted check in tests (stable in std from 1.82?).
+    trait IsSorted {
+        fn is_sorted(&self) -> bool;
+    }
+    impl IsSorted for Vec<String> {
+        fn is_sorted(&self) -> bool {
+            self.windows(2).all(|w| w[0] <= w[1])
+        }
     }
 }

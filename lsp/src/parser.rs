@@ -189,7 +189,7 @@ pub(crate) fn tokenize_with_spans(text: &str) -> Vec<SpanToken> {
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
         }
-        if i >= bytes.len() {
+        if i >= bytes.len() || bytes[i] == b'#' {
             break;
         }
 
@@ -253,7 +253,7 @@ pub fn build_before_cursor(doc: &str, cursor_line: usize, cursor_char: usize) ->
 
     for i in (0..cursor_line).rev() {
         let trimmed = lines[i].trim();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() || trimmed.starts_with('#') {
             break;
         }
         if trimmed.starts_with('/') || trimmed.starts_with(':') {
@@ -802,5 +802,42 @@ type = "Directory"
         );
         // last_token remains the RAW token text (key included), per LineContext.
         assert_eq!(ctx2.last_token, r#"comment="hello world""#);
+    }
+
+    #[test]
+    fn test_tokenize_inline_comment() {
+        let tokens =
+            tokenize_with_spans(r#"/ip/address add address=1.1.1.1/24 # comment with foo=bar"#);
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].text, "/ip/address");
+        assert_eq!(tokens[1].text, "add");
+        assert_eq!(tokens[2].text, "address=1.1.1.1/24");
+    }
+
+    #[test]
+    fn test_tokenize_hash_inside_quotes_is_not_comment() {
+        let tokens =
+            tokenize_with_spans(r##"/ip/address add comment="#1 interface" address=1.1.1.1/24"##);
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[0].text, "/ip/address");
+        assert_eq!(tokens[1].text, "add");
+        assert_eq!(tokens[2].text, r##"comment="#1 interface""##);
+        assert_eq!(tokens[3].text, "address=1.1.1.1/24");
+    }
+
+    #[test]
+    fn test_parse_line_with_inline_comment() {
+        let data = synthetic_data();
+        let ctx = parse_line(
+            &data,
+            "/ip/address add address=1.1.1.1/24 # comment with extra=prop",
+        );
+        assert_eq!(ctx.path, "/ip/address");
+        assert_eq!(ctx.command.as_deref(), Some("add"));
+        assert_eq!(
+            ctx.properties.get("address").map(|s| s.as_str()),
+            Some("1.1.1.1/24")
+        );
+        assert_eq!(ctx.properties.get("extra"), None);
     }
 }
