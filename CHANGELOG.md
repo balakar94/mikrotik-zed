@@ -2,7 +2,20 @@
 
 ## [Unreleased]
 
-No changes beyond `0.5.1` prerelease at this time.
+No changes yet.
+
+## [0.5.2] - 2026-08-27
+
+### Fixed
+
+- **Extraction (`scripts/extract_commands.py`)**: deduplicate intra-menu arguments (first-wins, 19 removed in `/interface/wifi` family), escape `type` field via `escape_toml_string`, optimize `clean_type` truncation 100→150 for complex types, add hygiene trace for empty descriptions (77% args).
+- **LSP hover (`lsp/src/hover.rs`)**: robust hover for flags with empty upstream descriptions — fallback to `Type: ...` instead of empty card.
+- **Data (`data/commands.toml`, `data/upstream-docs.toml`)**: regenerated from upstream `llms-full.txt` hash `5503bd5858cf82d0` (2026-08-27, +253 lines, +8 headings), still 1077 menus, source hash updated.
+
+### Changed
+
+- **Docs (`README.md`, `AGENTS.md`, `extension.toml`)**: clarify version support — `RouterOS 7.20+ · Snapshot 7.23.2 · Awaiting 7.24` (compatible with 7.0+ for common menus).
+- **Build (`Cargo.toml`, `lsp/Cargo.toml`)**: pin `toml = "0.8"` comment for MSRV 1.90 clarity.
 
 ## [0.5.1] - 2026-08-26
 
@@ -72,6 +85,7 @@ Baseline release tagged `v0.5.0` (`e167430`). Changes since `v0.4.0` (`62998ab`)
 - `extension.toml` kept to schema-known keys only (`make check-manifest` gate).
 - Local `TODO.md` ignored.
 
-[Unreleased]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/balakar94/mikrotik-zed/compare/v0.4.0...v0.5.0

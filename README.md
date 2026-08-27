@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <sub>Supported: RouterOS 7.20+ — data snapshot 7.23.2 tracked in <code>data/commands.toml</code> and <code>data/upstream-docs.toml</code> (auto-synced from <a href="https://manual.mikrotik.com/llms-full.txt">llms-full.txt</a>; compatible with 7.0+ for common menus, awaiting 7.24)</sub>
+  <sub>RouterOS 7.20+ · Snapshot 7.23.2 · Awaiting 7.24</sub>
 </p>
 
 ---

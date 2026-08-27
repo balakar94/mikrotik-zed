@@ -17,7 +17,8 @@ This roadmap is intentionally coarse; details live in issues and PRs.
 
 Focus is correctness, hardening, and release hygiene before any feature expansion.
 
-- **0.5.1 prerelease — shipped 2026-08-26** (tag `v0.5.1`, `d9a8ffd`): four commits rewritten in English on top of `0.5.0` (rebase `0cede40..87cc692`), published as a prerelease GitHub Release with all six platform binaries + SHA-256 companions + `extension.wasm`. Registry submission is deferred until the marketplace review window; see [docs/publishing-runbook.md](docs/publishing-runbook.md).
+- **0.5.2 — shipped 2026-08-27** (tag `v0.5.2`, `e5e36db`): stability and docs sync — deduplicated wifi args, flag type emission, hover fallback, version docs clarified (snapshot 7.23.2), upstream sync `5503bd5`.
+- **0.5.1 prerelease — shipped 2026-08-26** (tag `v0.5.1`, `d9a8ffd`): published as a prerelease GitHub Release with all six platform binaries + SHA-256 companions + `extension.wasm`. Registry submission is deferred until the marketplace review window; see [docs/publishing-runbook.md](docs/publishing-runbook.md).
 - **Shim cache integrity / download verification** (`feat/shim-download-verification`, Phase 1 in `src/cache.rs` / `src/verify.rs`): versioned layout `rsc-ls-<version>` (`.exe` on Windows), `.verified` marker, re-hash on reuse, clean abort on mismatch.
 - **Grammar token and highlight fixes** in prerelease: `mac_address` / `duration`, `$1` positional, `boolean_literal` / `array_access` precedence, `highlights.scm` corrections (`feat/multiline-string-grammar`, `feat/highlight-field-colors`) — mirrored to `grammars/rsc/queries/` and covered by corpus `68/68`.
 - **LSP framing / diagnostics hardening:** bounded `MAX_HEADER_SIZE`, `SyntaxFinding` deferred materialization for backslash continuations, `didChange` batch handling, duplicate `id` detection.
@@ -55,7 +56,7 @@ Until then, `feat/` branches remain the lab for ideas, not a promise.
 ## Principles
 
 - **No date promises.** Milestones are ordering hints; [CHANGELOG.md](CHANGELOG.md) is source of truth for what shipped.
-- **Hard rules stay hard:** no bundled `rsc-ls` binary, `wasm32-wasip2`-clean shim, schema-known `extension.toml` keys only, English-only persisted content.
+- **Hard rules stay hard:** no bundled `rsc-ls` binary, `wasm32-wasip2`-clean shim, schema-known `extension.toml` keys only.
 - **Edit inputs, not outputs:** change `grammar.js` / upstream docs, then regenerate `parser.c` / `data/commands.toml`; never hand-edit generated files.
 - **Defensive LSP:** capped messages/docs/diagnostics, bounded document store, strict `file://` validation. See [docs/adr/](docs/adr/) — especially [ADR 0001](docs/adr/0001-incremental-unset-field-adoption.md) for incremental adoption.
 - **Separate pipelines:** grammar semantics and command data evolve independently; coupled changes are avoided.

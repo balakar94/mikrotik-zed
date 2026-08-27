@@ -97,9 +97,10 @@ Verification: `worktree.which("rsc-ls")` resolves, `textDocument/publishDiagnost
 
 1. Grammar: `python scripts/publish_grammar.py` — checks `tree-sitter generate` clean, pushes `grammars/rsc` to `balakar94/tree-sitter-rsc`, updates `extension.toml` `rev` (never hand-edit; verify against `extension.toml`).
 2. Bump `version` in `Cargo.toml` + `extension.toml`.
-3. `make validate && make fmt clippy && cargo audit` — all green.
-4. Tag: `git tag v0.x.y && git push origin v0.x.y` → `.github/workflows/release.yml` builds `rsc-ls` for 6 triples (`aarch64/x86_64` × `apple-darwin`/`unknown-linux-gnu`, `x86_64/aarch64` × `pc-windows-msvc`) + WASM, creates GitHub Release with assets `rsc-ls-<triple>`.
-5. Extension: PR to `zed-industries/extensions` with submodule + `extensions.toml` + `pnpm sort-extensions`.
+3. **ALWAYS before commit:** update `CHANGELOG.md` (move `Unreleased` to versioned section with `Fixed`/`Changed`/`Added`, update compare links) and `ROADMAP.md` (update `Now — 0.5.x` with tag/hash, remove redundant language mentions). No commit without these — see `Pre-commit Checklist`.
+4. `make validate && make fmt clippy && cargo audit` — all green.
+5. Tag: `git tag v0.x.y && git push origin v0.x.y` → `.github/workflows/release.yml` builds `rsc-ls` for 6 triples (`aarch64/x86_64` × `apple-darwin`/`unknown-linux-gnu`, `x86_64/aarch64` × `pc-windows-msvc`) + WASM, creates GitHub Release with assets `rsc-ls-<triple>` (trigger: `on: push: tags: - "v*.*.*"` — must push tag explicitly, not just `git push`).
+6. Extension: PR to `zed-industries/extensions` with submodule + `extensions.toml` + `pnpm sort-extensions`.
 
 Verification: `gh release view v0.x.y --json assets --jq '.assets[].name'` lists 6 binaries, `extension.toml` rev resolves on GitHub, `make generate-check` passes on tag.
 
@@ -139,4 +140,16 @@ Also: `make clippy` fails → `cargo clippy -- -D warnings` must be clean for bo
 | LSP binary (native) | `lsp/Cargo.toml`, `lsp/src/main.rs` (bootstrap + re-exports), `lsp/src/server.rs` (stdio JSON-RPC: `Server`, dispatch loop, doc store, URI validation), `lsp/src/caps.rs` (all resource limits) |
 | LSP modules | `lsp/src/menus.rs` (indices), `completion.rs`, `hover.rs`, `diagnostics.rs` (5 rules, capped); server enclosure/URI tests live in `server.rs`'s test module |
 | Workspace / build | `Cargo.toml` (workspace `lsp`, `wasm32-wasip2`), `Makefile`, `extension.wasm` |
-| CI / Release | `.github/workflows/ci.yml`, `release.yml` (4 triples + WASM + GitHub Release) |
+| CI / Release | `.github/workflows/ci.yml`, `release.yml` (6 triples + WASM + GitHub Release, trigger `v*.*.*` tag) |
+
+## Pre-commit Checklist (ALWAYS)
+
+> **Never commit without these — the assistant must enforce this.**
+> This checklist is the single source of truth for release hygiene.
+
+- [ ] **CHANGELOG.md**: move `## [Unreleased]` to versioned `## [x.y.z] - YYYY-MM-DD` with `### Fixed`/`Changed`/`Added`, update link footnotes (`[Unreleased]: compare/vx.y.z...HEAD`, `[x.y.z]: compare/v...v...`).
+- [ ] **ROADMAP.md**: update `Now — 0.5.x` with tag/hash and snapshot, remove redundant principles (e.g., English-only is implicit, not listed), keep `Volatile facts` pointer.
+- [ ] **README.md** if version/snapshot changed: update badge note and `Coverage` / `Sync` snapshot line.
+- [ ] **Docs sync if needed**: `make sync && make extract` then `head -20 data/commands.toml` + `cat data/upstream-docs.toml` to confirm hash/version.
+- [ ] **Validate**: `make validate` (includes `check-manifest` + `generate-check` + `fmt` + `clippy` + `test-all` + `extract` idempotency) — must be green.
+- [ ] **Tag trigger note**: `release.yml` only runs on `git push origin v*.*.*` (or `workflow_dispatch`), never on plain `git push`. Verify tag push separately: `git tag vX.Y.Z && git push origin vX.Y.Z`.
