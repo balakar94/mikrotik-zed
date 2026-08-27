@@ -172,7 +172,8 @@ class TestCleanType:
     def test_long_type(self):
         long_type = "x" * 200
         result = clean_type(long_type)
-        assert len(result) <= 103  # 100 + "..."
+        assert len(result) <= 153  # 150 + "..."
+        assert result.endswith("...")
 
     def test_enum_type(self):
         result = clean_type("enum (disabled | enabled | proxy-arp)")

@@ -289,9 +289,11 @@ def clean_type(typ: str) -> str:
     """Clean and simplify type strings for the TOML output."""
     # Remove excessive whitespace
     typ = re.sub(r"\s+", " ", typ).strip()
-    # Truncate very long type descriptions
-    if len(typ) > 100:
-        typ = typ[:97] + "..."
+    # Truncate very long type descriptions — 150 keeps complex alt/super/multi types
+    # (often 110-140 chars) intact while still capping extremes; enum_values already
+    # preserves full member lists so display truncation can be generous.
+    if len(typ) > 150:
+        typ = typ[:147] + "..."
     return typ
 
 
@@ -379,6 +381,17 @@ def synthesize_directories(menus: list[dict]) -> list[dict]:
     Gaps only: explicitly parsed entries are never overwritten or merged
     into. Multi-level chains are handled transitively (/a/b/c implies
     /a/b and /a). Input order does not matter; callers sort afterwards.
+
+    Note on "/root": upstream llms-full.txt contains a single leaf
+    "## root/terminal" with **Type: Directory** (a docs artifact — there
+    is no real RouterOS CLI menu "/root"). The synthesizer intentionally
+    keeps "/root" as an empty Directory whose only child is "terminal" to
+    preserve hierarchy integrity: without it, "/root/terminal" would have
+    a dangling ancestor and prefix completion / ancestor_prefixes would
+    treat "/root" as unknown even though its child is documented. The
+    entry is harmless (no flags/arguments/read-only) and diagnostics
+    correctly treat "/root" as known; filtering it out would break docs
+    fidelity for no benefit, so it is kept intentionally.
     """
     known_paths = {m["path"] for m in menus}
     synthesized: dict[str, dict] = {}
@@ -396,6 +409,27 @@ def synthesize_directories(menus: list[dict]) -> list[dict]:
                     "read_only": [],
                 }
     return menus + list(synthesized.values())
+
+
+def _dedupe_entries(entries: list[dict], path: str, section: str) -> list[dict]:
+    """Deduplicate entries by name, first-wins — weight/speed optimization.
+
+    Upstream llms-full.txt concatenates two generations of docs for
+    /interface/wifi (ssid/mode/etc appear twice with different types).
+    Keeping duplicates bloats TOML and completion lists. First-wins preserves
+    backwards compat with existing snapshots; duplicates are warned to stderr.
+    Single source of truth: applied only at the TOML generation boundary.
+    """
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for e in entries:
+        name = e.get("name", "")
+        if name in seen:
+            print(f"warn: duplicate {section} {name} in {path} — keeping first", file=sys.stderr)
+            continue
+        seen.add(name)
+        unique.append(e)
+    return unique
 
 
 def finalize_menus(menus: list[dict]) -> list[dict]:
@@ -440,6 +474,14 @@ def generate_toml(menus: list[dict], llms_path: Path | None = None) -> str:
     lines.append(f"# Source hash (sha256[:16]): {src_hash}")
     lines.append("")
 
+    # Hygiene counters — track empty descriptions for quality traceability
+    # Upstream leaves ~77% of arguments and ~83% of read-only without description;
+    # empty is kept as valid (LSP falls back to name+type) but we trace it.
+    total_args = 0
+    empty_args = 0
+    total_ro = 0
+    empty_ro = 0
+
     for menu in menus:
         path = menu["path"]
         menu_type = menu["type"]
@@ -447,23 +489,31 @@ def generate_toml(menus: list[dict], llms_path: Path | None = None) -> str:
         lines.append(f'path = "{escape_toml_string(path)}"')
         lines.append(f'type = "{escape_toml_string(menu_type)}"')
 
-        # Flags
-        if menu["flags"]:
-            for flag in menu["flags"]:
+        # Flags — deduplicated (first-wins) to avoid TOML weight bloat
+        # Type is emitted as single source of truth (additive, not breaking).
+        flags = _dedupe_entries(menu.get("flags", []), path, "flag")
+        if flags:
+            for flag in flags:
                 name = escape_toml_string(flag["name"])
-                desc = escape_toml_string(flag["description"])
+                typ = escape_toml_string(clean_type(flag.get("type", "")))
+                desc = escape_toml_string(flag.get("description", ""))
                 lines.append("[[menus.flags]]")
                 lines.append(f'name = "{name}"')
-                lines.append(f'description = "{desc}"')
+                lines.append(f'type = "{typ}"')
+                if desc:
+                    lines.append(f'description = "{desc}"')
                 if flag.get("required"):
                     lines.append("required = true")
 
-        # Arguments
-        if menu["arguments"]:
-            for arg in menu["arguments"]:
+        # Arguments — deduplicated, type escaped
+        arguments = _dedupe_entries(menu.get("arguments", []), path, "arg")
+        total_args += len(arguments)
+        empty_args += sum(1 for a in arguments if not a.get("description"))
+        if arguments:
+            for arg in arguments:
                 name = escape_toml_string(arg["name"])
-                typ = clean_type(arg["type"])
-                desc = escape_toml_string(arg["description"])
+                typ = escape_toml_string(clean_type(arg.get("type", "")))
+                desc = escape_toml_string(arg.get("description", ""))
                 lines.append("[[menus.arguments]]")
                 lines.append(f'name = "{name}"')
                 lines.append(f'type = "{typ}"')
@@ -480,12 +530,15 @@ def generate_toml(menus: list[dict], llms_path: Path | None = None) -> str:
                 if arg.get("unset"):
                     lines.append("unset = true")
 
-        # Read-only arguments
-        if menu["read_only"]:
-            for arg in menu["read_only"]:
+        # Read-only arguments — type escaped, deduped
+        read_only = _dedupe_entries(menu.get("read_only", []), path, "read_only")
+        total_ro += len(read_only)
+        empty_ro += sum(1 for a in read_only if not a.get("description"))
+        if read_only:
+            for arg in read_only:
                 name = escape_toml_string(arg["name"])
-                typ = clean_type(arg["type"])
-                desc = escape_toml_string(arg["description"])
+                typ = escape_toml_string(clean_type(arg.get("type", "")))
+                desc = escape_toml_string(arg.get("description", ""))
                 lines.append("[[menus.read_only]]")
                 lines.append(f'name = "{name}"')
                 lines.append(f'type = "{typ}"')
@@ -493,6 +546,16 @@ def generate_toml(menus: list[dict], llms_path: Path | None = None) -> str:
                     lines.append(f'description = "{desc}"')
 
         lines.append("")
+
+    # Hygiene trace — stderr only, never pollutes TOML stdout
+    if total_args or total_ro:
+        pct_args = round(empty_args * 100 / total_args) if total_args else 0
+        pct_ro = round(empty_ro * 100 / total_ro) if total_ro else 0
+        print(
+            f"hygiene: {empty_args}/{total_args} arguments have empty description ({pct_args}%), "
+            f"{empty_ro}/{total_ro} read-only empty ({pct_ro}%)",
+            file=sys.stderr,
+        )
 
     return "\n".join(lines)
 
