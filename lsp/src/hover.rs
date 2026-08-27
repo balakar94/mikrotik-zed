@@ -145,12 +145,16 @@ pub fn compute_hover(
             });
         }
         if let Some(flag) = menu.flags.iter().find(|f| f.name == word) {
-            let desc = if flag.description.is_empty() {
-                ""
+            // Hygiene: ~28% flags have empty description upstream; fallback to type so card never empty
+            let md = if flag.description.is_empty() {
+                if flag.arg_type.is_empty() {
+                    format!("**{}**", flag.name)
+                } else {
+                    format!("**{}**\n\nType: `{}`", flag.name, flag.arg_type)
+                }
             } else {
-                &flag.description
+                format!("**{}**\n\n{}", flag.name, flag.description)
             };
-            let md = format!("**{}**\n\n{}", flag.name, desc);
             return Some(Hover {
                 contents: HoverContents {
                     kind: "markdown".to_string(),
