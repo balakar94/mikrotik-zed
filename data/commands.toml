@@ -2,8 +2,8 @@
 # Auto-generated from llms-full.txt
 # Covers: /app, /beep, /blink, /caps-man, /certificate, /console, /container, /disk, /dude, /environment, /file, /import, … (1077 menus)
 # RouterOS version: 7.23.2
-# Generated: 2026-08-27T10:16:14.889069Z
-# Source hash (sha256[:16]): df1882575dc393fa
+# Generated: 2026-08-27T10:26:53.550650Z
+# Source hash (sha256[:16]): 5503bd5858cf82d0
 
 [[menus]]
 path = "/app"

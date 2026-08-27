@@ -3,16 +3,16 @@
 # Regenerate with: make sync   (or python3 scripts/sync_llms.py)
 schema = 1
 routeros_version = "7.23.2"
-synced_at_utc = "2026-08-26T17:10:18Z"
+synced_at_utc = "2026-08-27T10:26:49Z"
 
 [[sources]]
 name = "index"
 path = "llms.txt"
 url = "https://manual.mikrotik.com/llms.txt"
-sha256 = "653eaa652ca897641089181c9ecf7df3179ba97d517d87a7803c98facd49d8ae"
+sha256 = "dbf6e66dc36a09d6164989805946bd32215ff3ff46fd4ba41bea9799fedf03cb"
 
 [[sources]]
 name = "full"
 path = "llms-full.txt"
 url = "https://manual.mikrotik.com/llms-full.txt"
-sha256 = "df1882575dc393fa01493bad856d70dc292a60d35779ae629f2b6e65108c387d"
+sha256 = "5503bd5858cf82d04e2329f6b35839d51744998d6df3b6a337d8b5ec5026b573"

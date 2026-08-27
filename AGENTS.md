@@ -5,7 +5,7 @@ User-facing documentation: [`README.md`](README.md). Task-specific deep dives: [
 
 ## What this repo is
 
-A Zed extension giving MikroTik RouterOS scripts (RouterOS 7.20+) first-class editor support: tree-sitter syntax highlighting plus a native language server with completion, hover, and diagnostics. One monorepo, three components:
+A Zed extension giving MikroTik RouterOS scripts (RouterOS 7.20+; data snapshot 7.23.2, compatible with 7.0+ for common menus, awaiting 7.24) first-class editor support: tree-sitter syntax highlighting plus a native language server with completion, hover, and diagnostics. One monorepo, three components:
 
 | Component                  | Location         | Notes                                                                                                                                                |
 | -------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |

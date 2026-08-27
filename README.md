@@ -14,6 +14,10 @@
   <a href="https://github.com/balakar94/tree-sitter-rsc"><img src="https://img.shields.io/badge/tree--sitter-rsc-orange" alt="grammar"></a>
 </p>
 
+<p align="center">
+  <sub>Supported: RouterOS 7.20+ — data snapshot 7.23.2 tracked in <code>data/commands.toml</code> and <code>data/upstream-docs.toml</code> (auto-synced from <a href="https://manual.mikrotik.com/llms-full.txt">llms-full.txt</a>; compatible with 7.0+ for common menus, awaiting 7.24)</sub>
+</p>
+
 ---
 
 **Contents:** [Features](#-features) · [Install](#-install) · [Quick start](#-quick-start) · [Dependencies](#-dependencies) · [Deploy](#-deploy) · [Language Server](#-language-server) · [Grammar](#-grammar) · [Sync & Extraction](#-sync--extraction) · [Development](#️-development) · [Release](#-release) · [Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) · [Reference](#-reference) · [License](#-license)
@@ -36,7 +40,7 @@
 | **Sync**         | Keeps the built-in command database aligned with MikroTik's published CLI reference                       |
 | **Grammar**      | A dedicated tree-sitter grammar, developed in its own repository and pinned by revision                   |
 
-**Coverage:** the command database models the complete RouterOS v7.20+ CLI — **1077 menus**, directories and executable commands alike, spanning every context of the hierarchy from interfaces and networking to queues, users and system tools. It is extracted automatically from MikroTik's official machine-readable documentation, so completion, hover and diagnostics work anywhere in the tree rather than on a hand-picked subset.
+**Coverage:** the command database models the complete RouterOS v7.23.2 CLI — **1077 menus**, directories and executable commands alike, spanning every context of the hierarchy from interfaces and networking to queues, users and system tools — compatible back to 7.20+ and broadly usable on 7.0+ for common menus. It is extracted automatically from MikroTik's official machine-readable documentation (`data/commands.toml` and `data/upstream-docs.toml`, source `https://manual.mikrotik.com/llms-full.txt`), so completion, hover and diagnostics work anywhere in the tree rather than on a hand-picked subset.
 
 <details>
 <summary>Example <code>.rsc</code> — hover, completion, diagnostics</summary>
@@ -271,7 +275,7 @@ Publishing a grammar change is scripted: `python scripts/publish_grammar.py` pus
 
 RouterOS evolves, and a hardcoded command table would rot silently. MikroTik mitigates this by publishing its CLI reference in machine-readable form (`llms-full.txt`), and this project builds directly on that source of truth.
 
-The pipeline has two steps. `scripts/sync_llms.py` fetches the upstream files and compares them against what the database was built from — with `--check` it writes nothing and exits non-zero when upstream moved, which is exactly how CI notices drift. `scripts/extract_commands.py` then distills the fetched documentation into `data/commands.toml`: currently 1077 menus, regenerated idempotently. Each generation records the RouterOS version, the UTC timestamp and the hash of the source document in its header, so any database snapshot can be traced back to the exact documentation it came from.
+The pipeline has two steps. `scripts/sync_llms.py` fetches the upstream files and compares them against what the database was built from — with `--check` it writes nothing and exits non-zero when upstream moved, which is exactly how CI notices drift. `scripts/extract_commands.py` then distills the fetched documentation into `data/commands.toml`: currently 1077 menus from the RouterOS 7.23.2 snapshot, regenerated idempotently. Each generation records the RouterOS version, the UTC timestamp and the hash of the source document in its header, so any database snapshot can be traced back to the exact documentation it came from. Current snapshot: RouterOS 7.23.2 (see `data/commands.toml` header and `data/upstream-docs.toml`); the pipeline will re-sync on the 7.24 release via the weekly docs-drift workflow.
 
 Updating the language server's knowledge therefore reduces to: sync, extract, commit — the TOML is embedded into the binary at compile time, and the next build carries the fresh data everywhere.
 
