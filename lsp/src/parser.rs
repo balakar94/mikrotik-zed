@@ -23,10 +23,11 @@ pub(crate) struct SpanToken {
 /// Scan one whitespace-delimited token starting at byte offset `start`.
 ///
 /// Tracks quote state so whitespace inside `"..."` or `'...'` does not split
-/// the token and a backslash inside quotes escapes the next byte. This
-/// mirrors the state machine of `continuation_body_end` in diagnostics.rs
-/// (RouterOS treats both quote styles symmetrically). Returns the exclusive
-/// end offset, which is always a char boundary: quote, backslash and
+/// the token and a backslash inside quotes escapes the next byte. An unquoted
+/// `#` also terminates the token mid-word: it starts a comment that runs to
+/// end-of-line (the same rule [`effective_content_end`] centralizes), so a
+/// comment tail can never leak into a token. Returns the exclusive end
+/// offset, which is always a char boundary: quote, backslash, hash and
 /// whitespace bytes only occur as standalone bytes in valid UTF-8.
 fn scan_token(bytes: &[u8], start: usize) -> usize {
     let mut i = start;
@@ -42,6 +43,8 @@ fn scan_token(bytes: &[u8], start: usize) -> usize {
             }
             b'"' if !in_single => in_double = !in_double,
             b'\'' if !in_double => in_single = !in_single,
+            // Unquoted '#' starts a comment to end-of-line, even mid-token.
+            b'#' if !in_double && !in_single => break,
             _ if !in_double && !in_single && bytes[i].is_ascii_whitespace() => break,
             _ => {}
         }
@@ -172,6 +175,40 @@ where
     }
 }
 
+/// Byte offset where the *effective content* of `line` ends: an unquoted
+/// `#` starts a comment that runs to end-of-line, so everything from the
+/// first unquoted `#` onward is inert. Returns `line.len()` when the line
+/// has no such comment.
+///
+/// Quote-aware: a `#` inside `"..."` or `'...'` (with `\` escaping the next
+/// byte inside quotes) is literal content, not a comment start. This is the
+/// SAME rule [`walk_structure`] applies per character and the same rule the
+/// diagnostics continuation detection uses; centralizing it here means the
+/// three consumers cannot drift apart. The returned offset is always a char
+/// boundary (`#` is a standalone ASCII byte).
+pub(crate) fn effective_content_end(line: &str) -> usize {
+    let bytes = line.as_bytes();
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if in_double || in_single => i += 2,
+            b'"' if !in_single => {
+                in_double = !in_double;
+                i += 1;
+            }
+            b'\'' if !in_double => {
+                in_single = !in_single;
+                i += 1;
+            }
+            b'#' if !in_double && !in_single => return i,
+            _ => i += 1,
+        }
+    }
+    bytes.len()
+}
+
 /// Split a line into tokens with spans: quoted strings, /-prefixed paths, or
 /// bare words.
 ///
@@ -179,6 +216,11 @@ where
 /// whitespace until the matching close (e.g. `comment="a=b c=d"` stays ONE
 /// token), so quoted values can no longer spawn phantom property tokens
 /// downstream. Unterminated quotes simply run to end-of-input.
+///
+/// Comment-aware: an unquoted `#` at any position (token start or mid-word)
+/// starts an inert comment for tokenization — the token scan stops at it and
+/// tokenization stops as well, so nothing from the first unquoted `#` onward
+/// is ever emitted. A `#` inside quotes is literal content.
 pub(crate) fn tokenize_with_spans(text: &str) -> Vec<SpanToken> {
     let mut tokens = Vec::new();
     let bytes = text.as_bytes();
@@ -226,6 +268,15 @@ pub(crate) fn tokenize(text: &str) -> Vec<String> {
 /// are continuations of the same command.  Walks backwards from the cursor
 /// line, collecting all lines belonging to the current command.
 ///
+/// Preceding lines are contributed as their *effective content*: the comment
+/// tail is cut quote-aware ([`effective_content_end`]), an odd trailing
+/// backslash run (a continuation marker) is removed, and the remainder is
+/// trimmed of surrounding whitespace. Lines whose effective content is empty
+/// — full-line comments (including indented ones and comments ending in a
+/// backslash) and lone-backslash lines — are INERT: the walk skips them and
+/// keeps going, so a comment between a path line and its command line does
+/// not lose the path context.
+///
 /// `cursor_char` is a BYTE offset within the cursor line (already converted
 /// from the negotiated wire encoding by callers at the protocol boundary).
 ///
@@ -234,7 +285,10 @@ pub(crate) fn tokenize(text: &str) -> Vec<String> {
 /// token" (value-completion mode) from "finished the token, starting a new
 /// one" (property-completion mode). The tokenizer ignores surrounding
 /// whitespace anyway, so only consumers that care about the cursor boundary
-/// can observe the difference.
+/// can observe the difference. This no-right-trim guarantee applies ONLY to
+/// the cursor line itself — preceding lines are normalized as described
+/// above. BLANK physical lines still terminate the walk: a blank line
+/// separates commands.
 pub fn build_before_cursor(doc: &str, cursor_line: usize, cursor_char: usize) -> String {
     let lines: Vec<&str> = doc.lines().collect();
     if cursor_line >= lines.len() {
@@ -252,15 +306,33 @@ pub fn build_before_cursor(doc: &str, cursor_line: usize, cursor_char: usize) ->
     let mut parts = vec![current_part];
 
     for i in (0..cursor_line).rev() {
+        // Blank physical lines still separate commands (unchanged rule).
         let trimmed = lines[i].trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if trimmed.is_empty() {
             break;
         }
-        if trimmed.starts_with('/') || trimmed.starts_with(':') {
-            parts.insert(0, lines[i]);
+        // Effective content: cut the comment tail quote-aware, then remove
+        // a trailing backslash run only when it is odd (a continuation
+        // marker; an even run is an escaped literal pair).
+        let content = &lines[i][..effective_content_end(lines[i])];
+        let content = content.trim_end();
+        let run = content.bytes().rev().take_while(|&b| b == b'\\').count();
+        let body = if run % 2 == 1 {
+            &content[..content.len() - run]
+        } else {
+            content
+        };
+        let body = body.trim();
+        // Empty effective content (full-line comment, lone backslash line,
+        // comment ending in a backslash) is inert: skip and keep walking.
+        if body.is_empty() {
+            continue;
+        }
+        if body.starts_with('/') || body.starts_with(':') {
+            parts.insert(0, body);
             break;
         }
-        parts.insert(0, lines[i]);
+        parts.insert(0, body);
     }
 
     parts.join(" ")
@@ -697,6 +769,122 @@ type = "Directory"
         assert_eq!(s, "/ip/address");
     }
 
+    #[test]
+    fn test_build_before_cursor_comment_between_path_and_command_is_inert() {
+        // A full-line comment between the path line and the command line
+        // must not break the walk — the path context survives.
+        let doc = "/ip/address\n# some note\nadd address=1.1.1.1/24";
+        let line = doc.lines().nth(2).unwrap();
+        let s = build_before_cursor(doc, 2, line.len());
+        assert!(
+            s.contains("/ip/address"),
+            "path line must survive the comment: {s}"
+        );
+        assert!(
+            s.contains("add address=1.1.1.1/24"),
+            "command line must be present: {s}"
+        );
+        let data = synthetic_data();
+        let ctx = parse_line(&data, &s);
+        assert_eq!(ctx.path, "/ip/address");
+        assert_eq!(ctx.command.as_deref(), Some("add"));
+        assert_eq!(
+            ctx.properties.get("address").map(|v| v.as_str()),
+            Some("1.1.1.1/24")
+        );
+    }
+
+    #[test]
+    fn test_build_before_cursor_comment_inert_equivalence() {
+        // Inserting a full-line comment changes nothing: the joined context
+        // is identical with or without it.
+        let plain = "/ip/address\nadd address=1.1.1.1/24";
+        let with_comment = "/ip/address\n# some note\nadd address=1.1.1.1/24";
+        let a = build_before_cursor(plain, 1, plain.lines().nth(1).unwrap().len());
+        let b = build_before_cursor(with_comment, 2, with_comment.lines().nth(2).unwrap().len());
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_build_before_cursor_strips_continuation_backslash() {
+        // A trailing continuation backslash on the preceding line must not
+        // survive into the joined text as a bare '\' token.
+        let doc = "/ip/address add \\\naddress=1.1.1.1/24";
+        let line = doc.lines().nth(1).unwrap();
+        let s = build_before_cursor(doc, 1, line.len());
+        assert_eq!(s, "/ip/address add address=1.1.1.1/24");
+        for token in tokenize(&s) {
+            assert!(!token.contains('\\'), "no backslash token allowed: {s}");
+        }
+        let data = synthetic_data();
+        let ctx = parse_line(&data, &s);
+        assert_eq!(ctx.command.as_deref(), Some("add"));
+        assert_eq!(
+            ctx.properties.get("address").map(|v| v.as_str()),
+            Some("1.1.1.1/24")
+        );
+    }
+
+    #[test]
+    fn test_build_before_cursor_keeps_escaped_backslash_pair() {
+        // Two trailing backslashes are an escaped literal pair, NOT a
+        // continuation marker: both must be kept in the joined text.
+        let doc = "/ip/address add comment=x\\\\\naddress=1.1.1.1/24";
+        let line = doc.lines().nth(1).unwrap();
+        let s = build_before_cursor(doc, 1, line.len());
+        assert_eq!(s, "/ip/address add comment=x\\\\ address=1.1.1.1/24");
+    }
+
+    #[test]
+    fn test_build_before_cursor_comment_ending_in_backslash_is_inert() {
+        // A comment line ending in a backslash does NOT continue: the
+        // comment tail (and its backslash) is cut before continuation
+        // counting, so the line is inert and the walk keeps going.
+        let doc = "/ip/address\n# note \\\nadd address=1.1.1.1/24";
+        let line = doc.lines().nth(2).unwrap();
+        let s = build_before_cursor(doc, 2, line.len());
+        assert!(!s.contains("note"), "comment content must be inert: {s}");
+        assert!(s.contains("/ip/address"), "path must survive: {s}");
+        assert!(
+            s.contains("add address=1.1.1.1/24"),
+            "command must be present: {s}"
+        );
+    }
+
+    #[test]
+    fn test_build_before_cursor_strips_inline_comment_tail() {
+        // An inline comment tail on a preceding line is cut (quote-aware)
+        // before the line is contributed to the joined context.
+        let doc = "/ip/address add # starting\naddress=1.1.1.1/24";
+        let line = doc.lines().nth(1).unwrap();
+        let s = build_before_cursor(doc, 1, line.len());
+        assert_eq!(s, "/ip/address add address=1.1.1.1/24");
+    }
+
+    #[test]
+    fn test_build_before_cursor_lone_backslash_line_is_inert() {
+        // A lone-backslash line has empty effective content (the odd run is
+        // a continuation marker): inert, skipped, walk keeps going.
+        let doc = "/ip/address\n\\\nadd address=1.1.1.1/24";
+        let line = doc.lines().nth(2).unwrap();
+        let s = build_before_cursor(doc, 2, line.len());
+        assert_eq!(s, "/ip/address add address=1.1.1.1/24");
+    }
+
+    // ── effective_content_end ─────────────────────────────────────
+
+    #[test]
+    fn test_effective_content_end_units() {
+        // '#' at byte offset 8 of "add x=1 # c".
+        assert_eq!(effective_content_end("add x=1 # c"), 8);
+        // '#' inside double quotes is literal content: whole line.
+        assert_eq!(effective_content_end(r#"a="b#c""#), r#"a="b#c""#.len());
+        // Leading comment: no effective content at all.
+        assert_eq!(effective_content_end("#x"), 0);
+        // No comment: whole line.
+        assert_eq!(effective_content_end("print"), 5);
+    }
+
     // ── parse_line ────────────────────────────────────────────────
 
     #[test]
@@ -823,6 +1011,22 @@ type = "Directory"
         assert_eq!(tokens[1].text, "add");
         assert_eq!(tokens[2].text, r##"comment="#1 interface""##);
         assert_eq!(tokens[3].text, "address=1.1.1.1/24");
+    }
+
+    #[test]
+    fn test_tokenize_unquoted_hash_stops_token_mid_word() {
+        // An unquoted '#' starts a comment at ANY position, even mid-word:
+        // the comment tail must never leak into the token.
+        assert_eq!(tokenize("add foo=bar#baz"), vec!["add", "foo=bar"]);
+        assert_eq!(
+            tokenize("add url=https://x#frag"),
+            vec!["add", "url=https://x"]
+        );
+        // A '#' inside single quotes is literal content, not a comment:
+        // the whole word stays ONE token.
+        let tokens = tokenize(r#"comment='a # b'"#);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0], r#"comment='a # b'"#);
     }
 
     #[test]

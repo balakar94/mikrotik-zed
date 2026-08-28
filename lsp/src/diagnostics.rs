@@ -504,12 +504,6 @@ fn syntax_diagnostics(doc: &str) -> Vec<Diagnostic> {
 // Diagnostics must therefore parse *logical* lines while still reporting
 // positions in original physical coordinates.
 
-/// Byte-scan state shared by continuation detection.
-struct ScanState {
-    in_double: bool,
-    in_single: bool,
-}
-
 /// Returns the byte index where the "continuation body" of `line` ends — that
 /// is, the start of the trailing odd run of backslashes within the effective
 /// content — or [`None`] when the line does not continue onto the next one.
@@ -520,34 +514,14 @@ struct ScanState {
 ///   so scanning stops there.
 /// - Trailing whitespace is ignored; then the consecutive trailing backslash
 ///   run is counted: odd → continuation (`\`), even → escaped literal (`\\`).
+///
+/// The comment cut is delegated to
+/// [`crate::parser::effective_content_end`], the single source of truth for
+/// the unquoted-`#` rule, so parser and diagnostics cannot drift apart.
 fn continuation_body_end(line: &str) -> Option<usize> {
-    let bytes = line.as_bytes();
-    let mut state = ScanState {
-        in_double: false,
-        in_single: false,
-    };
-    let mut i = 0usize;
-    // Content end defaults to EOL; an unquoted '#' cuts it earlier.
-    let mut content_end = line.len();
-
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' if state.in_double || state.in_single => {
-                // Escaped byte inside quotes; skip it entirely.
-                i += 2;
-                continue;
-            }
-            b'"' if !state.in_single => state.in_double = !state.in_double,
-            b'\'' if !state.in_double => state.in_single = !state.in_single,
-            b'#' if !state.in_double && !state.in_single => {
-                content_end = i;
-                break;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-
+    // The unquoted-'#' cut is shared with walk_structure/build_before_cursor
+    // (see crate::parser::effective_content_end).
+    let content_end = crate::parser::effective_content_end(line);
     // Note: ASCII quote/backslash/hash bytes only occur as standalone bytes in
     // valid UTF-8, so `content_end` is always a char boundary here.
     let content = &line[..content_end];
