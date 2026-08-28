@@ -1,4 +1,5 @@
 // ── LSP server core (protocol boundary) ───────────────────────────
+// Legacy note: get_cached_or_fetch_blocking retained for tests (now non-blocking via get_cached_or_fetch_background)
 //
 // Owns the wire-facing half of rsc-ls: the `Server` state machine
 // (stdio read/write loop, `handle_message` method dispatch, tracked-
@@ -26,8 +27,8 @@ use crate::encoding::{
 use crate::folding;
 use crate::framing::{Frame, FrameError, read_message};
 use crate::hover;
-use crate::live::{LiveCache, LiveConfig, get_cached_or_fetch_blocking};
-use crate::logging::{log_debug, log_error, log_warn};
+use crate::live::{LiveCache, LiveConfig, get_cached_or_fetch_background};
+use crate::logging::{log_debug, log_error, log_info, log_warn};
 use crate::menus::MenuData;
 use crate::navigation;
 use crate::parser::{build_before_cursor, parse_line, tokenize_with_spans};
@@ -420,6 +421,16 @@ impl Server {
                     "negotiated position encoding: {}",
                     self.position_encoding.as_str()
                 );
+                // Visible feedback for live connection system.
+                self.live_config.log_status();
+                log_info!(
+                    "live status on initialize: enabled={} active={} host={} scheme={} ssl_verify_effective={}",
+                    self.live_config.enabled,
+                    self.live_config.is_active(),
+                    self.live_config.host,
+                    self.live_config.scheme(),
+                    self.live_config.ssl_verify_effective()
+                );
                 Some(serde_json::json!({
                     "jsonrpc": "2.0",
                     "id": id,
@@ -462,6 +473,9 @@ impl Server {
                             "diagnosticProvider": {
                                 "interFileDependencies": false,
                                 "workspaceDiagnostics": false
+                            },
+                            "executeCommandProvider": {
+                                "commands": ["rsc.live.refresh", "rsc.live.status"]
                             }
                         },
                         "serverInfo": {
@@ -711,11 +725,11 @@ impl Server {
                     self.position_encoding,
                 );
                 let before_cursor = build_before_cursor(doc, line_idx, char_byte);
-                // Live enrichment: refresh cache if needed (capped at 2 s) then
-                // compute completions with whatever is cached. Never blocks
-                // more than LIVE_FETCH_BLOCKING_TIMEOUT_SECS and never logs pass.
+                // Live enrichment: stale-while-revalidate (non-blocking).
+                // Completion only reads fresh cache; misses trigger a background
+                // thread that hydrates for the next keystroke. Coalescing and
+                // negative TTL prevent retry spam. Never logs pass.
                 if self.live_config.is_active() {
-                    // Blocking refresh capped at 2 s; fresh cache returns instantly.
                     let context = parse_line(&self.data, &before_cursor);
                     let target_resource = if let Some(last_tok) =
                         crate::parser::tokenize(&before_cursor).last()
@@ -729,26 +743,93 @@ impl Server {
                         if let Some(menu) = self.data.menu_by_path.get(&context.path)
                             && let Some(arg) = menu.arguments.iter().find(|a| a.name == key)
                         {
-                            crate::live::live_resource_for_menu_property(
-                                &context.path,
-                                key,
-                                &arg.arg_type,
-                            )
+                            self.live_config
+                                .resolve_resource_with_custom(&context.path, key, &arg.arg_type)
+                                .or_else(|| {
+                                    crate::live::live_resource_for_menu_property(
+                                        &context.path,
+                                        key,
+                                        &arg.arg_type,
+                                    )
+                                })
                         } else {
-                            crate::live::live_resource_for_menu_property(&context.path, key, "")
+                            self.live_config
+                                .resolve_resource_with_custom(&context.path, key, "")
+                                .or_else(|| {
+                                    crate::live::live_resource_for_menu_property(
+                                        &context.path,
+                                        key,
+                                        "",
+                                    )
+                                })
                         }
                     } else {
                         Some(crate::live::ResourceKind::Interfaces)
                     };
 
                     if let Some(res) = target_resource {
-                        let _ = crate::live::get_cached_or_fetch_resource_blocking(
+                        let _ = get_cached_or_fetch_background(
                             &self.live_cache,
                             &self.live_config,
                             res,
                         );
+                        log_debug!("live background fetch triggered for {:?}", res);
                     } else {
-                        let _ = get_cached_or_fetch_blocking(&self.live_cache, &self.live_config);
+                        let _ = get_cached_or_fetch_background(
+                            &self.live_cache,
+                            &self.live_config,
+                            crate::live::ResourceKind::Interfaces,
+                        );
+                    }
+                    // Custom resource specific background fetch (separate cache key `custom:<property>`).
+                    if let Some(last_tok) = crate::parser::tokenize(&before_cursor).last()
+                        && last_tok.contains('=')
+                    {
+                        let key = last_tok
+                            .split('=')
+                            .next()
+                            .unwrap_or("")
+                            .trim_start_matches(':');
+                        if let Some(custom) =
+                            self.live_config.custom_resource_for_property(key).cloned()
+                        {
+                            let cache_clone = Arc::clone(&self.live_cache);
+                            let config_clone = self.live_config.clone();
+                            std::thread::spawn(move || {
+                                let start = std::time::Instant::now();
+                                match crate::live::fetch_custom_resource(&config_clone, &custom) {
+                                    Ok(vals) => {
+                                        log_info!(
+                                            "live fetch ok custom property={} path={} latency_ms={} items={}",
+                                            custom.property,
+                                            custom.path,
+                                            start.elapsed().as_millis(),
+                                            vals.len()
+                                        );
+                                        if !vals.is_empty() {
+                                            let mut guard = cache_clone
+                                                .lock()
+                                                .expect("live cache lock poisoned");
+                                            let cache_key = format!("custom:{}", custom.property);
+                                            guard.insert(cache_key, vals);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log_warn!(
+                                            "live fetch custom failed property={} path={} err={} latency_ms={}",
+                                            custom.property,
+                                            custom.path,
+                                            e,
+                                            start.elapsed().as_millis()
+                                        );
+                                        let mut guard =
+                                            cache_clone.lock().expect("live cache lock poisoned");
+                                        let cache_key = format!("custom:{}", custom.property);
+                                        guard.insert_negative(cache_key);
+                                    }
+                                }
+                            });
+                        }
                     }
                 }
                 let live_guard = self.live_cache.lock().ok();
@@ -1139,6 +1220,123 @@ impl Server {
                     "id": id,
                     "result": actions,
                 }))
+            }
+
+            "workspace/executeCommand" => {
+                let command = params["params"]["command"].as_str().unwrap_or("");
+                log_info!("workspace/executeCommand received: {}", command);
+                match command {
+                    "rsc.live.refresh" => {
+                        let mut guard = self.live_cache.lock().expect("live cache lock poisoned");
+                        let before = guard.entries.len();
+                        let args = params["params"]["arguments"].as_array();
+                        if let Some(arr) = args {
+                            if arr.is_empty() {
+                                guard.clear_all();
+                            } else {
+                                for v in arr {
+                                    if let Some(s) = v.as_str() {
+                                        // Support both raw keys and cache keys; clear exact.
+                                        guard.clear_key(s);
+                                        // Also try to map property-like args to cache keys if needed.
+                                        // No extra mapping; caller should pass cache keys like "interfaces".
+                                    }
+                                }
+                            }
+                        } else {
+                            guard.clear_all();
+                        }
+                        let after = guard.entries.len();
+                        drop(guard);
+                        // Optionally trigger background fetch for all ResourceKind if active.
+                        if self.live_config.is_active() {
+                            for &kind in &[
+                                crate::live::ResourceKind::Interfaces,
+                                crate::live::ResourceKind::IpAddresses,
+                                crate::live::ResourceKind::AddressLists,
+                                crate::live::ResourceKind::FirewallFilterChains,
+                                crate::live::ResourceKind::IpPools,
+                            ] {
+                                let _ = get_cached_or_fetch_background(
+                                    &self.live_cache,
+                                    &self.live_config,
+                                    kind,
+                                );
+                            }
+                        }
+                        log_info!(
+                            "live refresh executed before={} after={} command={}",
+                            before,
+                            after,
+                            command
+                        );
+                        Some(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {
+                                "cleared": true,
+                                "before": before,
+                                "after": after
+                            }
+                        }))
+                    }
+                    "rsc.live.status" => {
+                        let guard = self.live_cache.lock().expect("live cache lock poisoned");
+                        let entries = guard.entries.len();
+                        let failed = guard.failed_at.len();
+                        drop(guard);
+                        let status = serde_json::json!({
+                            "enabled": self.live_config.enabled,
+                            "active": self.live_config.is_active(),
+                            "host": self.live_config.host,
+                            "hosts": self.live_config.hosts,
+                            "port": self.live_config.port,
+                            "scheme": self.live_config.scheme(),
+                            "ssl_verify": self.live_config.ssl_verify,
+                            "ssl_verify_effective": self.live_config.ssl_verify_effective(),
+                            "timeout_secs": self.live_config.timeout_secs,
+                            "cache_entries": entries,
+                            "failed_entries": failed,
+                            "custom_resources": self.live_config.custom_resources.len()
+                        });
+                        log_info!("live status queried: {}", status);
+                        Some(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": status
+                        }))
+                    }
+                    _ => Some(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {
+                            "code": -32601,
+                            "message": format!("Unknown command: {command}")
+                        }
+                    })),
+                }
+            }
+
+            "workspace/didChangeConfiguration" => {
+                let settings = &params["params"]["settings"];
+                if settings.is_null() || !settings.is_object() {
+                    // No settings: re-read from env.
+                    self.live_config = crate::live::LiveConfig::from_env();
+                } else {
+                    self.live_config = crate::live::LiveConfig::from_settings_value(settings);
+                }
+                self.live_config.log_status();
+                log_info!("live config reloaded via didChangeConfiguration");
+                // Notifications have no id; if this was unexpectedly sent as a request, answer with null.
+                if id.is_null() {
+                    None
+                } else {
+                    Some(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": null
+                    }))
+                }
             }
 
             _ => {

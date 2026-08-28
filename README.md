@@ -224,13 +224,13 @@ Two transports are available, selected per task:
 
 Both report more than a transport-level success code: RouterOS routinely answers HTTP 200 or exits SSH with status 0 even when an import failed, so the output is scanned for high-confidence failure markers (`syntax error`, `bad command name`, `failure:` …) and surfaces them as real failures.
 
-The connection is configured through environment variables (`MIKROTIK_HOST`, `MIKROTIK_USER`, `MIKROTIK_PASS`, plus optional overrides for port, method, TLS verification and timeout — see `python scripts/mikrotik-deploy.py --help`). One safe first run needs nothing else:
+The connection is configured through environment variables (`MIKROTIK_HOST`, `MIKROTIK_USER`, `MIKROTIK_PASS`, plus optional overrides for port, method, TLS verification and timeout — see `python scripts/mikrotik-deploy.py --help`). Env var semantics are mirrored between the deploy companion (`scripts/mikrotik-deploy.py`) and live enrichment (`lsp/src/live.rs` `LiveConfig::from_env`), so the same `MIKROTIK_*` settings work for both — deploy defaults to `MIKROTIK_TIMEOUT=60` and auto-selects port 443 for REST / 22 for SSH, while live (REST only) defaults to `MIKROTIK_TIMEOUT=5` (clamped 1..30) and port 443. One safe first run needs nothing else:
 
 ```bash
 python scripts/mikrotik-deploy.py demo.rsc --dry-run
 ```
 
-Zed tasks live per-worktree: copy `languages/rsc/tasks.json` to `.zed/tasks.json` and you get **REST / SSH / Dry-run / Validate** entries that operate on `$ZED_FILE`.
+Zed tasks live per-worktree: copy `languages/rsc/tasks.json` to `.zed/tasks.json` and you get **REST / SSH / Dry-run / Validate** entries that operate on `$ZED_FILE`. The companion health check for live uses `scripts/mikrotik-live-check.py` (see Live section).
 
 ---
 
@@ -304,7 +304,7 @@ export MIKROTIK_SSL=0                 # 0 to disable TLS verification (self-sign
 export MIKROTIK_TIMEOUT=5             # Per-request timeout in seconds (1..30, default: 5)
 ```
 
-Alternatively, you can test connectivity from Zed's task runner using the **"MikroTik: Live — Check connectivity"** task in `.zed/tasks.json`.
+Connectivity check: the **"MikroTik: Live — Check connectivity"** task in `.zed/tasks.json` performs a real authenticated `GET /rest/interface` via `scripts/mikrotik-live-check.py` (not a dry-run deploy). It prompts for `MIKROTIK_HOST`/`MIKROTIK_USER` and reads `MIKROTIK_PASS` from env/keychain (never stored in `tasks.json`), sharing the same `MIKROTIK_*` semantics as `live.rs`/`deploy.py` — `MIKROTIK_PORT` (443), `MIKROTIK_SSL=0` (no verify), `MIKROTIK_HTTP=1` (force http, with legacy shim for `SSL=0` on non-standard ports), and `MIKROTIK_TIMEOUT` (5s live default). On success it prints `Live OK: N interfaces`; on failure `Live FAIL: …` with exit 4. Dry-run preview is also available: `python scripts/mikrotik-live-check.py --dry-run` or `--json` for machine output. See `python scripts/mikrotik-live-check.py --help`.
 
 ### Safety & Defensive Invariants
 

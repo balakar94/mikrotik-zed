@@ -49,9 +49,7 @@
     "label": "MikroTik: Live — Check connectivity (opt-in)",
     "command": "python3",
     "args": [
-      "scripts/mikrotik-deploy.py",
-      "$ZED_FILE",
-      "--dry-run",
+      "scripts/mikrotik-live-check.py",
       "--host",
       "${input:mikrotik_host}",
       "--user",

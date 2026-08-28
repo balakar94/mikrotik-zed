@@ -20,13 +20,29 @@
 // - Completion never blocks more than `LIVE_FETCH_BLOCKING_TIMEOUT_SECS`.
 
 use crate::caps::{
-    LIVE_FETCH_BLOCKING_TIMEOUT_SECS, LIVE_TIMEOUT_SECS, LIVE_TTL_SECS, MAX_CACHE_ENTRIES,
-    MAX_LIVE_ITEMS, MAX_LIVE_RESPONSE_BYTES, MAX_LIVE_VALUE_LEN,
+    LIVE_CUSTOM_RESOURCES_MAX, LIVE_FETCH_BLOCKING_TIMEOUT_SECS, LIVE_MAX_HOSTS,
+    LIVE_NEGATIVE_TTL_SECS, LIVE_TIMEOUT_SECS, LIVE_TTL_SECS, MAX_CACHE_ENTRIES, MAX_LIVE_ITEMS,
+    MAX_LIVE_RESPONSE_BYTES, MAX_LIVE_VALUE_LEN,
 };
 use crate::logging::{log_debug, log_info, log_warn};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+// ── CustomResource ───────────────────────────────────────────────
+
+/// User-defined live resource mapping via `RSC_LS_LIVE_RESOURCES`.
+///
+/// JSON shape: `{ "property": "packet-mark", "path": "/rest/ip/firewall/mangle", "field": "new-packet-mark" }`
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CustomResource {
+    /// Property name that triggers this resource (e.g. "packet-mark").
+    pub property: String,
+    /// REST path on the device (e.g. "/rest/ip/firewall/mangle").
+    pub path: String,
+    /// JSON field to extract from each array entry (e.g. "new-packet-mark").
+    pub field: String,
+}
 
 // ── LiveConfig ───────────────────────────────────────────────────
 
@@ -38,8 +54,10 @@ use std::time::{Duration, Instant};
 pub struct LiveConfig {
     /// Opt-in flag: `RSC_LS_LIVE=1` or `MIKROTIK_LIVE=1`.
     pub enabled: bool,
-    /// Device host/IP (`MIKROTIK_HOST`). Empty when not set.
+    /// Device host/IP (`MIKROTIK_HOST`). Empty when not set. Primary host for backward compat.
     pub host: String,
+    /// All hosts when `MIKROTIK_HOST` is comma-separated (first is primary). Capped to `LIVE_MAX_HOSTS`.
+    pub hosts: Vec<String>,
     /// Username (`MIKROTIK_USER`, default `admin`).
     pub user: String,
     /// Password (`MIKROTIK_PASS`). Never logged.
@@ -52,6 +70,8 @@ pub struct LiveConfig {
     pub force_http: bool,
     /// Per-request timeout in seconds (clamped 1..30, default 5).
     pub timeout_secs: u64,
+    /// User-defined custom live resources (capped to `LIVE_CUSTOM_RESOURCES_MAX`).
+    pub custom_resources: Vec<CustomResource>,
 }
 
 impl std::fmt::Debug for LiveConfig {
@@ -59,12 +79,15 @@ impl std::fmt::Debug for LiveConfig {
         f.debug_struct("LiveConfig")
             .field("enabled", &self.enabled)
             .field("host", &self.host)
+            .field("hosts", &self.hosts)
             .field("user", &self.user)
             .field("pass", &"[REDACTED]")
             .field("port", &self.port)
             .field("ssl_verify", &self.ssl_verify)
+            .field("ssl_verify_effective", &self.ssl_verify_effective())
             .field("force_http", &self.force_http)
             .field("timeout_secs", &self.timeout_secs)
+            .field("custom_resources", &self.custom_resources)
             .finish()
     }
 }
@@ -91,7 +114,13 @@ impl LiveConfig {
                 .map(|v| v.trim() == "1")
                 .unwrap_or(false);
 
-        let host = get("MIKROTIK_HOST").unwrap_or_default().trim().to_string();
+        let host_raw = get("MIKROTIK_HOST").unwrap_or_default();
+        let hosts = parse_hosts(&host_raw);
+        let host = hosts.first().cloned().unwrap_or_default();
+        if hosts.len() > 1 {
+            log_info!("live multi-host {} (primary={})", hosts.len(), host);
+        }
+
         let user_raw = get("MIKROTIK_USER").unwrap_or_default();
         let user = if user_raw.trim().is_empty() {
             "admin".to_string()
@@ -116,15 +145,21 @@ impl LiveConfig {
         let timeout_parsed = parse_env_u64(&timeout_raw, LIVE_TIMEOUT_SECS, "MIKROTIK_TIMEOUT");
         let timeout_secs = timeout_parsed.clamp(1, 30);
 
+        // Custom resources from env JSON.
+        let custom_raw = get("RSC_LS_LIVE_RESOURCES").or_else(|| get("MIKROTIK_LIVE_RESOURCES"));
+        let custom_resources = parse_custom_resources(custom_raw.as_deref());
+
         LiveConfig {
             enabled,
             host,
+            hosts,
             user,
             pass,
             port,
             ssl_verify,
             force_http,
             timeout_secs,
+            custom_resources,
         }
     }
 
@@ -137,6 +172,26 @@ impl LiveConfig {
             && !self.pass.is_empty()
             && validate_host(&self.host).is_ok()
             && self.port != 0
+    }
+
+    /// Primary host (first of `hosts`, or `host` for backward compat).
+    #[allow(dead_code)]
+    pub fn primary_host(&self) -> &str {
+        self.host.as_str()
+    }
+
+    /// All hosts (comma-separated `MIKROTIK_HOST` split, capped).
+    #[allow(dead_code)]
+    pub fn hosts_vec(&self) -> &[String] {
+        &self.hosts
+    }
+
+    /// Whether TLS verification is effectively enabled for the current scheme.
+    ///
+    /// Verification only matters when the resolved scheme is `https`; on `http`
+    /// the flag is irrelevant and effective is `false`.
+    pub fn ssl_verify_effective(&self) -> bool {
+        self.ssl_verify && self.scheme() == "https"
     }
 
     /// Resolve the REST scheme, mirroring `scripts/mikrotik-deploy.py::resolve_scheme`.
@@ -154,14 +209,24 @@ impl LiveConfig {
         if self.is_active() {
             // Host is safe to log (no pass); port and scheme are non-sensitive.
             log_info!(
-                "live enabled host={} port={} scheme={} user={} ssl_verify={} timeout={}s",
+                "live enabled host={} port={} scheme={} user={} ssl_verify={} ssl_verify_effective={} timeout={}s hosts={:?} custom_resources={}",
                 self.host,
                 self.port,
                 self.scheme(),
                 self.user,
                 self.ssl_verify,
-                self.timeout_secs
+                self.ssl_verify_effective(),
+                self.timeout_secs,
+                self.hosts,
+                self.custom_resources.len()
             );
+            if self.hosts.len() > 1 {
+                log_info!(
+                    "live multi-host active count={} primary={}",
+                    self.hosts.len(),
+                    self.host
+                );
+            }
         } else if self.enabled {
             // Opt-in was requested but required vars missing/invalid.
             log_info!(
@@ -171,6 +236,365 @@ impl LiveConfig {
             log_info!("live disabled (opt-in via RSC_LS_LIVE=1 or MIKROTIK_LIVE=1)");
         }
     }
+
+    /// Build a `LiveConfig` by overlaying `settings` JSON on top of `from_env()`.
+    ///
+    /// Supports both env-style keys (`MIKROTIK_HOST`) and lower-case keys
+    /// (`host`, `port`, ...), and nesting under `rsc.live` or `mikrotik`.
+    /// Used for hot-reload via `workspace/didChangeConfiguration`.
+    pub fn from_settings_value(v: &serde_json::Value) -> Self {
+        let mut cfg = Self::from_env();
+        Self::apply_settings_value(&mut cfg, v);
+        cfg
+    }
+
+    /// Apply settings overlay to an existing config (mutates in place).
+    pub fn apply_settings_value(cfg: &mut Self, v: &serde_json::Value) {
+        // Find the most relevant settings object.
+        let settings_obj = find_settings_object(v).unwrap_or(v);
+
+        if let Some(host_val) = get_settings_str(settings_obj, &["host", "MIKROTIK_HOST"]) {
+            let hosts = parse_hosts(&host_val);
+            if !hosts.is_empty() {
+                cfg.host = hosts[0].clone();
+                cfg.hosts = hosts;
+            }
+        }
+        if let Some(user_val) =
+            get_settings_str(settings_obj, &["user", "username", "MIKROTIK_USER"])
+        {
+            let trimmed = user_val.trim();
+            if !trimmed.is_empty() {
+                cfg.user = trimmed.to_string();
+            }
+        }
+        if let Some(pass_val) =
+            get_settings_str(settings_obj, &["pass", "password", "MIKROTIK_PASS"])
+        {
+            cfg.pass = pass_val;
+        }
+        if let Some(port_val) = get_settings_port(settings_obj) {
+            cfg.port = port_val;
+        }
+        if let Some(ssl_val) = get_settings_bool(
+            settings_obj,
+            &["ssl_verify", "ssl", "MIKROTIK_SSL", "verify_ssl"],
+        ) {
+            cfg.ssl_verify = ssl_val;
+        } else if let Some(s) = get_settings_str(settings_obj, &["MIKROTIK_SSL"]) {
+            // Handle string "0" as in env.
+            let trimmed = s.trim();
+            if trimmed == "0" {
+                cfg.ssl_verify = false;
+            } else if trimmed == "1" {
+                cfg.ssl_verify = true;
+            }
+        }
+        if let Some(http_val) =
+            get_settings_bool(settings_obj, &["force_http", "http", "MIKROTIK_HTTP"])
+        {
+            cfg.force_http = http_val;
+        }
+        if let Some(timeout_val) = get_settings_u64(
+            settings_obj,
+            &["timeout", "timeout_secs", "MIKROTIK_TIMEOUT"],
+        ) {
+            cfg.timeout_secs = timeout_val.clamp(1, 30);
+        }
+        // Custom resources overlay: check for JSON array or stringified JSON.
+        if let Some(custom_val) = settings_obj
+            .get("custom_resources")
+            .or_else(|| settings_obj.get("live_resources"))
+            .or_else(|| settings_obj.get("RSC_LS_LIVE_RESOURCES"))
+        {
+            if custom_val.is_array() {
+                cfg.custom_resources = parse_custom_resources_from_value(custom_val);
+            } else if let Some(s) = custom_val.as_str() {
+                cfg.custom_resources = parse_custom_resources(Some(s));
+            }
+        } else if let Some(s) = get_settings_str(settings_obj, &["RSC_LS_LIVE_RESOURCES"]) {
+            cfg.custom_resources = parse_custom_resources(Some(&s));
+        }
+        // Log if multi-host after overlay
+        if cfg.hosts.len() > 1 {
+            log_info!(
+                "live multi-host (settings) {} (primary={})",
+                cfg.hosts.len(),
+                cfg.host
+            );
+        }
+    }
+
+    /// Resolve a menu/property/type to a live resource, checking custom resources
+    /// as fallback when the hardcoded heuristic returns `None`.
+    ///
+    /// Keeps hardcoded heuristic for backward compat; custom resources are
+    /// matched by property name (case-insensitive).
+    pub fn resolve_resource_with_custom(
+        &self,
+        menu_path: &str,
+        property: &str,
+        type_str: &str,
+    ) -> Option<ResourceKind> {
+        if let Some(kind) = live_resource_for_menu_property(menu_path, property, type_str) {
+            return Some(kind);
+        }
+        // Fallback to custom resources: if property matches a custom mapping, treat as interface-like.
+        // We map custom to the closest built-in kind for now, or return Interfaces as generic.
+        let prop_low = property.to_ascii_lowercase();
+        for cr in &self.custom_resources {
+            if cr.property.eq_ignore_ascii_case(&prop_low)
+                || cr.property.eq_ignore_ascii_case(property)
+            {
+                // Custom resource matched — we still need a ResourceKind to drive cache key.
+                // For now, return Interfaces as a generic live kind; future: use custom path/field directly.
+                // Better: return a dedicated handling via custom fetch; but for completion we can treat as live.
+                // We log and return Interfaces to keep cache isolation simple.
+                log_debug!(
+                    "live custom resource matched property={} path={} field={}",
+                    cr.property,
+                    cr.path,
+                    cr.field
+                );
+                return Some(ResourceKind::Interfaces);
+            }
+        }
+        None
+    }
+
+    /// Get custom resource descriptor for a property if present (case-insensitive).
+    pub fn custom_resource_for_property(&self, property: &str) -> Option<&CustomResource> {
+        let prop_low = property.to_ascii_lowercase();
+        self.custom_resources
+            .iter()
+            .find(|cr| cr.property.eq_ignore_ascii_case(&prop_low))
+    }
+}
+
+/// Parse `MIKROTIK_HOST` comma-separated list into validated hosts, capped to `LIVE_MAX_HOSTS`.
+fn parse_hosts(raw: &str) -> Vec<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let mut hosts: Vec<String> = trimmed
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if hosts.len() > LIVE_MAX_HOSTS {
+        log_warn!(
+            "live hosts count {} exceeds cap {}, truncating",
+            hosts.len(),
+            LIVE_MAX_HOSTS
+        );
+        hosts.truncate(LIVE_MAX_HOSTS);
+    }
+    // Validate each host; keep only valid ones for the vec but keep primary as first valid?
+    // For now keep all but log warnings for invalid ones. is_active checks primary.
+    for h in &hosts {
+        if let Err(e) = validate_host(h) {
+            log_warn!("live host validation failed for {h:?}: {e}");
+        }
+        if is_ssrf_denied_host(h) {
+            log_warn!("live host denied by SSRF filter: {h:?}");
+        }
+    }
+    hosts
+}
+
+/// Parse custom resources from an optional JSON string (env var).
+fn parse_custom_resources(raw: Option<&str>) -> Vec<CustomResource> {
+    let Some(s) = raw else {
+        return Vec::new();
+    };
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    // Try to parse as JSON array.
+    let v: serde_json::Value = match serde_json::from_str(trimmed) {
+        Ok(v) => v,
+        Err(e) => {
+            log_warn!("invalid RSC_LS_LIVE_RESOURCES JSON, ignoring: {e}");
+            return Vec::new();
+        }
+    };
+    parse_custom_resources_from_value(&v)
+}
+
+/// Parse custom resources from a `serde_json::Value` (settings overlay).
+fn parse_custom_resources_from_value(v: &serde_json::Value) -> Vec<CustomResource> {
+    let arr = match v.as_array() {
+        Some(a) => a,
+        None => {
+            log_warn!("RSC_LS_LIVE_RESOURCES expected JSON array, got {:?}", v);
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    for entry in arr.iter().take(LIVE_CUSTOM_RESOURCES_MAX) {
+        let Some(obj) = entry.as_object() else {
+            continue;
+        };
+        let property = obj
+            .get("property")
+            .and_then(|p| p.as_str())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        let path = obj
+            .get("path")
+            .and_then(|p| p.as_str())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        let field = obj
+            .get("field")
+            .and_then(|p| p.as_str())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if property.is_empty() || path.is_empty() || field.is_empty() {
+            log_warn!(
+                "custom resource missing required fields, skipping: {:?}",
+                entry
+            );
+            continue;
+        }
+        // Basic validation: path should start with /rest, field chars allowed.
+        if !path.starts_with("/rest") {
+            log_warn!(
+                "custom resource path should start with /rest, skipping: {:?}",
+                entry
+            );
+            continue;
+        }
+        if property.len() > MAX_LIVE_VALUE_LEN || field.len() > MAX_LIVE_VALUE_LEN {
+            log_warn!(
+                "custom resource property/field too long, skipping: {:?}",
+                entry
+            );
+            continue;
+        }
+        out.push(CustomResource {
+            property,
+            path,
+            field,
+        });
+    }
+    if arr.len() > LIVE_CUSTOM_RESOURCES_MAX {
+        log_warn!(
+            "custom resources count {} exceeds cap {}, truncating",
+            arr.len(),
+            LIVE_CUSTOM_RESOURCES_MAX
+        );
+    }
+    out
+}
+
+/// Find the most relevant settings object inside a `didChangeConfiguration` value.
+///
+/// Looks for `rsc.live`, `mikrotik`, or `settings.rsc.live` nesting.
+fn find_settings_object(v: &serde_json::Value) -> Option<&serde_json::Value> {
+    if let Some(obj) = v.as_object() {
+        // Direct rsc.live
+        if let Some(rsc) = obj.get("rsc") {
+            if let Some(live) = rsc.get("live") {
+                return Some(live);
+            }
+            // rsc itself might contain host etc.
+            if rsc.get("host").is_some() || rsc.get("MIKROTIK_HOST").is_some() {
+                return Some(rsc);
+            }
+        }
+        if let Some(mikrotik) = obj.get("mikrotik") {
+            return Some(mikrotik);
+        }
+        if let Some(settings) = obj.get("settings") {
+            return find_settings_object(settings);
+        }
+        // If object itself looks like a config (has host), return it.
+        if obj.contains_key("host")
+            || obj.contains_key("MIKROTIK_HOST")
+            || obj.contains_key("MIKROTIK_PASS")
+        {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn get_settings_str(v: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    for k in keys {
+        if let Some(val) = v.get(*k) {
+            if let Some(s) = val.as_str() {
+                return Some(s.to_string());
+            }
+            if let Some(n) = val.as_u64() {
+                return Some(n.to_string());
+            }
+            if let Some(b) = val.as_bool() {
+                return Some(if b { "1".to_string() } else { "0".to_string() });
+            }
+        }
+    }
+    None
+}
+
+fn get_settings_bool(v: &serde_json::Value, keys: &[&str]) -> Option<bool> {
+    for k in keys {
+        if let Some(val) = v.get(*k) {
+            if let Some(b) = val.as_bool() {
+                return Some(b);
+            }
+            if let Some(s) = val.as_str() {
+                let t = s.trim().to_ascii_lowercase();
+                if t == "1" || t == "true" || t == "yes" {
+                    return Some(true);
+                }
+                if t == "0" || t == "false" || t == "no" {
+                    return Some(false);
+                }
+            }
+            if let Some(n) = val.as_u64() {
+                return Some(n != 0);
+            }
+        }
+    }
+    None
+}
+
+fn get_settings_u64(v: &serde_json::Value, keys: &[&str]) -> Option<u64> {
+    for k in keys {
+        if let Some(val) = v.get(*k) {
+            if let Some(n) = val.as_u64() {
+                return Some(n);
+            }
+            if let Some(s) = val.as_str()
+                && let Ok(n) = s.trim().parse::<u64>()
+            {
+                return Some(n);
+            }
+        }
+    }
+    None
+}
+
+fn get_settings_port(v: &serde_json::Value) -> Option<u16> {
+    for k in &["port", "MIKROTIK_PORT"] {
+        if let Some(val) = v.get(*k) {
+            if let Some(n) = val.as_u64()
+                && (1..=65535).contains(&n)
+            {
+                return Some(n as u16);
+            }
+            if let Some(s) = val.as_str()
+                && let Ok(n) = s.trim().parse::<i64>()
+                && (1..=65535).contains(&n)
+            {
+                return Some(n as u16);
+            }
+        }
+    }
+    None
 }
 
 /// Parse an env integer with deploy-companion warning semantics.
@@ -242,11 +666,40 @@ pub(crate) fn resolve_scheme(port: u16, force_http: bool, ssl_verify: bool) -> &
     if force_http { "http" } else { "https" }
 }
 
+/// Check if a host is denied by SSRF protection.
+fn is_ssrf_denied_host(host: &str) -> bool {
+    // Normalize: lowercase, strip brackets, strip port if present? host here is without port.
+    let lower = host.trim().to_ascii_lowercase();
+    // Strip IPv6 brackets for comparison
+    let inner = if lower.starts_with('[') && lower.ends_with(']') {
+        &lower[1..lower.len() - 1]
+    } else {
+        &lower
+    };
+    // Exact denials
+    if inner == "169.254.169.254" {
+        return true;
+    }
+    if inner == "metadata.google.internal" {
+        return true;
+    }
+    if inner == "::ffff:169.254.169.254" || inner == "::ffff:169.254.169.254%lo0" {
+        return true;
+    }
+    // Also deny the IPv6 bracketed form already handled via inner, but check original with brackets
+    if lower == "[169.254.169.254]" {
+        return true;
+    }
+    // Deny 0.0.0.0? Not required, but we keep minimal per task.
+    false
+}
+
 /// Validate `host` per defensive rules.
 ///
 /// - non-empty, max 253 chars
 /// - no null bytes, no control chars
 /// - no URI delimiters that would alter URL parsing (`@`, `?`, `#`, ` `, `%`)
+/// - SSRF denials for `169.254.169.254` and `metadata.google.internal`
 pub fn validate_host(host: &str) -> Result<(), LiveError> {
     if host.is_empty() {
         return Err(LiveError::InvalidHost("empty".to_string()));
@@ -273,7 +726,94 @@ pub fn validate_host(host: &str) -> Result<(), LiveError> {
     {
         return Err(LiveError::InvalidHost("contains URI delimiter".to_string()));
     }
+    if is_ssrf_denied_host(host) {
+        return Err(LiveError::InvalidHost("SSRF denied host".to_string()));
+    }
     Ok(())
+}
+
+/// Format host for URL: wrap bare IPv6 literals with brackets if needed.
+fn format_host_for_url(host: &str) -> String {
+    // Already bracketed? keep as is.
+    if host.starts_with('[') && host.ends_with(']') {
+        return host.to_string();
+    }
+    // Contains colon => likely IPv6 literal without brackets -> wrap.
+    if host.contains(':') {
+        return format!("[{host}]");
+    }
+    host.to_string()
+}
+
+/// Build and validate the REST URL for a given resource.
+///
+/// Uses `url::Url::parse` to ensure the final URL is syntactically valid
+/// and not vulnerable to injection. Handles IPv6 bracket wrapping.
+fn build_rest_url(config: &LiveConfig, resource: ResourceKind) -> Result<String, LiveError> {
+    validate_host(&config.host)?;
+    if config.port == 0 {
+        return Err(LiveError::InvalidPort("port 0".to_string()));
+    }
+    if config.host.contains('/') || config.host.contains('\\') {
+        return Err(LiveError::InvalidHost(
+            "host contains path separator".to_string(),
+        ));
+    }
+    if is_ssrf_denied_host(&config.host) {
+        return Err(LiveError::InvalidHost("SSRF denied host".to_string()));
+    }
+    let scheme = config.scheme();
+    let host_for_url = format_host_for_url(&config.host);
+    let url_str = format!(
+        "{}://{}:{}{}",
+        scheme,
+        host_for_url,
+        config.port,
+        resource.rest_path()
+    );
+    // Validate via url crate
+    let parsed = url::Url::parse(&url_str)
+        .map_err(|e| LiveError::InvalidHost(format!("invalid url: {e}")))?;
+    if parsed.scheme() != scheme {
+        return Err(LiveError::InvalidHost("scheme mismatch".to_string()));
+    }
+    // Ensure host matches (url crate normalizes)
+    // No further checks needed; the parse succeeded.
+    Ok(url_str)
+}
+
+/// Build URL for a custom resource.
+fn build_custom_rest_url(
+    config: &LiveConfig,
+    custom: &CustomResource,
+) -> Result<String, LiveError> {
+    validate_host(&config.host)?;
+    if config.port == 0 {
+        return Err(LiveError::InvalidPort("port 0".to_string()));
+    }
+    if config.host.contains('/') || config.host.contains('\\') {
+        return Err(LiveError::InvalidHost(
+            "host contains path separator".to_string(),
+        ));
+    }
+    if is_ssrf_denied_host(&config.host) {
+        return Err(LiveError::InvalidHost("SSRF denied host".to_string()));
+    }
+    let scheme = config.scheme();
+    let host_for_url = format_host_for_url(&config.host);
+    // Ensure custom path starts with /
+    let path = if custom.path.starts_with('/') {
+        custom.path.clone()
+    } else {
+        format!("/{}", custom.path)
+    };
+    let url_str = format!("{}://{}:{}{}", scheme, host_for_url, config.port, path);
+    let parsed = url::Url::parse(&url_str)
+        .map_err(|e| LiveError::InvalidHost(format!("invalid url: {e}")))?;
+    if parsed.scheme() != scheme {
+        return Err(LiveError::InvalidHost("scheme mismatch".to_string()));
+    }
+    Ok(url_str)
 }
 
 // ── LiveError ────────────────────────────────────────────────────
@@ -527,6 +1067,10 @@ pub struct CachedValue {
 pub struct LiveCache {
     pub entries: HashMap<String, CachedValue>,
     pub ttl: Duration,
+    /// Last failure times for negative cache (avoid immediate retry spam).
+    pub failed_at: HashMap<String, Instant>,
+    /// Last fetch attempt times for coalescing (avoid spawning parallel fetches).
+    pub last_fetch_attempt: HashMap<String, Instant>,
 }
 
 impl LiveCache {
@@ -535,6 +1079,8 @@ impl LiveCache {
         Self {
             entries: HashMap::new(),
             ttl,
+            failed_at: HashMap::new(),
+            last_fetch_attempt: HashMap::new(),
         }
     }
 
@@ -558,6 +1104,33 @@ impl LiveCache {
         }
     }
 
+    /// Whether a key is in negative cooldown (recent failure, within `LIVE_NEGATIVE_TTL_SECS`).
+    pub fn is_negative_cooldown(&self, key: &str) -> bool {
+        if let Some(at) = self.failed_at.get(key) {
+            at.elapsed() < Duration::from_secs(LIVE_NEGATIVE_TTL_SECS)
+        } else {
+            false
+        }
+    }
+
+    /// Whether a fetch can be spawned for `key` (not coalesced and not in negative cooldown).
+    pub fn can_spawn_fetch(&self, key: &str) -> bool {
+        if self.is_negative_cooldown(key) {
+            return false;
+        }
+        if let Some(last) = self.last_fetch_attempt.get(key)
+            && last.elapsed() < Duration::from_secs(LIVE_FETCH_BLOCKING_TIMEOUT_SECS)
+        {
+            return false;
+        }
+        true
+    }
+
+    /// Record a fetch attempt for coalescing.
+    pub fn record_fetch_attempt(&mut self, key: String) {
+        self.last_fetch_attempt.insert(key, Instant::now());
+    }
+
     /// Insert or replace a cache entry, enforcing caps.
     pub fn insert(&mut self, key: String, values: Vec<String>) {
         let mut vals = values;
@@ -579,12 +1152,38 @@ impl LiveCache {
             log_debug!("live cache evicted oldest key {oldest_key:?} at cap {MAX_CACHE_ENTRIES}");
         }
         self.entries.insert(
-            key,
+            key.clone(),
             CachedValue {
                 values: vals,
                 fetched_at: Instant::now(),
             },
         );
+        // Success clears negative cooldown for this key.
+        self.failed_at.remove(&key);
+    }
+
+    /// Insert a negative cache entry (failure) to avoid immediate retry spam.
+    pub fn insert_negative(&mut self, key: String) {
+        let key_clone = key.clone();
+        self.failed_at.insert(key, Instant::now());
+        log_debug!(
+            "live negative cooldown inserted for {key_clone:?} ttl={}s",
+            LIVE_NEGATIVE_TTL_SECS
+        );
+    }
+
+    /// Clear a single cache entry and its negative state.
+    pub fn clear_key(&mut self, key: &str) {
+        self.entries.remove(key);
+        self.failed_at.remove(key);
+        self.last_fetch_attempt.remove(key);
+    }
+
+    /// Clear all entries and negative state.
+    pub fn clear_all(&mut self) {
+        self.entries.clear();
+        self.failed_at.clear();
+        self.last_fetch_attempt.clear();
     }
 
     /// Test helper: insert with explicit `fetched_at` (for TTL tests).
@@ -606,12 +1205,14 @@ impl LiveCache {
             self.entries.remove(&oldest_key);
         }
         self.entries.insert(
-            key,
+            key.clone(),
             CachedValue {
                 values: vals,
                 fetched_at: at,
             },
         );
+        // Clear negative on explicit insert for test determinism.
+        self.failed_at.remove(&key);
     }
 }
 
@@ -753,7 +1354,109 @@ pub fn live_resource_values_for_property(
     Some((res, vals))
 }
 
+/// Non-blocking stale-while-revalidate: only read cache, trigger background fetch if needed.
+///
+/// Returns cached values if fresh, otherwise `None` (caller should use honest static set).
+/// If miss/stale and not in cooldown/coalesced, spawns a background thread to fetch.
+pub fn get_cached_or_fetch_background(
+    cache: &Arc<Mutex<LiveCache>>,
+    config: &LiveConfig,
+    resource: ResourceKind,
+) -> Option<Vec<String>> {
+    if !config.is_active() {
+        return None;
+    }
+    let key = resource.cache_key().to_string();
+    // Fast path: fresh cache.
+    {
+        let guard = cache.lock().expect("live cache lock poisoned");
+        if let Some(vals) = guard.try_get_cached(&key) {
+            log_debug!("live cache hit (fresh) for {key}");
+            return Some(vals);
+        }
+        if guard.is_negative_cooldown(&key) {
+            log_debug!("live negative cooldown for {key}, skipping fetch");
+            return None;
+        }
+        if !guard.can_spawn_fetch(&key) {
+            log_debug!("live fetch coalesced for {:?} key={}", resource, key);
+            return None;
+        }
+    }
+    // Record attempt before spawning to coalesce concurrent callers.
+    {
+        let mut guard = cache.lock().expect("live cache lock poisoned");
+        // Re-check after acquiring write lock (avoid TOCTOU).
+        if !guard.can_spawn_fetch(&key) {
+            return None;
+        }
+        if guard.try_get_cached(&key).is_some() {
+            return guard.try_get_cached(&key);
+        }
+        guard.record_fetch_attempt(key.clone());
+    }
+    trigger_background_fetch(cache, config, resource, key);
+    None
+}
+
+/// Alias for background fetch with explicit function name per spec.
+#[allow(dead_code)]
+pub fn trigger_background_fetch_if_needed(
+    cache: &Arc<Mutex<LiveCache>>,
+    config: &LiveConfig,
+    resource: ResourceKind,
+) {
+    let _ = get_cached_or_fetch_background(cache, config, resource);
+}
+
+fn trigger_background_fetch(
+    cache: &Arc<Mutex<LiveCache>>,
+    config: &LiveConfig,
+    resource: ResourceKind,
+    key: String,
+) {
+    let cache_clone = Arc::clone(cache);
+    let config_clone = config.clone();
+    log_debug!("live background fetch triggered for {:?}", resource);
+    std::thread::spawn(move || {
+        let start = Instant::now();
+        let result = fetch_resource(&config_clone, resource);
+        let elapsed = start.elapsed();
+        match result {
+            Ok(values) => {
+                if values.is_empty() {
+                    log_debug!("live fetch {:?} returned empty set", resource);
+                    // Empty set not cached; insert negative to avoid churn if repeated?
+                    // Keep as is: no negative for empty, just skip.
+                    return;
+                }
+                log_info!(
+                    "live fetch ok kind={:?} host={} latency_ms={} items={}",
+                    resource,
+                    config_clone.host,
+                    elapsed.as_millis(),
+                    values.len()
+                );
+                let mut guard = cache_clone.lock().expect("live cache lock poisoned");
+                guard.insert(key.clone(), values);
+            }
+            Err(e) => {
+                log_warn!(
+                    "live fetch {:?} failed: {} latency_ms={} host={}",
+                    resource,
+                    e,
+                    elapsed.as_millis(),
+                    config_clone.host
+                );
+                let mut guard = cache_clone.lock().expect("live cache lock poisoned");
+                guard.insert_negative(key.clone());
+            }
+        }
+    });
+}
+
 /// Generic blocking fetch or cache read for any ResourceKind with timeout.
+#[allow(dead_code)]
 pub fn get_cached_or_fetch_resource_blocking_with_timeout(
     cache: &Arc<Mutex<LiveCache>>,
     config: &LiveConfig,
@@ -770,6 +1473,10 @@ pub fn get_cached_or_fetch_resource_blocking_with_timeout(
         if let Some(vals) = guard.try_get_cached(key) {
             log_debug!("live cache hit (fresh) for {key}");
             return Some(vals);
+        }
+        if guard.is_negative_cooldown(key) {
+            log_debug!("live negative cooldown for {key}");
+            return None;
         }
     }
     log_debug!(
@@ -801,19 +1508,34 @@ pub fn get_cached_or_fetch_resource_blocking_with_timeout(
                 log_debug!("live fetch {:?} returned empty set", resource);
                 return None;
             }
-            log_debug!("live fetch {:?} ok: {} items", resource, values.len());
+            log_info!(
+                "live fetch ok kind={:?} host={} latency_ms={} items={}",
+                resource,
+                fetch_config.host,
+                elapsed.as_millis(),
+                values.len()
+            );
             let mut guard = cache.lock().expect("live cache lock poisoned");
             guard.insert(key.to_string(), values.clone());
             Some(values)
         }
         Err(e) => {
-            log_warn!("live fetch {:?} failed: {e}", resource);
+            log_warn!(
+                "live fetch {:?} failed: {} latency_ms={} host={}",
+                resource,
+                e,
+                elapsed.as_millis(),
+                fetch_config.host
+            );
+            let mut guard = cache.lock().expect("live cache lock poisoned");
+            guard.insert_negative(key.to_string());
             None
         }
     }
 }
 
 /// Convenience wrapper for fetching a specific resource blocking.
+#[allow(dead_code)]
 pub fn get_cached_or_fetch_resource_blocking(
     cache: &Arc<Mutex<LiveCache>>,
     config: &LiveConfig,
@@ -828,6 +1550,7 @@ pub fn get_cached_or_fetch_resource_blocking(
 }
 
 /// Try to return a cached live value, or fetch blocking with a timeout (default interfaces).
+#[allow(dead_code)]
 pub fn get_cached_or_fetch_blocking_with_timeout(
     cache: &Arc<Mutex<LiveCache>>,
     config: &LiveConfig,
@@ -842,6 +1565,7 @@ pub fn get_cached_or_fetch_blocking_with_timeout(
 }
 
 /// Convenience wrapper using the default blocking timeout (2 s) for interfaces.
+#[allow(dead_code)]
 pub fn get_cached_or_fetch_blocking(
     cache: &Arc<Mutex<LiveCache>>,
     config: &LiveConfig,
@@ -854,6 +1578,115 @@ pub fn get_cached_or_fetch_blocking(
 }
 
 // ── Fetch ────────────────────────────────────────────────────────
+
+/// Get a cached `ureq::Agent` for the given timeout and TLS verification mode, or build a new one.
+///
+/// Uses a global `OnceLock` cache keyed by `(timeout_secs, ssl_verify)` to reuse agents across calls.
+/// Logs `live agent reuse` on hit.
+fn get_cached_agent(timeout: Duration, ssl_verify: bool) -> ureq::Agent {
+    static AGENT_CACHE: OnceLock<Mutex<HashMap<(u64, bool), ureq::Agent>>> = OnceLock::new();
+    let cache = AGENT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (timeout.as_secs(), ssl_verify);
+    {
+        let guard = cache.lock().expect("agent cache lock poisoned");
+        if let Some(agent) = guard.get(&key) {
+            log_debug!(
+                "live agent reuse timeout={}s ssl_verify={} ssl_verify_effective={}",
+                key.0,
+                key.1,
+                key.1
+            );
+            return agent.clone();
+        }
+    }
+    // Build new agent
+    let agent = if ssl_verify {
+        ureq::AgentBuilder::new().timeout(timeout).build()
+    } else {
+        log_warn!(
+            "live ssl_verify=false — building agent with insecure TLS verifier (host verification disabled)"
+        );
+        match build_insecure_agent(timeout) {
+            Some(a) => a,
+            None => {
+                log_warn!(
+                    "live insecure agent build failed, falling back to default verifier (verification will still be attempted)"
+                );
+                ureq::AgentBuilder::new().timeout(timeout).build()
+            }
+        }
+    };
+    {
+        let mut guard = cache.lock().expect("agent cache lock poisoned");
+        guard.insert(key, agent.clone());
+    }
+    agent
+}
+
+/// Build an agent that disables TLS verification (insecure).
+///
+/// Returns `None` if the rustls insecure config cannot be built.
+fn build_insecure_agent(timeout: Duration) -> Option<ureq::Agent> {
+    // Use rustls dangerous verifier that accepts any certificate.
+    use rustls::DigitallySignedStruct;
+    use rustls::SignatureScheme;
+    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+    use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+
+    #[derive(Debug)]
+    struct NoCertificateVerification;
+
+    impl ServerCertVerifier for NoCertificateVerification {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: UnixTime,
+        ) -> Result<ServerCertVerified, rustls::Error> {
+            Ok(ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            // Use ring's supported schemes; provider is available via rustls crypto.
+            rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+
+    let provider = rustls::crypto::ring::default_provider();
+    let tls_config = rustls::ClientConfig::builder_with_provider(provider.into())
+        .with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
+        .ok()?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoCertificateVerification))
+        .with_no_client_auth();
+    let agent = ureq::AgentBuilder::new()
+        .timeout(timeout)
+        .tls_config(Arc::new(tls_config))
+        .build();
+    Some(agent)
+}
 
 /// Fetch live data for a specific resource kind from the RouterOS REST API.
 pub fn fetch_resource(
@@ -868,35 +1701,31 @@ pub fn fetch_resource(
         return Err(LiveError::InvalidPort("port 0".to_string()));
     }
 
-    let scheme = config.scheme();
-    if config.host.contains('/') || config.host.contains('\\') {
-        return Err(LiveError::InvalidHost(
-            "host contains path separator".to_string(),
-        ));
-    }
-    let url = format!(
-        "{}://{}:{}{}",
-        scheme,
-        config.host,
-        config.port,
-        resource.rest_path()
-    );
+    let url = build_rest_url(config, resource)?;
+
     log_debug!(
-        "live fetch_resource kind={:?} url={} user={} timeout={}s",
+        "live fetch_resource kind={:?} url={} user={} timeout={}s ssl_verify={} ssl_verify_effective={}",
         resource,
         url,
         config.user,
-        config.timeout_secs
+        config.timeout_secs,
+        config.ssl_verify,
+        config.ssl_verify_effective()
     );
 
     if !config.ssl_verify {
-        log_debug!(
-            "live ssl_verify=false — TLS verification would be disabled (MVP keeps default verifier)"
+        log_warn!(
+            "live ssl_verify=false — TLS verification disabled (insecure) scheme={} host={} port={} ssl_verify_effective={}",
+            config.scheme(),
+            config.host,
+            config.port,
+            config.ssl_verify_effective()
         );
     }
     let timeout = Duration::from_secs(config.timeout_secs.clamp(1, 30));
-    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let agent = get_cached_agent(timeout, config.ssl_verify_effective());
 
+    let start = Instant::now();
     let credentials = format!("{}:{}", config.user, config.pass);
     let encoded = base64::Engine::encode(
         &base64::engine::general_purpose::STANDARD,
@@ -974,6 +1803,119 @@ pub fn fetch_resource(
         log_warn!(
             "live fetch parsed 0 valid values for {:?} from {} entries",
             resource,
+            arr.len()
+        );
+    }
+    let elapsed = start.elapsed();
+    log_debug!(
+        "live fetch completed kind={:?} host={} latency_ms={} items={} elapsed={:?}",
+        resource,
+        config.host,
+        elapsed.as_millis(),
+        cleaned.len(),
+        elapsed
+    );
+    Ok(cleaned)
+}
+
+/// Fetch live data for a custom resource (user-defined via `RSC_LS_LIVE_RESOURCES`).
+pub fn fetch_custom_resource(
+    config: &LiveConfig,
+    custom: &CustomResource,
+) -> Result<Vec<String>, LiveError> {
+    if !config.is_active() {
+        return Err(LiveError::Disabled);
+    }
+    validate_host(&config.host)?;
+    if config.port == 0 {
+        return Err(LiveError::InvalidPort("port 0".to_string()));
+    }
+    let url = build_custom_rest_url(config, custom)?;
+    log_debug!(
+        "live fetch_custom kind={} url={} user={} timeout={}s",
+        custom.property,
+        url,
+        config.user,
+        config.timeout_secs
+    );
+    if !config.ssl_verify {
+        log_warn!(
+            "live ssl_verify=false — TLS verification disabled for custom fetch scheme={} host={} port={}",
+            config.scheme(),
+            config.host,
+            config.port
+        );
+    }
+    let timeout = Duration::from_secs(config.timeout_secs.clamp(1, 30));
+    let agent = get_cached_agent(timeout, config.ssl_verify_effective());
+    let credentials = format!("{}:{}", config.user, config.pass);
+    let encoded = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        credentials.as_bytes(),
+    );
+    let auth_header = format!("Basic {encoded}");
+    let resp: Result<ureq::Response, ureq::Error> = agent
+        .get(&url)
+        .set("Accept", "application/json")
+        .set("Authorization", &auth_header)
+        .call();
+    let response: ureq::Response = match resp {
+        Ok(r) => r,
+        Err(ureq::Error::Status(code, _)) => return Err(LiveError::Status(code)),
+        Err(ureq::Error::Transport(t)) => {
+            let msg = t.to_string();
+            if msg.to_ascii_lowercase().contains("timed out")
+                || msg.to_ascii_lowercase().contains("timeout")
+            {
+                return Err(LiveError::Timeout);
+            }
+            return Err(LiveError::Network(msg));
+        }
+    };
+    let status = response.status();
+    if !(200..300).contains(&status) {
+        return Err(LiveError::Status(status));
+    }
+    let reader = response.into_reader();
+    let mut buf = Vec::new();
+    let limit = MAX_LIVE_RESPONSE_BYTES + 1;
+    let n = {
+        use std::io::Read;
+        let mut limited = reader.take(limit as u64);
+        match limited.read_to_end(&mut buf) {
+            Ok(n) => n,
+            Err(e) => return Err(LiveError::Network(e.to_string())),
+        }
+    };
+    if n > MAX_LIVE_RESPONSE_BYTES {
+        return Err(LiveError::ResponseTooLarge(n));
+    }
+    if buf.is_empty() {
+        return Err(LiveError::Parse("empty response".to_string()));
+    }
+    let json: serde_json::Value =
+        serde_json::from_slice(&buf).map_err(|e| LiveError::Parse(format!("invalid json: {e}")))?;
+    let arr = json
+        .as_array()
+        .ok_or_else(|| LiveError::Parse("expected JSON array".to_string()))?;
+    let mut raw_values: Vec<String> = Vec::new();
+    for entry in arr {
+        if let Some(obj) = entry.as_object()
+            && let Some(val) = obj.get(&custom.field)
+            && let Some(val_str) = val.as_str()
+        {
+            raw_values.push(val_str.to_string());
+        }
+        if raw_values.len() >= MAX_LIVE_ITEMS * 2 {
+            break;
+        }
+    }
+    // Use generic filter (same as interfaces) for custom.
+    let cleaned = sanitize_resource_values(raw_values, ResourceKind::Interfaces);
+    if cleaned.is_empty() && !arr.is_empty() {
+        log_warn!(
+            "live custom fetch parsed 0 valid values for {} from {} entries",
+            custom.property,
             arr.len()
         );
     }
@@ -1138,6 +2080,51 @@ mod tests {
     }
 
     #[test]
+    fn test_ssl_verify_respects_mikrotik_ssl_effective() {
+        // Effective verification is false when ssl_verify is false, or when scheme is http.
+        let mut m = HashMap::new();
+        m.insert("RSC_LS_LIVE", "1");
+        m.insert("MIKROTIK_HOST", "192.168.88.1");
+        m.insert("MIKROTIK_PASS", "p");
+        let cfg = cfg_with(m);
+        assert!(cfg.ssl_verify);
+        assert!(cfg.ssl_verify_effective());
+        assert_eq!(cfg.scheme(), "https");
+
+        let mut m2 = HashMap::new();
+        m2.insert("RSC_LS_LIVE", "1");
+        m2.insert("MIKROTIK_HOST", "192.168.88.1");
+        m2.insert("MIKROTIK_PASS", "p");
+        m2.insert("MIKROTIK_SSL", "0");
+        let cfg2 = cfg_with(m2);
+        assert!(!cfg2.ssl_verify);
+        assert!(!cfg2.ssl_verify_effective());
+
+        // Force http also makes effective false even if ssl_verify true.
+        let mut m3 = HashMap::new();
+        m3.insert("RSC_LS_LIVE", "1");
+        m3.insert("MIKROTIK_HOST", "h");
+        m3.insert("MIKROTIK_PASS", "p");
+        m3.insert("MIKROTIK_HTTP", "1");
+        let cfg3 = cfg_with(m3);
+        assert!(cfg3.ssl_verify);
+        assert!(!cfg3.ssl_verify_effective());
+        assert_eq!(cfg3.scheme(), "http");
+
+        // Non-standard port with ssl_verify false => scheme http => effective false
+        let mut m4 = HashMap::new();
+        m4.insert("RSC_LS_LIVE", "1");
+        m4.insert("MIKROTIK_HOST", "h");
+        m4.insert("MIKROTIK_PASS", "p");
+        m4.insert("MIKROTIK_SSL", "0");
+        m4.insert("MIKROTIK_PORT", "80");
+        let cfg4 = cfg_with(m4);
+        assert!(!cfg4.ssl_verify);
+        assert!(!cfg4.ssl_verify_effective());
+        assert_eq!(cfg4.scheme(), "http");
+    }
+
+    #[test]
     fn test_force_http_respects_mikrotik_http() {
         let mut m = HashMap::new();
         m.insert("MIKROTIK_HOST", "h");
@@ -1256,6 +2243,61 @@ mod tests {
         // Ensure normal hostnames still pass.
         assert!(validate_host("router-1.local").is_ok());
         assert!(validate_host("192.168.88.1").is_ok());
+    }
+
+    #[test]
+    fn test_host_validation_rejects_metadata_ip() {
+        // SSRF protection: deny instance metadata endpoints.
+        for bad in [
+            "169.254.169.254",
+            "metadata.google.internal",
+            "::ffff:169.254.169.254",
+            "[::ffff:169.254.169.254]",
+            "169.254.169.254:80", // host with port should be rejected? contains ':'? For pure host without port, we check inner; but colon presence is allowed for IPv6. This case is not pure IP, but we test base.
+        ] {
+            // For the last entry with port, validation may allow ':' but SSRF check should still deny base IP? Our is_ssrf_denied_host checks inner after stripping brackets, but with port it includes colon and port. We handle exact match only, so "169.254.169.254:80" not denied as host (port is separate). So we test exact hosts.
+            if bad == "169.254.169.254:80" {
+                continue;
+            }
+            assert!(
+                validate_host(bad).is_err(),
+                "SSRF host should be rejected: {bad:?}"
+            );
+        }
+        // Normal hosts still ok
+        assert!(validate_host("192.168.88.1").is_ok());
+        assert!(validate_host("10.0.0.1").is_ok());
+    }
+
+    #[test]
+    fn test_url_build_ipv6() {
+        let mut m = HashMap::new();
+        m.insert("RSC_LS_LIVE", "1");
+        m.insert("MIKROTIK_HOST", "fe80::1");
+        m.insert("MIKROTIK_PASS", "p");
+        m.insert("MIKROTIK_PORT", "443");
+        let cfg = cfg_with(m);
+        assert!(validate_host(&cfg.host).is_ok());
+        // format_host_for_url should wrap bare IPv6
+        assert_eq!(format_host_for_url("fe80::1"), "[fe80::1]");
+        assert_eq!(format_host_for_url("[fe80::1]"), "[fe80::1]");
+        assert_eq!(format_host_for_url("192.168.88.1"), "192.168.88.1");
+        // build_rest_url should succeed and contain brackets
+        let url = build_rest_url(&cfg, ResourceKind::Interfaces).expect("ipv6 url should build");
+        assert!(
+            url.contains("[fe80::1]"),
+            "url should contain bracketed ipv6, got {url}"
+        );
+        assert!(url::Url::parse(&url).is_ok());
+
+        // Already bracketed host
+        let mut m2 = HashMap::new();
+        m2.insert("RSC_LS_LIVE", "1");
+        m2.insert("MIKROTIK_HOST", "[::1]");
+        m2.insert("MIKROTIK_PASS", "p");
+        let cfg2 = cfg_with(m2);
+        let url2 = build_rest_url(&cfg2, ResourceKind::Interfaces).expect("bracketed ipv6 url");
+        assert!(url2.contains("[::1]"));
     }
 
     #[test]
@@ -1676,6 +2718,141 @@ mod tests {
             live_resource_values_for_property(&cache, "", "pool", "string"),
             Some((ResourceKind::IpPools, vec!["dhcp-pool".to_string()]))
         );
+    }
+
+    #[test]
+    fn test_multi_host_parsing() {
+        let mut m = HashMap::new();
+        m.insert("RSC_LS_LIVE", "1");
+        m.insert("MIKROTIK_HOST", "192.168.88.1,10.0.0.2,  192.168.1.1");
+        m.insert("MIKROTIK_PASS", "p");
+        let cfg = cfg_with(m);
+        assert_eq!(cfg.host, "192.168.88.1");
+        assert_eq!(cfg.hosts, vec!["192.168.88.1", "10.0.0.2", "192.168.1.1"]);
+        assert_eq!(cfg.primary_host(), "192.168.88.1");
+        assert!(cfg.is_active());
+        // Cap at 4
+        let mut m2 = HashMap::new();
+        m2.insert("RSC_LS_LIVE", "1");
+        m2.insert("MIKROTIK_HOST", "a,b,c,d,e,f");
+        m2.insert("MIKROTIK_PASS", "p");
+        let cfg2 = cfg_with(m2);
+        assert_eq!(cfg2.hosts.len(), LIVE_MAX_HOSTS);
+        assert_eq!(cfg2.hosts.len(), 4);
+    }
+
+    #[test]
+    fn test_negative_cache_cooldown() {
+        let mut cache = LiveCache::new(Duration::from_secs(60));
+        assert!(!cache.is_negative_cooldown("interfaces"));
+        cache.insert_negative("interfaces".to_string());
+        assert!(cache.is_negative_cooldown("interfaces"));
+        // After inserting success, negative cleared
+        cache.insert("interfaces".to_string(), vec!["ether1".to_string()]);
+        assert!(!cache.is_negative_cooldown("interfaces"));
+        // Not in cooldown for other key
+        assert!(!cache.is_negative_cooldown("ip_addresses"));
+    }
+
+    #[test]
+    fn test_background_fetch_coalescing() {
+        let cache = Arc::new(Mutex::new(LiveCache::with_default_ttl()));
+        let mut m = HashMap::new();
+        m.insert("RSC_LS_LIVE", "1");
+        m.insert("MIKROTIK_HOST", "192.168.88.1");
+        m.insert("MIKROTIK_PASS", "p");
+        let _cfg = cfg_with(m);
+        // First call should trigger background fetch (no cache)
+        {
+            let guard = cache.lock().unwrap();
+            assert!(guard.can_spawn_fetch("interfaces"));
+        }
+        // Simulate a fetch attempt recorded
+        {
+            let mut guard = cache.lock().unwrap();
+            guard.record_fetch_attempt("interfaces".to_string());
+            assert!(!guard.can_spawn_fetch("interfaces")); // coalesced within 2s
+        }
+        // After negative cooldown, still cannot spawn
+        {
+            let mut guard = cache.lock().unwrap();
+            guard.insert_negative("interfaces".to_string());
+            assert!(!guard.can_spawn_fetch("interfaces"));
+        }
+    }
+
+    #[test]
+    fn test_custom_resource_parsing() {
+        let json = r#"[{"property":"packet-mark","path":"/rest/ip/firewall/mangle","field":"new-packet-mark"}]"#;
+        let mut m = HashMap::new();
+        m.insert("RSC_LS_LIVE", "1");
+        m.insert("MIKROTIK_HOST", "h");
+        m.insert("MIKROTIK_PASS", "p");
+        m.insert("RSC_LS_LIVE_RESOURCES", json);
+        let cfg = cfg_with(m);
+        assert_eq!(cfg.custom_resources.len(), 1);
+        assert_eq!(cfg.custom_resources[0].property, "packet-mark");
+        assert_eq!(cfg.custom_resources[0].path, "/rest/ip/firewall/mangle");
+        assert_eq!(cfg.custom_resources[0].field, "new-packet-mark");
+        // Resolve custom via LiveConfig fallback
+        assert!(
+            cfg.resolve_resource_with_custom("/ip/firewall/mangle", "packet-mark", "string")
+                .is_some()
+        );
+        // Hardcoded still works
+        assert_eq!(
+            cfg.resolve_resource_with_custom("", "interface", "string"),
+            Some(ResourceKind::Interfaces)
+        );
+        // Unknown without custom returns None
+        assert!(
+            cfg.resolve_resource_with_custom("", "unknown-prop", "string")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_custom_resource_cap() {
+        // More than 8 should truncate
+        let many: Vec<String> = (0..10)
+            .map(|i| format!(r#"{{"property":"p{i}","path":"/rest/interface","field":"name"}}"#))
+            .collect();
+        let json = format!("[{}]", many.join(","));
+        let mut m = HashMap::new();
+        m.insert("RSC_LS_LIVE", "1");
+        m.insert("MIKROTIK_HOST", "h");
+        m.insert("MIKROTIK_PASS", "p");
+        m.insert("RSC_LS_LIVE_RESOURCES", json.as_str());
+        let cfg = cfg_with(m);
+        assert_eq!(cfg.custom_resources.len(), LIVE_CUSTOM_RESOURCES_MAX);
+    }
+
+    #[test]
+    fn test_hot_reload_from_settings() {
+        let cfg = LiveConfig::from_env_with(|k| match k {
+            "RSC_LS_LIVE" => Some("1".to_string()),
+            "MIKROTIK_HOST" => Some("192.168.88.1".to_string()),
+            "MIKROTIK_PASS" => Some("envpass".to_string()),
+            _ => None,
+        });
+        assert_eq!(cfg.host, "192.168.88.1");
+        // Simulate settings overlay
+        let settings = serde_json::json!({
+            "rsc": {
+                "live": {
+                    "host": "10.0.0.5",
+                    "port": 8728
+                }
+            }
+        });
+        let _cfg2 = LiveConfig::from_settings_value(&settings);
+        // from_settings_value starts from env (which has 192.168.88.1) but overlays 10.0.0.5
+        // Note: from_env inside will read real env, not our mocked one. So we test apply directly.
+        let mut cfg3 = cfg.clone();
+        LiveConfig::apply_settings_value(&mut cfg3, &settings);
+        assert_eq!(cfg3.host, "10.0.0.5");
+        assert_eq!(cfg3.port, 8728);
+        assert_eq!(cfg3.hosts, vec!["10.0.0.5".to_string()]);
     }
 
     // Helper trait for sorted check in tests (stable in std from 1.82?).

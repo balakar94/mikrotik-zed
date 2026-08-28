@@ -85,3 +85,20 @@ pub(crate) const LIVE_TIMEOUT_SECS: u64 = 5;
 /// Maximum blocking time the completion handler may spend waiting for
 /// a live fetch before falling back to the honest (no live data) result.
 pub(crate) const LIVE_FETCH_BLOCKING_TIMEOUT_SECS: u64 = 2;
+
+/// Time-to-live for negative cache entries (failed fetches) before retry is allowed.
+///
+/// Prevents immediate retry spam after a device failure; completion stays
+/// non-blocking and the next fetch is deferred until this window expires.
+pub(crate) const LIVE_NEGATIVE_TTL_SECS: u64 = 15;
+
+/// Maximum number of hosts in multi-host mode (comma-separated `MIKROTIK_HOST`).
+///
+/// Only the primary host is fetched today; additional hosts are accepted and
+/// validated but not yet hydrated (future iteration).
+pub(crate) const LIVE_MAX_HOSTS: usize = 4;
+
+/// Maximum number of user-defined custom live resources via `RSC_LS_LIVE_RESOURCES`.
+///
+/// Bounds parsing of the JSON env var to avoid unbounded allocation.
+pub(crate) const LIVE_CUSTOM_RESOURCES_MAX: usize = 8;

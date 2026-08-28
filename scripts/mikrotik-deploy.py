@@ -6,17 +6,17 @@ Supports two transports:
   1) REST API via `requests` (preferred, RouterOS 7.20+ has /rest)
   2) SSH via `paramiko` (fallback, or explicit --method ssh)
 
-Env vars (all can be overridden by CLI flags):
+Env vars (all can be overridden by CLI flags, mirrored in lsp/src/live.rs LiveConfig::from_env):
   MIKROTIK_HOST   - device host/IP (required)
   MIKROTIK_USER   - username (default: admin)
   MIKROTIK_PASS   - password (required)
-  MIKROTIK_PORT   - REST 443 / SSH 22 (auto)
+  MIKROTIK_PORT   - REST 443 / SSH 22 (auto; live defaults to 443)
   MIKROTIK_SSL    - "0" to disable SSL certificate verification (REST);
                     verification only — it NEVER selects the URL scheme
-  MIKROTIK_METHOD - "rest" or "ssh" (default: auto)
+  MIKROTIK_METHOD - "rest" or "ssh" (default: auto; live uses REST only)
   MIKROTIK_HTTP   - "1" to force plain HTTP for REST transport (default: https)
-  MIKROTIK_TIMEOUT - seconds to wait for the remote SSH /import (default: 60)
-  MIKROTIK_ACCEPT_HOST_KEY - "1" to trust unknown SSH host keys (TOFU)
+  MIKROTIK_TIMEOUT - seconds to wait for the remote SSH /import (default: 60; live defaults to 5, clamped 1..30)
+  MIKROTIK_ACCEPT_HOST_KEY - "1" to trust unknown SSH host keys (TOFU; deploy SSH only)
 
 Import success caveat: HTTP 200 or SSH exit code 0 does NOT guarantee the
 import succeeded. /import output is additionally scanned for high-confidence

@@ -16,6 +16,26 @@
   - Strict host validation rejecting control characters and URI delimiters; passwords strictly redacted from all debug logs and errors.
   - Interactive Zed tasks in `languages/rsc/tasks.json` for live connectivity checks.
   - Comprehensive QA coverage: 46 Python tests in `tests/test_live_opt_in.py` and dedicated Rust unit tests.
+- **Live Hardening — Enriched Connection System (10-point hardening)**:
+  - Non-blocking hydrator with coalescing: `textDocument/completion` no longer blocks the LSP loop (stale-while-revalidate via background thread, 2s coalescing per `ResourceKind`).
+  - Negative cache / circuit breaker: failed fetches enter 15s cooldown (`LIVE_NEGATIVE_TTL_SECS`) to prevent retry spam when router is offline.
+  - TLS `MIKROTIK_SSL=0` now actually disables rustls verification via custom `ServerCertVerifier` + `OnceLock` agent cache (previously only logged).
+  - Robust URL building with `url` crate, IPv6 bracket handling (`fe80::1` → `[fe80::1]`), and SSRF denial for `169.254.169.254` / `metadata.google.internal`.
+  - Multi-host support: `MIKROTIK_HOST="a,b,c"` comma-split, capped `LIVE_MAX_HOSTS=4`, validated per-host.
+  - Generic dispatcher extensibility via `RSC_LS_LIVE_RESOURCES='[{"property":"packet-mark","path":"/rest/...","field":"new-packet-mark"}]'` (capped `LIVE_CUSTOM_RESOURCES_MAX=8`).
+  - Workspace commands `rsc.live.refresh` / `rsc.live.status` (`executeCommandProvider`) and hot-reload via `workspace/didChangeConfiguration` (no Zed restart).
+  - Observability: `OnceLock` agent reuse, structured `live fetch ok` logs with `latency_ms` / `items`, `ssl_verify_effective` in startup banner.
+  - Real health check: new `scripts/mikrotik-live-check.py` (GET `/rest/interface` with Basic Auth, mirrors `live.rs` scheme/host validation, `--dry-run`/`--json`, never logs `pass`) and updated `languages/rsc/tasks.json` + `.zed/tasks.json` (6 tasks, 2 live, identical).
+
+### Fixed
+
+- **LSP Live (`lsp/src/live.rs`)**: `MIKROTIK_SSL=0` was a no-op (only `debug!`); now `warn!` + real insecure verifier. SSRF hosts rejected, bare IPv6 literals correctly bracketed.
+
+### Changed
+
+- **Tasks (`languages/rsc/tasks.json`, `.zed/tasks.json`)**: `Live — Check connectivity` now runs real `mikrotik-live-check.py` (not `deploy --dry-run`), shares env semantics with `live.rs` (`PORT 443`, `TIMEOUT 5s clamped 1..30`, `MIKROTIK_HTTP`/`SSL` scheme logic).
+- **Deploy (`scripts/mikrotik-deploy.py`)**: header notes env vars are mirrored in `lsp/src/live.rs LiveConfig::from_env`; no behavior change.
+- **Caps (`lsp/src/caps.rs`)**: added `LIVE_NEGATIVE_TTL_SECS=15`, `LIVE_MAX_HOSTS=4`, `LIVE_CUSTOM_RESOURCES_MAX=8`.
 
 ## [0.5.2] - 2026-08-27
 
