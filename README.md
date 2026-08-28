@@ -308,10 +308,10 @@ Connectivity check: the **"MikroTik: Live — Check connectivity"** task in `.ze
 
 ### Safety & Defensive Invariants
 
-- **Zero Disk Modifications:** Live data is stored strictly in an in-memory TTL cache (60 seconds) and never touches `data/commands.toml` or any files on disk.
-- **Never Blocks Typing:** Network fetches have a strict 2-second blocking budget; if the router is unreachable or slow, completion falls back instantly to static placeholders without hanging the editor.
-- **Credential Protection:** `MIKROTIK_PASS` is strictly redacted from all logs and error messages.
-- **Strict Caps:** Responses are capped at 512 KiB and 500 items to prevent memory exhaustion.
+- **Zero Disk Modifications:** Live data is stored strictly in an in-memory TTL cache (60 seconds, max 16 collections, 512 KiB cap) and never touches `data/commands.toml` or any files on disk.
+- **Never Blocks Typing:** Completion never blocks the LSP loop — background hydrator is coalesced (2s) and negative-cached (15s); if the router is offline, the editor falls back instantly to static placeholders without hammering the device.
+- **Credential Protection:** `MIKROTIK_PASS` is strictly redacted from all logs and error messages; host validation and SSRF denial (`169.254.169.254`) are enforced before any request.
+- **Strict Caps:** Responses capped at 512 KiB / 500 items / 64 chars per value; custom resources capped at 8, hosts at 4.
 
 </details>
 

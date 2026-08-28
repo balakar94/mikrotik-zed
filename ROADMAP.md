@@ -19,6 +19,7 @@ Focus is correctness, hardening, and release hygiene before any feature expansio
 
 - **0.5.2 — shipped 2026-08-27** (tag `v0.5.2`): stability and docs sync — deduplicated wifi args, flag type emission, hover fallback, version docs clarified (snapshot 7.23.2), upstream sync.
 - **0.5.1 prerelease — shipped 2026-08-26** (tag `v0.5.1`): published as a prerelease GitHub Release with all six platform binaries + SHA-256 companions + `extension.wasm`. Registry submission is deferred until the marketplace review window; see [docs/publishing-runbook.md](docs/publishing-runbook.md).
+- **0.5.3 — Live Hardening (staged in `feat/live-data`, `98b24a9`)**: enriched connection system hardened for production — non-blocking hydrator (stale-while-revalidate, 2s coalescing), 15s negative-cache circuit breaker, real `MIKROTIK_SSL=0` rustls insecure verifier with `OnceLock` agent reuse, robust `url`-crate URL building + IPv6 bracketing + SSRF denial (`169.254.169.254`/`metadata`), multi-host `MIKROTIK_HOST="a,b,c"` (`LIVE_MAX_HOSTS=4`), generic dispatcher via `RSC_LS_LIVE_RESOURCES` (`LIVE_CUSTOM_RESOURCES_MAX=8`), `rsc.live.refresh`/`status` commands + `workspace/didChangeConfiguration` hot-reload, structured observability, and real health check `scripts/mikrotik-live-check.py` (mirrors `LiveConfig`, `languages/rsc/tasks.json` + `.zed/tasks.json` now 6 tasks, 2 live).
 - **Shim cache integrity / download verification** (`feat/shim-download-verification`, Phase 1 in `src/cache.rs` / `src/verify.rs`): versioned layout `rsc-ls-<version>` (`.exe` on Windows), `.verified` marker, re-hash on reuse, clean abort on mismatch.
 - **Grammar token and highlight fixes** in prerelease: `mac_address` / `duration`, `$1` positional, `boolean_literal` / `array_access` precedence, `highlights.scm` corrections (`feat/multiline-string-grammar`, `feat/highlight-field-colors`) — mirrored to `grammars/rsc/queries/` and covered by corpus `68/68`.
 - **LSP framing / diagnostics hardening:** bounded `MAX_HEADER_SIZE`, `SyntaxFinding` deferred materialization for backslash continuations, `didChange` batch handling, duplicate `id` detection.
@@ -40,15 +41,16 @@ Candidate set drawn from active `feat/` branches; each ships behind tests and `m
 
 Windows support landed in 0.5.0/0.5.1 (auto-download, `.exe` handling, `windows-arm64` + `x86_64-pc-windows-msvc` via `feat/windows-auto-download`, `feat/windows-arm64`, `feat/windows-support`); no further Windows work planned for 0.6.0 unless regressions appear.
 
-## Vision — Live Data (early, opt-in) — `feat/live-data`
+## Vision — Live Data (early, opt-in) — `feat/live-data` — hardened in 0.5.3
 
-> **Opt-in live device enrichment via Generic Resource Dispatcher.** Explores live enrichment directly from RouterOS devices over REST without touching `data/commands.toml`.
+> **Opt-in live device enrichment via Generic Resource Dispatcher.** Shipped as opt-in in `feat/live-data` (0.5.3, `98b24a9`); hardening keeps it zero-disk and bounded. Explores live enrichment directly from RouterOS devices over REST without touching `data/commands.toml`.
 
-**Goal:** when the user opts in, `rsc-ls` connects to a configured RouterOS device over REST and dynamically enriches autocomplete with **real-time values from the device**:
+**Shipped (0.5.3, `feat/live-data`):** `rsc-ls` connects to a configured RouterOS device over REST and dynamically enriches autocomplete with **real-time values from the device**:
 - **Interfaces & Bridges:** `interface`, `bridge`, `in-interface`, `out-interface`, `parent`
 - **IP Addresses & Networks:** `address`, `network`, `src-address`, `dst-address`, `gateway`, `to-addresses`
 - **Firewall & Lists:** `src-address-list`, `dst-address-list`, `address-list`, `list`, `chain`, `jump-target` across Filter, NAT, Mangle, and Raw
 - **IP Pools:** `pool`, `address-pool`, `remote-pool` (IPv4 and IPv6)
+- **Hardening:** non-blocking hydrator (stale-while-revalidate + 2s coalescing), 15s negative-cache breaker, `url`-crate + IPv6 bracketing + SSRF denial, `MIKROTIK_SSL=0` real verifier bypass, multi-host (`LIVE_MAX_HOSTS=4`), custom `RSC_LS_LIVE_RESOURCES` (`LIVE_CUSTOM_RESOURCES_MAX=8`), `rsc.live.refresh`/`status` + hot-reload, `scripts/mikrotik-live-check.py` health check.
 
 **Future Hydration Vectors (Post-0.6.0 candidate vectors):**
 * **Routing & BGP:** Dynamic BGP peers, AS numbers, VRF instances, and routing tables (`routing-table`, `vrf`, `instance`, `peer`).
@@ -57,11 +59,11 @@ Windows support landed in 0.5.0/0.5.1 (auto-download, `.exe` handling, `windows-
 * **Certificates & Security:** Installed TLS certificates, trust chains, and user groups (`certificate`, `ca-certificate`, `group`).
 * **DHCP & Network Services:** DHCP servers, option sets, and static DNS hostnames (`dhcp-server`, `dhcp-options`).
 
-**Architectural & Security Guarantees:**
-* **Zero disk modifications:** Live values live strictly in an in-memory `LiveCache` (TTL 60s, max 16 collections, max 500 items, max 64 chars per value). The static snapshot (`data/commands.toml` 7.23.2) remains the single source of truth for command grammar and structure.
-* **Bounded execution budget:** Blocking live fetches during completion are strictly capped at a 2-second timeout budget to ensure the editor never stutters or hangs if the router is slow or unreachable.
-* **Credential safety:** Credentials (`MIKROTIK_PASS`) are read from process environment / keychain only and are strictly redacted from all debug logs and errors.
-* **Zed configuration:** Opt-in via `RSC_LS_LIVE=1` / `MIKROTIK_LIVE=1` with host/user/pass configured via Zed `settings.json`, shell environment, or interactive Zed tasks in `languages/rsc/tasks.json`.
+**Architectural & Security Guarantees (now enforced):**
+* **Zero disk modifications:** Live values live strictly in an in-memory `LiveCache` (TTL 60s, max 16 collections, max 500 items, max 64 chars per value, 512 KiB cap). The static snapshot (`data/commands.toml` 7.23.2) remains the single source of truth for command grammar and structure.
+* **Bounded execution budget:** Completion never blocks the LSP loop; background hydrator is coalesced (2s) and negative-cached (15s) so the editor never stutters or hammers the router when offline.
+* **Credential safety:** Credentials (`MIKROTIK_PASS`) are read from process environment / keychain only and are strictly redacted from all debug logs and errors; `url` building is bracket-safe and SSRF-aware.
+* **Zed configuration:** Opt-in via `RSC_LS_LIVE=1` / `MIKROTIK_LIVE=1` with host/user/pass configured via Zed `settings.json`, shell environment, or interactive Zed tasks in `languages/rsc/tasks.json` (now 6 tasks, 2 live) + `rsc.live.status`/`refresh` commands and hot-reload via `workspace/didChangeConfiguration`.
 
 ## Later — 1.0+
 
