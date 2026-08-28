@@ -87,22 +87,23 @@ Verification: `sha256sum llms-full.txt` changes, CI `sync_llms --check` would ha
 1. `make build-lsp && export PATH="$PWD/target/release:$PATH"` — PATH fallback for `rsc-ls`.
 2. `open -a Zed` (GUI must inherit PATH) or `zed --foreground` from same shell.
 3. Zed → Command Palette → `Install Dev Extension` → select `mikrotik-zed/`.
-4. Open a `.rsc` file; exercise completion (`/ip` → TAB), hover (menu/property/verb), and diagnostics (5 rules: `unknown-menu`, `unknown-property`, `missing-required`, `duplicate-property`, `invalid-enum-value`).
-5. Logs: `zed: open log` or `RSC_LS_LOG=debug zed --foreground` — look for `[mikrotik-zed]` / `[rsc-ls]` prefixes; caps: `MAX_DOC_SIZE 5MiB`, `MAX_MESSAGE_SIZE 10MiB`, `MAX_DIAG_LINES 3000` / `500KB`.
-6. Tasks: `cp languages/rsc/tasks.json .zed/tasks.json`; set `MIKROTIK_HOST/USER/PASS/PORT/SSL/METHOD`; in Zed `task: spawn` → MikroTik deploy (REST/SSH/Dry-run); CLI: `python scripts/mikrotik-deploy.py test.rsc --dry-run`.
+4. Open a `.rsc` file; exercise completion (`/ip` → TAB), hover (menu/property/verb), and diagnostics (7 rules: `unknown-menu`, `unknown-property`, `missing-required`, `duplicate-property`, `invalid-enum-value`, `unclosed-brace`/`unmatched-brace`, `unclosed-quote`).
+5. Logs: `zed: open log` or `RSC_LS_LOG=debug zed --foreground` — look for `[mikrotik-zed]` / `[rsc-ls]` prefixes; caps: `MAX_DOC_SIZE 5MiB`, `MAX_MESSAGE_SIZE 10MiB`, `MAX_DIAG_LINES 3000` / `500KB` (`MAX_DIAG_BYTES`).
+6. Tasks: `cp languages/rsc/tasks.json .zed/tasks.json`; set `MIKROTIK_HOST/USER/PASS/PORT/SSL/METHOD`; in Zed `task: spawn` → 6 tasks (deploy REST/SSH/dry-run/validate + Live check/enable). Companions: `scripts/mikrotik-deploy.py` (push `.rsc` over REST/SSH) + `scripts/mikrotik-live-check.py` (Live `GET /rest/interface`, 5s default clamped 1..30s, `--dry-run`/`--json`, never logs pass).
 
-Verification: `worktree.which("rsc-ls")` resolves, `textDocument/publishDiagnostics` fires on save, `scripts/mikrotik-deploy.py --dry-run` prints `shlex.quote`'d commands.
+Verification: `worktree.which("rsc-ls")` resolves, `textDocument/publishDiagnostics` fires on save, `scripts/mikrotik-deploy.py --dry-run` prints `shlex.quote`'d commands; `scripts/mikrotik-live-check.py --dry-run` validates env without network.
 
-### 5. Release (Grammar + Binary + GitHub Release)
+### 5. Release (day-to-day view)
 
-1. Grammar: `python scripts/publish_grammar.py` — checks `tree-sitter generate` clean, pushes `grammars/rsc` to `balakar94/tree-sitter-rsc`, updates `extension.toml` `rev` (never hand-edit; verify against `extension.toml`).
-2. Bump `version` in `Cargo.toml` + `extension.toml`.
-3. **ALWAYS before commit:** update `CHANGELOG.md` (move `Unreleased` to versioned section with `Fixed`/`Changed`/`Added`, update compare links) and `ROADMAP.md` (update `Now — 0.5.x` with tag/hash, remove redundant language mentions). No commit without these — see `Pre-commit Checklist`.
-4. `make validate && make fmt clippy && cargo audit` — all green.
-5. Tag: `git tag v0.x.y && git push origin v0.x.y` → `.github/workflows/release.yml` builds `rsc-ls` for 6 triples (`aarch64/x86_64` × `apple-darwin`/`unknown-linux-gnu`, `x86_64/aarch64` × `pc-windows-msvc`) + WASM, creates GitHub Release with assets `rsc-ls-<triple>` (trigger: `on: push: tags: - "v*.*.*"` — must push tag explicitly, not just `git push`).
-6. Extension: PR to `zed-industries/extensions` with submodule + `extensions.toml` + `pnpm sort-extensions`.
+Canonical single source: `AGENTS.md` → *Release*; full extension checklist lives in `zed-extension-dev.md`. This section keeps only the daily steps:
 
-Verification: `gh release view v0.x.y --json assets --jq '.assets[].name'` lists 6 binaries, `extension.toml` rev resolves on GitHub, `make generate-check` passes on tag.
+1. Grammar (if `grammar.js` changed): `python scripts/publish_grammar.py --dry-run`, then `--push` — pushes `grammars/rsc` to `balakar94/tree-sitter-rsc` and updates `extension.toml` `rev` (never hand-edit).
+2. Bump: `make bump VERSION=x.y.z` — syncs `Cargo.toml`/`lsp/Cargo.toml`/`extension.toml`, runs `cargo fmt` + coherence checks (grammar crate versions stay independent).
+3. Docs: update `CHANGELOG.md` (move `Unreleased` → versioned `Fixed`/`Changed`/`Added`, fix compare links) and `ROADMAP.md` (`Now — 0.5.x` tag/hash) — required before every commit (see Pre-commit Checklist).
+4. Validate: `make validate && cargo audit` — all green.
+5. Tag: `git tag v0.x.y && git push origin v0.x.y` → `.github/workflows/release.yml` on `v*.*.*` builds 6 `rsc-ls` triples (macOS/Linux/Windows × 2 arches) + `extension.wasm` + `*.sha256`; Linux `aarch64-unknown-linux-gnu` builds natively on `ubuntu-24.04-arm` (no `zig`).
+
+Verification: `gh release view v0.x.y --json assets --jq '.assets[].name'` lists 6–7 assets; `extension.toml` rev resolves; `make generate-check` passes on tag.
 
 ## Troubleshooting
 
@@ -129,18 +130,19 @@ Also: `make clippy` fails → `cargo clippy -- -D warnings` must be clean for bo
 | Canonical highlights | `languages/rsc/highlights.scm` (deduped to `grammars/rsc/queries/highlights.scm`) |
 | Brackets / indents / outline | `languages/rsc/brackets.scm`, `indents.scm`, `outline.scm` (no `injections.scm`) |
 | Language config | `languages/rsc/config.toml` (`_`, `-`, `$` word chars) |
-| Tasks template / active | `languages/rsc/tasks.json` → `.zed/tasks.json` (4 tasks: REST, SSH, Dry-run, Validate) |
+| Tasks template / active | `languages/rsc/tasks.json` → `.zed/tasks.json` (6 tasks: deploy REST/SSH/dry-run/validate + Live check/enable) |
 | Command table | `data/commands.toml` (header: version, timestamp, sha256) |
 | Truth source docs | `llms-full.txt` (version in header), `llms.txt` (index) |
 | Extraction / sync | `scripts/extract_commands.py`, `scripts/sync_llms.py` |
 | Deploy companion | `scripts/mikrotik-deploy.py` (REST `requests`, SSH `paramiko`, 5MiB cap) |
+| Live check companion | `scripts/mikrotik-live-check.py` (REST `GET /rest/interface`, 5s default 1..30s, `--dry-run`/`--json`, never logs pass) |
 | Grammar publisher | `scripts/publish_grammar.py` (push + update `extension.toml` rev) |
 | Test corpus | `grammars/rsc/test/corpus/*.txt` (regenerate expectations with native `npx tree-sitter test -u`) |
 | Extension manifest / WASM | `extension.toml` (grammar `rev`), `src/lib.rs` (auto-download + PATH fallback, `platform_triple`) |
 | LSP binary (native) | `lsp/Cargo.toml`, `lsp/src/main.rs` (bootstrap + re-exports), `lsp/src/server.rs` (stdio JSON-RPC: `Server`, dispatch loop, doc store, URI validation), `lsp/src/caps.rs` (all resource limits) |
-| LSP modules | `lsp/src/menus.rs` (indices), `completion.rs`, `hover.rs`, `diagnostics.rs` (5 rules, capped); server enclosure/URI tests live in `server.rs`'s test module |
+| LSP modules | `lsp/src/menus.rs` (indices), `completion.rs`, `hover.rs`, `diagnostics.rs` (7 rules capped `MAX_DIAG_LINES 3000` / `500KB`), `live.rs` (opt-in enrichment, TTL/cache caps) + `caps.rs` (defensive limits) |
 | Workspace / build | `Cargo.toml` (workspace `lsp`, `wasm32-wasip2`), `Makefile`, `extension.wasm` |
-| CI / Release | `.github/workflows/ci.yml`, `release.yml` (6 triples + WASM + GitHub Release, trigger `v*.*.*` tag) |
+| CI / Release | `.github/workflows/ci.yml`, `release.yml` (6 triples + WASM + GitHub Release, trigger `v*.*.*` tag; native `aarch64` on `ubuntu-24.04-arm` — no `zig`) |
 
 ## Pre-commit Checklist (ALWAYS)
 

@@ -26,7 +26,9 @@ All three are generated from `https://manual.mikrotik.com` — the upstream trut
 
 ## Coverage
 
-**Complete CLI** — current coverage: `rg -c '^\[\[menus\]\]' data/commands.toml`. All roots are included via CLI-path regex `^[a-z0-9][a-z0-9/_-]*$`. Implicit parents (e.g., `/ip/firewall` implied by `/ip/firewall/filter`) are allowed by diagnostics.
+**Complete CLI** — current coverage: `rg -c '^\[\[menus\]\]' data/commands.toml` (version: see `data/commands.toml` header / `data/upstream-docs.toml`). All roots are included via CLI-path regex `^[a-z0-9][a-z0-9/_-]*$`. Implicit parents (e.g., `/ip/firewall` implied by `/ip/firewall/filter`) are allowed by diagnostics.
+
+> **Live:** opt-in `RSC_LS_LIVE=1` / `MIKROTIK_LIVE=1` appends interface/address/pool/chain values at completion time but does **not** change `data/commands.toml` — upstream docs remain the truth source (separate pipelines per `AGENTS.md` Hard rule #6).
 
 ## How to Lookup — 3 Workflows
 
@@ -161,7 +163,7 @@ Expected:
 
 ## Agent Rules: Never Invent
 
-- [ ] **Never invent** a menu path, property name, type, or enum value. If `rg` returns nothing, say "not found in RouterOS 7.22" — do not guess.
+- [ ] **Never invent** a menu path, property name, type, or enum value. If `rg` returns nothing, say "not found — check `data/commands.toml` header for current RouterOS version" — do not guess.
 - [ ] Always run **Workflow A** before emitting any RouterOS command in an answer or `.rsc` file.
 - [ ] Use **exact `rg` commands** above — `rg -n 'path = "/...\"' data/commands.toml` — not keyword fuzzy search alone.
 - [ ] Treat an empty `type = ""` as **unknown/complex** — surface as `type: property` and advise checking `llms-full.txt`, do not fabricate `enum` values.

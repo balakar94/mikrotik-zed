@@ -10,7 +10,7 @@ Guide for the pure-Rust language server `rsc-ls` and WASM extension that provide
 
 ## State
 
-Working end-to-end: workspace member `lsp/` (native binary `rsc-ls`) + WASM `cdylib` `src/lib.rs` (`zed_extension_api 0.7`). Diagnostics push+pull, 5 rules; completion with statement snippets; flat document symbols; folding ranges. Auto-download from GitHub Releases with PATH fallback and 4 platform triples.
+Working end-to-end: workspace member `lsp/` (native binary `rsc-ls`) + WASM `cdylib` `src/lib.rs` (`zed_extension_api 0.7`). Diagnostics push+pull, 7 rules; completion with statement snippets; flat document symbols; folding ranges. Auto-download from GitHub Releases with PATH fallback and 4 platform triples. Live enrichment (0.5.3, opt-in) via `RSC_LS_LIVE=1` / `MIKROTIK_LIVE=1` (`lsp/src/live.rs: LiveConfig::from_env`) — 11 `ResourceKind` variants grouped in 7 families (interfaces/bridges, ipv4/ipv6 addresses, address-lists, firewall chains, pools) (`lsp/src/live.rs: live_resource_for_menu_property`), in-memory TTL cache only (`lsp/src/live.rs: LiveCache`, `lsp/src/caps.rs: LIVE_TTL_SECS` 60s), stale-while-revalidate hydrator non-blocking (`lsp/src/live.rs: get_cached_or_fetch_background` / `trigger_background_fetch` with coalescing), negative cache `LIVE_NEGATIVE_TTL_SECS` 15s, `LIVE_MAX_HOSTS` 4, `LIVE_CUSTOM_RESOURCES_MAX` 8, SSRF deny `169.254.169.254` (`lsp/src/live.rs: is_ssrf_denied_host` / `validate_host`), 5s per-request / 2s blocking timeouts clamped 1..30s (`lsp/src/caps.rs: LIVE_TIMEOUT_SECS` / `LIVE_FETCH_BLOCKING_TIMEOUT_SECS`), URL via `url` crate with `fe80::` bracket handling (`lsp/src/live.rs: build_rest_url`).
 
 ## Architecture
 
@@ -33,7 +33,9 @@ Protocol: `Content-Length` framing, `textDocumentSync = {"openClose": true, "cha
 |------|------|
 | `src/lib.rs` | WASM extension; `RscExtension::language_server_command` (PATH→cache→download), `platform_triple`, `LanguageServerInstallationStatus` |
 | `lsp/src/main.rs` | Binary bootstrap: CLI dispatch, logging/banner setup, `Server::new(data)` + `run()`; declares all modules and re-exports shared paths (incl. `Server`, `exit_code`, `is_valid_file_uri`); hosts the child-of-root test modules (`main_tests/`) |
-| `lsp/src/server.rs` | Server core: `Server` struct + full `impl` — stdio loop (`run`), `handle_message` (all method dispatch), tracked-doc store with caps, `publish_diagnostics`, `compute_code_actions`, navigation request adapters, canonical `is_valid_file_uri`; items `pub(crate)`, re-exported at crate root |
+| `lsp/src/server.rs` | Server core: `Server` struct + full `impl` — stdio loop (`run`), `handle_message` (all method dispatch incl. `workspace/executeCommand` `rsc.live.refresh`/`rsc.live.status` + `workspace/didChangeConfiguration` hot-reload via `LiveConfig::apply_settings_value`), tracked-doc store with caps, `publish_diagnostics`, `compute_code_actions`, navigation adapters, canonical `is_valid_file_uri`; items `pub(crate)`, re-exported at crate root |
+| `lsp/src/live.rs` | Live hydrator: stale-while-revalidate (`get_cached_or_fetch_background`, `trigger_background_fetch`, coalescing via `can_spawn_fetch`/`record_fetch_attempt`), negative cache (`failed_at`, `LIVE_NEGATIVE_TTL_SECS`), TLS insecure via rustls `ServerCertVerifier` when `MIKROTIK_SSL=0` (`build_insecure_agent`), URL via `url` crate with `fe80::` bracket handling (`build_rest_url`, `format_host_for_url`), multi-host split (`parse_hosts`, `LIVE_MAX_HOSTS`), custom dispatcher `RSC_LS_LIVE_RESOURCES` JSON `{property,path,field}` (`parse_custom_resources`, `LIVE_CUSTOM_RESOURCES_MAX`), observability |
+| `lsp/src/caps.rs` | Single source of truth for caps (re-exported at crate root): `MAX_MESSAGE_SIZE` 10 MiB, `MAX_HEADER_SIZE` 32 KiB, `MAX_DOC_SIZE` 5 MiB, `MAX_DOCS` 100, `MAX_CODE_ACTIONS` 8, `MAX_DIAG_LINES` 3000, `MAX_DIAG_BYTES` 500 KB, `MAX_LIVE_ITEMS` 500, `MAX_LIVE_VALUE_LEN` 64, `MAX_LIVE_RESPONSE_BYTES` 512 KiB, `MAX_CACHE_ENTRIES` 16, `LIVE_TTL_SECS` 60, `LIVE_TIMEOUT_SECS` 5, `LIVE_FETCH_BLOCKING_TIMEOUT_SECS` 2, `LIVE_NEGATIVE_TTL_SECS` 15, `LIVE_MAX_HOSTS` 4, `LIVE_CUSTOM_RESOURCES_MAX` 8 |
 | `lsp/src/cli.rs` | CLI flags (`--version`/`-V`, `--help`/`-h`, usage errors exit 2), `version_string()` (`RSC_LS_BUILD_SHA` → ` (build <sha7>)`); handled before any logging/loading |
 | `lsp/src/framing.rs` | `Frame`/`FrameError`/`read_message` — Content-Length framing with header/body caps; unparsable headers are terminal (`FrameError::Protocol`) to prevent desync cascades |
 | `lsp/src/parser.rs` | Quote-aware `scan_token`/`SpanToken`/`tokenize_with_spans`/`tokenize`, `parse_line`, multi-line `build_before_cursor`; whole-document `walk_structure` + `StructureEvent` (quote/comment state machine shared by folding and the syntax diagnostics) |
@@ -48,13 +50,12 @@ Protocol: `Content-Length` framing, `textDocumentSync = {"openClose": true, "cha
 | `lsp/src/symbols.rs` | `compute_document_symbols` — flat symbol list: menu commands → Object(19), `:local`/`:global` → Variable(13) named by identifier, other `:verb` → Function(12); skips bare fragments/comments |
 | `lsp/src/navigation.rs` | Variable navigation primitives: `build_variable_index` (declarations via `declared_variable`, quote-aware `$usage` scan ignoring `$$`/strings/comments), `choose_definition` (deterministic closest-preceding rule), `collect_references` (cap 1000), `word_at` (delegates to hover's word extraction) |
 | `lsp/src/folding.rs` | `compute_folding_ranges` — quote/comment-aware brace regions (kind `"region"`), kindless folds for `\` continuations; only when `startLine < endLine` |
-| `lsp/src/server.rs` | Helper module: URI-validation & enclosure/capacity invariant tests over the shared caps (`caps.rs`) |
 | `data/commands.toml` | Generated command table (header: version/timestamp/SHA256), truth source `llms-full.txt` |
 | `extension.toml` | Manifest: `grammars[rsc]` + `language_servers[rsc-ls]` |
 
 ## Capabilities
 
-Advertised in `initialize`: `positionEncoding`, `textDocumentSync {openClose:true, change:2}`, `completionProvider {triggerCharacters:["/", " ", "=", ":"]}`, `hoverProvider`, `documentSymbolProvider`, `foldingRangeProvider`, `codeActionProvider`, `definitionProvider`, `referencesProvider`, `signatureHelpProvider {triggerCharacters:[" ", "="]}`, `diagnosticProvider {interFileDependencies:false}`.
+Advertised in `initialize`: `positionEncoding`, `textDocumentSync {openClose:true, change:2}`, `completionProvider {triggerCharacters:["/", " ", "=", ":"]}`, `hoverProvider`, `documentSymbolProvider`, `foldingRangeProvider`, `codeActionProvider`, `definitionProvider`, `referencesProvider`, `signatureHelpProvider {triggerCharacters:[" ", "="]}`, `diagnosticProvider {interFileDependencies:false}`, `executeCommandProvider {commands:["rsc.live.refresh","rsc.live.status"]}` for Live cache control.
 
 ### Completion (`textDocument/completion`)
 
@@ -63,7 +64,7 @@ Strategy: return all candidates, let Zed fuzzy-filter. Exceptions: `property=` �
 - No path → roots (`get_root_completion_items`, `kind::CLASS`)
 - Before verb → sub-menus (`get_sub_menu_completion_items`) + `STANDARD_VERBS` + `Command` children (`get_verb_completion_items`, `kind::FUNCTION`)
 - After verb (`add`/`print`) → args/flags (`get_arg_completion_items`, `kind::PROPERTY`/`CONSTANT`, snippets `address=$1` / `comment="$1"`, skips used props)
-- After `key=` → enum/bool/`iface_enum`/`ipAddr`/`ipPrefix` values (`get_value_completions`, `kind::ENUM_MEMBER`)
+- After `key=` → enum/bool/`iface_enum`/`ipAddr`/`ipPrefix` values (`get_value_completions`, `kind::ENUM_MEMBER`) — live cache (`LiveCache`) appends interface/address/pool/chain values when fresh via `live_resource_values_for_property`, otherwise triggers background hydrate
 
 Context: `build_before_cursor` + `parse_line` (both in `parser.rs`; `parse_line` uses `child_names_by_parent` for implicit parents like `/ip/firewall`).
 
@@ -111,9 +112,22 @@ Returns `quickfix` actions ("Did you mean 'X'?") for client-echoed diagnostics w
 
 All diagnostics: `source="rsc-ls"`. Types: `Diagnostic{range, severity, code, source, message}` with `Range{Position{line,character}}`.
 
+## Live Enrichment (0.5.3)
+
+Stale-while-revalidate, never blocks completion (`lsp/src/live.rs` + `lsp/src/server.rs` + `lsp/src/caps.rs`):
+
+- `get_cached_or_fetch_background(cache, config, kind)` — fast path: fresh `LiveCache` hit if `fetched_at.elapsed() < LIVE_TTL_SECS` (60s) → `Some(values)`.
+- Miss/stale: if `is_negative_cooldown(key)` (15s `LIVE_NEGATIVE_TTL_SECS`) → `None` (retry gate); else if `!can_spawn_fetch(key)` (coalesced within 2s `LIVE_FETCH_BLOCKING_TIMEOUT_SECS`) → `None`.
+- Otherwise `record_fetch_attempt(key)` then `trigger_background_fetch` spawns thread → `fetch_resource` / `fetch_custom_resource`, on success `insert(key, values)` (dedup/sort/cap 500), on error `insert_negative(key)`.
+- Blocking path `get_cached_or_fetch_resource_blocking_with_timeout` (completion fallback) clamps `config.timeout_secs` 1..30s (`MIKROTIK_TIMEOUT`), respects same negative/coalesce gates, capped 2s budget.
+- URL: `build_rest_url` / `build_custom_rest_url` validate host (`validate_host`, `is_ssrf_denied_host` deny `169.254.169.254`), wrap bare `fe80::` via `format_host_for_url` → `[fe80::1]`, then `url::Url::parse` guarantees well-formed `scheme://host:port/rest/...`; non-`/rest` custom paths rejected.
+- TLS: `get_cached_agent` caches `ureq::Agent` by `(timeout, ssl_verify_effective)`; when `MIKROTIK_SSL=0` `build_insecure_agent` installs rustls `ServerCertVerifier` (`NoCertificateVerification` returning `ServerCertVerified::assertion()`), else default verifier.
+- Multi-host: `parse_hosts` splits `MIKROTIK_HOST` comma-separated, trims, validates, caps `LIVE_MAX_HOSTS` 4 (primary `hosts[0]` hydrates today, extras logged). Custom: `parse_custom_resources` parses `RSC_LS_LIVE_RESOURCES` JSON array capped `LIVE_CUSTOM_RESOURCES_MAX` 8, each `{property,path,field}` (`path` must start `/rest`, `property`/`field` ≤64).
+- Hot-reload via `workspace/didChangeConfiguration` → `LiveConfig::apply_settings_value` (merges `rsc.live` / `mikrotik` / `MIKROTIK_*` keys); `workspace/executeCommand` `rsc.live.refresh` clears (`clear_all`/`clear_key`) + re-hydrates, `rsc.live.status` returns `{enabled, active, host, scheme, cache_entries}`.
+
 ## Adding a New LSP Feature
 
-1. **Choose handler**: add match arm in `Server::handle_message` (`lsp/src/server.rs`) (e.g., `textDocument/definition`, `textDocument/formatting`). Advertise in `initialize` capabilities.
+1. **Choose handler**: add match arm in `Server::handle_message` (`lsp/src/server.rs`) (e.g., `textDocument/definition`, `textDocument/formatting`, `workspace/executeCommand`). Advertise in `initialize` capabilities.
 2. **Reuse context**: call `build_before_cursor(doc, line, char)` → `parse_line(&data, &before)` → `LineContext{path, command, properties, last_token}`. For hover-like word precision, use `find_word_start/end` from `hover.rs`.
 3. **Query MenuData**: `data.menu_by_path.get(&ctx.path)` for exact menu, `data.child_names_by_parent.get(&ctx.path)` for children/implicit parents, `data.menus` for prefix scans. Check `menu_type` (`Directory`/`Settings Directory`/`Command`) and `arg.required`/`arg_type`.
 4. **Implement module**: create `lsp/src/<feature>.rs` (like `completion.rs`/`hover.rs`/`diagnostics.rs`/`symbols.rs`/`folding.rs`), expose a pure `compute_<feature>(...) -> Vec<T>/Option<Value>` function (no I/O) for testability. Register `mod <feature>` alongside the others in `main.rs`.
@@ -138,6 +152,12 @@ Canonical values live in `caps.rs` (single source of truth, re-exported from the
 | `MAX_SYNTAX_DIAGNOSTICS` | 10 | `diagnostics.rs` | Cap on unclosed/unmatched brace + quote diagnostics per publish (oldest-first) |
 | `MAX_BRACE_DEPTH` | 4096 | `parser.rs` | Open-brace stack bound shared by folding + syntax diagnostics |
 | `MAX_REFERENCES` | 1000 | `navigation.rs` | Cap on one `textDocument/references` result list (declaration included) |
+| `LIVE_NEGATIVE_TTL_SECS` | 15 s | `caps.rs` | Negative cache TTL after failed live fetch (retry gate) |
+| `LIVE_MAX_HOSTS` | 4 | `caps.rs` | Cap on comma-separated `MIKROTIK_HOST` entries parsed |
+| `LIVE_CUSTOM_RESOURCES_MAX` | 8 | `caps.rs` | Cap on `RSC_LS_LIVE_RESOURCES` JSON array entries |
+| `LIVE_TIMEOUT_SECS` | 5 s | `caps.rs` | Default per-request live fetch timeout (clamped 1..30s via `MIKROTIK_TIMEOUT`) |
+| `LIVE_FETCH_BLOCKING_TIMEOUT_SECS` | 2 s | `caps.rs` | Max blocking time completion handler waits (coalesce window); background hydrator is unbounded but non-blocking |
+| `LIVE_TTL_SECS` | 60 s | `caps.rs` | TTL for successful live cache entries |
 
 Incremental edits: `lsp_position_to_offset` + `apply_incremental_edit` (`encoding.rs`, called from the didChange handler in `server.rs`) handle `range` patches; on `InvalidRange`/`OutOfBounds` fall back to full replace. `floor_char_boundary` polyfill for UTF-8 safety. Large docs still publish diagnostics (capped) without OOM. URI validation helper: `server.rs` (`is_valid_file_uri`, single definition).
 

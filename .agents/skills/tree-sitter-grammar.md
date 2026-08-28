@@ -14,7 +14,7 @@ Trigger this skill when:
 
 ## Grammar Location
 
-- **Source:** `grammars/rsc/grammar.js` — own repo checked out as an **untracked working copy** (`https://github.com/balakar94/tree-sitter-rsc`; pinned rev in `extension.toml` → `[grammars.rsc] rev`). Fresh clone: `make grammar-clone`
+- **Source:** `grammars/rsc/grammar.js` — **UNTRACKED working copy since 0.5.0 (refactor(grammar) #33)**, own repo/lifecycle (`https://github.com/balakar94/tree-sitter-rsc`), pinned via `extension.toml` → `[grammars.rsc] rev` — **never hand-edit `rev`**, use `scripts/publish_grammar.py --push` (auto-updates rev). Bootstrap: `make grammar-clone`
 - **Generated:** `grammars/rsc/src/parser.c` (`TREE_SITTER_LANGUAGE_VERSION 15`), `src/grammar.json`, `src/node-types.json` — never edit by hand
 - **Metadata:** `grammars/rsc/tree-sitter.json` (scope `source.rsc`, file-types `["rsc"]`); crate + CLI versions live in `Cargo.toml` / `package.json` — read them there, don't trust remembered numbers
 - **Queries:** canonical `languages/rsc/*.scm` (used by Zed) → deduped copy `grammars/rsc/queries/highlights.scm` (used by `tree-sitter test` / playground)
@@ -71,7 +71,7 @@ Parsed as `global_command` + `_command_body` (`do_block`/`else_block`/`while_con
 
 ## Grammar Evolution
 
-Historical rule-by-rule changes live in the submodule's git log (`git -C grammars/rsc log`) — not duplicated here. When you change the grammar in a non-obvious way, capture _why_ in the commit message, not in this skill.
+Historical rule-by-rule changes live in the grammar repo's git log (`git -C grammars/rsc log`, untracked working copy) — not duplicated here. When you change the grammar in a non-obvious way, capture _why_ in the commit message, not in this skill.
 
 ## Making Changes — 6-Step Workflow
 
@@ -80,7 +80,7 @@ Historical rule-by-rule changes live in the submodule's git log (`git -C grammar
 3. **Corpus tests** — `npx tree-sitter test` (or `npm test`) must pass clean. Parse fixtures: `npx tree-sitter parse test/simple.rsc` and `npx tree-sitter parse test/example.rsc` — no `ERROR`/`MISSING`.
 4. **Update queries** — edit canonical `languages/rsc/*.scm` first, then dedup: `cp languages/rsc/highlights.scm grammars/rsc/queries/highlights.scm`. Verify order-sensitive highlights (see below).
 5. **Verify rendering** — `npx tree-sitter highlight test/example.rsc` (ANSI) and `npx tree-sitter highlight test/example.rsc --html` (exact captures); check brackets/indents with real Zed via `Install Dev Extension`.
-6. **Publish** — `python scripts/publish_grammar.py --dry-run` then `python scripts/publish_grammar.py --push` (pushes `grammars/rsc` to `balakar94/tree-sitter-rsc` and updates `extension.toml` rev). Requires `tree-sitter generate` clean and corpus green.
+6. **Publish** — `python scripts/publish_grammar.py --dry-run` **then** `python scripts/publish_grammar.py --push` — `--push` pushes `grammars/rsc` to `balakar94/tree-sitter-rsc` and **auto-updates `extension.toml` rev (never hand-edit)**. Requires `tree-sitter generate` clean + corpus green.
 
 Verification:
 

@@ -4,7 +4,7 @@
 
 Before writing or reviewing anything persisted to the repo: code, comments, docs, commit messages, PR/issue text, metadata files, script output, CI annotations. Also when replying in chat — to know where the boundary is.
 
-The rule itself lives in [`AGENTS.md`](../../AGENTS.md) → *Hard rules* #9. This skill adds the operational details.
+The rule itself lives in [`AGENTS.md`](../../AGENTS.md) → *Hard rules* #8 (Everything persisted is English). This skill adds the operational details.
 
 ## Rule
 

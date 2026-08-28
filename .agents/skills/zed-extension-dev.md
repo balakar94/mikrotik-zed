@@ -16,7 +16,7 @@ for command data see `commands-extraction`; for day-to-day commands see `develop
 
 - **Extension ID:** `mikrotik-rsc` — **Name:** `MikroTik RouterOS Script`
 - **Language:** `MikroTik Script` (Zed) / `RSC` (grammar) — **Suffix:** `.rsc`
-- **Target:** RouterOS 7.22+
+- **Target:** RouterOS 7.20+
 - **License:** Apache-2.0 — **Grammar repo:** [tree-sitter-rsc](https://github.com/balakar94/tree-sitter-rsc)
 
 Hard constraints that govern this project are in [`AGENTS.md`](../../AGENTS.md) → *Hard rules*. Read them before editing.
@@ -36,7 +36,8 @@ language_server_command(id, worktree) called per worktree
   ├─2 make_file_executable("rsc-ls") ──found──► reuse cached download (extension dir)
   └─3 auto-download:
        current_platform() → triple (aarch64-apple-darwin | x86_64-apple-darwin
-                                   | x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu)
+                                   | x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu
+                                   | x86_64-pc-windows-msvc | aarch64-pc-windows-msvc)
        set_language_server_installation_status(CheckingForUpdate → Downloading → None/Failed)
        latest_github_release() → github_release_by_tag_name("v<version>") → direct URL fallback
        download_file(url, "rsc-ls", Uncompressed)
@@ -48,11 +49,11 @@ language_server_command(id, worktree) called per worktree
               ▼
          rsc-ls --stdio JSON-RPC 2.0
            ├─ initialize → capabilities (completion, hover, diagnostic, sync Full)
-           ├─ textDocument/didOpen|didChange → publishDiagnostics (5 rules, capped)
+           ├─ textDocument/didOpen|didChange → publishDiagnostics (7 rules, capped 3000/500KB)
            ├─ textDocument/completion (triggers: /  space  =  :)
            ├─ textDocument/hover
            └─ textDocument/diagnostic (pull)
-Windows → auto-download error; instruct manual build.
+Release builds Linux aarch64 natively on ubuntu-24.04-arm (no zig/cargo-zigbuild); 6 triples total — 4 platform triples + Windows ARM64 (x86_64 + aarch64 Windows).
 ```
 
 ### Supply-chain verification (auto-download)
@@ -83,9 +84,8 @@ languages = ["MikroTik Script"]
 
 ## Tasks & Deploy
 
-`scripts/mikrotik-deploy.py` pushes `.rsc` files over REST/SSH — full env-var reference in the
-script docstring (`python scripts/mikrotik-deploy.py --help`). Always try `--dry-run` first.
-Zed task templates: `languages/rsc/tasks.json` → copy to `.zed/tasks.json` to activate.
+`scripts/mikrotik-deploy.py` pushes `.rsc` files over REST/SSH and `scripts/mikrotik-live-check.py` validates Live REST (`GET /rest/interface`, 5s default 1..30s clamp, `--dry-run`/`--json`) — full env-var reference in script docstrings (`--help`). Always try `--dry-run` first.
+Zed task templates: `languages/rsc/tasks.json` → copy to `.zed/tasks.json` to activate (6 tasks: deploy REST/SSH/dry-run/validate + Live check/enable).
 
 ## Publishing Checklist
 
@@ -99,15 +99,17 @@ python scripts/publish_grammar.py --push  # pushes grammars/rsc → balakar94/tr
 # verify extension.toml rev updated: git -C grammars/rsc rev-parse HEAD
 
 # 2. Bump versions consistently
-# edit: Cargo.toml, lsp/Cargo.toml, grammars/rsc/Cargo.toml, grammars/rsc/package.json, extension.toml
-# keep semver; release.yml reads Cargo.toml version for tag fallback
+# edit via: make bump VERSION=x.y.z  — syncs Cargo.toml + lsp/Cargo.toml + extension.toml
+# keep semver; release.yml reads Cargo.toml version for tag fallback; grammar crate versions stay independent
+# also update CHANGELOG.md + ROADMAP.md before commit (see AGENTS.md Pre-commit Checklist)
 
 # 3. Regenerate & commit data if llms-full.txt changed
 python scripts/extract_commands.py && git diff --exit-code data/commands.toml
 
 # 4. Tag → triggers .github/workflows/release.yml (multi-platform rsc-ls binaries + WASM)
 git tag v<version> && git push origin v<version>
-# artifacts: rsc-ls-<triple> + extension.wasm + *.sha256
+# artifacts (v*.*.*): 6 rsc-ls triples (macOS/Linux/Windows × 2) + extension.wasm + per-file *.sha256 + SHA256SUMS (6–7 assets)
+# Linux aarch64 builds natively on ubuntu-24.04-arm — no zig
 
 # 5. PR to zed-industries/extensions
 # fork zed-industries/extensions, add submodule: git submodule add https://github.com/balakar94/mikrotik-zed mikrotik-zed
@@ -123,11 +125,12 @@ git tag v<version> && git push origin v<version>
 | `grammar not found` / `Failed to load grammar rsc` | `extension.toml` `rev` is placeholder `000...` or not pushed | `python scripts/publish_grammar.py --push`; verify `git ls-remote https://github.com/balakar94/tree-sitter-rsc <rev>` |
 | `Failed to compile` WASM / `wasm32-wasip2` missing | Extension built without `wasm` target or uses `std::env`/`cfg` | `rustup target add wasm32-wasip2`; replace `std::env::var` with `worktree.shell_env()`; see `platform_triple()` in `src/lib.rs` |
 | `404 download` / `Failed to download rsc-ls-<triple>` | No GitHub Release asset for version/triple; `CARGO_PKG_VERSION` mismatch | Tag and push matching `v<version>`; check `gh release view v<ver> --json assets`; fallback: `cargo build -p rsc-ls --release && export PATH=$PATH:target/release` |
-| Diagnostics not showing | File not `language: MikroTik Script` (`.rsc` suffix or `config.toml` mismatch); doc exceeds caps; invalid URI | Check `languages/rsc/config.toml` suffix; `zed: open log` for `[rsc-ls]`; open via real `file://` path; check caps in `diagnostics.rs` |
-| `Windows auto-download not supported` | `platform_triple()` rejects Windows | Build manually: `cargo build -p rsc-ls --release` and add to PATH |
+| Diagnostics not showing | File not `language: MikroTik Script` (`.rsc` suffix or `config.toml` mismatch); doc exceeds caps; invalid URI | Check `languages/rsc/config.toml` suffix; `zed: open log` for `[rsc-ls]`; open via real `file://` path; check caps `MAX_DIAG_LINES 3000` / `500KB` in `lsp/src/caps.rs` |
+| `Platform not supported for rsc-ls auto-download` | Rare: `platform_triple()` has no mapping for os/arch (all 6 shipped triples are covered) | Build from source: `cargo build -p rsc-ls --release` and add to PATH; or grab `rsc-ls-<triple>` from GitHub Releases |
 | `stale parser.c` CI failure | Edited `grammar.js` without regenerating | `cd grammars/rsc && npx tree-sitter generate && git add src/parser.c src/grammar.json src/node-types.json` |
 | `data/commands.toml stale` CI failure | Edited `llms-full.txt` without re-extracting | `python scripts/extract_commands.py && git add data/commands.toml` |
 | Tasks not appearing | `.zed/tasks.json` missing or not valid JSON | `cp languages/rsc/tasks.json .zed/tasks.json`; validate JSON; restart Zed |
+| Live check fails / `RSC_LS_LIVE` no effect | Live opt-in missing, host unreachable, or caps/TLS mismatch | `RSC_LS_LIVE=1 MIKROTIK_HOST=... MIKROTIK_PASS=...` + `scripts/mikrotik-live-check.py --dry-run`; check `lsp/src/live.rs` caps (`LIVE_MAX_HOSTS 4`, 5s/2s timeouts, SSRF deny) |
 
 ## Reference
 
