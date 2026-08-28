@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-08-28
+
 ### Added
 
 - **Live Device Data Enrichment (`lsp/src/live.rs`, `lsp/src/completion.rs`)**:
@@ -16,7 +18,7 @@
   - Strict host validation rejecting control characters and URI delimiters; passwords strictly redacted from all debug logs and errors.
   - Interactive Zed tasks in `languages/rsc/tasks.json` for live connectivity checks.
   - Comprehensive QA coverage: 46 Python tests in `tests/test_live_opt_in.py` and dedicated Rust unit tests.
-- **Live Hardening — Enriched Connection System (10-point hardening)**:
+- **Live Hardening — Enriched Connection System**:
   - Non-blocking hydrator with coalescing: `textDocument/completion` no longer blocks the LSP loop (stale-while-revalidate via background thread, 2s coalescing per `ResourceKind`).
   - Negative cache / circuit breaker: failed fetches enter 15s cooldown (`LIVE_NEGATIVE_TTL_SECS`) to prevent retry spam when router is offline.
   - TLS `MIKROTIK_SSL=0` now actually disables rustls verification via custom `ServerCertVerifier` + `OnceLock` agent cache (previously only logged).
@@ -118,7 +120,8 @@ Baseline release tagged `v0.5.0`. Changes since `v0.4.0`:
 - `extension.toml` kept to schema-known keys only.
 - Local `TODO.md` ignored.
 
-[Unreleased]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/balakar94/mikrotik-zed/compare/v0.4.0...v0.5.0

@@ -1,6 +1,6 @@
 [package]
 name = "rsc-ls"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"
@@ -15,4 +15,4 @@ toml = "0.8" # pinned intentionally: 0.8 is stable on MSRV 1.90; 0.9 offers no n
 ureq = { version = "2.10", default-features = false, features = ["tls", "json"] }
 base64 = "0.22"
 url = "2"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
