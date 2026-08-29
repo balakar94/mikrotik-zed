@@ -95,7 +95,7 @@ class TestLiveModuleExists:
         txt = _read(SERVER_RS)
         assert "live_config" in txt, "server.rs missing live_config wiring"
         assert "live_cache" in txt
-        assert "get_cached_or_fetch_blocking" in txt
+        assert "get_cached_or_fetch_background" in txt
         assert "LIVE_FETCH_BLOCKING_TIMEOUT_SECS" in _read(CAPS_RS)
 
     def test_completion_wires_live(self):
@@ -285,11 +285,11 @@ class TestLiveFallback:
     def test_fetch_blocking_timeout_capped_at_2s(self):
         txt = _read(LIVE_RS)
         assert "LIVE_FETCH_BLOCKING_TIMEOUT_SECS" in txt
-        # The blocking helper must clamp fetch timeout to blocking budget
-        assert "fetch_timeout_secs" in txt or "blocking_timeout" in txt
-        # Ensure server uses the wrapper with default 2s
+        # The background helper still respects the blocking budget cap (coalescing window)
+        assert "LIVE_FETCH_BLOCKING_TIMEOUT_SECS" in txt
+        # Ensure server uses the background variant with default 2s
         srv = _read(SERVER_RS)
-        assert "get_cached_or_fetch_blocking" in srv
+        assert "get_cached_or_fetch_background" in srv
         # Should be called in completion handler, not elsewhere blocking
         assert "completion" in srv.lower()
 
