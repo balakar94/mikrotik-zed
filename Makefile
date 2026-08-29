@@ -172,7 +172,9 @@ bump: ## Bump version (usage: make bump VERSION=0.2.0)
 	@test -n "$(VERSION)" || (echo "usage: make bump VERSION=0.2.0" && false)
 	@echo "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$$' || (echo "error: VERSION must be semver x.y.z" && false)
 	@echo "Bumping to $(VERSION) ..."
-	@python3 -c 'import re,pathlib,sys; v=sys.argv[1]; [pathlib.Path(p).write_text(re.sub(r"^version = \".*\"", f"version = \"{v}\"", pathlib.Path(p).read_text(), flags=re.M)) for p in ["Cargo.toml","lsp/Cargo.toml","extension.toml"]]' "$(VERSION)"
+	# NOTE: regex is fragile — only first occurrence is replaced (count=1) and relies on version under [package] being first.
+	# For robustness, parse TOML with tomllib and rewrite only [package] version if this grows fragile.
+	@python3 -c 'import re,pathlib,sys; v=sys.argv[1]; [pathlib.Path(p).write_text(re.sub(r"^version = \".*\"", f"version = \"{v}\"", pathlib.Path(p).read_text(), count=1, flags=re.M)) for p in ["Cargo.toml","lsp/Cargo.toml","extension.toml"]]' "$(VERSION)"
 	@echo "Note: grammars/rsc versions live in the separate tree-sitter-rsc repo (untracked working copy)"
 	@echo "      never bumped from here — publish_grammar.py handles that repo."
 	@echo "Note: Cargo.lock refreshes on next cargo command — commit it with the bumps."

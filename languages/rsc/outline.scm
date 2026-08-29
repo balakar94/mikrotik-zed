@@ -17,6 +17,11 @@
   (root_menu (identifier) @name)
 ) @item
 
+; Menu continuation lines (indented property lists without leading /)
+(menu_continuation
+  (named_param name: (identifier) @name)
+) @item
+
 ; Global commands (e.g., :put, :local, :if)
 (global_command
   (identifier) @name) @item

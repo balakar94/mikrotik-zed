@@ -2,7 +2,7 @@
 # Auto-generated from llms-full.txt
 # Covers: /app, /beep, /blink, /caps-man, /certificate, /console, /container, /disk, /dude, /environment, /file, /import, … (1077 menus)
 # RouterOS version: 7.23.2
-# Generated: 2026-08-27T10:26:53.550650Z
+# Generated: 2026-08-29T15:47:24.041416Z
 # Source hash (sha256[:16]): 5503bd5858cf82d0
 
 [[menus]]
@@ -605,7 +605,7 @@ enum_values = ["2ghz-b", "2ghz-onlyg", "2ghz-b/g", "5ghz-a", "5ghz-onlyn", "5ghz
 unset = true
 [[menus.arguments]]
 name = "extension-channel"
-type = "enum (disabled | Ce | eC | Ceee | eCee | eeCe | eeeC | XX | XXXX | Ceeeeeee | eCeeeeee | eeCeeeee | eeeCeeee | eeeeCeee | eeeeeCee | eeeeeeCe | eee..."
+type = "enum (disabled | Ce | eC | Ceee | eCee | eeCe | eeeC | XX | XXXX | Ceeeeeee | eCeeeeee | eeCeeeee | eeeCeeee | eeeeCeee | eeeeeCee | eeeeeeCe | ee...)"
 enum_values = ["disabled", "Ce", "eC", "Ceee", "eCee", "eeCe", "eeeC", "XX", "XXXX", "Ceeeeeee", "eCeeeeee", "eeCeeeee", "eeeCeeee", "eeeeCeee", "eeeeeCee", "eeeeeeCe", "eeeeeeeC", "XXXXXXXX"]
 unset = true
 [[menus.arguments]]
@@ -649,7 +649,7 @@ enum_values = ["2ghz-b", "2ghz-onlyg", "2ghz-b/g", "5ghz-a", "5ghz-onlyn", "5ghz
 unset = true
 [[menus.arguments]]
 name = "extension-channel"
-type = "enum (disabled | Ce | eC | Ceee | eCee | eeCe | eeeC | XX | XXXX | Ceeeeeee | eCeeeeee | eeCeeeee | eeeCeeee | eeeeCeee | eeeeeCee | eeeeeeCe | eee..."
+type = "enum (disabled | Ce | eC | Ceee | eCee | eeCe | eeeC | XX | XXXX | Ceeeeeee | eCeeeeee | eeCeeeee | eeeCeeee | eeeeCeee | eeeeeCee | eeeeeeCe | ee...)"
 enum_values = ["disabled", "Ce", "eC", "Ceee", "eCee", "eeCe", "eeeC", "XX", "XXXX", "Ceeeeeee", "eCeeeeee", "eeCeeeee", "eeeCeeee", "eeeeCeee", "eeeeeCee", "eeeeeeCe", "eeeeeeeC", "XXXXXXXX"]
 unset = true
 [[menus.arguments]]
@@ -874,7 +874,7 @@ enum_values = ["2ghz-b", "2ghz-onlyg", "2ghz-b/g", "5ghz-a", "5ghz-onlyn", "5ghz
 unset = true
 [[menus.arguments]]
 name = "extension-channel"
-type = "enum (disabled | Ce | eC | Ceee | eCee | eeCe | eeeC | XX | XXXX | Ceeeeeee | eCeeeeee | eeCeeeee | eeeCeeee | eeeeCeee | eeeeeCee | eeeeeeCe | eee..."
+type = "enum (disabled | Ce | eC | Ceee | eCee | eeCe | eeeC | XX | XXXX | Ceeeeeee | eCeeeeee | eeCeeeee | eeeCeeee | eeeeCeee | eeeeeCee | eeeeeeCe | ee...)"
 enum_values = ["disabled", "Ce", "eC", "Ceee", "eCee", "eeCe", "eeeC", "XX", "XXXX", "Ceeeeeee", "eCeeeeee", "eeCeeeee", "eeeCeeee", "eeeeCeee", "eeeeeCee", "eeeeeeCe", "eeeeeeeC", "XXXXXXXX"]
 unset = true
 [[menus.arguments]]
@@ -1215,7 +1215,7 @@ enum_values = ["2ghz-b", "2ghz-onlyg", "2ghz-b/g", "5ghz-a", "5ghz-onlyn", "5ghz
 unset = true
 [[menus.arguments]]
 name = "extension-channel"
-type = "enum (disabled | Ce | eC | Ceee | eCee | eeCe | eeeC | XX | XXXX | Ceeeeeee | eCeeeeee | eeCeeeee | eeeCeeee | eeeeCeee | eeeeeCee | eeeeeeCe | eee..."
+type = "enum (disabled | Ce | eC | Ceee | eCee | eeCe | eeeC | XX | XXXX | Ceeeeeee | eCeeeeee | eeCeeeee | eeeCeeee | eeeeCeee | eeeeeCee | eeeeeeCe | ee...)"
 enum_values = ["disabled", "Ce", "eC", "Ceee", "eCee", "eeCe", "eeeC", "XX", "XXXX", "Ceeeeeee", "eCeeeeee", "eeCeeeee", "eeeCeeee", "eeeeCeee", "eeeeeCee", "eeeeeeCe", "eeeeeeeC", "XXXXXXXX"]
 unset = true
 [[menus.arguments]]
@@ -2233,7 +2233,7 @@ name = "authority"
 type = ""
 [[menus.read_only]]
 name = "status"
-type = "enum (pending | granted | denied | authorized | waiting | failed | issued | invalid) { pending:1, granted:2, denied:3, authorized:4, waiting:10, fa..."
+type = "enum (pending | granted | denied | authorized | waiting | failed | issued | invalid) { pending:1, granted:2, denied:3, authorized:4, waiting:10, f...)"
 [[menus.read_only]]
 name = "created"
 type = "date"
@@ -2363,7 +2363,7 @@ name = "completion"
 type = "string"
 [[menus.read_only]]
 name = "style"
-type = "enum (none | syntax-meta | syntax-nonterminal | syntax-value | syntax-obsolete | error | ambiguous | comment | escaped | variable | variable-undefi..."
+type = "enum (none | syntax-meta | syntax-nonterminal | syntax-value | syntax-obsolete | error | ambiguous | comment | escaped | variable | variable-undef...)"
 [[menus.read_only]]
 name = "offset"
 type = "num"
@@ -2479,7 +2479,7 @@ name = "shell"
 type = ""
 [[menus.arguments]]
 name = "stop-signal"
-type = "enum (1-SIGHUP | 2-SIGINT | 3-SIGQUIT | 4-SIGILL | 5-SIGTRAP | 6-SIGABTR | 7-SIGBUS | 8-SIGFPE | 9-SIGKILL | 10-SIGUSR1 | 11-SIGSEGV | 12-SIGUSR2 |..."
+type = "enum (1-SIGHUP | 2-SIGINT | 3-SIGQUIT | 4-SIGILL | 5-SIGTRAP | 6-SIGABTR | 7-SIGBUS | 8-SIGFPE | 9-SIGKILL | 10-SIGUSR1 | 11-SIGSEGV | 12-SIGUSR2 ...)"
 enum_values = ["1-SIGHUP", "2-SIGINT", "3-SIGQUIT", "4-SIGILL", "5-SIGTRAP", "6-SIGABTR", "7-SIGBUS", "8-SIGFPE", "9-SIGKILL", "10-SIGUSR1", "11-SIGSEGV", "12-SIGUSR2", "13-SIGPIPE", "14-SIGALRM", "15-SIGTERM", "16-SIGSTKFLT", "17-SIGCHLD", "18-SIGCONT", "19-SIGSTOP", "20-SIGTSTP", "21-SIGTTIN", "22-SIGTTOU", "23-SIGURG", "24-SIGXCPU", "25-SIGXFSZ", "26-SIGVTALRM", "27-SIGPROF", "28-SIGWINCH", "29-SIGIO", "30-SIGPWR", "31-SIGSYS"]
 [[menus.arguments]]
 name = "stop-time"
@@ -2601,7 +2601,7 @@ name = "default-shell"
 type = "string"
 [[menus.read_only]]
 name = "default-stop-signal"
-type = "enum (1-SIGHUP | 2-SIGINT | 3-SIGQUIT | 4-SIGILL | 5-SIGTRAP | 6-SIGABTR | 7-SIGBUS | 8-SIGFPE | 9-SIGKILL | 10-SIGUSR1 | 11-SIGSEGV | 12-SIGUSR2 |..."
+type = "enum (1-SIGHUP | 2-SIGINT | 3-SIGQUIT | 4-SIGILL | 5-SIGTRAP | 6-SIGABTR | 7-SIGBUS | 8-SIGFPE | 9-SIGKILL | 10-SIGUSR1 | 11-SIGSEGV | 12-SIGUSR2 ...)"
 [[menus.read_only]]
 name = "default-workdir"
 type = "string"
@@ -2715,7 +2715,7 @@ path = "/container/kill"
 type = "Command"
 [[menus.arguments]]
 name = "signal"
-type = "enum (1-SIGHUP | 2-SIGINT | 3-SIGQUIT | 4-SIGILL | 5-SIGTRAP | 6-SIGABTR | 7-SIGBUS | 8-SIGFPE | 9-SIGKILL | 10-SIGUSR1 | 11-SIGSEGV | 12-SIGUSR2 |..."
+type = "enum (1-SIGHUP | 2-SIGINT | 3-SIGQUIT | 4-SIGILL | 5-SIGTRAP | 6-SIGABTR | 7-SIGBUS | 8-SIGFPE | 9-SIGKILL | 10-SIGUSR1 | 11-SIGSEGV | 12-SIGUSR2 ...)"
 enum_values = ["1-SIGHUP", "2-SIGINT", "3-SIGQUIT", "4-SIGILL", "5-SIGTRAP", "6-SIGABTR", "7-SIGBUS", "8-SIGFPE", "9-SIGKILL", "10-SIGUSR1", "11-SIGSEGV", "12-SIGUSR2", "13-SIGPIPE", "14-SIGALRM", "15-SIGTERM", "16-SIGSTKFLT", "17-SIGCHLD", "18-SIGCONT", "19-SIGSTOP", "20-SIGTSTP", "21-SIGTTIN", "22-SIGTTOU", "23-SIGURG", "24-SIGXCPU", "25-SIGXFSZ", "26-SIGVTALRM", "27-SIGPROF", "28-SIGWINCH", "29-SIGIO", "30-SIGPWR", "31-SIGSYS"]
 
 [[menus]]
@@ -4833,7 +4833,7 @@ name = "ospf-metric"
 type = "num"
 [[menus.read_only]]
 name = "ospf-type"
-type = "enum (intra-area | inter-area | external-type-1 | external-type-2 | nssa-external-type-1 | nssa-external-type-2) { intra-area:1, inter-area:2, exte..."
+type = "enum (intra-area | inter-area | external-type-1 | external-type-2 | nssa-external-type-1 | nssa-external-type-2) { intra-area:1, inter-area:2, ext...)"
 
 [[menus]]
 path = "/dude/ros/routerboard"
@@ -5249,7 +5249,7 @@ name = "slaves"
 type = ""
 [[menus.arguments]]
 name = "mode"
-type = "enum (balance-rr | active-backup | balance-xor | broadcast | 802.3ad | balance-tlb | balance-alb) { balance-rr:0, active-backup:1, balance-xor:2, b..."
+type = "enum (balance-rr | active-backup | balance-xor | broadcast | 802.3ad | balance-tlb | balance-alb) { balance-rr:0, active-backup:1, balance-xor:2, ...)"
 enum_values = ["balance-rr", "active-backup", "balance-xor", "broadcast", "802.3ad", "balance-tlb", "balance-alb"]
 [[menus.arguments]]
 name = "primary"
@@ -5285,7 +5285,7 @@ enum_values = ["30secs", "1sec"]
 description = "LACP rate specifies how often to exchange LACPDUs between bonding peers. `1sec` - short timeout. `30secs` - long timeout."
 [[menus.arguments]]
 name = "transmit-hash-policy"
-type = "enum (layer-2 | layer-3-and-4 | layer-2-and-3 | encap-2-and-3 | encap-3-and-4) { layer-2:0, layer-3-and-4:1, layer-2-and-3:2, encap-2-and-3:3, enca..."
+type = "enum (layer-2 | layer-3-and-4 | layer-2-and-3 | encap-2-and-3 | encap-3-and-4) { layer-2:0, layer-3-and-4:1, layer-2-and-3:2, encap-2-and-3:3, enc...)"
 enum_values = ["layer-2", "layer-3-and-4", "layer-2-and-3", "encap-2-and-3", "encap-3-and-4"]
 [[menus.arguments]]
 name = "min-links"
@@ -5321,7 +5321,7 @@ path = "/interface/bonding/monitor"
 type = "Command"
 [[menus.read_only]]
 name = "mode"
-type = "enum (balance-rr | active-backup | balance-xor | broadcast | 802.3ad | balance-tlb | balance-alb) { balance-rr:0, active-backup:1, balance-xor:2, b..."
+type = "enum (balance-rr | active-backup | balance-xor | broadcast | 802.3ad | balance-tlb | balance-alb) { balance-rr:0, active-backup:1, balance-xor:2, ...)"
 description = "Used bonding mode."
 [[menus.read_only]]
 name = "active-ports"
@@ -5518,7 +5518,7 @@ name = "pvid"
 type = "num"
 [[menus.arguments]]
 name = "frame-types"
-type = "enum (admit-all | admit-only-vlan-tagged | admit-only-untagged-and-priority-tagged) { admit-all:0, admit-only-vlan-tagged:1, admit-only-untagged-an..."
+type = "enum (admit-all | admit-only-vlan-tagged | admit-only-untagged-and-priority-tagged) { admit-all:0, admit-only-vlan-tagged:1, admit-only-untagged-a...)"
 enum_values = ["admit-all", "admit-only-vlan-tagged", "admit-only-untagged-and-priority-tagged"]
 [[menus.arguments]]
 name = "ingress-filtering"
@@ -5799,7 +5799,7 @@ type = "enum"
 required = true
 [[menus.arguments]]
 name = "action"
-type = "enum (accept | passthrough | drop | jump | return | log | mark-packet | set-priority) { accept:0, passthrough:1, drop:2, jump:3, return:4, log:5, m..."
+type = "enum (accept | passthrough | drop | jump | return | log | mark-packet | set-priority) { accept:0, passthrough:1, drop:2, jump:3, return:4, log:5, ...)"
 enum_values = ["accept", "passthrough", "drop", "jump", "return", "log", "mark-packet", "set-priority"]
 [[menus.arguments]]
 name = "jump-target"
@@ -6211,7 +6211,7 @@ type = "enum"
 required = true
 [[menus.arguments]]
 name = "action"
-type = "enum (accept | passthrough | drop | jump | return | log | mark-packet | set-priority | src-nat | dst-nat | redirect | arp-reply) { accept:0, passth..."
+type = "enum (accept | passthrough | drop | jump | return | log | mark-packet | set-priority | src-nat | dst-nat | redirect | arp-reply) { accept:0, passt...)"
 enum_values = ["accept", "passthrough", "drop", "jump", "return", "log", "mark-packet", "set-priority", "src-nat", "dst-nat", "redirect", "arp-reply"]
 [[menus.arguments]]
 name = "jump-target"
@@ -6425,7 +6425,7 @@ type = "iface_enum"
 required = true
 [[menus.arguments]]
 name = "priority"
-type = "enum (0x00 | 0x10 | 0x20 | 0x30 | 0x40 | 0x50 | 0x60 | 0x70 | 0x80 | 0x90 | 0xa0 | 0xb0 | 0xc0 | 0xd0 | 0xe0 | 0xf0) { 0x00:0x00, 0x10:0x10, 0x20:0..."
+type = "enum (0x00 | 0x10 | 0x20 | 0x30 | 0x40 | 0x50 | 0x60 | 0x70 | 0x80 | 0x90 | 0xa0 | 0xb0 | 0xc0 | 0xd0 | 0xe0 | 0xf0) { 0x00:0x00, 0x10:0x10, 0x20:...)"
 enum_values = ["0x00", "0x10", "0x20", "0x30", "0x40", "0x50", "0x60", "0x70", "0x80", "0x90", "0xa0", "0xb0", "0xc0", "0xd0", "0xe0", "0xf0"]
 [[menus.arguments]]
 name = "path-cost"
@@ -6465,7 +6465,7 @@ name = "pvid"
 type = "num"
 [[menus.arguments]]
 name = "frame-types"
-type = "enum (admit-all | admit-only-vlan-tagged | admit-only-untagged-and-priority-tagged) { admit-all:0, admit-only-vlan-tagged:1, admit-only-untagged-an..."
+type = "enum (admit-all | admit-only-vlan-tagged | admit-only-untagged-and-priority-tagged) { admit-all:0, admit-only-vlan-tagged:1, admit-only-untagged-a...)"
 enum_values = ["admit-all", "admit-only-vlan-tagged", "admit-only-untagged-and-priority-tagged"]
 [[menus.arguments]]
 name = "ingress-filtering"
@@ -6523,7 +6523,7 @@ name = "port-id"
 type = ""
 [[menus.read_only]]
 name = "role"
-type = "enum (disabled-port | root-port | designated-port | alternate-port | backup-port) { disabled-port:0, root-port:1, designated-port:2, alternate-port..."
+type = "enum (disabled-port | root-port | designated-port | alternate-port | backup-port) { disabled-port:0, root-port:1, designated-port:2, alternate-por...)"
 [[menus.read_only]]
 name = "edge-port"
 type = "bool"
@@ -6620,7 +6620,7 @@ name = "port-id"
 type = ""
 [[menus.read_only]]
 name = "role"
-type = "enum (disabled-port | root-port | designated-port | alternate-port | backup-port) { disabled-port:0, root-port:1, designated-port:2, alternate-port..."
+type = "enum (disabled-port | root-port | designated-port | alternate-port | backup-port) { disabled-port:0, root-port:1, designated-port:2, alternate-por...)"
 [[menus.read_only]]
 name = "edge-port"
 type = "bool"
@@ -6724,7 +6724,7 @@ type = "num"
 required = true
 [[menus.arguments]]
 name = "priority"
-type = "enum (0x00 | 0x10 | 0x20 | 0x30 | 0x40 | 0x50 | 0x60 | 0x70 | 0x80 | 0x90 | 0xa0 | 0xb0 | 0xc0 | 0xd0 | 0xe0 | 0xf0) { 0x00:0x00, 0x10:0x10, 0x20:0..."
+type = "enum (0x00 | 0x10 | 0x20 | 0x30 | 0x40 | 0x50 | 0x60 | 0x70 | 0x80 | 0x90 | 0xa0 | 0xb0 | 0xc0 | 0xd0 | 0xe0 | 0xf0) { 0x00:0x00, 0x10:0x10, 0x20:...)"
 enum_values = ["0x00", "0x10", "0x20", "0x30", "0x40", "0x50", "0x60", "0x70", "0x80", "0x90", "0xa0", "0xb0", "0xc0", "0xd0", "0xe0", "0xf0"]
 [[menus.arguments]]
 name = "internal-path-cost"
@@ -6750,7 +6750,7 @@ name = "port-id"
 type = ""
 [[menus.read_only]]
 name = "role"
-type = "enum (disabled-port | root-port | designated-port | alternate-port | backup-port | master-port) { disabled-port:0, root-port:1, designated-port:2, ..."
+type = "enum (disabled-port | root-port | designated-port | alternate-port | backup-port | master-port) { disabled-port:0, root-port:1, designated-port:2,...)"
 [[menus.read_only]]
 name = "learning"
 type = "bool"
@@ -6880,7 +6880,7 @@ name = "registrar-state"
 type = "enum (IN | LV | MT) { IN:1, LV:2, MT:3 }"
 [[menus.read_only]]
 name = "applicant-state"
-type = "enum (Very anxious Observer | Very anxious Passive | Very anxious New | Anxious New | Anxious Active | Quiet Active | Leaving Active | Anxious Obse..."
+type = "enum (Very anxious Observer | Very anxious Passive | Very anxious New | Anxious New | Anxious Active | Quiet Active | Leaving Active | Anxious Obs...)"
 [[menus.read_only]]
 name = "last-event"
 type = "enum (New | JoinIn | In | JoinEmpty | Empty | Leave) { New:0, JoinIn:1, In:2, JoinEmpty:3, Empty:4, Leave:5 }"
@@ -6990,7 +6990,7 @@ type = "enum (mac-as-username | mac-as-username-and-password)"
 enum_values = ["mac-as-username", "mac-as-username-and-password"]
 [[menus.arguments]]
 name = "radius-mac-format"
-type = "enum (XX:XX:XX:XX:XX:XX | XX-XX-XX-XX-XX-XX | XXXXXXXXXXXX | xx:xx:xx:xx:xx:xx | xx-xx-xx-xx-xx-xx | xxxxxxxxxxxx) { XX:XX:XX:XX:XX:XX:0, XX-XX-XX-..."
+type = "enum (XX:XX:XX:XX:XX:XX | XX-XX-XX-XX-XX-XX | XXXXXXXXXXXX | xx:xx:xx:xx:xx:xx | xx-xx-xx-xx-xx-xx | xxxxxxxxxxxx) { XX:XX:XX:XX:XX:XX:0, XX-XX-XX...)"
 enum_values = ["XX:XX:XX:XX:XX:XX", "XX-XX-XX-XX-XX-XX", "XXXXXXXXXXXX", "xx:xx:xx:xx:xx:xx", "xx-xx-xx-xx-xx-xx", "xxxxxxxxxxxx"]
 [[menus.arguments]]
 name = "reauth-timeout"
@@ -7298,7 +7298,7 @@ name = "mdix-enable"
 type = "bool"
 [[menus.arguments]]
 name = "speed"
-type = "enum (10M-baseT-half | 10M-baseT-full | 100M-baseT-half | 100M-baseT-full | 1G-baseT-half | 1G-baseT-full | 10G-baseT | 2.5G-baseT | 2.5G-baseX | 5..."
+type = "enum (10M-baseT-half | 10M-baseT-full | 100M-baseT-half | 100M-baseT-full | 1G-baseT-half | 1G-baseT-full | 10G-baseT | 2.5G-baseT | 2.5G-baseX | ...)"
 enum_values = ["10M-baseT-half", "10M-baseT-full", "100M-baseT-half", "100M-baseT-full", "1G-baseT-half", "1G-baseT-full", "10G-baseT", "2.5G-baseT", "2.5G-baseX", "5G-baseT", "40G-baseCR4", "40G-baseSR4-LR4", "25G-baseCR", "25G-baseSR-LR", "50G-baseCR2", "100G-baseSR4-LR4", "100G-baseCR4", "50G-baseSR2-LR2", "1G-baseX", "10G-baseCR", "10G-baseSR-LR", "50G-baseSR-LR", "50G-baseCR", "100G-baseSR2-LR2", "100G-baseCR2", "200G-baseSR4-LR4", "200G-baseCR4", "400G-baseSR8-LR8", "400G-baseCR8", "100M-baseFX-half", "100M-baseFX-full"]
 [[menus.arguments]]
 name = "bandwidth"
@@ -7777,10 +7777,10 @@ name = "status"
 type = "enum (unknown | link-ok | no-link | initializing | auto-init-failed)"
 [[menus.read_only]]
 name = "auto-negotiation"
-type = "enum (incomplete | done | no-negotiation | failed | restarted | disabled | not-supported) { incomplete:0, done:1, no-negotiation:2, failed:3, resta..."
+type = "enum (incomplete | done | no-negotiation | failed | restarted | disabled | not-supported) { incomplete:0, done:1, no-negotiation:2, failed:3, rest...)"
 [[menus.read_only]]
 name = "rate"
-type = "enum (unknown | 10Mbps | 100Mbps | 1Gbps | 2.5Gbps | 5Gbps | 10Gbps | 25Gbps | 40Gbps | 50Gbps | 100Gbps | 200Gbps | 400Gbps) { unknown:0, 10Mbps:1..."
+type = "enum (unknown | 10Mbps | 100Mbps | 1Gbps | 2.5Gbps | 5Gbps | 10Gbps | 25Gbps | 40Gbps | 50Gbps | 100Gbps | 200Gbps | 400Gbps) { unknown:0, 10Mbps:...)"
 [[menus.read_only]]
 name = "full-duplex"
 type = "bool"
@@ -7831,7 +7831,7 @@ name = "sfp-cmis-module-state"
 type = "enum (low-power | power-up | ready | power-down | fault)"
 [[menus.read_only]]
 name = "sfp-connector-type"
-type = "enum (unknown | SC | LC | optical-pigtail | multifiber-parallel-optic-1x12 | multifiber-parallel-optic-1x16 | copper-pigtail | no-separable-connect..."
+type = "enum (unknown | SC | LC | optical-pigtail | multifiber-parallel-optic-1x12 | multifiber-parallel-optic-1x16 | copper-pigtail | no-separable-connec...)"
 [[menus.read_only]]
 name = "sfp-encoding"
 type = "enum (unspecified | 8B/10B | 4B/5B | nrz | manchester | sonet | 64B/66B | 256B/257B | pam4)"
@@ -7959,7 +7959,7 @@ type = "enum (auto | low | high) { auto:0, low:1, high:2 }"
 description = "PoE out voltage selection"
 [[menus.read_only]]
 name = "poe-out-status"
-type = "enum (disabled | waiting-for-load | powered-on | overload | short-circuit | voltage-too-low | current-too-low | power-cycle | voltage-too-high | co..."
+type = "enum (disabled | waiting-for-load | powered-on | overload | short-circuit | voltage-too-low | current-too-low | power-cycle | voltage-too-high | c...)"
 [[menus.read_only]]
 name = "poe-out-voltage"
 type = "num"
@@ -8328,7 +8328,7 @@ enum_values = ["promiscuous", "isolated", "community1", "community2"]
 description = "Matches isolation profile based on UFDB. Valid only in the egress policy table."
 [[menus.arguments]]
 name = "src-mac-addr-state"
-type = "enum (sa-found | sa-not-found | dynamic-station-move | static-station-move) { sa-found:0, sa-not-found:1, dynamic-station-move:2, static-station-mo..."
+type = "enum (sa-found | sa-not-found | dynamic-station-move | static-station-move) { sa-found:0, sa-not-found:1, dynamic-station-move:2, static-station-m...)"
 enum_values = ["sa-found", "sa-not-found", "dynamic-station-move", "static-station-move"]
 description = "Defines whether to match packets with registered state - packets whose destination MAC address is in UFDB/MFDB/RFDB. Valid only in the egress policy table."
 [[menus.arguments]]
@@ -8336,7 +8336,7 @@ name = "flow-id"
 type = "num"
 [[menus.arguments]]
 name = "action"
-type = "enum (forward | redirect-to-cpu | copy-to-cpu | send-to-new-dst-ports | drop) { forward:0, redirect-to-cpu:1, copy-to-cpu:2, send-to-new-dst-ports:..."
+type = "enum (forward | redirect-to-cpu | copy-to-cpu | send-to-new-dst-ports | drop) { forward:0, redirect-to-cpu:1, copy-to-cpu:2, send-to-new-dst-ports...)"
 enum_values = ["forward", "redirect-to-cpu", "copy-to-cpu", "send-to-new-dst-ports", "drop"]
 [[menus.arguments]]
 name = "new-dst-ports"
@@ -8882,7 +8882,7 @@ type = "num"
 description = "Error code when L3HW driver is in a failure state."
 [[menus.read_only]]
 name = "state"
-type = "enum (ok | stopping | starting | fib-failure | net-failure | switch-failure | fasttrack-failure | out-of-memory) { ok:0, stopping:1, starting:2, fi..."
+type = "enum (ok | stopping | starting | fib-failure | net-failure | switch-failure | fasttrack-failure | out-of-memory) { ok:0, stopping:1, starting:2, f...)"
 description = "Current state of the L3HW driver."
 [[menus.read_only]]
 name = "ipv4-routes-total"
@@ -9013,7 +9013,7 @@ path = "/interface/ethernet/switch/l3hw-settings/monitor"
 type = "Command"
 [[menus.read_only]]
 name = "state"
-type = "enum (ok | stopping | starting | fib-failure | net-failure | switch-failure | fasttrack-failure | out-of-memory) { ok:0, stopping:1, starting:2, fi..."
+type = "enum (ok | stopping | starting | fib-failure | net-failure | switch-failure | fasttrack-failure | out-of-memory) { ok:0, stopping:1, starting:2, f...)"
 description = "Current state of the L3HW driver."
 [[menus.read_only]]
 name = "ipv4-routes-total"
@@ -9260,12 +9260,12 @@ type = "bool"
 description = "Enable or disable MAC-based VLAN translation on the port."
 [[menus.arguments]]
 name = "allow-mac-based-service-vlan-assignment-for"
-type = "enum (none | untagged-and-priority-tagged-frame-only | tagged-frame-only | all) { none:0, untagged-and-priority-tagged-frame-only:1, tagged-frame-o..."
+type = "enum (none | untagged-and-priority-tagged-frame-only | tagged-frame-only | all) { none:0, untagged-and-priority-tagged-frame-only:1, tagged-frame-...)"
 enum_values = ["none", "untagged-and-priority-tagged-frame-only", "tagged-frame-only", "all"]
 description = "Frame type for which MAC-based service VLAN translation applies."
 [[menus.arguments]]
 name = "allow-mac-based-customer-vlan-assignment-for"
-type = "enum (none | untagged-and-priority-tagged-frame-only | tagged-frame-only | all) { none:0, untagged-and-priority-tagged-frame-only:1, tagged-frame-o..."
+type = "enum (none | untagged-and-priority-tagged-frame-only | tagged-frame-only | all) { none:0, untagged-and-priority-tagged-frame-only:1, tagged-frame-...)"
 enum_values = ["none", "untagged-and-priority-tagged-frame-only", "tagged-frame-only", "all"]
 description = "Frame type for which MAC-based customer VLAN translation applies."
 [[menus.arguments]]
@@ -11101,7 +11101,7 @@ description = "Physical port for traffic shaper."
 required = true
 [[menus.arguments]]
 name = "target"
-type = "enum (queue0 | queue1 | queue2 | queue3 | queue4 | queue5 | queue6 | queue7 | wrr-group0 | wrr-group1 | port) { queue0:0, queue1:1, queue2:2, queue..."
+type = "enum (queue0 | queue1 | queue2 | queue3 | queue4 | queue5 | queue6 | queue7 | wrr-group0 | wrr-group1 | port) { queue0:0, queue1:1, queue2:2, queu...)"
 enum_values = ["queue0", "queue1", "queue2", "queue3", "queue4", "queue5", "queue6", "queue7", "wrr-group0", "wrr-group1", "port"]
 [[menus.arguments]]
 name = "meter-unit"
@@ -11539,7 +11539,7 @@ type = "num"
 description = "Unicast FDB lookup/learning VLAN id."
 [[menus.arguments]]
 name = "action"
-type = "enum (forward | src-drop | dst-drop | src-and-dst-drop | ingress-port-policing-bypass | src-redirect-to-cpu | dst-redirect-to-cpu | src-and-dst-red..."
+type = "enum (forward | src-drop | dst-drop | src-and-dst-drop | ingress-port-policing-bypass | src-redirect-to-cpu | dst-redirect-to-cpu | src-and-dst-re...)"
 enum_values = ["forward", "src-drop", "dst-drop", "src-and-dst-drop", "ingress-port-policing-bypass", "src-redirect-to-cpu", "dst-redirect-to-cpu", "src-and-dst-redirect-to-cpu"]
 [[menus.arguments]]
 name = "mirror"
@@ -12702,7 +12702,7 @@ name = "registration-status"
 type = "string"
 [[menus.read_only]]
 name = "functionality"
-type = "enum (minimum | full | tx rf circuit disabled | rx rf circuit disabled | tx and rx rf circuit disabled | tx and rx rf circuit disabled) { minimum:0..."
+type = "enum (minimum | full | tx rf circuit disabled | rx rf circuit disabled | tx and rx rf circuit disabled | tx and rx rf circuit disabled) { minimum:...)"
 [[menus.read_only]]
 name = "manufacturer"
 type = "string"
@@ -13479,7 +13479,7 @@ enum_values = ["sha1", "md5", "sha256", "sha384", "sha512", "null"]
 description = "Allowed authentication methods."
 [[menus.arguments]]
 name = "cipher"
-type = "enum (blowfish128 | aes128-cbc | aes192-cbc | aes256-cbc | aes128-gcm | aes192-gcm | aes256-gcm | null) { blowfish128:1, aes128-cbc:2, aes192-cbc:4..."
+type = "enum (blowfish128 | aes128-cbc | aes192-cbc | aes256-cbc | aes128-gcm | aes192-gcm | aes256-gcm | null) { blowfish128:1, aes128-cbc:2, aes192-cbc:...)"
 enum_values = ["blowfish128", "aes128-cbc", "aes192-cbc", "aes256-cbc", "aes128-gcm", "aes192-gcm", "aes256-gcm", "null"]
 description = "Allowed ciphers. To use GCM ciphers, set auth to null, because the GCM cipher also handles authentication."
 [[menus.arguments]]
@@ -16069,7 +16069,7 @@ name = "arp-timeout"
 type = ""
 [[menus.arguments]]
 name = "region"
-type = "enum (no-region-set | usa | canada | asia | eu | japan | australia | china) { no-region-set:0, usa:1, canada:2, asia:3, eu:4, japan:5, australia:6,..."
+type = "enum (no-region-set | usa | canada | asia | eu | japan | australia | china) { no-region-set:0, usa:1, canada:2, asia:3, eu:4, japan:5, australia:6...)"
 enum_values = ["no-region-set", "usa", "canada", "asia", "eu", "japan", "australia", "china"]
 [[menus.arguments]]
 name = "mode"
@@ -16080,7 +16080,7 @@ name = "ssid"
 type = "string"
 [[menus.arguments]]
 name = "frequency"
-type = "enum (auto | 58320 | 60480 | 62640 | 64800 | 66000 | 66960 | 69120) { auto:0, 58320:58320, 60480:60480, 62640:62640, 64800:64800, 66000:66000, 6696..."
+type = "enum (auto | 58320 | 60480 | 62640 | 64800 | 66000 | 66960 | 69120) { auto:0, 58320:58320, 60480:60480, 62640:62640, 64800:64800, 66000:66000, 669...)"
 enum_values = ["auto", "58320", "60480", "62640", "64800", "66000", "66960", "69120"]
 [[menus.arguments]]
 name = "scan-list"
@@ -16310,7 +16310,7 @@ name = "remote"
 type = "macAddr"
 [[menus.read_only]]
 name = "tx-mode"
-type = "enum (dmg | edmg-cb1 | edmg-cb2 | edmg-cb1-long-ldpc | edmg-cb2-long-ldpc) { dmg:0, edmg-cb1:1, edmg-cb2:2, edmg-cb1-long-ldpc:3, edmg-cb2-long-ldp..."
+type = "enum (dmg | edmg-cb1 | edmg-cb2 | edmg-cb1-long-ldpc | edmg-cb2-long-ldpc) { dmg:0, edmg-cb1:1, edmg-cb2:2, edmg-cb1-long-ldpc:3, edmg-cb2-long-ld...)"
 [[menus.read_only]]
 name = "tx-mcs"
 type = "num"
@@ -16706,7 +16706,7 @@ type = "ubit (wpa-psk, wpa2-psk, wpa2-psk-sha2, wpa-eap, wpa2-eap, wpa3-psk, wpa
 unset = true
 [[menus.arguments]]
 name = "network-type"
-type = "enum (private | private-with-guest | public-chargeable | public-free | personal-device | emergency-only | test | wildcard) { private:0, private-wit..."
+type = "enum (private | private-with-guest | public-chargeable | public-free | personal-device | emergency-only | test | wildcard) { private:0, private-wi...)"
 enum_values = ["private", "private-with-guest", "public-chargeable", "public-free", "personal-device", "emergency-only", "test", "wildcard"]
 unset = true
 [[menus.arguments]]
@@ -16746,7 +16746,7 @@ name = "venue-names"
 type = ""
 [[menus.arguments]]
 name = "ipv4-availability"
-type = "enum (not-available | public | port-restricted | single-nated | double-nated | port-restricted-single-nated | port-restricted-double-nated | unknow..."
+type = "enum (not-available | public | port-restricted | single-nated | double-nated | port-restricted-single-nated | port-restricted-double-nated | unkno...)"
 enum_values = ["not-available", "public", "port-restricted", "single-nated", "double-nated", "port-restricted-single-nated", "port-restricted-double-nated", "unknown"]
 unset = true
 [[menus.arguments]]
@@ -16859,7 +16859,7 @@ enum_values = ["60ghz-ad", "5ghz-a", "5ghz-n", "5ghz-ac", "5ghz-ax", "5ghz-be", 
 unset = true
 [[menus.arguments]]
 name = "width"
-type = "enum (20mhz | 20/40mhz | 20/40mhz-Ce | 20/40mhz-eC | 20/40/80mhz | 20/40/80+80mhz | 20/40/80/160mhz | 20/40/80/160/320mhz | 1mhz | 1/2mhz | 1/2/4mh..."
+type = "enum (20mhz | 20/40mhz | 20/40mhz-Ce | 20/40mhz-eC | 20/40/80mhz | 20/40/80+80mhz | 20/40/80/160mhz | 20/40/80/160/320mhz | 1mhz | 1/2mhz | 1/2/4m...)"
 enum_values = ["20mhz", "20/40mhz", "20/40mhz-Ce", "20/40mhz-eC", "20/40/80mhz", "20/40/80+80mhz", "20/40/80/160mhz", "20/40/80/160/320mhz", "1mhz", "1/2mhz", "1/2/4mhz", "1/2/4/8mhz", "2160mhz"]
 unset = true
 [[menus.arguments]]
@@ -17231,7 +17231,7 @@ enum_values = ["60ghz-ad", "5ghz-a", "5ghz-n", "5ghz-ac", "5ghz-ax", "5ghz-be", 
 unset = true
 [[menus.arguments]]
 name = "width"
-type = "enum (20mhz | 20/40mhz | 20/40mhz-Ce | 20/40mhz-eC | 20/40/80mhz | 20/40/80+80mhz | 20/40/80/160mhz | 20/40/80/160/320mhz | 1mhz | 1/2mhz | 1/2/4mh..."
+type = "enum (20mhz | 20/40mhz | 20/40mhz-Ce | 20/40mhz-eC | 20/40/80mhz | 20/40/80+80mhz | 20/40/80/160mhz | 20/40/80/160/320mhz | 1mhz | 1/2mhz | 1/2/4m...)"
 enum_values = ["20mhz", "20/40mhz", "20/40mhz-Ce", "20/40mhz-eC", "20/40/80mhz", "20/40/80+80mhz", "20/40/80/160mhz", "20/40/80/160/320mhz", "1mhz", "1/2mhz", "1/2/4mhz", "1/2/4/8mhz", "2160mhz"]
 unset = true
 [[menus.arguments]]
@@ -17543,7 +17543,7 @@ type = "ubit (wpa-psk, wpa2-psk, wpa2-psk-sha2, wpa-eap, wpa2-eap, wpa3-psk, wpa
 unset = true
 [[menus.arguments]]
 name = "network-type"
-type = "enum (private | private-with-guest | public-chargeable | public-free | personal-device | emergency-only | test | wildcard) { private:0, private-wit..."
+type = "enum (private | private-with-guest | public-chargeable | public-free | personal-device | emergency-only | test | wildcard) { private:0, private-wi...)"
 enum_values = ["private", "private-with-guest", "public-chargeable", "public-free", "personal-device", "emergency-only", "test", "wildcard"]
 unset = true
 [[menus.arguments]]
@@ -17583,7 +17583,7 @@ name = "venue-names"
 type = ""
 [[menus.arguments]]
 name = "ipv4-availability"
-type = "enum (not-available | public | port-restricted | single-nated | double-nated | port-restricted-single-nated | port-restricted-double-nated | unknow..."
+type = "enum (not-available | public | port-restricted | single-nated | double-nated | port-restricted-single-nated | port-restricted-double-nated | unkno...)"
 enum_values = ["not-available", "public", "port-restricted", "single-nated", "double-nated", "port-restricted-single-nated", "port-restricted-double-nated", "unknown"]
 unset = true
 [[menus.arguments]]
@@ -17696,7 +17696,7 @@ enum_values = ["60ghz-ad", "5ghz-a", "5ghz-n", "5ghz-ac", "5ghz-ax", "5ghz-be", 
 unset = true
 [[menus.arguments]]
 name = "width"
-type = "enum (20mhz | 20/40mhz | 20/40mhz-Ce | 20/40mhz-eC | 20/40/80mhz | 20/40/80+80mhz | 20/40/80/160mhz | 20/40/80/160/320mhz | 1mhz | 1/2mhz | 1/2/4mh..."
+type = "enum (20mhz | 20/40mhz | 20/40mhz-Ce | 20/40mhz-eC | 20/40/80mhz | 20/40/80+80mhz | 20/40/80/160mhz | 20/40/80/160/320mhz | 1mhz | 1/2mhz | 1/2/4m...)"
 enum_values = ["20mhz", "20/40mhz", "20/40mhz-Ce", "20/40mhz-eC", "20/40/80mhz", "20/40/80+80mhz", "20/40/80/160mhz", "20/40/80/160/320mhz", "1mhz", "1/2mhz", "1/2/4mhz", "1/2/4/8mhz", "2160mhz"]
 unset = true
 [[menus.arguments]]
@@ -17914,7 +17914,7 @@ name = "rsn-capab"
 type = "ubit (preauth, no-pairwise, ptksa-rcntr-0, ptksa-rcntr-1, gtksa-rcntr-0, gtksa-rcntr-1, mfpr, mfpc, joint-multiband-assoc, peerkey, spp-amsdu-c, sp..."
 [[menus.read_only]]
 name = "group-data-cipher"
-type = "enum (use-gcs | group-traffic-disallowed | wep40 | tkip | ccmp | wep104 | aes-cmac | gcmp | gcmp-256 | ccmp-256 | bip-gmac_128 | bip-gmac_256 | bip..."
+type = "enum (use-gcs | group-traffic-disallowed | wep40 | tkip | ccmp | wep104 | aes-cmac | gcmp | gcmp-256 | ccmp-256 | bip-gmac_128 | bip-gmac_256 | bi...)"
 [[menus.read_only]]
 name = "group-mgmt-cipher"
 type = "enum ()"
@@ -18003,7 +18003,7 @@ type = "string"
 required = true
 [[menus.arguments]]
 name = "network-type"
-type = "enum (private | private-with-guest | public-chargeable | public-free | personal-device | emergency-only | test | wildcard) { private:0, private-wit..."
+type = "enum (private | private-with-guest | public-chargeable | public-free | personal-device | emergency-only | test | wildcard) { private:0, private-wi...)"
 enum_values = ["private", "private-with-guest", "public-chargeable", "public-free", "personal-device", "emergency-only", "test", "wildcard"]
 unset = true
 [[menus.arguments]]
@@ -18046,7 +18046,7 @@ name = "authentication-types"
 type = ""
 [[menus.arguments]]
 name = "ipv4-availability"
-type = "enum (not-available | public | port-restricted | single-nated | double-nated | port-restricted-single-nated | port-restricted-double-nated | unknow..."
+type = "enum (not-available | public | port-restricted | single-nated | double-nated | port-restricted-single-nated | port-restricted-double-nated | unkno...)"
 enum_values = ["not-available", "public", "port-restricted", "single-nated", "double-nated", "port-restricted-single-nated", "port-restricted-double-nated", "unknown"]
 unset = true
 [[menus.arguments]]
@@ -18385,7 +18385,7 @@ type = "enum"
 unset = true
 [[menus.arguments]]
 name = "network-type"
-type = "enum (private | private-with-guest | public-chargeable | public-free | personal-device | emergency-only | test | wildcard) { private:0, private-wit..."
+type = "enum (private | private-with-guest | public-chargeable | public-free | personal-device | emergency-only | test | wildcard) { private:0, private-wi...)"
 enum_values = ["private", "private-with-guest", "public-chargeable", "public-free", "personal-device", "emergency-only", "test", "wildcard"]
 unset = true
 [[menus.arguments]]
@@ -18425,7 +18425,7 @@ name = "venue-names"
 type = ""
 [[menus.arguments]]
 name = "ipv4-availability"
-type = "enum (not-available | public | port-restricted | single-nated | double-nated | port-restricted-single-nated | port-restricted-double-nated | unknow..."
+type = "enum (not-available | public | port-restricted | single-nated | double-nated | port-restricted-single-nated | port-restricted-double-nated | unkno...)"
 enum_values = ["not-available", "public", "port-restricted", "single-nated", "double-nated", "port-restricted-single-nated", "port-restricted-double-nated", "unknown"]
 unset = true
 [[menus.arguments]]
@@ -18613,7 +18613,7 @@ enum_values = ["60ghz-ad", "5ghz-a", "5ghz-n", "5ghz-ac", "5ghz-ax", "5ghz-be", 
 unset = true
 [[menus.arguments]]
 name = "width"
-type = "enum (20mhz | 20/40mhz | 20/40mhz-Ce | 20/40mhz-eC | 20/40/80mhz | 20/40/80+80mhz | 20/40/80/160mhz | 20/40/80/160/320mhz | 1mhz | 1/2mhz | 1/2/4mh..."
+type = "enum (20mhz | 20/40mhz | 20/40mhz-Ce | 20/40mhz-eC | 20/40/80mhz | 20/40/80+80mhz | 20/40/80/160mhz | 20/40/80/160/320mhz | 1mhz | 1/2mhz | 1/2/4m...)"
 enum_values = ["20mhz", "20/40mhz", "20/40mhz-Ce", "20/40mhz-eC", "20/40/80mhz", "20/40/80+80mhz", "20/40/80/160mhz", "20/40/80/160/320mhz", "1mhz", "1/2mhz", "1/2/4mhz", "1/2/4/8mhz", "2160mhz"]
 unset = true
 [[menus.arguments]]
@@ -18847,7 +18847,7 @@ name = "signal-per-link"
 type = ""
 [[menus.read_only]]
 name = "auth-type"
-type = "enum (wpa2-eap | wpa2-psk | ft-eap | ft-wpa2-psk | wpa3-eap | wpa2-psk-sha2 | wpa3-psk | wpa3-psk-gd | ft-wpa3-psk | ft-wpa3-psk-gd | wpa3-eap-192 ..."
+type = "enum (wpa2-eap | wpa2-psk | ft-eap | ft-wpa2-psk | wpa3-eap | wpa2-psk-sha2 | wpa3-psk | wpa3-psk-gd | ft-wpa3-psk | ft-wpa3-psk-gd | wpa3-eap-192...)"
 [[menus.read_only]]
 name = "mfp"
 type = "bool"
@@ -19200,7 +19200,7 @@ path = "/interface/wifi/spectral-scan"
 type = "Command"
 [[menus.arguments]]
 name = "resolution"
-type = "enum (312khz | 625khz | 1.25mhz | 2.5mhz | 5mhz | 10mhz | 20mhz | 40mhz | 80mhz) { 312khz:312, 625khz:625, 1.25mhz:1250, 2.5mhz:2500, 5mhz:5000, 10..."
+type = "enum (312khz | 625khz | 1.25mhz | 2.5mhz | 5mhz | 10mhz | 20mhz | 40mhz | 80mhz) { 312khz:312, 625khz:625, 1.25mhz:1250, 2.5mhz:2500, 5mhz:5000, 1...)"
 enum_values = ["312khz", "625khz", "1.25mhz", "2.5mhz", "5mhz", "10mhz", "20mhz", "40mhz", "80mhz"]
 [[menus.arguments]]
 name = "data"
@@ -19550,7 +19550,7 @@ name = "radio-name"
 type = "string"
 [[menus.arguments]]
 name = "mode"
-type = "enum (station | station-wds | ap-bridge | bridge | alignment-only | nstreme-dual-slave | wds-slave | station-pseudobridge | station-pseudobridge-cl..."
+type = "enum (station | station-wds | ap-bridge | bridge | alignment-only | nstreme-dual-slave | wds-slave | station-pseudobridge | station-pseudobridge-c...)"
 enum_values = ["station", "station-wds", "ap-bridge", "bridge", "alignment-only", "nstreme-dual-slave", "wds-slave", "station-pseudobridge", "station-pseudobridge-clone", "station-bridge"]
 [[menus.arguments]]
 name = "ssid"
@@ -19580,7 +19580,7 @@ type = "enum (2ghz-b | 2ghz-onlyg | 2ghz-b/g | 5ghz-a | 5ghz-onlyn | 5ghz-a/n | 
 enum_values = ["2ghz-b", "2ghz-onlyg", "2ghz-b/g", "5ghz-a", "5ghz-onlyn", "5ghz-a/n", "2ghz-onlyn", "2ghz-b/g/n", "2ghz-g/n", "5ghz-a/n/ac", "5ghz-n/ac", "5ghz-onlyac"]
 [[menus.arguments]]
 name = "channel-width"
-type = "enum (20mhz | 40mhz-turbo | 10mhz | 5mhz | 20/40mhz-Ce | 20/40mhz-eC | 20/40/80mhz-Ceee | 20/40/80mhz-eCee | 20/40/80mhz-eeCe | 20/40/80mhz-eeeC | ..."
+type = "enum (20mhz | 40mhz-turbo | 10mhz | 5mhz | 20/40mhz-Ce | 20/40mhz-eC | 20/40/80mhz-Ceee | 20/40/80mhz-eCee | 20/40/80mhz-eeCe | 20/40/80mhz-eeeC |...)"
 enum_values = ["20mhz", "40mhz-turbo", "10mhz", "5mhz", "20/40mhz-Ce", "20/40mhz-eC", "20/40/80mhz-Ceee", "20/40/80mhz-eCee", "20/40/80mhz-eeCe", "20/40/80mhz-eeeC", "20/40/80/160mhz-Ceeeeeee", "20/40/80/160mhz-eCeeeeee", "20/40/80/160mhz-eeCeeeee", "20/40/80/160mhz-eeeCeeee", "20/40/80/160mhz-eeeeCeee", "20/40/80/160mhz-eeeeeCee", "20/40/80/160mhz-eeeeeeCe", "20/40/80/160mhz-eeeeeeeC", "20/40mhz-XX", "20/40/80mhz-XXXX", "20/40/80/160mhz-XXXXXXXX"]
 [[menus.arguments]]
 name = "secondary-frequency"
@@ -19590,7 +19590,7 @@ name = "scan-list"
 type = ""
 [[menus.arguments]]
 name = "wireless-protocol"
-type = "enum (unspecified | any | 802.11 | nstreme | nv2 | nv2-nstreme-802.11 | nv2-nstreme) { unspecified:0, any:1, 802.11:2, nstreme:3, nv2:4, nv2-nstrem..."
+type = "enum (unspecified | any | 802.11 | nstreme | nv2 | nv2-nstreme-802.11 | nv2-nstreme) { unspecified:0, any:1, 802.11:2, nstreme:3, nv2:4, nv2-nstre...)"
 enum_values = ["unspecified", "any", "802.11", "nstreme", "nv2", "nv2-nstreme-802.11", "nv2-nstreme"]
 [[menus.arguments]]
 name = "rate-set"
@@ -19832,7 +19832,7 @@ name = "default-name"
 type = "string"
 [[menus.read_only]]
 name = "interface-type"
-type = "enum (virtual | Atheros AR5212 | Atheros AR5211 | Atheros AR5210 | Prism | Atheros AR5213 | Atheros AR5413 | Atheros 11N | Atheros AR9271 | Atheros..."
+type = "enum (virtual | Atheros AR5212 | Atheros AR5211 | Atheros AR5210 | Prism | Atheros AR5213 | Atheros AR5413 | Atheros 11N | Atheros AR9271 | Athero...)"
 [[menus.read_only]]
 name = "pci-info"
 type = "string"
@@ -20080,7 +20080,7 @@ type = "enum (private | private-with-guest | public-chargeable | public-free | p
 enum_values = ["private", "private-with-guest", "public-chargeable", "public-free", "personal-device", "emergency-only", "test", "wildcard"]
 [[menus.arguments]]
 name = "iw-venue"
-type = "enum (any | assembly | business | educational | industrial | institutional | mercantile | residential | storage | utility | vehicular | outdoor) { ..."
+type = "enum (any | assembly | business | educational | industrial | institutional | mercantile | residential | storage | utility | vehicular | outdoor) {...)"
 enum_values = ["any", "assembly", "business", "educational", "industrial", "institutional", "mercantile", "residential", "storage", "utility", "vehicular", "outdoor"]
 [[menus.arguments]]
 name = "iw-hessid"
@@ -20111,7 +20111,7 @@ name = "iw-authentication-types"
 type = ""
 [[menus.arguments]]
 name = "iw-ipv4-availability"
-type = "enum (any | not-available | public | port-restricted | single-nated | double-nated | port-restricted-single-nated | port-restricted-double-nated | ..."
+type = "enum (any | not-available | public | port-restricted | single-nated | double-nated | port-restricted-single-nated | port-restricted-double-nated |...)"
 enum_values = ["any", "not-available", "public", "port-restricted", "single-nated", "double-nated", "port-restricted-single-nated", "port-restricted-double-nated", "unknown"]
 [[menus.arguments]]
 name = "iw-ipv6-availability"
@@ -20297,7 +20297,7 @@ type = "string"
 required = true
 [[menus.arguments]]
 name = "network-type"
-type = "enum (private | private-with-guest | public-chargeable | public-free | personal-device | emergency-only | test | wildcard) { private:0, private-wit..."
+type = "enum (private | private-with-guest | public-chargeable | public-free | personal-device | emergency-only | test | wildcard) { private:0, private-wi...)"
 enum_values = ["private", "private-with-guest", "public-chargeable", "public-free", "personal-device", "emergency-only", "test", "wildcard"]
 [[menus.arguments]]
 name = "internet"
@@ -20335,7 +20335,7 @@ name = "authentication-types"
 type = ""
 [[menus.arguments]]
 name = "ipv4-availability"
-type = "enum (not-available | public | port-restricted | single-nated | double-nated | port-restricted-single-nated | port-restricted-double-nated | unknow..."
+type = "enum (not-available | public | port-restricted | single-nated | double-nated | port-restricted-single-nated | port-restricted-double-nated | unkno...)"
 enum_values = ["not-available", "public", "port-restricted", "single-nated", "double-nated", "port-restricted-single-nated", "port-restricted-double-nated", "unknown"]
 [[menus.arguments]]
 name = "ipv6-availability"
@@ -20406,7 +20406,7 @@ path = "/interface/wireless/monitor"
 type = "Command"
 [[menus.read_only]]
 name = "status"
-type = "enum (disabled | searching-for-network | connected-to-ess | initializing | searching-for-frequency | radar-detecting | running-ap | tkip-countermea..."
+type = "enum (disabled | searching-for-network | connected-to-ess | initializing | searching-for-frequency | radar-detecting | running-ap | tkip-counterme...)"
 [[menus.read_only]]
 name = "status-reason"
 type = "string"
@@ -21094,7 +21094,7 @@ name = "eap-methods"
 type = ""
 [[menus.arguments]]
 name = "tls-mode"
-type = "enum (verify-certificate | dont-verify-certificate | no-certificates | verify-certificate-with-crl) { verify-certificate:0, dont-verify-certificate..."
+type = "enum (verify-certificate | dont-verify-certificate | no-certificates | verify-certificate-with-crl) { verify-certificate:0, dont-verify-certificat...)"
 enum_values = ["verify-certificate", "dont-verify-certificate", "no-certificates", "verify-certificate-with-crl"]
 [[menus.arguments]]
 name = "tls-certificate"
@@ -21157,7 +21157,7 @@ name = "interim-update"
 type = "time"
 [[menus.arguments]]
 name = "radius-mac-format"
-type = "enum (XX:XX:XX:XX:XX:XX | XXXX:XXXX:XXXX | XXXXXX:XXXXXX | XX-XX-XX-XX-XX-XX | XXXXXX-XXXXXX | XXXXXXXXXXXX | XX XX XX XX XX XX | xx:xx:xx:xx:xx:xx..."
+type = "enum (XX:XX:XX:XX:XX:XX | XXXX:XXXX:XXXX | XXXXXX:XXXXXX | XX-XX-XX-XX-XX-XX | XXXXXX-XXXXXX | XXXXXXXXXXXX | XX XX XX XX XX XX | xx:xx:xx:xx:xx:x...)"
 enum_values = ["XX:XX:XX:XX:XX:XX", "XXXX:XXXX:XXXX", "XXXXXX:XXXXXX", "XX-XX-XX-XX-XX-XX", "XXXXXX-XXXXXX", "XXXXXXXXXXXX", "XX XX XX XX XX XX", "xx:xx:xx:xx:xx:xx", "xxxx:xxxx:xxxx", "xxxxxx:xxxxxx", "xx-xx-xx-xx-xx-xx", "xxxxxx-xxxxxx", "xxxxxxxxxxxx", "xx xx xx xx xx xx"]
 [[menus.arguments]]
 name = "radius-mac-mode"
@@ -21260,7 +21260,7 @@ name = "src"
 type = "macAddr"
 [[menus.read_only]]
 name = "type"
-type = "enum (assoc-req | assoc-resp | reassoc-req | reassoc-resp | probe-req | probe-resp | beacon | atim | disassoc | auth | deauth | ps-poll | rts | cts..."
+type = "enum (assoc-req | assoc-resp | reassoc-req | reassoc-resp | probe-req | probe-resp | beacon | atim | disassoc | auth | deauth | ps-poll | rts | ct...)"
 
 [[menus]]
 path = "/interface/wireless/sniffer/save"
@@ -21432,7 +21432,7 @@ name = "signal-strength"
 type = "num"
 [[menus.read_only]]
 name = "network-source"
-type = "enum (none | seen-data-frame | seen-successful-auth | seen-successful-assoc | forms-network) { none:0, seen-data-frame:1, seen-successful-auth:2, s..."
+type = "enum (none | seen-data-frame | seen-successful-auth | seen-successful-assoc | forms-network) { none:0, seen-data-frame:1, seen-successful-auth:2, ...)"
 [[menus.read_only]]
 name = "seen-wep"
 type = "bool"
@@ -21694,7 +21694,7 @@ type = "string"
 required = true
 [[menus.arguments]]
 name = "type"
-type = "enum (short-local-name | complete-local-name | service-data | manufacturer-data) { short-local-name:8, complete-local-name:9, service-data:22, manu..."
+type = "enum (short-local-name | complete-local-name | service-data | manufacturer-data) { short-local-name:8, complete-local-name:9, service-data:22, man...)"
 enum_values = ["short-local-name", "complete-local-name", "service-data", "manufacturer-data"]
 required = true
 [[menus.arguments]]
@@ -21876,7 +21876,7 @@ name = "key"
 type = "string"
 [[menus.read_only]]
 name = "type"
-type = "enum (unknown | mikrotik | ibeacon | eddystone-uid | eddystone-url | eddystone-tlm | eddystone-eid) { unknown:0, mikrotik:1, ibeacon:2, eddystone-u..."
+type = "enum (unknown | mikrotik | ibeacon | eddystone-uid | eddystone-url | eddystone-tlm | eddystone-eid) { unknown:0, mikrotik:1, ibeacon:2, eddystone-...)"
 [[menus.read_only]]
 name = "version"
 type = "num"
@@ -22061,7 +22061,7 @@ name = "window"
 type = "num"
 [[menus.arguments]]
 name = "own-address-type"
-type = "enum (public | random-static | rpa-fallback-to-public | rpa-fallback-to-random) { public:0, random-static:1, rpa-fallback-to-public:2, rpa-fallback..."
+type = "enum (public | random-static | rpa-fallback-to-public | rpa-fallback-to-random) { public:0, random-static:1, rpa-fallback-to-public:2, rpa-fallbac...)"
 enum_values = ["public", "random-static", "rpa-fallback-to-public", "rpa-fallback-to-random"]
 description = "Address type used in scan requests"
 [[menus.arguments]]
@@ -22089,7 +22089,7 @@ name = "device"
 type = "enum"
 [[menus.read_only]]
 name = "pdu-type"
-type = "enum (adv-ind | adv-direct-ind | adv-scan-ind | adv-noconn-ind | scan-rsp | unknown) { adv-ind:0, adv-direct-ind:1, adv-scan-ind:2, adv-noconn-ind:..."
+type = "enum (adv-ind | adv-direct-ind | adv-scan-ind | adv-noconn-ind | scan-rsp | unknown) { adv-ind:0, adv-direct-ind:1, adv-scan-ind:2, adv-noconn-ind...)"
 [[menus.read_only]]
 name = "time"
 type = "date"
@@ -22218,7 +22218,7 @@ name = "tx-immediate-delay-us"
 type = "num"
 [[menus.arguments]]
 name = "channel-plan"
-type = "enum (custom | eu-868 | as-923 | kr-920 | in-865 | il-917 | us-915-1 | us-915-2 | us-915-3 | us-915-4 | us-915-5 | us-915-6 | us-915-7 | us-915-8 |..."
+type = "enum (custom | eu-868 | as-923 | kr-920 | in-865 | il-917 | us-915-1 | us-915-2 | us-915-3 | us-915-4 | us-915-5 | us-915-6 | us-915-7 | us-915-8 ...)"
 enum_values = ["custom", "eu-868", "as-923", "kr-920", "in-865", "il-917", "us-915-1", "us-915-2", "us-915-3", "us-915-4", "us-915-5", "us-915-6", "us-915-7", "us-915-8", "au-915-1", "au-915-2", "ru-864", "ru-864-mid", "2.4-ghz"]
 [[menus.arguments]]
 name = "antenna-gain"
@@ -23420,7 +23420,7 @@ name = "custom-hostname-suffix"
 type = "string"
 [[menus.read_only]]
 name = "status"
-type = "enum (stopped | searching... | requesting... | bound | renewing... | rebinding... | error) { stopped:0, searching...:1, requesting...:2, bound:3, r..."
+type = "enum (stopped | searching... | requesting... | bound | renewing... | rebinding... | error) { stopped:0, searching...:1, requesting...:2, bound:3, ...)"
 [[menus.read_only]]
 name = "address"
 type = ""
@@ -24138,7 +24138,7 @@ name = "name"
 type = "string"
 [[menus.read_only]]
 name = "type"
-type = "enum (A | NS | MD | MF | CNAME | SOA | MB | MG | MR | NULL | WKS | PTR | HINFO | MINFO | MX | TXT | AAAA | SRV) { A:1, NS:2, MD:3, MF:4, CNAME:5, S..."
+type = "enum (A | NS | MD | MF | CNAME | SOA | MB | MG | MR | NULL | WKS | PTR | HINFO | MINFO | MX | TXT | AAAA | SRV) { A:1, NS:2, MD:3, MF:4, CNAME:5, ...)"
 [[menus.read_only]]
 name = "data"
 type = ""
@@ -24568,7 +24568,7 @@ type = "num"
 description = "Reply destination port."
 [[menus.read_only]]
 name = "tcp-state"
-type = "enum (none | syn-sent | syn-recv | established | fin-wait | close-wait | last-ack | time-wait | close | listen) { none:0, syn-sent:1, syn-recv:2, e..."
+type = "enum (none | syn-sent | syn-recv | established | fin-wait | close-wait | last-ack | time-wait | close | listen) { none:0, syn-sent:1, syn-recv:2, ...)"
 description = "TCP connection state."
 [[menus.read_only]]
 name = "icmp-type"
@@ -24740,7 +24740,7 @@ description = "Specifies to which chain the rule will be added. If the input doe
 required = true
 [[menus.arguments]]
 name = "action"
-type = "enum (accept | jump | return | log | passthrough | add-src-to-address-list | add-dst-to-address-list | drop | reject | tarpit | fasttrack-connectio..."
+type = "enum (accept | jump | return | log | passthrough | add-src-to-address-list | add-dst-to-address-list | drop | reject | tarpit | fasttrack-connecti...)"
 enum_values = ["accept", "jump", "return", "log", "passthrough", "add-src-to-address-list", "add-dst-to-address-list", "drop", "reject", "tarpit", "fasttrack-connection"]
 [[menus.arguments]]
 name = "jump-target"
@@ -24748,7 +24748,7 @@ type = "enum ()"
 description = "Name of the target chain to jump to. Applicable only if `action=jump`."
 [[menus.arguments]]
 name = "reject-with"
-type = "enum (icmp-network-unreachable | icmp-host-unreachable | icmp-protocol-unreachable | icmp-port-unreachable | icmp-net-prohibited | icmp-host-prohib..."
+type = "enum (icmp-network-unreachable | icmp-host-unreachable | icmp-protocol-unreachable | icmp-port-unreachable | icmp-net-prohibited | icmp-host-prohi...)"
 enum_values = ["icmp-network-unreachable", "icmp-host-unreachable", "icmp-protocol-unreachable", "icmp-port-unreachable", "icmp-net-prohibited", "icmp-host-prohibited", "tcp-reset", "icmp-admin-prohibited"]
 [[menus.arguments]]
 name = "hw-offload"
@@ -24968,7 +24968,7 @@ description = "Specifies to which chain the rule will be added. If the input doe
 required = true
 [[menus.arguments]]
 name = "action"
-type = "enum (accept | jump | return | log | passthrough | add-src-to-address-list | add-dst-to-address-list | sniff-tzsp | sniff-pc | drop | mark-packet |..."
+type = "enum (accept | jump | return | log | passthrough | add-src-to-address-list | add-dst-to-address-list | sniff-tzsp | sniff-pc | drop | mark-packet ...)"
 enum_values = ["accept", "jump", "return", "log", "passthrough", "add-src-to-address-list", "add-dst-to-address-list", "sniff-tzsp", "sniff-pc", "drop", "mark-packet", "mark-connection", "change-mss", "change-dscp", "strip-ipv4-options", "change-ttl", "mark-routing", "set-priority", "clear-df", "fasttrack-connection", "route"]
 [[menus.arguments]]
 name = "jump-target"
@@ -25222,7 +25222,7 @@ description = "Specifies to which chain the rule will be added. If the input doe
 required = true
 [[menus.arguments]]
 name = "action"
-type = "enum (accept | jump | return | log | passthrough | add-src-to-address-list | add-dst-to-address-list | src-nat | masquerade | dst-nat | redirect | ..."
+type = "enum (accept | jump | return | log | passthrough | add-src-to-address-list | add-dst-to-address-list | src-nat | masquerade | dst-nat | redirect |...)"
 enum_values = ["accept", "jump", "return", "log", "passthrough", "add-src-to-address-list", "add-dst-to-address-list", "src-nat", "masquerade", "dst-nat", "redirect", "same", "netmap", "endpoint-independent-nat", "socksify"]
 [[menus.arguments]]
 name = "jump-target"
@@ -25441,7 +25441,7 @@ description = "Specifies to which chain the rule will be added. If the input doe
 required = true
 [[menus.arguments]]
 name = "action"
-type = "enum (accept | jump | return | log | passthrough | add-src-to-address-list | add-dst-to-address-list | drop | notrack) { accept:0, jump:1, return:2..."
+type = "enum (accept | jump | return | log | passthrough | add-src-to-address-list | add-dst-to-address-list | drop | notrack) { accept:0, jump:1, return:...)"
 enum_values = ["accept", "jump", "return", "log", "passthrough", "add-src-to-address-list", "add-dst-to-address-list", "drop", "notrack"]
 [[menus.arguments]]
 name = "jump-target"
@@ -25986,7 +25986,7 @@ name = "radius-location-name"
 type = "string"
 [[menus.arguments]]
 name = "radius-mac-format"
-type = "enum (XX:XX:XX:XX:XX:XX | XXXX:XXXX:XXXX | XXXXXX:XXXXXX | XX-XX-XX-XX-XX-XX | XXXXXX-XXXXXX | XXXXXXXXXXXX | XX XX XX XX XX XX) { XX:XX:XX:XX:XX:X..."
+type = "enum (XX:XX:XX:XX:XX:XX | XXXX:XXXX:XXXX | XXXXXX:XXXXXX | XX-XX-XX-XX-XX-XX | XXXXXX-XXXXXX | XXXXXXXXXXXX | XX XX XX XX XX XX) { XX:XX:XX:XX:XX:...)"
 enum_values = ["XX:XX:XX:XX:XX:XX", "XXXX:XXXX:XXXX", "XXXXXX:XXXXXX", "XX-XX-XX-XX-XX-XX", "XXXXXX-XXXXXX", "XXXXXXXXXXXX", "XX XX XX XX XX XX"]
 
 [[menus]]
@@ -26335,7 +26335,7 @@ name = "remote-address"
 type = ""
 [[menus.read_only]]
 name = "state"
-type = "enum (spawning | starting | message-1-received | message-1-sent | message-2-received | message-2-sent | message-3-received | message-3-sent | messa..."
+type = "enum (spawning | starting | message-1-received | message-1-sent | message-2-received | message-2-sent | message-3-received | message-3-sent | mess...)"
 description = "Current IKE phase 1 state."
 [[menus.read_only]]
 name = "side"
@@ -26499,7 +26499,7 @@ enum_values = ["none", "md5", "sha1", "sha256", "sha512"]
 description = "Authentication algorithm."
 [[menus.arguments]]
 name = "enc-algorithm"
-type = "enum (none | des | 3des | null | aes-cbc | aes-ctr | aes-gcm | blowfish | twofish | camellia | chacha20poly1305) { none:0, des:2, 3des:3, null:11, ..."
+type = "enum (none | des | 3des | null | aes-cbc | aes-ctr | aes-gcm | blowfish | twofish | camellia | chacha20poly1305) { none:0, des:2, 3des:3, null:11,...)"
 enum_values = ["none", "des", "3des", "null", "aes-cbc", "aes-ctr", "aes-gcm", "blowfish", "twofish", "camellia", "chacha20poly1305"]
 description = "Encryption algorithm."
 [[menus.arguments]]
@@ -26861,7 +26861,7 @@ type = "num"
 description = "Number of phase 2 exchanges."
 [[menus.read_only]]
 name = "ph2-state"
-type = "enum (spawning | starting | ready-to-send | getspi-sent | getspi-done | msg1-sent | ready-to-establish | commiting | adding-sa | established | expi..."
+type = "enum (spawning | starting | ready-to-send | getspi-sent | getspi-done | msg1-sent | ready-to-establish | commiting | adding-sa | established | exp...)"
 description = "Current phase 2 state."
 
 [[menus]]
@@ -27459,13 +27459,13 @@ name = "mac-address"
 type = "macAddr"
 [[menus.read_only]]
 name = "lldp-chassis-id-subtype"
-type = "enum (chassis-component | interface-alias | port-component | mac-address | network-address | interface-name | local) { chassis-component:1, interfa..."
+type = "enum (chassis-component | interface-alias | port-component | mac-address | network-address | interface-name | local) { chassis-component:1, interf...)"
 [[menus.read_only]]
 name = "lldp-chassis-id"
 type = "string"
 [[menus.read_only]]
 name = "lldp-port-id-subtype"
-type = "enum (interface-alias | port-component | mac-address | network-address | interface-name | agent-circuit-id | local) { interface-alias:1, port-compo..."
+type = "enum (interface-alias | port-component | mac-address | network-address | interface-name | agent-circuit-id | local) { interface-alias:1, port-comp...)"
 [[menus.read_only]]
 name = "lldp-port-id"
 type = "string"
@@ -27751,7 +27751,7 @@ name = "last-protocol"
 type = "enum (HTTP/1.0 | HTTP/1.1 | FTP) { HTTP/1.0:1, HTTP/1.1:2, FTP:3 }"
 [[menus.read_only]]
 name = "state"
-type = "enum (rx-header | resolving | connecting | waiting | rx-body | tx-header | tx-body | idle) { rx-header:0, resolving:1, connecting:2, waiting:3, rx-..."
+type = "enum (rx-header | resolving | connecting | waiting | rx-body | tx-header | tx-body | idle) { rx-header:0, resolving:1, connecting:2, waiting:3, rx...)"
 [[menus.read_only]]
 name = "tx-bytes"
 type = "num"
@@ -28622,7 +28622,7 @@ name = "interfaces"
 type = ""
 [[menus.arguments]]
 name = "cache-entries"
-type = "enum (1k | 2k | 4k | 8k | 16k | 32k | 64k | 128k | 256k | 512k | 1M | 2M | 4M | 8M | 16M | 32M) { 1k:0x400, 2k:0x800, 4k:0x1000, 8k:0x2000, 16k:0x4..."
+type = "enum (1k | 2k | 4k | 8k | 16k | 32k | 64k | 128k | 256k | 512k | 1M | 2M | 4M | 8M | 16M | 32M) { 1k:0x400, 2k:0x800, 4k:0x1000, 8k:0x2000, 16k:0x...)"
 enum_values = ["1k", "2k", "4k", "8k", "16k", "32k", "64k", "128k", "256k", "512k", "1M", "2M", "4M", "8M", "16M", "32M"]
 [[menus.arguments]]
 name = "active-flow-timeout"
@@ -29024,7 +29024,7 @@ name = "custom-iana-id"
 type = "num"
 [[menus.read_only]]
 name = "status"
-type = "enum (stopped | searching... | requesting... | bound | renewing... | rebinding... | stopping... | declining... | error | idle | requesting-info... ..."
+type = "enum (stopped | searching... | requesting... | bound | renewing... | rebinding... | stopping... | declining... | error | idle | requesting-info......)"
 [[menus.read_only]]
 name = "duid"
 type = "string"
@@ -29512,7 +29512,7 @@ type = "num"
 description = "Reply destination port."
 [[menus.read_only]]
 name = "tcp-state"
-type = "enum (none | syn-sent | syn-recv | established | fin-wait | close-wait | last-ack | time-wait | close | listen) { none:0, syn-sent:1, syn-recv:2, e..."
+type = "enum (none | syn-sent | syn-recv | established | fin-wait | close-wait | last-ack | time-wait | close | listen) { none:0, syn-sent:1, syn-recv:2, ...)"
 description = "TCP connection state."
 [[menus.read_only]]
 name = "icmp-type"
@@ -29601,7 +29601,7 @@ description = "Specifies to which chain the rule will be added. If the input doe
 required = true
 [[menus.arguments]]
 name = "action"
-type = "enum (accept | jump | return | log | passthrough | add-src-to-address-list | add-dst-to-address-list | drop | reject | fasttrack-connection) { acce..."
+type = "enum (accept | jump | return | log | passthrough | add-src-to-address-list | add-dst-to-address-list | drop | reject | fasttrack-connection) { acc...)"
 enum_values = ["accept", "jump", "return", "log", "passthrough", "add-src-to-address-list", "add-dst-to-address-list", "drop", "reject", "fasttrack-connection"]
 description = "Action to take if a packet is matched by the rule: `accept` - accept the packet. A packet is not passed to the next firewall rule.  `add-dst-to-address-list` - add the destination address to the address list specified by the `address-list` parameter.  `add-src-to-address-list` - add the source address to the address list specified by the `address-list` parameter.  `drop` - drop the packet.  `fasttrack-connection` - fasttrack the connection.  `jump` - jump to the user-defined chain specified by the value of the `jump-target` parameter.  `log` - add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port->dst-ip:port, and length of the packet. After a packet is matched it is passed to the next rule in the list, similar to `passthrough`.  `passthrough` - if a packet is matched by the rule, increase the counter and go to the next rule (useful for statistics).  `reject` - reject the packet and send an ICMP response.  `return` - passes control back to the chain from where the jump took place."
 [[menus.arguments]]
@@ -29610,7 +29610,7 @@ type = "enum ()"
 description = "Name of the target chain to jump to. Applicable only if `action=jump`."
 [[menus.arguments]]
 name = "reject-with"
-type = "enum (icmp-no-route | icmp-admin-prohibited | icmp-not-neighbour | icmp-address-unreachable | icmp-port-unreachable | tcp-reset | icmp-err-src-rout..."
+type = "enum (icmp-no-route | icmp-admin-prohibited | icmp-not-neighbour | icmp-address-unreachable | icmp-port-unreachable | tcp-reset | icmp-err-src-rou...)"
 enum_values = ["icmp-no-route", "icmp-admin-prohibited", "icmp-not-neighbour", "icmp-address-unreachable", "icmp-port-unreachable", "tcp-reset", "icmp-err-src-routing-header", "icmp-headers-too-long"]
 [[menus.arguments]]
 name = "connection-nat-state"
@@ -29787,7 +29787,7 @@ description = "Specifies to which chain the rule will be added. If the input doe
 required = true
 [[menus.arguments]]
 name = "action"
-type = "enum (accept | jump | return | log | passthrough | add-src-to-address-list | add-dst-to-address-list | sniff-tzsp | sniff-pc | drop | mark-packet |..."
+type = "enum (accept | jump | return | log | passthrough | add-src-to-address-list | add-dst-to-address-list | sniff-tzsp | sniff-pc | drop | mark-packet ...)"
 enum_values = ["accept", "jump", "return", "log", "passthrough", "add-src-to-address-list", "add-dst-to-address-list", "sniff-tzsp", "sniff-pc", "drop", "mark-packet", "mark-connection", "mark-routing", "change-mss", "change-dscp", "set-priority", "change-hop-limit", "snpt", "dnpt"]
 [[menus.arguments]]
 name = "src-prefix"
@@ -30023,7 +30023,7 @@ description = "Specifies to which chain the rule will be added. If the input doe
 required = true
 [[menus.arguments]]
 name = "action"
-type = "enum (accept | jump | return | log | passthrough | add-src-to-address-list | add-dst-to-address-list | src-nat | masquerade | dst-nat | redirect | ..."
+type = "enum (accept | jump | return | log | passthrough | add-src-to-address-list | add-dst-to-address-list | src-nat | masquerade | dst-nat | redirect |...)"
 enum_values = ["accept", "jump", "return", "log", "passthrough", "add-src-to-address-list", "add-dst-to-address-list", "src-nat", "masquerade", "dst-nat", "redirect", "netmap"]
 description = "Action to take if a packet is matched by the rule: `accept` - accept the packet. A packet is not passed to the next firewall rule.  `add-dst-to-address-list` - add the destination address to the address list specified by the `address-list` parameter.  `add-src-to-address-list` - add the source address to the address list specified by the `address-list` parameter.  `dst-nat` - perform destination NAT.  `jump` - jump to the user-defined chain specified by the value of the `jump-target` parameter.  `log` - add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port->dst-ip:port, and length of the packet. After a packet is matched it is passed to the next rule in the list, similar to `passthrough`.  `masquerade` - masquerade the source address.  `netmap` - create a static 1:1 NAT mapping.  `passthrough` - if a packet is matched by the rule, increase the counter and go to the next rule (useful for statistics).  `redirect` - redirect the packet to the router.  `return` - passes control back to the chain from where the jump took place.  `src-nat` - perform source NAT."
 [[menus.arguments]]
@@ -30205,7 +30205,7 @@ description = "Specifies to which chain the rule will be added. If the input doe
 required = true
 [[menus.arguments]]
 name = "action"
-type = "enum (accept | jump | return | log | passthrough | add-src-to-address-list | add-dst-to-address-list | drop | notrack) { accept:0, jump:1, return:2..."
+type = "enum (accept | jump | return | log | passthrough | add-src-to-address-list | add-dst-to-address-list | drop | notrack) { accept:0, jump:1, return:...)"
 enum_values = ["accept", "jump", "return", "log", "passthrough", "add-src-to-address-list", "add-dst-to-address-list", "drop", "notrack"]
 description = "Action to take if a packet is matched by the rule: `accept` - accept the packet. A packet is not passed to the next firewall rule.  `add-dst-to-address-list` - add the destination address to the address list specified by the `address-list` parameter.  `add-src-to-address-list` - add the source address to the address list specified by the `address-list` parameter.  `drop` - drop the packet.  `jump` - jump to the user-defined chain specified by the value of the `jump-target` parameter.  `log` - add a message to the system log containing the following data: in-interface, out-interface, src-mac, protocol, src-ip:port->dst-ip:port, and length of the packet. After a packet is matched it is passed to the next rule in the list, similar to `passthrough`.  `notrack` - skip connection tracking for the packet.  `passthrough` - if a packet is matched by the rule, increase the counter and go to the next rule (useful for statistics).  `return` - passes control back to the chain from where the jump took place."
 [[menus.arguments]]
@@ -31995,7 +31995,7 @@ name = "name"
 type = "string"
 [[menus.arguments]]
 name = "baud-rate"
-type = "enum (auto | 50 | 75 | 110 | 134 | 150 | 200 | 300 | 600 | 1200 | 1800 | 2400 | 4800 | 9600 | 19200 | 38400 | 57600 | 115200 | 230400 | 460800 | 50..."
+type = "enum (auto | 50 | 75 | 110 | 134 | 150 | 200 | 300 | 600 | 1200 | 1800 | 2400 | 4800 | 9600 | 19200 | 38400 | 57600 | 115200 | 230400 | 460800 | 5...)"
 enum_values = ["auto", "50", "75", "110", "134", "150", "200", "300", "600", "1200", "1800", "2400", "4800", "9600", "19200", "38400", "57600", "115200", "230400", "460800", "500000", "576000", "921600", "1000000", "1152000", "1500000", "2000000", "2500000", "3000000", "3500000", "4000000"]
 [[menus.arguments]]
 name = "data-bits"
@@ -32334,7 +32334,7 @@ name = "last-caller-id"
 type = "string"
 [[menus.read_only]]
 name = "last-disconnect-reason"
-type = "enum (peer-request | hung-up | idle-timeout | session-timeout | reset | reboot | port-error | nas-error | nas-request) { peer-request:1, hung-up:2,..."
+type = "enum (peer-request | hung-up | idle-timeout | session-timeout | reset | reboot | port-error | nas-error | nas-request) { peer-request:1, hung-up:2...)"
 
 [[menus]]
 path = "/queue"
@@ -32598,7 +32598,7 @@ type = "string"
 required = true
 [[menus.arguments]]
 name = "kind"
-type = "enum (bfifo | pfifo | red | sfq | pcq | mq-pfifo | none | codel | fq-codel | cake) { bfifo:1, pfifo:2, red:3, sfq:4, pcq:5, mq-pfifo:6, none:7, cod..."
+type = "enum (bfifo | pfifo | red | sfq | pcq | mq-pfifo | none | codel | fq-codel | cake) { bfifo:1, pfifo:2, red:3, sfq:4, pcq:5, mq-pfifo:6, none:7, co...)"
 enum_values = ["bfifo", "pfifo", "red", "sfq", "pcq", "mq-pfifo", "none", "codel", "fq-codel", "cake"]
 required = true
 [[menus.arguments]]
@@ -32727,7 +32727,7 @@ name = "cake-rtt"
 type = "time"
 [[menus.arguments]]
 name = "cake-rtt-scheme"
-type = "enum (none | datacentre | lan | metro | regional | internet | oceanic | satellite | interplanetary) { none:0, datacentre:1, lan:2, metro:3, regiona..."
+type = "enum (none | datacentre | lan | metro | regional | internet | oceanic | satellite | interplanetary) { none:0, datacentre:1, lan:2, metro:3, region...)"
 enum_values = ["none", "datacentre", "lan", "metro", "regional", "internet", "oceanic", "satellite", "interplanetary"]
 [[menus.arguments]]
 name = "cake-diffserv"
@@ -32735,7 +32735,7 @@ type = "enum (diffserv3 | diffserv4 | diffserv8 | besteffort | precedence) { dif
 enum_values = ["diffserv3", "diffserv4", "diffserv8", "besteffort", "precedence"]
 [[menus.arguments]]
 name = "cake-flowmode"
-type = "enum (flowblind | srchost | dsthost | hosts | flows | dual-srchost | dual-dsthost | triple-isolate) { flowblind:0, srchost:1, dsthost:2, hosts:3, f..."
+type = "enum (flowblind | srchost | dsthost | hosts | flows | dual-srchost | dual-dsthost | triple-isolate) { flowblind:0, srchost:1, dsthost:2, hosts:3, ...)"
 enum_values = ["flowblind", "srchost", "dsthost", "hosts", "flows", "dual-srchost", "dual-dsthost", "triple-isolate"]
 [[menus.arguments]]
 name = "cake-nat"
@@ -33397,13 +33397,13 @@ description = "A quick way to filter incoming updates with specific \"unknown\" 
 unset = true
 [[menus.arguments]]
 name = "input.limit-process-routes-ipv4"
-type = "enum (10 | 100 | 1000 | 10000 | 100000 | 1000000 | 10000000) { 10:10, 100:100, 1000:1000, 10000:10000, 100000:100000, 1000000:1000000, 10000000:100..."
+type = "enum (10 | 100 | 1000 | 10000 | 100000 | 1000000 | 10000000) { 10:10, 100:100, 1000:1000, 10000:10000, 100000:100000, 1000000:1000000, 10000000:10...)"
 enum_values = ["10", "100", "1000", "10000", "100000", "1000000", "10000000"]
 description = "Try to limit the amount of received IPv4 routes to the specified number. This number does not represent the exact number of routes going to be installed in the routing table by the peer. [BGP session \"clear\"](session/clear.md) command must be used to reset the flag if the limit is reached."
 unset = true
 [[menus.arguments]]
 name = "input.limit-process-routes-ipv6"
-type = "enum (10 | 100 | 1000 | 10000 | 100000 | 1000000 | 10000000) { 10:10, 100:100, 1000:1000, 10000:10000, 100000:100000, 1000000:1000000, 10000000:100..."
+type = "enum (10 | 100 | 1000 | 10000 | 100000 | 1000000 | 10000000) { 10:10, 100:100, 1000:1000, 10000:10000, 100000:100000, 1000000:1000000, 10000000:10...)"
 enum_values = ["10", "100", "1000", "10000", "100000", "1000000", "10000000"]
 description = "Try to limit the amount of received IPv6 routes to the specified number. This number does not represent the exact number of routes going to be installed in the routing table by the peer. BGP session \"clear\" command must be used to reset the flag if the limit is reached."
 unset = true
@@ -33986,13 +33986,13 @@ description = "A quick way to filter incoming updates with specific \"unknown\" 
 unset = true
 [[menus.arguments]]
 name = "input.limit-process-routes-ipv4"
-type = "enum (10 | 100 | 1000 | 10000 | 100000 | 1000000 | 10000000) { 10:10, 100:100, 1000:1000, 10000:10000, 100000:100000, 1000000:1000000, 10000000:100..."
+type = "enum (10 | 100 | 1000 | 10000 | 100000 | 1000000 | 10000000) { 10:10, 100:100, 1000:1000, 10000:10000, 100000:100000, 1000000:1000000, 10000000:10...)"
 enum_values = ["10", "100", "1000", "10000", "100000", "1000000", "10000000"]
 description = "Try to limit the amount of received IPv4 routes to the specified number. This number does not represent the exact number of routes going to be installed in the routing table by the peer. [BGP session \"clear\"](session/clear.md) command must be used to reset the flag if the limit is reached."
 unset = true
 [[menus.arguments]]
 name = "input.limit-process-routes-ipv6"
-type = "enum (10 | 100 | 1000 | 10000 | 100000 | 1000000 | 10000000) { 10:10, 100:100, 1000:1000, 10000:10000, 100000:100000, 1000000:1000000, 10000000:100..."
+type = "enum (10 | 100 | 1000 | 10000 | 100000 | 1000000 | 10000000) { 10:10, 100:100, 1000:1000, 10000:10000, 100000:100000, 1000000:1000000, 10000000:10...)"
 enum_values = ["10", "100", "1000", "10000", "100000", "1000000", "10000000"]
 description = "Try to limit the amount of received IPv6 routes to the specified number. This number does not represent the exact number of routes going to be installed in the routing table by the peer. BGP session \"clear\" command must be used to reset the flag if the limit is reached."
 unset = true
@@ -36677,7 +36677,7 @@ name = "ospf.tag"
 type = "num"
 [[menus.read_only]]
 name = "ospf.type"
-type = "enum (intra | inter | ext-type-1 | ext-type-2 | nssa-type-1 | nssa-type-2) { intra:0, inter:1, ext-type-1:2, ext-type-2:3, nssa-type-1:4, nssa-type..."
+type = "enum (intra | inter | ext-type-1 | ext-type-2 | nssa-type-1 | nssa-type-2) { intra:0, inter:1, ext-type-1:2, ext-type-2:3, nssa-type-1:4, nssa-typ...)"
 [[menus.read_only]]
 name = "isis.type"
 type = "enum (l1 | l2 | l1-inter | l1-ext | l2-ext | l1-inter-ext) { l1:0, l2:1, l1-inter:2, l1-ext:3, l2-ext:4, l1-inter-ext:5 }"
@@ -36945,7 +36945,7 @@ path = "/routing/stats/memory"
 type = "Directory"
 [[menus.read_only]]
 name = "procid"
-type = "enum (main | fib | policy | static | bfd | ospf | pim | mpls | rip | bgp | fantasy | bgp-remote-1 | bgp-remote-2 | bgp-remote-3 | bgp-remote-4 | bg..."
+type = "enum (main | fib | policy | static | bfd | ospf | pim | mpls | rip | bgp | fantasy | bgp-remote-1 | bgp-remote-2 | bgp-remote-3 | bgp-remote-4 | b...)"
 [[menus.read_only]]
 name = "name"
 type = "string"
@@ -37377,7 +37377,7 @@ name = "oid"
 type = "string"
 [[menus.arguments]]
 name = "type"
-type = "enum (integer | string | nullobj | obj-id | ip-address | counter32 | timeticks | unsigned) { integer:0x02, string:0x04, nullobj:0x05, obj-id:0x06, ..."
+type = "enum (integer | string | nullobj | obj-id | ip-address | counter32 | timeticks | unsigned) { integer:0x02, string:0x04, nullobj:0x05, obj-id:0x06,...)"
 enum_values = ["integer", "string", "nullobj", "obj-id", "ip-address", "counter32", "timeticks", "unsigned"]
 [[menus.arguments]]
 name = "value"
@@ -38186,7 +38186,7 @@ name = "*"
 type = "default"
 [[menus.arguments]]
 name = "type"
-type = "enum (interface-status | interface-receive | interface-transmit | interface-activity | wireless-signal-strength | wireless-status | modem-signal | ..."
+type = "enum (interface-status | interface-receive | interface-transmit | interface-activity | wireless-signal-strength | wireless-status | modem-signal |...)"
 enum_values = ["interface-status", "interface-receive", "interface-transmit", "interface-activity", "wireless-signal-strength", "wireless-status", "modem-signal", "modem-technology", "flash-access", "interface-speed", "interface-speed-1G", "interface-speed-25G", "interface-speed-2.5G", "interface-speed-100G", "poe-out", "ap-cap", "on", "off", "fan-fault", "poe-fault", "gps-valid", "align-left", "align-right", "align-up", "align-down"]
 required = true
 [[menus.arguments]]
@@ -38377,11 +38377,11 @@ type = "enum (bsd-syslog | iso8601)"
 enum_values = ["bsd-syslog", "iso8601"]
 [[menus.arguments]]
 name = "syslog-facility"
-type = "enum (kern | user | mail | daemon | auth | syslog | lpr | news | uucp | cron | authpriv | ftp | ntp | local0 | local1 | local2 | local3 | local4 | ..."
+type = "enum (kern | user | mail | daemon | auth | syslog | lpr | news | uucp | cron | authpriv | ftp | ntp | local0 | local1 | local2 | local3 | local4 |...)"
 enum_values = ["kern", "user", "mail", "daemon", "auth", "syslog", "lpr", "news", "uucp", "cron", "authpriv", "ftp", "ntp", "local0", "local1", "local2", "local3", "local4", "local5", "local6", "local7"]
 [[menus.arguments]]
 name = "syslog-severity"
-type = "enum (auto | emergency | alert | critical | error | warning | notice | info | debug) { auto:0xffffffff, emergency:0, alert:1, critical:2, error:3, ..."
+type = "enum (auto | emergency | alert | critical | error | warning | notice | info | debug) { auto:0xffffffff, emergency:0, alert:1, critical:2, error:3,...)"
 enum_values = ["auto", "emergency", "alert", "critical", "error", "warning", "notice", "info", "debug"]
 [[menus.arguments]]
 name = "email-to"
@@ -38604,7 +38604,7 @@ type = "date"
 description = "Date and time the package was built."
 [[menus.read_only]]
 name = "scheduled"
-type = "enum ( | scheduled for uninstall | scheduled for disable | scheduled for enable | Use `apply-changes` to proceed with install) { :0, scheduled for ..."
+type = "enum ( | scheduled for uninstall | scheduled for disable | scheduled for enable | Use `apply-changes` to proceed with install) { :0, scheduled for...)"
 description = "Scheduled action for the package after the next reboot."
 [[menus.read_only]]
 name = "bundle"
@@ -39836,7 +39836,7 @@ name = "self-test"
 type = "string"
 [[menus.read_only]]
 name = "hid-self-test"
-type = "enum (done-and-passed | done-and-warning | done-and-error | aborted | in-progress | no-test-initiated) { done-and-passed:1, done-and-warning:2, don..."
+type = "enum (done-and-passed | done-and-warning | done-and-error | aborted | in-progress | no-test-initiated) { done-and-passed:1, done-and-warning:2, do...)"
 
 [[menus]]
 path = "/system/ups/rtc"
@@ -40098,7 +40098,7 @@ name = "random-data"
 type = "bool"
 [[menus.read_only]]
 name = "status"
-type = "enum (connecting | can not start test | can not connect | remote is busy | test unsupported | running | disconnected | authentication failed | done..."
+type = "enum (connecting | can not start test | can not connect | remote is busy | test unsupported | running | disconnected | authentication failed | don...)"
 [[menus.read_only]]
 name = "duration"
 type = "time"
@@ -41742,7 +41742,7 @@ name = "oid"
 type = "string"
 [[menus.read_only]]
 name = "type"
-type = "enum (null | integer | counter | gauge | timeticks | unsigned-integer | octet-string | opaque | object-id | ip-address | counter-64bit | no-such-ob..."
+type = "enum (null | integer | counter | gauge | timeticks | unsigned-integer | octet-string | opaque | object-id | ip-address | counter-64bit | no-such-o...)"
 [[menus.read_only]]
 name = "value"
 type = "string"
@@ -41795,7 +41795,7 @@ name = "oid"
 type = "string"
 [[menus.read_only]]
 name = "type"
-type = "enum (null | integer | counter | gauge | timeticks | unsigned-integer | octet-string | opaque | object-id | ip-address | counter-64bit | no-such-ob..."
+type = "enum (null | integer | counter | gauge | timeticks | unsigned-integer | octet-string | opaque | object-id | ip-address | counter-64bit | no-such-o...)"
 [[menus.read_only]]
 name = "value"
 type = "string"
@@ -43284,7 +43284,7 @@ name = "acct-multi-session-id"
 type = "string"
 [[menus.read_only]]
 name = "nas-port-type"
-type = "enum (async | sync | isdn-sync | isdn-sync-v120 | isdn-sync-v110 | virtual | piafs | hdlc | x25 | x75 | g3-fax | sdsl | adsl-cap | adsl-dmt | idsl ..."
+type = "enum (async | sync | isdn-sync | isdn-sync-v120 | isdn-sync-v110 | virtual | piafs | hdlc | x25 | x75 | g3-fax | sdsl | adsl-cap | adsl-dmt | idsl...)"
 [[menus.read_only]]
 name = "nas-port-id"
 type = "string"
@@ -43311,7 +43311,7 @@ name = "ended"
 type = "date"
 [[menus.read_only]]
 name = "terminate-cause"
-type = "enum (user-request | lost-carrier | lost-service | idle-timeout | session-timeout | admin-reset | admin-reboot | port-error | nas-error | nas-reque..."
+type = "enum (user-request | lost-carrier | lost-service | idle-timeout | session-timeout | admin-reset | admin-reboot | port-error | nas-error | nas-requ...)"
 [[menus.read_only]]
 name = "uptime"
 type = "time"
@@ -43524,7 +43524,7 @@ name = "by-romon"
 type = "macAddr"
 [[menus.read_only]]
 name = "via"
-type = "enum (unknown | winbox | console | telnet | ftp | web | ssh | mac-telnet | bandwidth-test | api | romon | rest-api) { unknown:0, winbox:1, console:..."
+type = "enum (unknown | winbox | console | telnet | ftp | web | ssh | mac-telnet | bandwidth-test | api | romon | rest-api) { unknown:0, winbox:1, console...)"
 [[menus.read_only]]
 name = "group"
 type = "enum"
