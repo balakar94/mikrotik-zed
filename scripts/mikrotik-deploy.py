@@ -36,11 +36,13 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import time
 import pathlib
 import getpass
 import shlex
+import urllib.parse
 
 # Optional dependencies - imported lazily
 try:
@@ -89,6 +91,56 @@ def _match_import_failure_marker(output: str) -> str | None:
     return None
 
 
+# Filename validation — mirrors lsp/src/live.rs::validate_host but adapted for filenames.
+# Policy: safe filename for RouterOS file storage and REST URL path segment.
+_FILENAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
+
+
+def validate_filename(filename: str) -> str | None:
+    """Validate a remote filename for SFTP/REST file operations.
+
+    Returns None on success, error string on failure.
+    Checks: non-empty, 1..64 chars, no null/control, no path separators,
+    no URI delimiters (%?#@), no parent segment '..', and strict charset
+    ^[a-zA-Z0-9._-]+$ (same allowlist style as live.rs validate_host).
+    """
+    if not filename:
+        return "empty"
+    if len(filename) > 64:
+        return "exceeds 64 characters"
+    if "\0" in filename:
+        return "contains null byte"
+    # Control characters: ord < 32 or DEL (127), also covers \n \r \t
+    if any(ord(c) < 32 or ord(c) == 127 for c in filename):
+        return "contains control characters"
+    # Path separators — never allow directory traversal
+    if "/" in filename or "\\" in filename:
+        return "contains path separator (/ or \\)"
+    # Exact '..' segment check (split by '/') — defensive even though '/' already rejected,
+    # mirrors lsp/src/live.rs path validation and server.rs is_valid_file_uri.
+    if ".." in filename.split("/"):
+        return "contains parent directory segment '..'"
+    # URI delimiters that could alter URL parsing if interpolated
+    if "%" in filename or "?" in filename or "#" in filename or "@" in filename:
+        return "contains URI delimiter (%?#@)"
+    if not _FILENAME_RE.match(filename):
+        return "contains invalid characters (allowed: a-z, A-Z, 0-9, ., _, -)"
+    return None
+
+
+def _sanitize_and_validate_filename(raw: str) -> str:
+    """Validate filename and exit 2 with a clear message on failure (never logs pass)."""
+    err = validate_filename(raw)
+    if err:
+        print(f"error: invalid filename {raw!r}: {err}", file=sys.stderr)
+        print(
+            "hint: filename must match ^[a-zA-Z0-9._-]+$ and be 1..64 chars, no path separators or URI delimiters",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return raw
+
+
 def resolve_scheme(port: int, force_http: bool, no_ssl_verify: bool) -> tuple[str, bool]:
     """Resolve the REST URL scheme.
 
@@ -129,8 +181,12 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
             " use --http (or MIKROTIK_HTTP=1) explicitly",
             file=sys.stderr,
         )
+    # Sanitize filename before any URL construction — same gate for both transports.
+    filename = _sanitize_and_validate_filename(filename)
+    # URL-encode validated filename for REST path segment (safe after allowlist).
+    encoded_filename = urllib.parse.quote(filename, safe="")
     if dry_run:
-        log(f"DRY-RUN REST: would POST {len(content)} bytes to {scheme}://{host}:{port}/rest/file/{filename} as {user}")
+        log(f"DRY-RUN REST: would POST {len(content)} bytes to {scheme}://{host}:{port}/rest/file/{encoded_filename} as {user}")
         log(f"DRY-RUN REST: would POST to {scheme}://{host}:{port}/rest/execute {{script: /import file={filename}}}")
         return
     if not HAS_REQUESTS:
@@ -159,9 +215,9 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
         # If execute not allowed, try file method
         log(f"REST execute returned {resp.status_code}: {resp.text[:500]}")
         log("REST: falling back to PUT /rest/file upload — EXPERIMENTAL: RouterOS's file API varies across versions")
-        # File upload via /rest/file (PUT)
+        # File upload via /rest/file (PUT) — filename already validated and URL-encoded.
         # RouterOS file API is not well documented; we try PUT with contents field
-        put_resp = session.put(f"{base}/rest/file/{filename}", json={"contents": content}, timeout=30)
+        put_resp = session.put(f"{base}/rest/file/{encoded_filename}", json={"contents": content}, timeout=30)
         if put_resp.status_code in (200, 201, 204):
             log(f"REST: file upload OK ({put_resp.status_code}), now importing")
             # RouterOS console accepts single-quoted strings; quoting guards
@@ -181,6 +237,8 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
 
 
 def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str, filename: str, dry_run: bool, accept_host_key: bool, timeout: int = 60) -> None:
+    # Sanitize filename before SFTP — same gate as REST.
+    filename = _sanitize_and_validate_filename(filename)
     if dry_run:
         log(f"DRY-RUN SSH: would scp {len(content)} bytes to {host}:{port} as {user} -> /{filename}")
         log(f"DRY-RUN SSH: would ssh {user}@{host} \"/import file={filename}\"")
@@ -303,6 +361,17 @@ def main() -> None:
     path = pathlib.Path(args.file)
     content = load_file(path)
     filename = args.filename or path.name
+    # Early filename validation before any transport dispatch — same policy as
+    # deploy_via_rest / deploy_via_ssh inner gates (double-checked there).
+    # Never logs password.
+    err = validate_filename(filename)
+    if err:
+        print(f"error: invalid filename {filename!r}: {err}", file=sys.stderr)
+        print(
+            "hint: filename must match ^[a-zA-Z0-9._-]+$ and be 1..64 chars, no path separators or URI delimiters",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     # Basic validation: RSC files should contain RouterOS commands
     if not content.strip():

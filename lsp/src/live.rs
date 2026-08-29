@@ -423,6 +423,56 @@ fn parse_custom_resources(raw: Option<&str>) -> Vec<CustomResource> {
     parse_custom_resources_from_value(&v)
 }
 
+/// Validate a custom resource field or property name.
+///
+/// Must match `^[a-zA-Z0-9_-]+$` and be 1..64 chars, mirroring the filename
+/// allowlist style. Rejects null, control, and URI delimiters implicitly via
+/// the regex.
+fn is_valid_custom_identifier(s: &str) -> bool {
+    if s.is_empty() || s.len() > MAX_LIVE_VALUE_LEN {
+        return false;
+    }
+    if s.contains('\0') || s.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Validate a custom resource REST path.
+///
+/// Requirements:
+/// - starts with `/rest`, length 1..64
+/// - no null, control, `\`, `%`, `?`, `#`, `@`
+/// - no `//` (consecutive slashes)
+/// - no `..` as an exact segment (split by `/`)
+fn is_valid_custom_path(path: &str) -> bool {
+    if path.is_empty() || path.len() > 64 {
+        return false;
+    }
+    if !path.starts_with("/rest") {
+        return false;
+    }
+    if path.contains('\0') || path.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    if path.contains('\\')
+        || path.contains('%')
+        || path.contains('?')
+        || path.contains('#')
+        || path.contains('@')
+    {
+        return false;
+    }
+    if path.contains("//") {
+        return false;
+    }
+    if path.split('/').any(|seg| seg == "..") {
+        return false;
+    }
+    true
+}
+
 /// Parse custom resources from a `serde_json::Value` (settings overlay).
 fn parse_custom_resources_from_value(v: &serde_json::Value) -> Vec<CustomResource> {
     let arr = match v.as_array() {
@@ -459,17 +509,25 @@ fn parse_custom_resources_from_value(v: &serde_json::Value) -> Vec<CustomResourc
             );
             continue;
         }
-        // Basic validation: path should start with /rest, field chars allowed.
-        if !path.starts_with("/rest") {
+        // Path validation: strict allowlist, no traversal or delimiters.
+        if !is_valid_custom_path(&path) {
             log_warn!(
-                "custom resource path should start with /rest, skipping: {:?}",
+                "custom resource path failed validation, skipping: {:?}",
                 entry
             );
             continue;
         }
-        if property.len() > MAX_LIVE_VALUE_LEN || field.len() > MAX_LIVE_VALUE_LEN {
+        // Property and field validation: ^[a-zA-Z0-9_-]+$ 1..64
+        if !is_valid_custom_identifier(&property) {
             log_warn!(
-                "custom resource property/field too long, skipping: {:?}",
+                "custom resource property failed validation (expected ^[a-zA-Z0-9_-]+$ 1..64), skipping: {:?}",
+                entry
+            );
+            continue;
+        }
+        if !is_valid_custom_identifier(&field) {
+            log_warn!(
+                "custom resource field failed validation (expected ^[a-zA-Z0-9_-]+$ 1..64), skipping: {:?}",
                 entry
             );
             continue;
@@ -683,14 +741,24 @@ fn is_ssrf_denied_host(host: &str) -> bool {
     if inner == "metadata.google.internal" {
         return true;
     }
-    if inner == "::ffff:169.254.169.254" || inner == "::ffff:169.254.169.254%lo0" {
+    // Note: the zone-id form "::ffff:169.254.169.254%lo0" is intentionally not
+    // listed here because validate_host rejects '%' in hosts, making such a
+    // literal unreachable. If SSRF checks were moved before validation, this
+    // branch would need reconsideration, but after validation it is dead code.
+    if inner == "::ffff:169.254.169.254" {
         return true;
     }
     // Also deny the IPv6 bracketed form already handled via inner, but check original with brackets
     if lower == "[169.254.169.254]" {
         return true;
     }
-    // Deny 0.0.0.0? Not required, but we keep minimal per task.
+    // Unspecified addresses are never valid RouterOS hosts — deny them as SSRF.
+    if inner == "0.0.0.0" || inner == "::" {
+        return true;
+    }
+    if lower == "[0.0.0.0]" || lower == "[::]" {
+        return true;
+    }
     false
 }
 
