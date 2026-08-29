@@ -367,7 +367,7 @@ Updating the language server's knowledge therefore reduces to: sync, extract, co
 
 ## 🛠️ Development
 
-Everything runs through `make`, so contributor workflows mirror CI one-to-one: `make validate` replays the entire gate locally — manifest schema compliance, formatting, clippy on both targets with warnings denied, all three test suites and extraction idempotency. (Upstream-docs staleness is gated separately by `make sync-check`, which CI runs; run `make sync && make extract` when MikroTik publishes updates.)
+Everything runs through `make`, so contributor workflows mirror CI one-to-one: `make validate` replays offline gate (manifest, fmt, clippy, tests, extract); run `make sync-check` separately for upstream drift. (Upstream-docs staleness is gated separately by `make sync-check`, which CI runs; run `make sync && make extract` when MikroTik publishes updates.)
 
 ```bash
 make generate      # regenerate parser.c from grammar.js

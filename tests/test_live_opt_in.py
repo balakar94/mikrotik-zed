@@ -24,7 +24,9 @@ Acceptance criteria (risk-based, deterministic, no real device):
 All tests deterministic, no network, tied to observable files/behavior.
 """
 
+import ast
 import json
+import operator
 import re
 from pathlib import Path
 
@@ -47,6 +49,45 @@ def _read(p: Path) -> str:
     return p.read_text(encoding="utf-8")
 
 
+_ALLOWED_BINOPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.floordiv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+    ast.BitOr: operator.or_,
+    ast.BitAnd: operator.and_,
+    ast.BitXor: operator.xor,
+    ast.LShift: operator.lshift,
+    ast.RShift: operator.rshift,
+}
+_ALLOWED_UNOPS = {
+    ast.UAdd: operator.pos,
+    ast.USub: operator.neg,
+    ast.Invert: operator.invert,
+}
+
+
+def _eval_arith(node: ast.AST) -> int:
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return node.value
+    if isinstance(node, ast.BinOp):
+        op = _ALLOWED_BINOPS.get(type(node.op))
+        if op is None:
+            raise ValueError(f"disallowed binop {type(node.op).__name__}")
+        return op(_eval_arith(node.left), _eval_arith(node.right))
+    if isinstance(node, ast.UnaryOp):
+        op = _ALLOWED_UNOPS.get(type(node.op))
+        if op is None:
+            raise ValueError(f"disallowed unop {type(node.op).__name__}")
+        return op(_eval_arith(node.operand))
+    if isinstance(node, ast.Expression):
+        return _eval_arith(node.body)
+    raise ValueError(f"disallowed node {type(node).__name__}")
+
+
 def _caps_value(name: str) -> int | None:
     """Extract const usize/u64 value from caps.rs, handling expressions like 512 * 1024."""
     txt = _read(CAPS_RS)
@@ -55,18 +96,13 @@ def _caps_value(name: str) -> int | None:
     if not m:
         return None
     expr = m.group(1).strip()
-    # Strip comments after
+    # Strip inline comments after value
     expr = expr.split("//")[0].strip()
-    # Evaluate safely: only integers and * + - allowed
-    # Replace safe pattern: handle "512 * 1024"
     try:
-        # Use eval with restricted builtins? Only numbers and operators.
-        # Safer to manually parse: tokens are numbers, *, /
-        # For our known constants we can just eval arithmetic.
-        # Ensure only digits, spaces, *, /, +, -, (, )
         if not re.match(r"^[\d\s\*\+\-\/\(\)]+$", expr):
             return None
-        return int(eval(expr))  # noqa: S307 - controlled input, not user data
+        tree = ast.parse(expr, mode="eval")
+        return int(_eval_arith(tree))
     except Exception:
         return None
 

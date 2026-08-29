@@ -43,7 +43,7 @@ make install                              # full bootstrap (SKIP_SYSTEM=1 skips 
 
 ```bash
 make check      # fast compile gate (WASM + LSP)
-make validate   # full local pre-commit/pre-PR gate: manifest, generate-check, fmt, clippy, all tests, extract
+make validate   # offline gate: manifest, generate-check, fmt, clippy, all tests, extract
                 # (upstream-docs staleness is a separate CI gate: make sync-check)
                 # validate includes extract idempotency: fails if `git diff --exit-code data/commands.toml` is dirty
 ```

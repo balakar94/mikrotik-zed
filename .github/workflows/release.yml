@@ -98,12 +98,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # MSRV 1.90 — matches the zed-industries/extensions packaging toolchain. Keep in sync with
-      # rust-toolchain.toml and Cargo.toml rust-version.
-      - name: Install Rust 1.90 (MSRV)
+      # MSRV — toolchain channel from rust-toolchain.toml (single source of truth). Keep in sync with
+      # Cargo.toml rust-version.
+      - name: Resolve Rust toolchain
+        id: toolchain
+        run: |
+          CH=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])' 2>/dev/null || python -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])' 2>/dev/null || grep -E 'channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$CH" ]; then echo "::error::failed to resolve toolchain"; exit 1; fi
+          echo "channel=$CH" >> "$GITHUB_OUTPUT"
+          echo "Resolved toolchain: $CH"
+
+      - name: Install Rust ${{ steps.toolchain.outputs.channel }} (MSRV)
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 6c977a6
         with:
-          toolchain: "1.90"
+          toolchain: ${{ steps.toolchain.outputs.channel }}
           targets: wasm32-wasip2
 
       - name: Cargo cache
@@ -202,12 +210,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # MSRV 1.90 — matches the zed-industries/extensions packaging toolchain. Keep in sync with
-      # rust-toolchain.toml and Cargo.toml rust-version.
-      - name: Install Rust 1.90 (MSRV)
+      # MSRV — toolchain channel from rust-toolchain.toml (single source of truth). Keep in sync with
+      # Cargo.toml rust-version.
+      - name: Resolve Rust toolchain
+        id: toolchain
+        run: |
+          CH=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])' 2>/dev/null || python -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])' 2>/dev/null || grep -E 'channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$CH" ]; then echo "::error::failed to resolve toolchain"; exit 1; fi
+          echo "channel=$CH" >> "$GITHUB_OUTPUT"
+          echo "Resolved toolchain: $CH"
+
+      - name: Install Rust ${{ steps.toolchain.outputs.channel }} (MSRV)
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 6c977a6
         with:
-          toolchain: "1.90"
+          toolchain: ${{ steps.toolchain.outputs.channel }}
           targets: ${{ matrix.target }}
 
       - name: Install zig (for aarch64 linux cross)

@@ -28,12 +28,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # MSRV 1.90 — matches the zed-industries/extensions packaging toolchain. Keep in sync with
-      # rust-toolchain.toml, Cargo.toml/rust-version, and release.yml.
-      - name: Install Rust 1.90 (MSRV)
+      # MSRV — toolchain channel from rust-toolchain.toml (single source of truth). Keep in sync with
+      # Cargo.toml rust-version and release.yml.
+      - name: Resolve Rust toolchain
+        id: toolchain
+        run: |
+          CH=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])' 2>/dev/null || python -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])' 2>/dev/null || grep -E 'channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$CH" ]; then echo "::error::failed to resolve toolchain"; exit 1; fi
+          echo "channel=$CH" >> "$GITHUB_OUTPUT"
+          echo "Resolved toolchain: $CH"
+
+      - name: Install Rust ${{ steps.toolchain.outputs.channel }} (MSRV)
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 6c977a6
         with:
-          toolchain: "1.90"
+          toolchain: ${{ steps.toolchain.outputs.channel }}
           components: rustfmt, clippy
           targets: wasm32-wasip2
 
@@ -51,6 +59,16 @@ jobs:
 
       - name: Unit tests (make test-rust, all workspace members)
         run: make test-rust
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@6cd13508893c0e7eab5f273c2575d3859bd7229a # v2.86.6
+        with:
+          tool: cargo-audit@0.22.2
+
+      - name: Cargo audit (RustSec — PR gate)
+        run: |
+          cargo audit --version
+          cargo audit
 
       - name: Build WASM (wasm32-wasip2)
         run: cargo build --locked --target wasm32-wasip2 --release
@@ -87,10 +105,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install Rust 1.90 (MSRV)
+      # MSRV — toolchain channel from rust-toolchain.toml (single source of truth).
+      - name: Resolve Rust toolchain
+        id: toolchain
+        run: |
+          CH=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])' 2>/dev/null || python -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])' 2>/dev/null || grep -E 'channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$CH" ]; then echo "::error::failed to resolve toolchain"; exit 1; fi
+          echo "channel=$CH" >> "$GITHUB_OUTPUT"
+          echo "Resolved toolchain: $CH"
+
+      - name: Install Rust ${{ steps.toolchain.outputs.channel }} (MSRV)
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 6c977a6
         with:
-          toolchain: "1.90"
+          toolchain: ${{ steps.toolchain.outputs.channel }}
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -139,6 +166,7 @@ jobs:
           case "$REV" in *0000*)
             echo "::error::placeholder rev found ($REV) — run scripts/publish_grammar.py"; exit 1;;
           esac
+          echo "$REV" | grep -Eq '^[0-9a-f]{40}$' || { echo "::error::REV must be 40-char hex ($REV)"; exit 1; }
           git clone --quiet https://github.com/balakar94/tree-sitter-rsc grammars/rsc
           if [ "$(git -C grammars/rsc rev-parse HEAD)" != "$REV" ]; then
             git -C grammars/rsc fetch --quiet --depth 1 origin "$REV"
@@ -257,6 +285,7 @@ jobs:
           case "$REV" in *0000*)
             echo "::error::placeholder rev found ($REV) — run scripts/publish_grammar.py"; exit 1;;
           esac
+          echo "$REV" | grep -Eq '^[0-9a-f]{40}$' || { echo "::error::REV must be 40-char hex ($REV)"; exit 1; }
           git clone --quiet https://github.com/balakar94/tree-sitter-rsc grammars/rsc
           if [ "$(git -C grammars/rsc rev-parse HEAD)" != "$REV" ]; then
             git -C grammars/rsc fetch --quiet --depth 1 origin "$REV"
