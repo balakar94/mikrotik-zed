@@ -1,5 +1,4 @@
 // ── LSP server core (protocol boundary) ───────────────────────────
-// Legacy note: get_cached_or_fetch_blocking retained for tests (now non-blocking via get_cached_or_fetch_background)
 //
 // Owns the wire-facing half of rsc-ls: the `Server` state machine
 // (stdio read/write loop, `handle_message` method dispatch, tracked-
@@ -297,34 +296,28 @@ impl Server {
         }
     }
 
-    /// Test helper: create a server with explicit live config/cache.
-    #[cfg(test)]
+    /// Create a server with explicit live config/cache (used by production and tests).
     pub(crate) fn new_with_live(
         data: MenuData,
         live_config: LiveConfig,
         live_cache: Arc<Mutex<LiveCache>>,
     ) -> Self {
-        Server {
-            data,
-            docs: HashMap::new(),
-            position_encoding: PositionEncoding::default(),
-            shutdown_received: false,
-            live_config,
-            live_cache,
-            published: Vec::new(),
+        #[cfg(not(test))]
+        {
+            Self::new(data, live_config, live_cache)
         }
-    }
-
-    /// Production helper: construct with explicit live values (used by
-    /// non-test code that needs to build a server without env).
-    #[cfg(not(test))]
-    #[allow(dead_code)]
-    pub(crate) fn new_with_live(
-        data: MenuData,
-        live_config: LiveConfig,
-        live_cache: Arc<Mutex<LiveCache>>,
-    ) -> Self {
-        Self::new(data, live_config, live_cache)
+        #[cfg(test)]
+        {
+            Server {
+                data,
+                docs: HashMap::new(),
+                position_encoding: PositionEncoding::default(),
+                shutdown_received: false,
+                live_config,
+                live_cache,
+                published: Vec::new(),
+            }
+        }
     }
 
     pub(crate) fn run(&mut self) {

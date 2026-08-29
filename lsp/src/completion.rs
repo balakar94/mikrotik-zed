@@ -116,17 +116,6 @@ pub fn compute_completions_with_live(
     items
 }
 
-/// The pre-snippet dispatch of [`compute_completions`], kept as its own step
-/// so snippet appending can wrap whatever base candidate set applies.
-#[allow(dead_code)]
-fn match_context(
-    data: &MenuData,
-    context: &LineContext,
-    before_cursor: &str,
-) -> Vec<CompletionItem> {
-    match_context_with_live(data, context, before_cursor, None)
-}
-
 fn match_context_with_live(
     data: &MenuData,
     context: &LineContext,
@@ -413,22 +402,6 @@ fn get_arg_completion_items(data: &MenuData, ctx: &LineContext) -> Vec<Completio
 }
 
 // ── Value completions (inside "property=value" tokens) ───────────
-
-/// Honest placeholder values per argument type.
-///
-/// Only types with a universally valid representative get an item; anything
-/// device-specific (interface names, script variables) returns zero items
-/// rather than fabricated suggestions like `ether1`. Live enrichment (when
-/// a `LiveCache` is supplied) merges device interface names on top without
-/// fabricating.
-#[allow(dead_code)]
-fn get_value_completions(
-    data: &MenuData,
-    ctx: &LineContext,
-    property_key: &str,
-) -> Vec<CompletionItem> {
-    get_value_completions_with_live(data, ctx, property_key, None)
-}
 
 fn get_value_completions_with_live(
     data: &MenuData,

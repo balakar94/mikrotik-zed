@@ -9,7 +9,6 @@ WASM_CRATE  ?= mikrotik_zed
 WASM_OUT    ?= target/$(WASM_TARGET)/release/$(WASM_CRATE).wasm
 VENV_DIR    ?= .venv
 PYTHON      ?= $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
-PIP         ?= pip3
 SKIP_SYSTEM ?=
 FILE        ?=
 VERSION     ?=
@@ -180,7 +179,7 @@ bump: ## Bump version (usage: make bump VERSION=0.2.0)
 
 # ── Cleanup ──────────────────────────────────────────────────────
 _clean-artifacts:
-	rm -rf target/; rm -f extension.wasm; rm -f grammars/rsc.wasm
+	rm -rf target/; rm -f extension.wasm
 	cd $(GRAMMAR_DIR) && rm -f parser.dylib tree-sitter-rsc.wasm
 
 clean: _clean-artifacts ## Remove build artifacts (preserves Cargo.lock and parser.c)

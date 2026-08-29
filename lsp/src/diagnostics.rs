@@ -64,7 +64,6 @@ pub struct Diagnostic {
 
 // LSP severity constants
 pub mod severity {
-    #[allow(dead_code)]
     pub const ERROR: u8 = 1;
     pub const WARNING: u8 = 2;
     pub const INFORMATION: u8 = 3;
