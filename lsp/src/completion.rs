@@ -31,12 +31,42 @@ pub struct Documentation {
     pub value: String,
 }
 
+/// LSP range for `textEdit`.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct CompletionPosition {
+    pub line: u32,
+    pub character: u32,
+}
+
+/// LSP range for `textEdit`.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct CompletionRange {
+    pub start: CompletionPosition,
+    pub end: CompletionPosition,
+}
+
+/// LSP `TextEdit` for `CompletionItem.textEdit`.
+///
+/// When present, the client replaces `range` with `newText` instead of
+/// inserting `insertText` at the cursor. `insertText` is retained as a
+/// fallback for clients that ignore `textEdit` (Zed supports it).
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct TextEdit {
+    pub range: CompletionRange,
+    #[serde(rename = "newText")]
+    pub new_text: String,
+}
+
 /// A completion item ready for JSON serialization.
 ///
 /// Newer optional fields (`documentation`, `sortText`) are omitted from the
 /// JSON when unset instead of serialized as null — semantically identical
 /// for LSP clients and keeps the payload small. Pre-existing optional fields
 /// keep their historical null-emitting shape for wire compatibility.
+/// `textEdit` is optional: when `Some`, it replaces the typed prefix (e.g.
+/// the suffix after `=` or a partial menu token) so that accepting `input`
+/// when `in` is already typed yields `input` rather than `ininput`. When
+/// `None`, the client falls back to `insertText` at the cursor.
 #[derive(serde::Serialize, Clone)]
 pub struct CompletionItem {
     pub label: String,
@@ -49,6 +79,8 @@ pub struct CompletionItem {
     pub sort_text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub documentation: Option<Documentation>,
+    #[serde(rename = "textEdit", skip_serializing_if = "Option::is_none")]
+    pub text_edit: Option<TextEdit>,
 }
 
 impl CompletionItem {
@@ -61,6 +93,7 @@ impl CompletionItem {
             insert_text_format: None,
             sort_text: None,
             documentation: None,
+            text_edit: None,
         }
     }
 }
@@ -109,8 +142,11 @@ pub fn compute_completions_with_live(
     // the value-completion prefix filter there is deliberately NO fallback
     // to the unfiltered set — menu paths and property names are noise after
     // a colon, so an unknown script word completes to nothing.
+    // RouterOS is case-insensitive, so match case-insensitively for both
+    // properties and colon globals.
     if let Some(typed) = colon_token {
-        items.retain(|item| item.label.starts_with(&typed));
+        let lower = typed.to_ascii_lowercase();
+        items.retain(|item| item.label.to_ascii_lowercase().starts_with(&lower));
     }
 
     items
@@ -142,16 +178,29 @@ fn match_context_with_live(
 
     // Typing a property VALUE inside the current token ("chain=" or the
     // partial "chain=in") → suggest enum/bool/type values filtered by the
-    // already-typed suffix. Only when the cursor sits INSIDE the token:
-    // trailing whitespace means the token is finished and the user is about
-    // to start a new property, which must stay an argument-completion case.
-    if !before_cursor.ends_with(char::is_whitespace)
-        && let Some(eq_pos) = context.last_token.rfind('=')
-    {
-        let key = &context.last_token[..eq_pos];
-        let typed_suffix = &context.last_token[eq_pos + 1..];
-        let items = get_value_completions_with_live(data, context, key, live_cache);
-        return filter_by_typed_prefix(items, typed_suffix);
+    // already-typed suffix. Tolerant of trailing whitespace after `=` ("chain= ")
+    // so that a space does not suppress value suggestions when the value is
+    // still empty; the trimmed last token is inspected instead of requiring
+    // the cursor to sit strictly inside the token. If the suffix is already
+    // non-empty and the cursor sits AFTER whitespace ("chain=input "), the
+    // token is considered finished and we fall through to argument completions.
+    let trimmed = before_cursor.trim_end();
+    let has_trailing_ws = trimmed.len() != before_cursor.len();
+    let trimmed_last = crate::parser::tokenize(trimmed)
+        .last()
+        .cloned()
+        .unwrap_or_default();
+    if let Some(eq_pos) = trimmed_last.rfind('=') {
+        let raw_suffix = &trimmed_last[eq_pos + 1..];
+        let trimmed_suffix = raw_suffix.trim_matches(|c| c == '"' || c == '\'');
+        // If trailing whitespace present with a non-empty value, the value
+        // token is finished — suggest next property, not values.
+        if !has_trailing_ws || trimmed_suffix.is_empty() {
+            let key = trimmed_last[..eq_pos].trim_start_matches(':').to_string();
+            let typed_suffix = trimmed_last[eq_pos + 1..].to_string();
+            let items = get_value_completions_with_live(data, context, &key, live_cache);
+            return filter_by_typed_prefix(items, &typed_suffix);
+        }
     }
 
     // If a verb is already typed (e.g., "add", "print"), only suggest
@@ -306,19 +355,63 @@ fn filter_by_typed_prefix(items: Vec<CompletionItem>, typed_suffix: &str) -> Vec
 // ── Root menus ──────────────────────────────────────────────────
 
 fn get_root_completion_items(data: &MenuData) -> Vec<CompletionItem> {
-    match data.child_names_by_parent.get("") {
-        Some(roots) => roots
-            .iter()
-            .map(|r| {
+    let mut items = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Directories / settings directories via the parent index (fast path).
+    // The synthetic root index always creates Directory entries, even for
+    // Command roots like `/import`. Overwrite the kind/detail when the real
+    // menu type (from `menu_by_path`) is `Command` so `/import` etc. appear
+    // as `FUNCTION`/`Command` instead of `CLASS`.
+    if let Some(roots) = data.child_names_by_parent.get("") {
+        for r in roots {
+            let real_type = data
+                .menu_by_path
+                .get(&r.path)
+                .map(|m| m.menu_type.as_str())
+                .unwrap_or(r.menu_type.as_str());
+            if real_type == "Command" {
+                let mut item = CompletionItem::new(r.path.clone(), kind::FUNCTION);
+                item.detail = Some("Command".to_string());
+                item.insert_text = Some(r.path.clone());
+                item.insert_text_format = Some(1);
+                items.push(item);
+            } else {
                 let mut item = CompletionItem::new(r.path.clone(), kind::CLASS);
                 item.detail = Some(format!("root menu — {}", r.path));
                 item.insert_text = Some(r.path.clone());
                 item.insert_text_format = Some(1);
-                item
-            })
-            .collect(),
-        None => Vec::new(),
+                items.push(item);
+            }
+            seen.insert(r.path.clone());
+        }
     }
+    // Root-level Commands that have no synthetic entry (defensive; should be
+    // rare because the synthetic index creates an entry for every root) are
+    // added here so `/import`, `/quit`, `/beep`, `/put`, etc. are never
+    // missing even when child_names_by_parent is incomplete.
+    for (path, menu) in &data.menu_by_path {
+        if path == "/" {
+            continue;
+        }
+        if path.matches('/').count() != 1 {
+            continue;
+        }
+        if menu.menu_type != "Command" {
+            continue;
+        }
+        if seen.contains(path) {
+            continue;
+        }
+        let mut item = CompletionItem::new(path.clone(), kind::FUNCTION);
+        item.detail = Some("Command".to_string());
+        item.insert_text = Some(path.clone());
+        item.insert_text_format = Some(1);
+        items.push(item);
+        seen.insert(path.clone());
+    }
+    // Deterministic order: sort by label for stable tests.
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    items
 }
 
 // ── Sub-menus ───────────────────────────────────────────────────
@@ -343,16 +436,29 @@ fn get_sub_menu_completion_items(data: &MenuData, ctx: &LineContext) -> Vec<Comp
 // ── Verbs ───────────────────────────────────────────────────────
 
 fn get_verb_completion_items(data: &MenuData, ctx: &LineContext) -> Vec<CompletionItem> {
-    let mut items: Vec<CompletionItem> = MenuData::STANDARD_VERBS
-        .iter()
-        .map(|verb| {
-            let mut item = CompletionItem::new(verb.to_string(), kind::FUNCTION);
-            item.detail = Some(format!("{verb} — standard command"));
-            item.insert_text = Some(verb.to_string());
-            item.insert_text_format = Some(1);
-            item
-        })
-        .collect();
+    let menu_type = data
+        .menu_by_path
+        .get(&ctx.path)
+        .map(|m| m.menu_type.as_str())
+        .unwrap_or("Directory");
+    // Only Directory / Settings Directory menus support the 15 standard verbs.
+    // Command menus (e.g. /tool/ping) have no child operations — only their
+    // own arguments/flags — so emitting verbs there is noise.
+    let is_directory = menu_type == "Directory" || menu_type == "Settings Directory";
+    let mut items: Vec<CompletionItem> = if is_directory {
+        MenuData::STANDARD_VERBS
+            .iter()
+            .map(|verb| {
+                let mut item = CompletionItem::new(verb.to_string(), kind::FUNCTION);
+                item.detail = Some(format!("{verb} — standard command"));
+                item.insert_text = Some(verb.to_string());
+                item.insert_text_format = Some(1);
+                item
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     // Action commands (type = "Command" entries under this path)
     if let Some(children) = data.child_names_by_parent.get(&ctx.path) {
@@ -656,10 +762,15 @@ type = "Directory"
             items.iter().any(|i| i.label == "/system"),
             "should contain /system"
         );
-        // Root menus keep their CLASS kind and detail text…
+        // Root menus keep their CLASS kind and detail text; root Commands
+        // (e.g. /import) are FUNCTION/Command per C3.
         for item in items.iter().filter(|i| i.label.starts_with('/')) {
-            assert_eq!(item.kind, Some(kind::CLASS));
-            assert!(item.detail.as_ref().unwrap().contains("root menu"));
+            if item.kind == Some(kind::CLASS) {
+                assert!(item.detail.as_ref().unwrap().contains("root menu"));
+            } else {
+                assert_eq!(item.kind, Some(kind::FUNCTION));
+                assert_eq!(item.detail.as_deref(), Some("Command"));
+            }
         }
         // …and statement-start snippets are appended on top of them.
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
@@ -705,10 +816,14 @@ type = "Directory"
         // All MENU labels should start with / (snippet labels start with ':').
         for item in items.iter().filter(|i| i.label.starts_with('/')) {
             assert!(
-                item.label.starts_with('/') && item.kind == Some(kind::CLASS),
-                "root label should be a CLASS menu: {}",
+                item.label.starts_with('/')
+                    && (item.kind == Some(kind::CLASS) || item.kind == Some(kind::FUNCTION)),
+                "root label should be a CLASS menu or FUNCTION command: {}",
                 item.label
             );
+            if item.kind == Some(kind::FUNCTION) {
+                assert_eq!(item.detail.as_deref(), Some("Command"));
+            }
         }
         // Snippets are the only non-menu additions at statement start.
         let extra: Vec<&str> = items
@@ -717,13 +832,17 @@ type = "Directory"
             .filter(|l| !l.starts_with('/'))
             .collect();
         assert_eq!(extra, vec![":if", ":foreach", ":for", ":do"]);
-        // Should contain all 8 roots at least
+        // Should contain all 8 roots at least and root Commands per C3
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert!(labels.contains(&"/ip"));
         assert!(labels.contains(&"/interface"));
         assert!(labels.contains(&"/system"));
         assert!(labels.contains(&"/tool"));
         assert!(labels.contains(&"/queue"));
+        // Root commands (C3) — /import etc. are Commands, not Directory children
+        assert!(labels.contains(&"/import"));
+        assert!(labels.contains(&"/quit"));
+        assert!(labels.contains(&"/beep"));
     }
 
     // ── Sub-menu completions ──────────────────────────────────────
@@ -1163,11 +1282,16 @@ type = "string"
         let data = synthetic();
         let items = compute_completions(&data, "");
         assert!(!items.is_empty());
-        // Menus keep CLASS kind; snippets (kind SNIPPET) are appended at
-        // statement start since B3.
+        // Menus keep CLASS kind (directories) or FUNCTION (root Commands);
+        // snippets (kind SNIPPET) are appended at statement start since B3.
         for it in items.iter().filter(|i| i.label.starts_with('/')) {
             assert!(it.label.starts_with('/'), "root label must start with /");
-            assert_eq!(it.kind, Some(kind::CLASS));
+            assert!(
+                it.kind == Some(kind::CLASS) || it.kind == Some(kind::FUNCTION),
+                "root kind must be CLASS or FUNCTION, got {:?} for {}",
+                it.kind,
+                it.label
+            );
         }
         // Should not contain verbs or properties at root
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();

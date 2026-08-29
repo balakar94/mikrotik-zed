@@ -21,8 +21,9 @@ use crate::caps::{MAX_CODE_ACTIONS, MAX_DOC_SIZE, MAX_DOCS};
 use crate::completion;
 use crate::diagnostics;
 use crate::encoding::{
-    PositionEncoding, apply_incremental_edit, convert_diagnostic_ranges, floor_char_boundary,
-    lsp_character_to_byte_offset, lsp_position_to_offset,
+    PositionEncoding, apply_incremental_edit, byte_offset_to_utf16_units,
+    convert_diagnostic_ranges, floor_char_boundary, lsp_character_to_byte_offset,
+    lsp_position_to_offset,
 };
 use crate::folding;
 use crate::framing::{Frame, FrameError, read_message};
@@ -782,6 +783,8 @@ impl Server {
                         );
                     }
                     // Custom resource specific background fetch (separate cache key `custom:<property>`).
+                    // Coalesced via `LiveCache::can_spawn_fetch` / `is_negative_cooldown`
+                    // and `record_fetch_attempt` to avoid 16 threads/min.
                     if let Some(last_tok) = crate::parser::tokenize(&before_cursor).last()
                         && last_tok.contains('=')
                     {
@@ -793,47 +796,85 @@ impl Server {
                         if let Some(custom) =
                             self.live_config.custom_resource_for_property(key).cloned()
                         {
-                            let cache_clone = Arc::clone(&self.live_cache);
-                            let config_clone = self.live_config.clone();
-                            std::thread::spawn(move || {
-                                let start = std::time::Instant::now();
-                                match crate::live::fetch_custom_resource(&config_clone, &custom) {
-                                    Ok(vals) => {
-                                        log_info!(
-                                            "live fetch ok custom property={} path={} latency_ms={} items={}",
-                                            custom.property,
-                                            custom.path,
-                                            start.elapsed().as_millis(),
-                                            vals.len()
-                                        );
-                                        if !vals.is_empty() {
+                            let cache_key = format!("custom:{}", custom.property);
+                            // Check coalescing / negative TTL / fresh hit before spawning.
+                            let should_spawn = {
+                                let mut guard =
+                                    self.live_cache.lock().expect("live cache lock poisoned");
+                                if guard.try_get_cached(&cache_key).is_some() {
+                                    log_debug!(
+                                        "live custom cache hit (fresh) for {cache_key}, skipping fetch"
+                                    );
+                                    false
+                                } else if guard.is_negative_cooldown(&cache_key) {
+                                    log_debug!(
+                                        "live custom negative cooldown for {cache_key}, skipping fetch"
+                                    );
+                                    false
+                                } else if !guard.can_spawn_fetch(&cache_key) {
+                                    log_debug!(
+                                        "live custom fetch coalesced for {cache_key}, skipping"
+                                    );
+                                    false
+                                } else {
+                                    guard.record_fetch_attempt(cache_key.clone());
+                                    true
+                                }
+                            };
+                            if should_spawn {
+                                let cache_clone = Arc::clone(&self.live_cache);
+                                let config_clone = self.live_config.clone();
+                                std::thread::spawn(move || {
+                                    let start = std::time::Instant::now();
+                                    match crate::live::fetch_custom_resource(&config_clone, &custom)
+                                    {
+                                        Ok(vals) => {
+                                            log_info!(
+                                                "live fetch ok custom property={} path={} latency_ms={} items={}",
+                                                custom.property,
+                                                custom.path,
+                                                start.elapsed().as_millis(),
+                                                vals.len()
+                                            );
                                             let mut guard = cache_clone
                                                 .lock()
                                                 .expect("live cache lock poisoned");
                                             let cache_key = format!("custom:{}", custom.property);
-                                            guard.insert(cache_key, vals);
+                                            if vals.is_empty() {
+                                                // Cache empty vec briefly (negative TTL) to avoid churn;
+                                                // still considered fresh for coalescing.
+                                                log_debug!(
+                                                    "live custom fetch empty for {}, inserting empty vec",
+                                                    custom.property
+                                                );
+                                                guard.insert(cache_key.clone(), vals);
+                                                // Also ensure negative not set (insert clears it).
+                                            } else {
+                                                guard.insert(cache_key, vals);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            log_warn!(
+                                                "live fetch custom failed property={} path={} err={} latency_ms={}",
+                                                custom.property,
+                                                custom.path,
+                                                e,
+                                                start.elapsed().as_millis()
+                                            );
+                                            let mut guard = cache_clone
+                                                .lock()
+                                                .expect("live cache lock poisoned");
+                                            let cache_key = format!("custom:{}", custom.property);
+                                            guard.insert_negative(cache_key);
                                         }
                                     }
-                                    Err(e) => {
-                                        log_warn!(
-                                            "live fetch custom failed property={} path={} err={} latency_ms={}",
-                                            custom.property,
-                                            custom.path,
-                                            e,
-                                            start.elapsed().as_millis()
-                                        );
-                                        let mut guard =
-                                            cache_clone.lock().expect("live cache lock poisoned");
-                                        let cache_key = format!("custom:{}", custom.property);
-                                        guard.insert_negative(cache_key);
-                                    }
-                                }
-                            });
+                                });
+                            }
                         }
                     }
                 }
                 let live_guard = self.live_cache.lock().ok();
-                let items = if let Some(ref cache) = live_guard {
+                let mut items = if let Some(ref cache) = live_guard {
                     completion::compute_completions_with_live(
                         &self.data,
                         &before_cursor,
@@ -842,6 +883,193 @@ impl Server {
                 } else {
                     completion::compute_completions(&self.data, &before_cursor)
                 };
+
+                // ── textEdit injection (C2) ─────────────────────────────────
+                // Populate `textEdit` so accepting a completion replaces the
+                // already-typed prefix instead of inserting beside it
+                // (`in` + `input` → `input`, not `ininput`). `insertText` is
+                // retained as fallback for clients that ignore `textEdit` (Zed
+                // supports it). If computing the range fails we leave `textEdit`
+                // as `None` and the client falls back to insertion at cursor.
+                //
+                // Two cases are handled (per spec, at least these):
+                // - value completions after `=`: range covers the typed suffix
+                //   after `=` (excluding a leading opening quote so `"in` → `input`
+                //   preserves the quote as `"input`);
+                // - sub-menu / verb completions before a verb: when the cursor
+                //   sits inside a partial token that prefixes a child name, range
+                //   covers that token so `addr` → `address`.
+                // For all other cases (e.g., already-finished token + space) the
+                // edit is zero-length at the cursor (pure insertion).
+                {
+                    // Use the physical current line for byte offsets; `before_cursor`
+                    // may be a joined multi-line string whose offsets do not map
+                    // to the LSP line/character requested.
+                    let line_text = current_line;
+                    // Decide whether we are in a value-completion context using
+                    // the same tolerant trimmed logic as `completion::match_context`.
+                    let trimmed_bc = before_cursor.trim_end();
+                    let has_trailing_ws = trimmed_bc.len() != before_cursor.len();
+                    let trimmed_last = crate::parser::tokenize(trimmed_bc)
+                        .last()
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut value_range: Option<(usize, usize)> = None;
+                    if let Some(eq_pos) = trimmed_last.rfind('=') {
+                        let raw_suffix = &trimmed_last[eq_pos + 1..];
+                        let trimmed_suffix = raw_suffix.trim_matches(|c| c == '"' || c == '\'');
+                        if !has_trailing_ws || trimmed_suffix.is_empty() {
+                            // Value context confirmed — compute byte range in the
+                            // physical line.
+                            let prefix_line = &line_text[..char_byte.min(line_text.len())];
+                            // Clamp to char boundary already ensured by char_byte.
+                            let tokens = crate::parser::tokenize_with_spans(prefix_line);
+                            if let Some(tok) = tokens.last() {
+                                if let Some(pos) = tok.text.rfind('=') {
+                                    let suffix_part = &tok.text[pos + 1..];
+                                    let leading = if suffix_part.starts_with('"')
+                                        || suffix_part.starts_with('\'')
+                                    {
+                                        1
+                                    } else {
+                                        0
+                                    };
+                                    let start = tok.start + pos + 1 + leading;
+                                    // Trailing-space with empty value → zero-length at cursor
+                                    let (s, e) = if has_trailing_ws && trimmed_suffix.is_empty() {
+                                        (char_byte, char_byte)
+                                    } else {
+                                        (start, char_byte)
+                                    };
+                                    // Defensive clamp
+                                    let s_clamped = s.min(line_text.len()).min(e);
+                                    let e_clamped = e.min(line_text.len());
+                                    let s_floored =
+                                        crate::encoding::floor_char_boundary(line_text, s_clamped);
+                                    let e_floored =
+                                        crate::encoding::floor_char_boundary(line_text, e_clamped);
+                                    value_range = Some((s_floored, e_floored));
+                                }
+                            } else if has_trailing_ws && trimmed_suffix.is_empty() {
+                                // No token in prefix (e.g., cursor after "chain= " where
+                                // tokenization of prefix_line yields ["chain="] but we already
+                                // handled; this branch is for safety).
+                                value_range = Some((char_byte, char_byte));
+                            }
+                        }
+                    }
+                    if let Some((s_byte, e_byte)) = value_range {
+                        let start_char = match self.position_encoding {
+                            PositionEncoding::Utf8 => s_byte as u32,
+                            PositionEncoding::Utf16 => {
+                                byte_offset_to_utf16_units(line_text, s_byte)
+                            }
+                        };
+                        let end_char = match self.position_encoding {
+                            PositionEncoding::Utf8 => e_byte as u32,
+                            PositionEncoding::Utf16 => {
+                                byte_offset_to_utf16_units(line_text, e_byte)
+                            }
+                        };
+                        for item in &mut items {
+                            // Value items are ENUM_MEMBER (12). Live + static values share it.
+                            if item.kind == Some(12) {
+                                let new_text = item
+                                    .insert_text
+                                    .clone()
+                                    .unwrap_or_else(|| item.label.clone());
+                                item.text_edit = Some(completion::TextEdit {
+                                    range: completion::CompletionRange {
+                                        start: completion::CompletionPosition {
+                                            line: line_idx as u32,
+                                            character: start_char,
+                                        },
+                                        end: completion::CompletionPosition {
+                                            line: line_idx as u32,
+                                            character: end_char,
+                                        },
+                                    },
+                                    new_text,
+                                });
+                            }
+                        }
+                    } else {
+                        // Sub-menu / verb prefix case: when not a value context and
+                        // cursor inside a token that prefixes a child/verb, replace it.
+                        // Heuristic: last token in prefix_line is non-empty, does not
+                        // contain `=`, `:`, `/` at token level? Actually path tokens
+                        // contain `/`, so we skip those. We only handle plain word
+                        // prefixes for sub-menus/verbs.
+                        let prefix_line = &line_text[..char_byte.min(line_text.len())];
+                        if !prefix_line.ends_with(char::is_whitespace) && !prefix_line.is_empty() {
+                            let tokens = crate::parser::tokenize_with_spans(prefix_line);
+                            if let Some(tok) = tokens.last() {
+                                // Skip tokens that are path, value, or script word
+                                if !tok.text.contains('=')
+                                    && !tok.text.starts_with(':')
+                                    && !tok.text.starts_with('/')
+                                    && !tok.text.starts_with('"')
+                                    && !tok.text.starts_with('\'')
+                                {
+                                    let typed = tok.text.as_str();
+                                    // Check if any CLASS or FUNCTION item is a case-insensitive prefix match
+                                    let lower_typed = typed.to_ascii_lowercase();
+                                    let needs_edit = items.iter().any(|it| {
+                                        (it.kind == Some(9) || it.kind == Some(3))
+                                            && it
+                                                .label
+                                                .to_ascii_lowercase()
+                                                .starts_with(&lower_typed)
+                                    });
+                                    if needs_edit && !typed.is_empty() {
+                                        let s_byte = tok.start;
+                                        let e_byte = tok.end.min(char_byte);
+                                        let start_char = match self.position_encoding {
+                                            PositionEncoding::Utf8 => s_byte as u32,
+                                            PositionEncoding::Utf16 => {
+                                                byte_offset_to_utf16_units(line_text, s_byte)
+                                            }
+                                        };
+                                        let end_char = match self.position_encoding {
+                                            PositionEncoding::Utf8 => e_byte as u32,
+                                            PositionEncoding::Utf16 => {
+                                                byte_offset_to_utf16_units(line_text, e_byte)
+                                            }
+                                        };
+                                        for item in &mut items {
+                                            if item.kind == Some(9) || item.kind == Some(3) {
+                                                // Only add edit if label actually starts with typed (avoid replacing unrelated verbs)
+                                                if item
+                                                    .label
+                                                    .to_ascii_lowercase()
+                                                    .starts_with(&lower_typed)
+                                                {
+                                                    let new_text = item
+                                                        .insert_text
+                                                        .clone()
+                                                        .unwrap_or_else(|| item.label.clone());
+                                                    item.text_edit = Some(completion::TextEdit {
+                                                        range: completion::CompletionRange {
+                                                            start: completion::CompletionPosition {
+                                                                line: line_idx as u32,
+                                                                character: start_char,
+                                                            },
+                                                            end: completion::CompletionPosition {
+                                                                line: line_idx as u32,
+                                                                character: end_char,
+                                                            },
+                                                        },
+                                                        new_text,
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 Some(serde_json::json!({
                     "jsonrpc": "2.0",
