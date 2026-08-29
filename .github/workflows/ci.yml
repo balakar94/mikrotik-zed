@@ -106,8 +106,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # MSRV — toolchain channel from rust-toolchain.toml (single source of truth).
+      # Bash syntax → explicit `shell: bash` (Git Bash on the Windows runner).
       - name: Resolve Rust toolchain
         id: toolchain
+        shell: bash
         run: |
           CH=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])' 2>/dev/null || python -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])' 2>/dev/null || grep -E 'channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')
           if [ -z "$CH" ]; then echo "::error::failed to resolve toolchain"; exit 1; fi
