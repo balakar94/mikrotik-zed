@@ -123,6 +123,7 @@ pub struct LineContext {
     pub command: Option<String>,
     /// property name → value (empty string if just "key=")
     pub properties: HashMap<String, String>,
+    #[allow(dead_code)]
     pub last_token: String,
 }
 
