@@ -94,8 +94,10 @@ pub(crate) const LIVE_NEGATIVE_TTL_SECS: u64 = 15;
 
 /// Maximum number of hosts in multi-host mode (comma-separated `MIKROTIK_HOST`).
 ///
-/// Only the primary host is fetched today; additional hosts are accepted and
-/// validated but not yet hydrated (future iteration).
+/// Validated but only primary host hydrated; multi-host is future
+/// iteration. Additional hosts up to `LIVE_MAX_HOSTS` are parsed and
+/// validated (SSRF/host rules) but no fetch is issued for them today;
+/// single-host mode is the only hydrated path.
 pub(crate) const LIVE_MAX_HOSTS: usize = 4;
 
 /// Maximum number of user-defined custom live resources via `RSC_LS_LIVE_RESOURCES`.

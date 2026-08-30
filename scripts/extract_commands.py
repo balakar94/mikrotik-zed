@@ -293,18 +293,41 @@ def clean_type(typ: str) -> str:
     # (often 110-140 chars) intact while still capping extremes; enum_values already
     # preserves full member lists so display truncation can be generous.
     if len(typ) > 150:
-        typ = typ[:147] + "..."
+        # Preserve closing `)` for `enum (...)` types so truncated values remain
+        # syntactically balanced. If original starts with `enum (` and is longer
+        # than cap, end with `...)` rather than bare `...`.
+        if typ.lstrip().startswith("enum ("):
+            typ = typ[:146] + "...)"
+        else:
+            typ = typ[:147] + "..."
     return typ
 
 
 def escape_toml_string(s: str) -> str:
-    """Escape a string for TOML literal string representation."""
-    # Replace backslashes and quotes
-    s = s.replace("\\", "\\\\")
-    s = s.replace('"', '\\"')
-    # Remove newlines from descriptions
-    s = s.replace("\n", " ").replace("\r", "")
-    return s
+    """Escape a string for TOML basic string representation.
+
+    Handles TOML-required escapes: backslash, quote, tab, and control
+    characters 0x00-0x1F (as \\u00XX) except \\n/\\r which are stripped
+    and \\t which is escaped as \\t. Keeps deleting \\n/\\r for
+    single-line TOML values but ensures \\t doesn't produce invalid TOML.
+    """
+    out: list[str] = []
+    for ch in s:
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ch == "\t":
+            out.append("\\t")
+        elif ch == "\n":
+            out.append(" ")
+        elif ch == "\r":
+            continue
+        elif 0x00 <= ord(ch) <= 0x1F:
+            out.append(f"\\u{ord(ch):04X}")
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def _extract_routeros_version(llms_path: Path) -> str:

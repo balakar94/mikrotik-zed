@@ -9,5 +9,6 @@ brackets = [
     { start = "{", end = "}", close = true, newline = true },
     { start = "[", end = "]", close = true, newline = false },
     { start = "(", end = ")", close = true, newline = false },
+    # `"` bracket handled via config with not_in string guard (see brackets.scm comment)
     { start = "\"", end = "\"", close = true, newline = false, not_in = ["string"] },
 ]
