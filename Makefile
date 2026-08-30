@@ -24,7 +24,7 @@ _check-tools:
 	@command -v cargo >/dev/null || (echo "error: cargo not found — run 'make install'" && false)
 	@command -v rustup >/dev/null && rustup target list --installed | grep -q $(WASM_TARGET) || echo "hint: rustup target add $(WASM_TARGET)"
 	@command -v npx >/dev/null || echo "hint: npm install -g tree-sitter-cli (for grammar)"
-	@command -v $(PYTHON) >/dev/null || echo "hint: $(PYTHON) not found — Python 3.12+ needed (run 'make install-tools')"
+	@command -v $(PYTHON) >/dev/null || echo "hint: $(PYTHON) not found — Python 3.11+ needed (run 'make install-tools')"
 
 # ── Tree-sitter grammar ──────────────────────────────────────────
 generate: ## Regenerate parser.c from grammar.js (requires tree-sitter-cli)
@@ -58,6 +58,7 @@ grammar-clone: ## Clone grammar working copy at rev pinned in extension.toml
 	fi
 	@REV=$$(awk '/^\[grammars\.rsc\]/{f=1;next} f&&/^rev/{gsub(/"/,"",$$3);print $$3;exit}' extension.toml); \
 	if [ -n "$$REV" ] && [ "$$(git -C $(GRAMMAR_DIR) rev-parse HEAD)" != "$$REV" ]; then \
+		echo "$$REV" | grep -Eq '^[0-9a-f]{40}$$' || (echo "error: REV must be 40-char hex" && false); \
 		git -C $(GRAMMAR_DIR) fetch --depth 1 origin "$$REV" && git -C $(GRAMMAR_DIR) checkout --detach FETCH_HEAD; fi
 	@git -C $(GRAMMAR_DIR) log --oneline -1
 parse: ## Parse a file (usage: make parse FILE=path/to/file.rsc)
@@ -196,7 +197,7 @@ install-dev: ## Point Zed to this directory (manual: Install Dev Extension)
 	@echo "Open Zed → Command Palette → 'Install Dev Extension' → select this directory"
 	@echo "Make sure rsc-ls binary is in PATH: make build-lsp && make install-lsp"
 
-validate: check-manifest generate-check fmt clippy test-all extract ## Full local gate (heavy: manifest, generate-check, fmt, clippy, tests, extract)
+validate: check-manifest generate-check fmt clippy test-all extract ## Offline gate (manifest, generate-check, fmt, clippy, tests, extract); run make sync-check separately for upstream drift
 	@git diff --exit-code data/commands.toml || (echo "data/commands.toml stale — run 'make extract' and commit" && false)
 	@echo "All checks passed. Ready to commit."
 

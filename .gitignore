@@ -3,7 +3,7 @@ target/
 # Cargo.lock MUST be committed for binary workspaces (contains rsc-ls binary)
 # Do NOT ignore Cargo.lock — committed for reproducible builds
 
-# Grammar is a git submodule (grammars/rsc -> balakar94/tree-sitter-rsc).
+# Grammar working copy (untracked, see make grammar-clone) — was submodule before 0.5.0
 # It manages its own .gitignore (target/, build/, node_modules/).
 
 # WASM outputs (built, not source)
