@@ -57,6 +57,7 @@ pub struct LiveConfig {
     /// Device host/IP (`MIKROTIK_HOST`). Empty when not set. Primary host for backward compat.
     pub host: String,
     /// All hosts when `MIKROTIK_HOST` is comma-separated (first is primary). Capped to `LIVE_MAX_HOSTS`.
+    /// Multi-host is validated but only the primary host is currently fetched; additional hosts retained for future use.
     pub hosts: Vec<String>,
     /// Username (`MIKROTIK_USER`, default `admin`).
     pub user: String,
@@ -172,18 +173,6 @@ impl LiveConfig {
             && !self.pass.is_empty()
             && validate_host(&self.host).is_ok()
             && self.port != 0
-    }
-
-    /// Primary host (first of `hosts`, or `host` for backward compat).
-    #[allow(dead_code)]
-    pub fn primary_host(&self) -> &str {
-        self.host.as_str()
-    }
-
-    /// All hosts (comma-separated `MIKROTIK_HOST` split, capped).
-    #[allow(dead_code)]
-    pub fn hosts_vec(&self) -> &[String] {
-        &self.hosts
     }
 
     /// Whether TLS verification is effectively enabled for the current scheme.
@@ -1467,16 +1456,6 @@ pub fn get_cached_or_fetch_background(
     None
 }
 
-/// Alias for background fetch with explicit function name per spec.
-#[allow(dead_code)]
-pub fn trigger_background_fetch_if_needed(
-    cache: &Arc<Mutex<LiveCache>>,
-    config: &LiveConfig,
-    resource: ResourceKind,
-) {
-    let _ = get_cached_or_fetch_background(cache, config, resource);
-}
-
 fn trigger_background_fetch(
     cache: &Arc<Mutex<LiveCache>>,
     config: &LiveConfig,
@@ -1521,128 +1500,6 @@ fn trigger_background_fetch(
             }
         }
     });
-}
-
-/// Generic blocking fetch or cache read for any ResourceKind with timeout.
-#[allow(dead_code)]
-pub fn get_cached_or_fetch_resource_blocking_with_timeout(
-    cache: &Arc<Mutex<LiveCache>>,
-    config: &LiveConfig,
-    resource: ResourceKind,
-    blocking_timeout: Duration,
-) -> Option<Vec<String>> {
-    if !config.is_active() {
-        return None;
-    }
-    let key = resource.cache_key();
-    // Fast path: fresh cache.
-    {
-        let guard = cache.lock().expect("live cache lock poisoned");
-        if let Some(vals) = guard.try_get_cached(key) {
-            log_debug!("live cache hit (fresh) for {key}");
-            return Some(vals);
-        }
-        if guard.is_negative_cooldown(key) {
-            log_debug!("live negative cooldown for {key}");
-            return None;
-        }
-    }
-    log_debug!(
-        "live cache miss or stale — fetching {:?} from {}:{} (scheme={}, timeout={}s)",
-        resource,
-        config.host,
-        config.port,
-        config.scheme(),
-        config.timeout_secs
-    );
-    let fetch_timeout_secs = std::cmp::min(config.timeout_secs, blocking_timeout.as_secs().max(1));
-    let mut fetch_config = config.clone();
-    fetch_config.timeout_secs = fetch_timeout_secs;
-
-    let start = Instant::now();
-    let result = fetch_resource(&fetch_config, resource);
-    let elapsed = start.elapsed();
-    if elapsed > blocking_timeout + Duration::from_millis(200) {
-        log_warn!(
-            "live fetch {:?} exceeded blocking budget (elapsed {:?} > {:?})",
-            resource,
-            elapsed,
-            blocking_timeout
-        );
-    }
-    match result {
-        Ok(values) => {
-            if values.is_empty() {
-                log_debug!("live fetch {:?} returned empty set", resource);
-                return None;
-            }
-            log_info!(
-                "live fetch ok kind={:?} host={} latency_ms={} items={}",
-                resource,
-                fetch_config.host,
-                elapsed.as_millis(),
-                values.len()
-            );
-            let mut guard = cache.lock().expect("live cache lock poisoned");
-            guard.insert(key.to_string(), values.clone());
-            Some(values)
-        }
-        Err(e) => {
-            log_warn!(
-                "live fetch {:?} failed: {} latency_ms={} host={}",
-                resource,
-                e,
-                elapsed.as_millis(),
-                fetch_config.host
-            );
-            let mut guard = cache.lock().expect("live cache lock poisoned");
-            guard.insert_negative(key.to_string());
-            None
-        }
-    }
-}
-
-/// Convenience wrapper for fetching a specific resource blocking.
-#[allow(dead_code)]
-pub fn get_cached_or_fetch_resource_blocking(
-    cache: &Arc<Mutex<LiveCache>>,
-    config: &LiveConfig,
-    resource: ResourceKind,
-) -> Option<Vec<String>> {
-    get_cached_or_fetch_resource_blocking_with_timeout(
-        cache,
-        config,
-        resource,
-        Duration::from_secs(LIVE_FETCH_BLOCKING_TIMEOUT_SECS),
-    )
-}
-
-/// Try to return a cached live value, or fetch blocking with a timeout (default interfaces).
-#[allow(dead_code)]
-pub fn get_cached_or_fetch_blocking_with_timeout(
-    cache: &Arc<Mutex<LiveCache>>,
-    config: &LiveConfig,
-    blocking_timeout: Duration,
-) -> Option<Vec<String>> {
-    get_cached_or_fetch_resource_blocking_with_timeout(
-        cache,
-        config,
-        ResourceKind::Interfaces,
-        blocking_timeout,
-    )
-}
-
-/// Convenience wrapper using the default blocking timeout (2 s) for interfaces.
-#[allow(dead_code)]
-pub fn get_cached_or_fetch_blocking(
-    cache: &Arc<Mutex<LiveCache>>,
-    config: &LiveConfig,
-) -> Option<Vec<String>> {
-    get_cached_or_fetch_blocking_with_timeout(
-        cache,
-        config,
-        Duration::from_secs(LIVE_FETCH_BLOCKING_TIMEOUT_SECS),
-    )
 }
 
 // ── Fetch ────────────────────────────────────────────────────────
@@ -2563,7 +2420,7 @@ mod tests {
     fn test_get_cached_or_fetch_blocking_disabled_returns_none() {
         let cache = Arc::new(Mutex::new(LiveCache::with_default_ttl()));
         let cfg = cfg_with(HashMap::new());
-        let res = get_cached_or_fetch_blocking(&cache, &cfg);
+        let res = get_cached_or_fetch_background(&cache, &cfg, ResourceKind::Interfaces);
         assert!(res.is_none());
     }
 
@@ -2582,7 +2439,7 @@ mod tests {
         m.insert("MIKROTIK_HOST", "192.168.88.1");
         m.insert("MIKROTIK_PASS", "secret");
         let cfg = cfg_with(m);
-        let res = get_cached_or_fetch_blocking(&cache, &cfg);
+        let res = get_cached_or_fetch_background(&cache, &cfg, ResourceKind::Interfaces);
         assert_eq!(res, Some(vec!["ether1".to_string(), "ether2".to_string()]));
     }
 
@@ -2797,7 +2654,7 @@ mod tests {
         let cfg = cfg_with(m);
         assert_eq!(cfg.host, "192.168.88.1");
         assert_eq!(cfg.hosts, vec!["192.168.88.1", "10.0.0.2", "192.168.1.1"]);
-        assert_eq!(cfg.primary_host(), "192.168.88.1");
+        assert_eq!(cfg.host.as_str(), "192.168.88.1");
         assert!(cfg.is_active());
         // Cap at 4
         let mut m2 = HashMap::new();
