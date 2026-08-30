@@ -27,7 +27,9 @@ use crate::encoding::{
 use crate::folding;
 use crate::framing::{Frame, FrameError, read_message};
 use crate::hover;
-use crate::live::{LiveCache, LiveConfig, get_cached_or_fetch_background};
+use crate::live::{
+    LiveCache, LiveConfig, get_cached_or_fetch_background, trigger_enrichment_for_completion,
+};
 use crate::logging::{log_debug, log_error, log_info, log_warn};
 use crate::menus::MenuData;
 use crate::navigation;
@@ -742,146 +744,32 @@ impl Server {
                 // negative TTL prevent retry spam. Never logs pass.
                 if self.live_config.is_active() {
                     let context = parse_line(&self.data, &before_cursor);
-                    let target_resource = if let Some(last_tok) =
-                        crate::parser::tokenize(&before_cursor).last()
-                        && last_tok.contains('=')
-                    {
-                        let key = last_tok
-                            .split('=')
-                            .next()
-                            .unwrap_or("")
-                            .trim_start_matches(':');
-                        if let Some(menu) = self.data.menu_by_path.get(&context.path)
-                            && let Some(arg) = menu.arguments.iter().find(|a| a.name == key)
-                        {
-                            self.live_config
-                                .resolve_resource_with_custom(&context.path, key, &arg.arg_type)
-                                .or_else(|| {
-                                    crate::live::live_resource_for_menu_property(
-                                        &context.path,
-                                        key,
-                                        &arg.arg_type,
-                                    )
-                                })
-                        } else {
-                            self.live_config
-                                .resolve_resource_with_custom(&context.path, key, "")
-                                .or_else(|| {
-                                    crate::live::live_resource_for_menu_property(
-                                        &context.path,
-                                        key,
-                                        "",
-                                    )
-                                })
-                        }
-                    } else {
-                        Some(crate::live::ResourceKind::Interfaces)
-                    };
-
-                    if let Some(res) = target_resource {
-                        let _ = get_cached_or_fetch_background(
-                            &self.live_cache,
-                            &self.live_config,
-                            res,
-                        );
-                        log_debug!("live background fetch triggered for {:?}", res);
-                    } else {
-                        let _ = get_cached_or_fetch_background(
-                            &self.live_cache,
-                            &self.live_config,
-                            crate::live::ResourceKind::Interfaces,
-                        );
-                    }
-                    // Custom resource specific background fetch (separate cache key `custom:<property>`).
-                    // Coalesced via `LiveCache::can_spawn_fetch` / `is_negative_cooldown`
-                    // and `record_fetch_attempt` to avoid 16 threads/min.
-                    if let Some(last_tok) = crate::parser::tokenize(&before_cursor).last()
-                        && last_tok.contains('=')
-                    {
-                        let key = last_tok
-                            .split('=')
-                            .next()
-                            .unwrap_or("")
-                            .trim_start_matches(':');
-                        if let Some(custom) =
-                            self.live_config.custom_resource_for_property(key).cloned()
-                        {
-                            let cache_key = format!("custom:{}", custom.property);
-                            // Check coalescing / negative TTL / fresh hit before spawning.
-                            let should_spawn = {
-                                let mut guard =
-                                    self.live_cache.lock().expect("live cache lock poisoned");
-                                if guard.try_get_cached(&cache_key).is_some() {
-                                    log_debug!(
-                                        "live custom cache hit (fresh) for {cache_key}, skipping fetch"
-                                    );
-                                    false
-                                } else if guard.is_negative_cooldown(&cache_key) {
-                                    log_debug!(
-                                        "live custom negative cooldown for {cache_key}, skipping fetch"
-                                    );
-                                    false
-                                } else if !guard.can_spawn_fetch(&cache_key) {
-                                    log_debug!(
-                                        "live custom fetch coalesced for {cache_key}, skipping"
-                                    );
-                                    false
-                                } else {
-                                    guard.record_fetch_attempt(cache_key.clone());
-                                    true
-                                }
-                            };
-                            if should_spawn {
-                                let cache_clone = Arc::clone(&self.live_cache);
-                                let config_clone = self.live_config.clone();
-                                std::thread::spawn(move || {
-                                    let start = std::time::Instant::now();
-                                    match crate::live::fetch_custom_resource(&config_clone, &custom)
-                                    {
-                                        Ok(vals) => {
-                                            log_info!(
-                                                "live fetch ok custom property={} path={} latency_ms={} items={}",
-                                                custom.property,
-                                                custom.path,
-                                                start.elapsed().as_millis(),
-                                                vals.len()
-                                            );
-                                            let mut guard = cache_clone
-                                                .lock()
-                                                .expect("live cache lock poisoned");
-                                            let cache_key = format!("custom:{}", custom.property);
-                                            if vals.is_empty() {
-                                                // Cache empty vec briefly (negative TTL) to avoid churn;
-                                                // still considered fresh for coalescing.
-                                                log_debug!(
-                                                    "live custom fetch empty for {}, inserting empty vec",
-                                                    custom.property
-                                                );
-                                                guard.insert(cache_key.clone(), vals);
-                                                // Also ensure negative not set (insert clears it).
-                                            } else {
-                                                guard.insert(cache_key, vals);
-                                            }
-                                        }
-                                        Err(e) => {
-                                            log_warn!(
-                                                "live fetch custom failed property={} path={} err={} latency_ms={}",
-                                                custom.property,
-                                                custom.path,
-                                                e,
-                                                start.elapsed().as_millis()
-                                            );
-                                            let mut guard = cache_clone
-                                                .lock()
-                                                .expect("live cache lock poisoned");
-                                            let cache_key = format!("custom:{}", custom.property);
-                                            guard.insert_negative(cache_key);
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                    }
+                    // Property key of the completion target: the `key` of a
+                    // trailing `key=value` token, if the cursor is inside a
+                    // property assignment.
+                    let tokens = crate::parser::tokenize(&before_cursor);
+                    let property = tokens
+                        .last()
+                        .filter(|tok| tok.contains('='))
+                        .map(|tok| tok.split('=').next().unwrap_or("").trim_start_matches(':'));
+                    // Menu-declared argument type for the property (empty
+                    // string when the property is unknown to the menu).
+                    let arg_type = property
+                        .and_then(|key| {
+                            self.data
+                                .menu_by_path
+                                .get(&context.path)
+                                .and_then(|menu| menu.arguments.iter().find(|a| a.name == key))
+                                .map(|arg| arg.arg_type.as_str())
+                        })
+                        .unwrap_or("");
+                    trigger_enrichment_for_completion(
+                        &self.live_cache,
+                        &self.live_config,
+                        property,
+                        &context.path,
+                        arg_type,
+                    );
                 }
                 let live_guard = self.live_cache.lock().ok();
                 let mut items = if let Some(ref cache) = live_guard {

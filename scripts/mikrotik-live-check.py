@@ -36,7 +36,20 @@ import argparse
 import getpass
 import json
 import os
+import pathlib
 import sys
+
+# Shared connection-setup helpers live in the sibling module. Make the
+# scripts/ directory importable regardless of CWD or how this file is loaded
+# (direct run as `python scripts/<name>.py`, or importlib in the test suite).
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from _mikrotik_shared import (  # noqa: E402
+    env_int,
+    format_host_for_url,
+    resolve_scheme,
+    validate_host,
+)
 
 # Optional requests - fallback to urllib
 try:
@@ -46,64 +59,6 @@ try:
 except ImportError:
     requests = None  # type: ignore
     HAS_REQUESTS = False
-
-
-def _env_int(name: str, default: int) -> int:
-    """Read integer env var with warning on bad input (mirrors deploy companion)."""
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        return int(raw.strip())
-    except ValueError:
-        print(f"warning: invalid {name}={raw!r}, using default {default}", file=sys.stderr)
-        return default
-
-
-def resolve_scheme(port: int, force_http: bool, no_ssl_verify: bool) -> tuple[str, bool]:
-    """Resolve REST URL scheme — mirrors scripts/mikrotik-deploy.py::resolve_scheme.
-
-    Default is HTTPS; plain HTTP requires explicit MIKROTIK_HTTP=1 / --http.
-    Legacy shim: --no-ssl-verify on non-standard ports (outside 443/8729)
-    historically forced http; preserved with warning semantics.
-
-    Returns (scheme, legacy_shim_fired).
-    """
-    if not force_http and no_ssl_verify and port not in (443, 8729):
-        return "http", True
-    return ("http" if force_http else "https"), False
-
-
-def validate_host(host: str) -> str | None:
-    """Validate host per lsp/src/live.rs::validate_host.
-
-    Returns None on success, error string on failure.
-    Checks: non-empty, <=253, no null/control, no URI delimiters @?#% space, no slash.
-    """
-    if not host:
-        return "empty"
-    if len(host) > 253:
-        return "exceeds 253 chars"
-    if "\0" in host:
-        return "contains null byte"
-    if any(ord(c) < 32 for c in host):
-        return "contains control characters"
-    # Rust also checks is_control (which covers \t \n etc), but we already cover <32
-    # Also check for URI delimiters
-    if "@" in host or "?" in host or "#" in host or "%" in host or " " in host:
-        return "contains URI delimiter (@?#% or space)"
-    if "/" in host or "\\" in host:
-        return "host contains path separator"
-    return None
-
-
-def format_host_for_url(host: str) -> str:
-    """Wrap bare IPv6 literals with brackets for URL."""
-    if host.startswith("[") and host.endswith("]"):
-        return host
-    if ":" in host:
-        return f"[{host}]"
-    return host
 
 
 def parse_args() -> argparse.Namespace:
@@ -126,7 +81,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--timeout",
         type=int,
-        default=_env_int("MIKROTIK_TIMEOUT", 5),
+        default=env_int("MIKROTIK_TIMEOUT", 5),
         help="Request timeout seconds (env MIKROTIK_TIMEOUT, default 5, clamped 1..30)",
     )
     p.add_argument("--json", action="store_true", help="Output JSON instead of human text")

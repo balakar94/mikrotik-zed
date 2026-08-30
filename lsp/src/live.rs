@@ -130,7 +130,7 @@ impl LiveConfig {
         };
         let pass = get("MIKROTIK_PASS").unwrap_or_default();
 
-        // Port: mirror _env_int with default 443 and warning on bad input.
+        // Port: mirror _mikrotik_shared.py::env_int with default 443 and warning on bad input.
         let port_raw = get("MIKROTIK_PORT");
         let port = parse_env_u16(&port_raw, 443, 1, 65535, "MIKROTIK_PORT");
 
@@ -183,7 +183,7 @@ impl LiveConfig {
         self.ssl_verify && self.scheme() == "https"
     }
 
-    /// Resolve the REST scheme, mirroring `scripts/mikrotik-deploy.py::resolve_scheme`.
+    /// Resolve the REST scheme, mirroring `scripts/_mikrotik_shared.py::resolve_scheme`.
     ///
     /// Default is HTTPS; plain HTTP requires explicit `force_http`.
     /// Legacy shim: `--no-ssl-verify` (here `!ssl_verify`) on a non-standard
@@ -700,11 +700,14 @@ fn parse_env_u64(raw: &Option<String>, default: u64, name: &str) -> u64 {
     }
 }
 
-/// Resolve the REST URL scheme, mirroring deploy companion `resolve_scheme`.
+/// Resolve the REST URL scheme, mirroring `scripts/_mikrotik_shared.py::resolve_scheme`.
 ///
 /// `port`: target port.
 /// `force_http`: `MIKROTIK_HTTP=1`.
 /// `ssl_verify`: true when verification is enabled; false when `MIKROTIK_SSL=0`.
+///
+/// The live client applies the same rules as the Python companion scripts
+/// but does not emit their legacy-shim warning (see `LiveConfig::scheme`).
 pub(crate) fn resolve_scheme(port: u16, force_http: bool, ssl_verify: bool) -> &'static str {
     let no_ssl_verify = !ssl_verify;
     if !force_http && no_ssl_verify && port != 443 && port != 8729 {
@@ -790,6 +793,8 @@ pub fn validate_host(host: &str) -> Result<(), LiveError> {
 }
 
 /// Format host for URL: wrap bare IPv6 literals with brackets if needed.
+///
+/// Keep in sync with `scripts/_mikrotik_shared.py::format_host_for_url`.
 fn format_host_for_url(host: &str) -> String {
     // Already bracketed? keep as is.
     if host.starts_with('[') && host.ends_with(']') {
@@ -802,40 +807,51 @@ fn format_host_for_url(host: &str) -> String {
     host.to_string()
 }
 
-/// Build and validate the REST URL for a given resource.
+/// Shared base URL builder — single source for host/port/scheme validation.
 ///
-/// Uses `url::Url::parse` to ensure the final URL is syntactically valid
-/// and not vulnerable to injection. Handles IPv6 bracket wrapping.
-fn build_rest_url(config: &LiveConfig, resource: ResourceKind) -> Result<String, LiveError> {
-    validate_host(&config.host)?;
-    if config.port == 0 {
+/// Validates host (`validate_host`, SSRF, slash, port), wraps bare IPv6,
+/// parses via `url::Url::parse`, and checks scheme. Path is left as `/`
+/// for callers to set via `Url::set_path`. Keeps caps single source.
+///
+/// Keep in sync with `scripts/_mikrotik_shared.py::validate_host` /
+/// `format_host_for_url` / `resolve_scheme`.
+fn build_base_url(host: &str, port: u16, scheme: &str) -> Result<url::Url, LiveError> {
+    validate_host(host)?;
+    if port == 0 {
         return Err(LiveError::InvalidPort("port 0".to_string()));
     }
-    if config.host.contains('/') || config.host.contains('\\') {
+    if host.contains('/') || host.contains('\\') {
         return Err(LiveError::InvalidHost(
             "host contains path separator".to_string(),
         ));
     }
-    if is_ssrf_denied_host(&config.host) {
+    if is_ssrf_denied_host(host) {
         return Err(LiveError::InvalidHost("SSRF denied host".to_string()));
     }
-    let scheme = config.scheme();
-    let host_for_url = format_host_for_url(&config.host);
-    let url_str = format!(
-        "{}://{}:{}{}",
-        scheme,
-        host_for_url,
-        config.port,
-        resource.rest_path()
-    );
-    // Validate via url crate
+    let host_for_url = format_host_for_url(host);
+    let url_str = format!("{scheme}://{host_for_url}:{port}/");
     let parsed = url::Url::parse(&url_str)
         .map_err(|e| LiveError::InvalidHost(format!("invalid url: {e}")))?;
     if parsed.scheme() != scheme {
         return Err(LiveError::InvalidHost("scheme mismatch".to_string()));
     }
-    // Ensure host matches (url crate normalizes)
-    // No further checks needed; the parse succeeded.
+    Ok(parsed)
+}
+
+/// Build and validate the REST URL for a given resource.
+///
+/// Uses `build_base_url` for shared validation, then appends the resource path.
+/// Handles IPv6 bracket wrapping via `format_host_for_url`.
+fn build_rest_url(config: &LiveConfig, resource: ResourceKind) -> Result<String, LiveError> {
+    let mut base = build_base_url(&config.host, config.port, config.scheme())?;
+    base.set_path(resource.rest_path());
+    let url_str = base.to_string();
+    // Re-validate full URL (scheme + host + path) via Url crate.
+    let parsed = url::Url::parse(&url_str)
+        .map_err(|e| LiveError::InvalidHost(format!("invalid url: {e}")))?;
+    if parsed.scheme() != config.scheme() {
+        return Err(LiveError::InvalidHost("scheme mismatch".to_string()));
+    }
     Ok(url_str)
 }
 
@@ -844,30 +860,18 @@ fn build_custom_rest_url(
     config: &LiveConfig,
     custom: &CustomResource,
 ) -> Result<String, LiveError> {
-    validate_host(&config.host)?;
-    if config.port == 0 {
-        return Err(LiveError::InvalidPort("port 0".to_string()));
-    }
-    if config.host.contains('/') || config.host.contains('\\') {
-        return Err(LiveError::InvalidHost(
-            "host contains path separator".to_string(),
-        ));
-    }
-    if is_ssrf_denied_host(&config.host) {
-        return Err(LiveError::InvalidHost("SSRF denied host".to_string()));
-    }
-    let scheme = config.scheme();
-    let host_for_url = format_host_for_url(&config.host);
+    let mut base = build_base_url(&config.host, config.port, config.scheme())?;
     // Ensure custom path starts with /
     let path = if custom.path.starts_with('/') {
         custom.path.clone()
     } else {
         format!("/{}", custom.path)
     };
-    let url_str = format!("{}://{}:{}{}", scheme, host_for_url, config.port, path);
+    base.set_path(&path);
+    let url_str = base.to_string();
     let parsed = url::Url::parse(&url_str)
         .map_err(|e| LiveError::InvalidHost(format!("invalid url: {e}")))?;
-    if parsed.scheme() != scheme {
+    if parsed.scheme() != config.scheme() {
         return Err(LiveError::InvalidHost("scheme mismatch".to_string()));
     }
     Ok(url_str)
@@ -1502,6 +1506,137 @@ fn trigger_background_fetch(
     });
 }
 
+/// Trigger live enrichment for a completion request (stale-while-revalidate).
+///
+/// Called by the `textDocument/completion` handler once per request; it
+/// encapsulates what the handler used to inline around live data:
+///
+/// 1. Resource resolution — `resolve_resource_with_custom` on (menu path,
+///    property, arg type), i.e. the built-in heuristic with
+///    custom-resource fallback; when `property` is `None` (cursor not inside
+///    a `key=value` assignment) interfaces are prefetched as the likely target.
+/// 2. Built-in background fetch — coalescing-aware spawn via
+///    `get_cached_or_fetch_background` (`try_get_cached`,
+///    `is_negative_cooldown`, `can_spawn_fetch`, `record_fetch_attempt`).
+/// 3. Custom background fetch — a separate coalescing-aware spawn under
+///    cache key `custom:<property>` (see `trigger_custom_fetch_background`).
+///
+/// Never blocks and never logs `pass`. `context_path` is the menu path of
+/// the line being completed; `arg_type` is the menu-declared argument type
+/// for `property`, or `""` when unknown.
+pub fn trigger_enrichment_for_completion(
+    cache: &Arc<Mutex<LiveCache>>,
+    config: &LiveConfig,
+    property: Option<&str>,
+    context_path: &str,
+    arg_type: &str,
+) {
+    let target_resource = match property {
+        Some(key) => config.resolve_resource_with_custom(context_path, key, arg_type),
+        None => Some(ResourceKind::Interfaces),
+    };
+
+    match target_resource {
+        Some(res) => {
+            let _ = get_cached_or_fetch_background(cache, config, res);
+            log_debug!("live background fetch triggered for {res:?}");
+        }
+        None => {
+            // Property has no known resource; prefetch interfaces anyway so
+            // the next keystroke can enrich.
+            let _ = get_cached_or_fetch_background(cache, config, ResourceKind::Interfaces);
+        }
+    }
+
+    // Custom resource: separate background fetch under its own cache key so
+    // it never collides with built-in entries.
+    if let Some(key) = property
+        && let Some(custom) = config.custom_resource_for_property(key).cloned()
+    {
+        trigger_custom_fetch_background(cache, config, &custom);
+    }
+}
+
+/// Spawn a coalescing-aware background fetch for a custom resource.
+///
+/// Cache key is `custom:<property>`. Mirrors `get_cached_or_fetch_background`
+/// semantics: a fresh cache entry or a negative cooldown short-circuits, and
+/// at most one fetch is in flight per key within
+/// `LIVE_FETCH_BLOCKING_TIMEOUT_SECS`. Empty results are not cached (no
+/// negative either, same as the built-in path).
+fn trigger_custom_fetch_background(
+    cache: &Arc<Mutex<LiveCache>>,
+    config: &LiveConfig,
+    custom: &CustomResource,
+) {
+    let key = format!("custom:{}", custom.property);
+    // Fast path: fresh cache, negative cooldown, or in-flight fetch.
+    {
+        let guard = cache.lock().expect("live cache lock poisoned");
+        if guard.try_get_cached(&key).is_some() {
+            log_debug!("live cache hit (fresh) for {key}");
+            return;
+        }
+        if guard.is_negative_cooldown(&key) {
+            log_debug!("live negative cooldown for {key}, skipping custom fetch");
+            return;
+        }
+        if !guard.can_spawn_fetch(&key) {
+            log_debug!("live custom fetch coalesced for {key}");
+            return;
+        }
+    }
+    // Record the attempt before spawning to coalesce concurrent callers
+    // (re-check under the write lock to avoid a TOCTOU double spawn).
+    {
+        let mut guard = cache.lock().expect("live cache lock poisoned");
+        if !guard.can_spawn_fetch(&key) {
+            return;
+        }
+        guard.record_fetch_attempt(key.clone());
+    }
+
+    let cache_clone = Arc::clone(cache);
+    let config_clone = config.clone();
+    let custom_clone = custom.clone();
+    let key_clone = key.clone();
+    log_debug!("live background fetch triggered for custom resource {key_clone}");
+    std::thread::spawn(move || {
+        let start = Instant::now();
+        match fetch_custom_resource(&config_clone, &custom_clone) {
+            Ok(vals) => {
+                if vals.is_empty() {
+                    log_debug!(
+                        "live custom fetch {} returned empty set",
+                        custom_clone.property
+                    );
+                    return;
+                }
+                log_info!(
+                    "live fetch ok custom property={} path={} latency_ms={} items={}",
+                    custom_clone.property,
+                    custom_clone.path,
+                    start.elapsed().as_millis(),
+                    vals.len()
+                );
+                let mut guard = cache_clone.lock().expect("live cache lock poisoned");
+                guard.insert(key_clone, vals);
+            }
+            Err(e) => {
+                log_warn!(
+                    "live fetch custom failed property={} path={} err={} latency_ms={}",
+                    custom_clone.property,
+                    custom_clone.path,
+                    e,
+                    start.elapsed().as_millis()
+                );
+                let mut guard = cache_clone.lock().expect("live cache lock poisoned");
+                guard.insert_negative(key_clone);
+            }
+        }
+    });
+}
+
 // ── Fetch ────────────────────────────────────────────────────────
 
 /// Get a cached `ureq::Agent` for the given timeout and TLS verification mode, or build a new one.
@@ -1613,31 +1748,26 @@ fn build_insecure_agent(timeout: Duration) -> Option<ureq::Agent> {
     Some(agent)
 }
 
-/// Fetch live data for a specific resource kind from the RouterOS REST API.
-pub fn fetch_resource(
+/// Shared live-fetch path used by both `fetch_resource` and
+/// `fetch_custom_resource`.
+///
+/// Performs the authenticated GET against `url` with the config's clamped
+/// timeout, enforces the response caps from `caps.rs`
+/// (`MAX_LIVE_RESPONSE_BYTES` via `reader.take(limit + 1)`), validates the
+/// JSON-array shape, and extracts + sanitizes the values via
+/// `extract_and_sanitize`.
+///
+/// `label` identifies the resource in logs (e.g. `Interfaces` or a custom
+/// property name). Callers are responsible for `config.is_active()`, host
+/// validation, and URL construction (via `build_base_url`). `pass` is only
+/// used in the Authorization header and never logged.
+fn fetch_live_resource(
     config: &LiveConfig,
-    resource: ResourceKind,
+    url: &str,
+    json_field: &str,
+    kind: ResourceKind,
+    label: &str,
 ) -> Result<Vec<String>, LiveError> {
-    if !config.is_active() {
-        return Err(LiveError::Disabled);
-    }
-    validate_host(&config.host)?;
-    if config.port == 0 {
-        return Err(LiveError::InvalidPort("port 0".to_string()));
-    }
-
-    let url = build_rest_url(config, resource)?;
-
-    log_debug!(
-        "live fetch_resource kind={:?} url={} user={} timeout={}s ssl_verify={} ssl_verify_effective={}",
-        resource,
-        url,
-        config.user,
-        config.timeout_secs,
-        config.ssl_verify,
-        config.ssl_verify_effective()
-    );
-
     if !config.ssl_verify {
         log_warn!(
             "live ssl_verify=false — TLS verification disabled (insecure) scheme={} host={} port={} ssl_verify_effective={}",
@@ -1659,131 +1789,11 @@ pub fn fetch_resource(
     let auth_header = format!("Basic {encoded}");
 
     let resp: Result<ureq::Response, ureq::Error> = agent
-        .get(&url)
+        .get(url)
         .set("Accept", "application/json")
         .set("Authorization", &auth_header)
         .call();
 
-    let response: ureq::Response = match resp {
-        Ok(r) => r,
-        Err(ureq::Error::Status(code, _)) => {
-            return Err(LiveError::Status(code));
-        }
-        Err(ureq::Error::Transport(t)) => {
-            let msg = t.to_string();
-            if msg.to_ascii_lowercase().contains("timed out")
-                || msg.to_ascii_lowercase().contains("timeout")
-            {
-                return Err(LiveError::Timeout);
-            }
-            return Err(LiveError::Network(msg));
-        }
-    };
-
-    let status = response.status();
-    if !(200..300).contains(&status) {
-        return Err(LiveError::Status(status));
-    }
-
-    let reader = response.into_reader();
-    let mut buf = Vec::new();
-    let limit = MAX_LIVE_RESPONSE_BYTES + 1;
-    let n = {
-        use std::io::Read;
-        let mut limited = reader.take(limit as u64);
-        match limited.read_to_end(&mut buf) {
-            Ok(n) => n,
-            Err(e) => return Err(LiveError::Network(e.to_string())),
-        }
-    };
-    if n > MAX_LIVE_RESPONSE_BYTES {
-        return Err(LiveError::ResponseTooLarge(n));
-    }
-    if buf.is_empty() {
-        return Err(LiveError::Parse("empty response".to_string()));
-    }
-
-    let json: serde_json::Value =
-        serde_json::from_slice(&buf).map_err(|e| LiveError::Parse(format!("invalid json: {e}")))?;
-    let arr = json
-        .as_array()
-        .ok_or_else(|| LiveError::Parse("expected JSON array".to_string()))?;
-
-    let field_name = resource.json_field();
-    let mut raw_values: Vec<String> = Vec::new();
-    for entry in arr {
-        if let Some(obj) = entry.as_object()
-            && let Some(val) = obj.get(field_name)
-            && let Some(val_str) = val.as_str()
-        {
-            raw_values.push(val_str.to_string());
-        }
-        if raw_values.len() >= MAX_LIVE_ITEMS * 2 {
-            break;
-        }
-    }
-
-    let cleaned = sanitize_resource_values(raw_values, resource);
-    if cleaned.is_empty() && !arr.is_empty() {
-        log_warn!(
-            "live fetch parsed 0 valid values for {:?} from {} entries",
-            resource,
-            arr.len()
-        );
-    }
-    let elapsed = start.elapsed();
-    log_debug!(
-        "live fetch completed kind={:?} host={} latency_ms={} items={} elapsed={:?}",
-        resource,
-        config.host,
-        elapsed.as_millis(),
-        cleaned.len(),
-        elapsed
-    );
-    Ok(cleaned)
-}
-
-/// Fetch live data for a custom resource (user-defined via `RSC_LS_LIVE_RESOURCES`).
-pub fn fetch_custom_resource(
-    config: &LiveConfig,
-    custom: &CustomResource,
-) -> Result<Vec<String>, LiveError> {
-    if !config.is_active() {
-        return Err(LiveError::Disabled);
-    }
-    validate_host(&config.host)?;
-    if config.port == 0 {
-        return Err(LiveError::InvalidPort("port 0".to_string()));
-    }
-    let url = build_custom_rest_url(config, custom)?;
-    log_debug!(
-        "live fetch_custom kind={} url={} user={} timeout={}s",
-        custom.property,
-        url,
-        config.user,
-        config.timeout_secs
-    );
-    if !config.ssl_verify {
-        log_warn!(
-            "live ssl_verify=false — TLS verification disabled for custom fetch scheme={} host={} port={}",
-            config.scheme(),
-            config.host,
-            config.port
-        );
-    }
-    let timeout = Duration::from_secs(config.timeout_secs.clamp(1, 30));
-    let agent = get_cached_agent(timeout, config.ssl_verify_effective());
-    let credentials = format!("{}:{}", config.user, config.pass);
-    let encoded = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        credentials.as_bytes(),
-    );
-    let auth_header = format!("Basic {encoded}");
-    let resp: Result<ureq::Response, ureq::Error> = agent
-        .get(&url)
-        .set("Accept", "application/json")
-        .set("Authorization", &auth_header)
-        .call();
     let response: ureq::Response = match resp {
         Ok(r) => r,
         Err(ureq::Error::Status(code, _)) => return Err(LiveError::Status(code)),
@@ -1797,10 +1807,12 @@ pub fn fetch_custom_resource(
             return Err(LiveError::Network(msg));
         }
     };
+
     let status = response.status();
     if !(200..300).contains(&status) {
         return Err(LiveError::Status(status));
     }
+
     let reader = response.into_reader();
     let mut buf = Vec::new();
     let limit = MAX_LIVE_RESPONSE_BYTES + 1;
@@ -1818,15 +1830,43 @@ pub fn fetch_custom_resource(
     if buf.is_empty() {
         return Err(LiveError::Parse("empty response".to_string()));
     }
+
     let json: serde_json::Value =
         serde_json::from_slice(&buf).map_err(|e| LiveError::Parse(format!("invalid json: {e}")))?;
-    let arr = json
-        .as_array()
-        .ok_or_else(|| LiveError::Parse("expected JSON array".to_string()))?;
+    let Some(arr) = json.as_array() else {
+        return Err(LiveError::Parse("expected JSON array".to_string()));
+    };
+
+    let cleaned = extract_and_sanitize(arr, json_field, kind);
+    if cleaned.is_empty() && !arr.is_empty() {
+        log_warn!(
+            "live fetch parsed 0 valid values for {label} from {} entries",
+            arr.len()
+        );
+    }
+    let elapsed = start.elapsed();
+    log_debug!(
+        "live fetch completed {label} host={} latency_ms={} items={} elapsed={:?}",
+        config.host,
+        elapsed.as_millis(),
+        cleaned.len(),
+        elapsed
+    );
+    Ok(cleaned)
+}
+
+/// Extract `json_field` from each array entry (bounded to
+/// `2 * MAX_LIVE_ITEMS` raw values) and sanitize the results with `kind`'s
+/// value filter.
+fn extract_and_sanitize(
+    arr: &[serde_json::Value],
+    json_field: &str,
+    kind: ResourceKind,
+) -> Vec<String> {
     let mut raw_values: Vec<String> = Vec::new();
     for entry in arr {
         if let Some(obj) = entry.as_object()
-            && let Some(val) = obj.get(&custom.field)
+            && let Some(val) = obj.get(json_field)
             && let Some(val_str) = val.as_str()
         {
             raw_values.push(val_str.to_string());
@@ -1835,16 +1875,67 @@ pub fn fetch_custom_resource(
             break;
         }
     }
-    // Use generic filter (same as interfaces) for custom.
-    let cleaned = sanitize_resource_values(raw_values, ResourceKind::Interfaces);
-    if cleaned.is_empty() && !arr.is_empty() {
-        log_warn!(
-            "live custom fetch parsed 0 valid values for {} from {} entries",
-            custom.property,
-            arr.len()
-        );
+    sanitize_resource_values(raw_values, kind)
+}
+
+/// Fetch live data for a specific resource kind from the RouterOS REST API.
+///
+/// Thin wrapper over `fetch_live_resource`: builds the resource-specific URL
+/// (which runs the shared host/port/scheme validation via `build_base_url`)
+/// and selects the resource's JSON field and value filter.
+pub fn fetch_resource(
+    config: &LiveConfig,
+    resource: ResourceKind,
+) -> Result<Vec<String>, LiveError> {
+    if !config.is_active() {
+        return Err(LiveError::Disabled);
     }
-    Ok(cleaned)
+    let url = build_rest_url(config, resource)?;
+    log_debug!(
+        "live fetch_resource kind={:?} url={} user={} timeout={}s ssl_verify={} ssl_verify_effective={}",
+        resource,
+        url,
+        config.user,
+        config.timeout_secs,
+        config.ssl_verify,
+        config.ssl_verify_effective()
+    );
+    fetch_live_resource(
+        config,
+        &url,
+        resource.json_field(),
+        resource,
+        &format!("{resource:?}"),
+    )
+}
+
+/// Fetch live data for a custom resource (user-defined via
+/// `RSC_LS_LIVE_RESOURCES`).
+///
+/// Thin wrapper over `fetch_live_resource`; custom values use the generic
+/// identifier filter (same as interfaces).
+pub fn fetch_custom_resource(
+    config: &LiveConfig,
+    custom: &CustomResource,
+) -> Result<Vec<String>, LiveError> {
+    if !config.is_active() {
+        return Err(LiveError::Disabled);
+    }
+    let url = build_custom_rest_url(config, custom)?;
+    log_debug!(
+        "live fetch_custom kind={} url={} user={} timeout={}s",
+        custom.property,
+        url,
+        config.user,
+        config.timeout_secs
+    );
+    fetch_live_resource(
+        config,
+        &url,
+        &custom.field,
+        ResourceKind::Interfaces,
+        &custom.property,
+    )
 }
 
 /// Fetch interface names from the RouterOS REST API (wrapper for backwards compatibility).
@@ -2779,6 +2870,171 @@ mod tests {
         assert_eq!(cfg3.port, 8728);
         assert_eq!(cfg3.hosts, vec!["10.0.0.5".to_string()]);
     }
+
+    // ── Shared fetch tail (D1) ───────────────────────────────────
+
+    #[test]
+    fn test_extract_and_sanitize_extracts_field_and_filters() {
+        let arr: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{"name":"ether2"},{"name":"ether1"},{"name":"ether1"},{"name":"bad val"},{"nope":"x"},{"name":"wlan1"}]"#,
+        )
+        .unwrap();
+        let out = extract_and_sanitize(&arr, "name", ResourceKind::Interfaces);
+        assert_eq!(out, vec!["ether1", "ether2", "wlan1"]);
+    }
+
+    #[test]
+    fn test_extract_and_sanitize_ip_kind_uses_ip_filter() {
+        let arr: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{"address":"10.0.0.1/24"},{"address":"192.168.1.1 evil"},{"address":"2001:db8::1/64"}]"#,
+        )
+        .unwrap();
+        let out = extract_and_sanitize(&arr, "address", ResourceKind::IpAddresses);
+        assert_eq!(out, vec!["10.0.0.1/24", "2001:db8::1/64"]);
+    }
+
+    #[test]
+    fn test_extract_and_sanitize_caps_raw_values() {
+        // More than 2*MAX_LIVE_ITEMS entries: extraction stops early and the
+        // sanitized output is capped to MAX_LIVE_ITEMS.
+        let n = MAX_LIVE_ITEMS * 2 + 10;
+        let entries: Vec<String> = (0..n)
+            .map(|i| format!("{{\"name\":\"iface{i:04}\"}}"))
+            .collect();
+        let arr: Vec<serde_json::Value> =
+            serde_json::from_str(&format!("[{}]", entries.join(","))).unwrap();
+        let out = extract_and_sanitize(&arr, "name", ResourceKind::Interfaces);
+        assert_eq!(out.len(), MAX_LIVE_ITEMS);
+    }
+
+    fn custom_test_resource() -> CustomResource {
+        CustomResource {
+            property: "packet-mark".to_string(),
+            path: "/rest/ip/firewall/mangle".to_string(),
+            field: "new-packet-mark".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_fetch_custom_resource_disabled() {
+        let cfg = cfg_with(HashMap::new()); // disabled
+        let res = fetch_custom_resource(&cfg, &custom_test_resource());
+        assert!(matches!(res, Err(LiveError::Disabled)));
+    }
+
+    #[test]
+    fn test_fetch_custom_resource_rejects_host_with_slash() {
+        // Same shared validation as the built-in fetchers (via build_base_url).
+        let mut m = HashMap::new();
+        m.insert("RSC_LS_LIVE", "1");
+        m.insert("MIKROTIK_HOST", "host/with/slash");
+        m.insert("MIKROTIK_PASS", "p");
+        let cfg = cfg_with(m);
+        let res = fetch_custom_resource(&cfg, &custom_test_resource());
+        assert!(matches!(res, Err(LiveError::InvalidHost(_))));
+    }
+
+    // ── Completion enrichment trigger (D2) ───────────────────────
+    //
+    // These tests exercise the synchronous coalescing logic of
+    // `trigger_enrichment_for_completion`. The host is loopback with a closed
+    // port so any background fetch fails fast; the network outcome is not
+    // asserted (it runs on a detached thread).
+
+    fn active_test_cfg() -> LiveConfig {
+        let mut m = HashMap::new();
+        m.insert("RSC_LS_LIVE", "1");
+        m.insert("MIKROTIK_HOST", "127.0.0.1");
+        m.insert("MIKROTIK_PORT", "1");
+        m.insert("MIKROTIK_PASS", "p");
+        m.insert("MIKROTIK_TIMEOUT", "1");
+        cfg_with(m)
+    }
+
+    #[test]
+    fn test_trigger_enrichment_inactive_config_does_nothing() {
+        let cache = Arc::new(Mutex::new(LiveCache::with_default_ttl()));
+        let cfg = cfg_with(HashMap::new()); // disabled
+        trigger_enrichment_for_completion(&cache, &cfg, None, "/", "");
+        assert!(cache.lock().unwrap().last_fetch_attempt.is_empty());
+    }
+
+    #[test]
+    fn test_trigger_enrichment_without_property_prefetches_interfaces() {
+        let cache = Arc::new(Mutex::new(LiveCache::with_default_ttl()));
+        let cfg = active_test_cfg();
+        trigger_enrichment_for_completion(&cache, &cfg, None, "/", "");
+        let guard = cache.lock().unwrap();
+        // Coalescing marker recorded for the interfaces key...
+        assert!(guard.last_fetch_attempt.contains_key("interfaces"));
+        // ...so a second trigger is coalesced, not re-spawned.
+        assert!(!guard.can_spawn_fetch("interfaces"));
+    }
+
+    #[test]
+    fn test_trigger_enrichment_with_property_resolves_resource() {
+        let cache = Arc::new(Mutex::new(LiveCache::with_default_ttl()));
+        let cfg = active_test_cfg();
+        trigger_enrichment_for_completion(&cache, &cfg, Some("interface"), "/ip/address", "iface");
+        let guard = cache.lock().unwrap();
+        assert!(guard.last_fetch_attempt.contains_key("interfaces"));
+    }
+
+    #[test]
+    fn test_trigger_enrichment_unknown_property_falls_back_to_interfaces() {
+        let cache = Arc::new(Mutex::new(LiveCache::with_default_ttl()));
+        let cfg = active_test_cfg();
+        trigger_enrichment_for_completion(&cache, &cfg, Some("comment"), "", "");
+        let guard = cache.lock().unwrap();
+        // Only the interfaces prefetch; no custom key involved.
+        assert!(guard.last_fetch_attempt.contains_key("interfaces"));
+        assert_eq!(guard.last_fetch_attempt.len(), 1);
+    }
+
+    #[test]
+    fn test_trigger_enrichment_custom_resource_uses_custom_key() {
+        let mut m = HashMap::new();
+        m.insert("RSC_LS_LIVE", "1");
+        m.insert("MIKROTIK_HOST", "127.0.0.1");
+        m.insert("MIKROTIK_PORT", "1");
+        m.insert("MIKROTIK_PASS", "p");
+        m.insert("MIKROTIK_TIMEOUT", "1");
+        m.insert(
+            "RSC_LS_LIVE_RESOURCES",
+            r#"[{"property":"packet-mark","path":"/rest/ip/firewall/mangle","field":"new-packet-mark"}]"#,
+        );
+        let cfg = cfg_with(m);
+        let cache = Arc::new(Mutex::new(LiveCache::with_default_ttl()));
+        trigger_enrichment_for_completion(
+            &cache,
+            &cfg,
+            Some("packet-mark"),
+            "/ip/firewall/mangle",
+            "string",
+        );
+        let guard = cache.lock().unwrap();
+        // Custom property resolves to the generic Interfaces kind...
+        assert!(guard.last_fetch_attempt.contains_key("interfaces"));
+        // ...and the custom resource is tracked under `custom:<property>`.
+        assert!(guard.last_fetch_attempt.contains_key("custom:packet-mark"));
+        let recorded_at = guard.last_fetch_attempt["custom:packet-mark"];
+        drop(guard);
+        // Second call within the coalescing window must not re-record.
+        trigger_enrichment_for_completion(
+            &cache,
+            &cfg,
+            Some("packet-mark"),
+            "/ip/firewall/mangle",
+            "string",
+        );
+        let guard = cache.lock().unwrap();
+        assert_eq!(
+            guard.last_fetch_attempt["custom:packet-mark"], recorded_at,
+            "custom fetch attempt must be coalesced within the window"
+        );
+    }
+
+    // Helper trait for sorted check in tests (stable in std from 1.82?).
 
     // Helper trait for sorted check in tests (stable in std from 1.82?).
     trait IsSorted {
