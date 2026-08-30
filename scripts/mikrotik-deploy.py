@@ -44,6 +44,13 @@ import getpass
 import shlex
 import urllib.parse
 
+# Shared connection-setup helpers live in the sibling module. Make the
+# scripts/ directory importable regardless of CWD or how this file is loaded
+# (direct run as `python scripts/<name>.py`, or importlib in the test suite).
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from _mikrotik_shared import env_int, resolve_scheme  # noqa: E402
+
 # Optional dependencies - imported lazily
 try:
     import requests  # type: ignore
@@ -139,37 +146,6 @@ def _sanitize_and_validate_filename(raw: str) -> str:
         )
         sys.exit(2)
     return raw
-
-
-def resolve_scheme(port: int, force_http: bool, no_ssl_verify: bool) -> tuple[str, bool]:
-    """Resolve the REST URL scheme.
-
-    Default is HTTPS on every port; plain HTTP requires an explicit opt-in via
-    --http (or MIKROTIK_HTTP=1). SSL verification (--no-ssl-verify /
-    MIKROTIK_SSL=0) only controls certificate validation, never the scheme.
-
-    Legacy shim: --no-ssl-verify used to also force http:// on non-standard
-    ports (anything outside 443/8729), which plain-HTTP-on-port-80 setups
-    relied on. That observable behavior is preserved — with a warning — until
-    those users migrate to --http.
-
-    Returns (scheme, legacy_shim_fired).
-    """
-    if not force_http and no_ssl_verify and port not in (443, 8729):
-        return "http", True
-    return ("http" if force_http else "https"), False
-
-
-def _env_int(name: str, default: int) -> int:
-    """Read an integer env var, falling back to default with a warning on bad input."""
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        print(f"warning: invalid {name}={raw!r}, using default {default}", file=sys.stderr)
-        return default
 
 
 def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: bool, content: str, filename: str, dry_run: bool, force_http: bool = False) -> None:
@@ -326,7 +302,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--timeout",
         type=int,
-        default=_env_int("MIKROTIK_TIMEOUT", 60),
+        default=env_int("MIKROTIK_TIMEOUT", 60),
         help="Seconds to wait for the remote /import to finish, SSH (env MIKROTIK_TIMEOUT, default 60)",
     )
     p.add_argument(
