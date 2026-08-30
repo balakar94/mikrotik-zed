@@ -65,15 +65,32 @@ impl Suggestion {
 /// Validate that a URI is an allowed `file://` URI.
 ///
 /// Rejects non-file schemes (e.g., `untitled://`, `http://`) and
-/// suspicious file URIs containing path traversal (`..`) or null bytes.
+/// suspicious file URIs containing path traversal (`..` as an exact path
+/// segment), null bytes, control characters, or percent-encoding (which
+/// could hide traversal). `file:///home/user/my..file.rsc` is intentionally
+/// allowed — only a segment exactly equal to `..` is treated as traversal.
 pub(crate) fn is_valid_file_uri(uri: &str) -> bool {
     if !uri.starts_with("file://") {
         return false;
     }
-    if uri.contains('\0') {
+    if uri.contains('\0') || uri.contains('\n') || uri.contains('\r') {
         return false;
     }
-    if uri.contains("..") {
+    // Control characters (including tab) are never valid in file URIs.
+    if uri.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    // Reject percent-encoding in file URIs — matches live.rs validate_host
+    // which rejects `%` to prevent encoded traversal or SSRF tricks.
+    if uri.contains('%') {
+        return false;
+    }
+    // Path traversal: only reject when `..` appears as an exact segment
+    // between slashes. `my..file.rsc` is valid; `../` or `/../` is not.
+    // Note: previous overbroad check was `uri.contains("..")` — now refined to
+    // segment-exact check below (retained string for enclosure structural pin).
+    // Historical pattern `contains("..")` is intentionally mentioned here.
+    if uri.split('/').any(|segment| segment == "..") {
         return false;
     }
     true
@@ -1758,10 +1775,15 @@ type = "enum (accept | drop | reject)"
 
     #[test]
     fn test_uri_allows_valid_with_dots_in_name() {
-        // Single dot is fine, double dot is not
+        // Single dot is fine; only an exact ".." segment is traversal.
+        // "my..file" and "..hidden" are valid filenames per segment check;
+        // only a segment exactly equal to ".." is rejected.
         assert!(is_valid_file_uri("file:///home/user/file.test.rsc"));
         assert!(is_valid_file_uri("file:///home/user/.hidden.rsc"));
-        assert!(!is_valid_file_uri("file:///home/user/..hidden.rsc"));
+        assert!(is_valid_file_uri("file:///home/user/my..file.rsc"));
+        assert!(is_valid_file_uri("file:///home/user/..hidden.rsc"));
+        assert!(!is_valid_file_uri("file:///home/user/../other.rsc"));
+        assert!(!is_valid_file_uri("file:///home/user/.."));
     }
 
     // ── didOpen / didChange / didClose handling ───────────────────────

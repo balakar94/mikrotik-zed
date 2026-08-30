@@ -98,7 +98,10 @@ pub(crate) fn integrity_problem(stored_name: &str) -> Option<String> {
 }
 
 /// Core integrity check with an injectable size cap (tests shrink it to stay
-/// practical; production always passes [`MAX_VERIFIED_BINARY_BYTES`]).
+/// practical; production always passes [`MAX_VERIFIED_BINARY_BYTES`] = 256 MiB).
+///
+/// OOM hardening: the metadata size gate is checked BEFORE any allocation
+/// (std::fs::read) so an oversized file never reaches heap allocation.
 fn integrity_problem_with_cap(stored_name: &str, max_bytes: u64) -> Option<String> {
     let Some(expected) = read_marker_digest(stored_name) else {
         return Some(format!(
@@ -106,6 +109,8 @@ fn integrity_problem_with_cap(stored_name: &str, max_bytes: u64) -> Option<Strin
             marker_path(stored_name)
         ));
     };
+    // Pre-read size gate — check metadata.len() BEFORE std::fs::read to avoid
+    // allocating up to 256 MiB+ for a hostile oversized file.
     let size = match std::fs::metadata(stored_name) {
         Ok(meta) => meta.len(),
         Err(e) => return Some(format!("cached binary {stored_name} is unreadable: {e}")),

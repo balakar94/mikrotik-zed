@@ -267,33 +267,76 @@ def main() -> None:
             session.auth = (user, password)
             session.verify = ssl_verify
             session.headers.update({"Content-Type": "application/json"})
-            resp = session.get(url, timeout=timeout)
-            status = resp.status_code
-            content = resp.content
-            text = resp.text
-            if len(content) > MAX_BYTES:
-                msg = f"response too large ({len(content)} bytes > {MAX_BYTES})"
+            # Streamed read with byte cap — prevents OOM on unbounded responses
+            # (same 512 KiB limit as caps.rs MAX_LIVE_RESPONSE_BYTES).
+            try:
+                resp = session.get(url, timeout=timeout, stream=True)
+            except requests.exceptions.Timeout as e:  # type: ignore[union-attr]
+                msg = f"request timed out: {e}"
                 print(f"error: {msg}", file=sys.stderr)
                 if args.json:
-                    print(json.dumps({"ok": False, "error": msg, "host": host, "url": url, "status": status}))
+                    print(json.dumps({"ok": False, "error": msg, "host": host, "url": url}))
                 else:
-                    print(f"Live FAIL: {msg} status={status}")
+                    print(f"Live FAIL: {msg}")
                 sys.exit(4)
+            except requests.exceptions.RequestException as e:  # type: ignore[union-attr]
+                msg = f"network error: {e}"
+                if password and password in msg:
+                    msg = msg.replace(password, "[REDACTED]")
+                print(f"error: {msg}", file=sys.stderr)
+                if args.json:
+                    print(json.dumps({"ok": False, "error": msg, "host": host, "url": url}))
+                else:
+                    print(f"Live FAIL: {msg}")
+                sys.exit(4)
+            status = resp.status_code
+            # Incremental streaming read — abort if exceeds MAX_BYTES
+            content_chunks: list[bytes] = []
+            total = 0
+            try:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if chunk:
+                        total += len(chunk)
+                        if total > MAX_BYTES:
+                            msg = f"response too large ({total} bytes > {MAX_BYTES})"
+                            print(f"error: {msg}", file=sys.stderr)
+                            if args.json:
+                                print(json.dumps({"ok": False, "error": msg, "host": host, "url": url, "status": status}))
+                            else:
+                                print(f"Live FAIL: {msg} status={status}")
+                            sys.exit(4)
+                        content_chunks.append(chunk)
+            except requests.exceptions.RequestException as e:  # type: ignore[union-attr]
+                msg = f"network error during streaming: {e}"
+                if password and password in msg:
+                    msg = msg.replace(password, "[REDACTED]")
+                print(f"error: {msg}", file=sys.stderr)
+                if args.json:
+                    print(json.dumps({"ok": False, "error": msg, "host": host, "url": url}))
+                else:
+                    print(f"Live FAIL: {msg}")
+                sys.exit(4)
+            content = b"".join(content_chunks)
+            # Respect server encoding but fall back to utf-8
+            try:
+                text = content.decode(resp.encoding or "utf-8", errors="replace")
+            except Exception:
+                text = content.decode("utf-8", errors="replace")
+            # Already streaming-capped above; no second size check needed
             if status == 200:
+                # Parse from our streamed buffer (resp.json() would re-read the
+                # already-drained stream). Use text directly to avoid OOM and
+                # double-read.
                 try:
-                    data = resp.json()
-                except Exception:
-                    # Try manual parse if json fails
-                    try:
-                        data = json.loads(text)
-                    except Exception as e:
-                        msg = f"parse error: {e}"
-                        print(f"error: {msg}", file=sys.stderr)
-                        if args.json:
-                            print(json.dumps({"ok": False, "error": msg, "status": status, "host": host}))
-                        else:
-                            print(f"Live FAIL: {msg} status={status}")
-                        sys.exit(4)
+                    data = json.loads(text)
+                except Exception as e:
+                    msg = f"parse error: {e}"
+                    print(f"error: {msg}", file=sys.stderr)
+                    if args.json:
+                        print(json.dumps({"ok": False, "error": msg, "status": status, "host": host}))
+                    else:
+                        print(f"Live FAIL: {msg} status={status}")
+                    sys.exit(4)
                 # Count items
                 if isinstance(data, list):
                     count = len(data)
@@ -355,7 +398,10 @@ def main() -> None:
             try:
                 with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
                     status = r.status
-                    content = r.read()
+                    # urllib does not support stream iteration like requests; still cap via limit
+                    content = r.read(MAX_BYTES + 1)
+                    # If we got more than MAX_BYTES, abort without reading the rest
+                    # (read(MAX_BYTES+1) guarantees we detect overflow in one read)
                     text = content.decode("utf-8", errors="replace")
                     if len(content) > MAX_BYTES:
                         msg = f"response too large ({len(content)} bytes > {MAX_BYTES})"
