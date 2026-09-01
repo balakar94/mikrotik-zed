@@ -10,12 +10,13 @@
 
 use super::*;
 use crate::menus::MenuData;
+use std::sync::Arc;
 
 /// `/tool/fetch`-shaped fixture: two REQUIRED properties, two optional
 /// ones sharing the `check-` prefix (for ambiguity coverage), and an
 /// enum type whose spaces prove offsets survive multi-word types.
-fn sig_data() -> MenuData {
-    MenuData::from_toml_str(
+fn sig_data() -> Arc<MenuData> {
+    Arc::new(MenuData::from_toml_str(
         r#"
 [[menus]]
 path = "/tool/fetch"
@@ -45,7 +46,7 @@ name = "interface"
 type = "iface_enum"
 required = true
 "#,
-    )
+    ))
 }
 
 fn make_server() -> Server {

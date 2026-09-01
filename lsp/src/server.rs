@@ -301,7 +301,7 @@ pub(crate) fn references_result(
 
 // ── Server state ────────────────────────────────────────────────
 pub(crate) struct Server {
-    pub(crate) data: MenuData,
+    pub(crate) data: Arc<MenuData>,
     pub(crate) docs: HashMap<String, String>, // URI → document text
     /// Position encoding negotiated during `initialize`; defaults to UTF-16
     /// (the spec default) until then.
@@ -326,12 +326,12 @@ impl Server {
     /// (parsed from env, TTL 60 s, caps from `caps.rs`).
     #[cfg(not(test))]
     pub(crate) fn new(
-        data: MenuData,
+        data: Arc<MenuData>,
         live_config: LiveConfig,
         live_cache: Arc<Mutex<LiveCache>>,
     ) -> Self {
         Server {
-            data,
+            data: Arc::clone(&data),
             docs: HashMap::new(),
             position_encoding: PositionEncoding::default(),
             shutdown_received: false,
@@ -342,9 +342,9 @@ impl Server {
 
     /// Test constructor: live is disabled, cache is empty (honest placeholders).
     #[cfg(test)]
-    pub(crate) fn new(data: MenuData) -> Self {
+    pub(crate) fn new(data: Arc<MenuData>) -> Self {
         Server {
-            data,
+            data: Arc::clone(&data),
             docs: HashMap::new(),
             position_encoding: PositionEncoding::default(),
             shutdown_received: false,
@@ -356,18 +356,18 @@ impl Server {
 
     /// Create a server with explicit live config/cache (used by production and tests).
     pub(crate) fn new_with_live(
-        data: MenuData,
+        data: Arc<MenuData>,
         live_config: LiveConfig,
         live_cache: Arc<Mutex<LiveCache>>,
     ) -> Self {
         #[cfg(not(test))]
         {
-            Self::new(data, live_config, live_cache)
+            Self::new(Arc::clone(&data), live_config, live_cache)
         }
         #[cfg(test)]
         {
             Server {
-                data,
+                data: Arc::clone(&data),
                 docs: HashMap::new(),
                 position_encoding: PositionEncoding::default(),
                 shutdown_received: false,
@@ -819,7 +819,7 @@ impl Server {
                     Some(&*live_guard as &LiveCache),
                 );
 
-                // ── textEdit injection (C2) ─────────────────────────────────
+                // ── textEdit injection (C-02 logical vs physical) ─────────────
                 // Populate `textEdit` so accepting a completion replaces the
                 // already-typed prefix instead of inserting beside it
                 // (`in` + `input` → `input`, not `ininput`). `insertText` is
@@ -837,89 +837,162 @@ impl Server {
                 // For all other cases (e.g., already-finished token + space) the
                 // edit is zero-length at the cursor (pure insertion).
                 //
-                // TODO(C-02): this range is physical-line–scoped. For RouterOS
-                // `\`-continued commands `before_cursor` is a logical join of
-                // several physical lines, but `line_text`/`char_byte` here are
-                // physical. A true fix would use `diagnostics::logical_lines` +
-                // `LogicalLine::logical_offset_from_physical` (as
-                // `textDocument/signatureHelp` does) to map the cursor into
-                // logical coordinates, compute the prefix range there, then map
-                // it back with `LogicalLine::map_range`. Deferred as >20 lines
-                // and needs careful UTF-16 handling; parity is covered by the
-                // logical-line unit tests. Keeping the physical path preserves
-                // backwards compatibility for the common single-line case.
+                // Logical vs physical: RouterOS `\`-continued commands join
+                // several physical lines into one logical line. `before_cursor`
+                // is a logical join (via `build_before_cursor`), but
+                // `line_text`/`char_byte` are physical. We map the cursor into
+                // logical coordinates with `diagnostics::logical_lines` +
+                // `LogicalLine::logical_offset_from_physical` (as signatureHelp
+                // does), compute the prefix range in logical space, then map it
+                // back with `LogicalLine::map_range` to physical line/character.
+                // This makes a cursor on continuation line 2 (e.g.
+                // `gateway=1.1.1.1 \` + `comment="x"`) cover the logical token
+                // correctly while staying byte- and UTF-16-correct.
                 {
-                    // Use the physical current line for byte offsets; `before_cursor`
-                    // may be a joined multi-line string whose offsets do not map
-                    // to the LSP line/character requested.
                     let line_text = current_line;
-                    // Decide whether we are in a value-completion context using
-                    // the same tolerant trimmed logic as `completion::match_context`.
+                    // Value vs non-value decision uses the same tolerant trimmed
+                    // logic as `completion::match_context` — driven by the
+                    // logical `before_cursor` (continuation-aware).
                     let trimmed_bc = before_cursor.trim_end();
                     let has_trailing_ws = trimmed_bc.len() != before_cursor.len();
                     let trimmed_last = crate::parser::tokenize(trimmed_bc)
                         .last()
                         .cloned()
                         .unwrap_or_default();
-                    let mut value_range: Option<(usize, usize)> = None;
+                    let mut value_range_phys: Option<(usize, usize, usize, usize)> = None;
+                    // (phys_start_line, phys_start_char_byte, phys_end_line, phys_end_char_byte) in byte offsets
+                    // Helper: try logical path first, fallback to physical.
+                    let logicals = diagnostics::logical_lines(doc);
+                    let covering = diagnostics::covering_logical_line(&logicals, line_idx);
+                    let cursor_logical_opt = covering
+                        .and_then(|ll| ll.logical_offset_from_physical(line_idx, char_byte));
+
                     if let Some(eq_pos) = trimmed_last.rfind('=') {
                         let raw_suffix = &trimmed_last[eq_pos + 1..];
                         let trimmed_suffix = raw_suffix.trim_matches(|c| c == '"' || c == '\'');
                         if !has_trailing_ws || trimmed_suffix.is_empty() {
-                            // Value context confirmed — compute byte range in the
-                            // physical line.
-                            let prefix_line = &line_text[..char_byte.min(line_text.len())];
-                            // Clamp to char boundary already ensured by char_byte.
-                            let tokens = crate::parser::tokenize_with_spans(prefix_line);
-                            if let Some(tok) = tokens.last() {
-                                if let Some(pos) = tok.text.rfind('=') {
-                                    let suffix_part = &tok.text[pos + 1..];
-                                    let leading = if suffix_part.starts_with('"')
-                                        || suffix_part.starts_with('\'')
-                                    {
-                                        1
-                                    } else {
-                                        0
-                                    };
-                                    let start = tok.start + pos + 1 + leading;
-                                    // Trailing-space with empty value → zero-length at cursor
-                                    let (s, e) = if has_trailing_ws && trimmed_suffix.is_empty() {
-                                        (char_byte, char_byte)
-                                    } else {
-                                        (start, char_byte)
-                                    };
-                                    // Defensive clamp
-                                    let s_clamped = s.min(line_text.len()).min(e);
-                                    let e_clamped = e.min(line_text.len());
-                                    let s_floored =
-                                        crate::encoding::floor_char_boundary(line_text, s_clamped);
-                                    let e_floored =
-                                        crate::encoding::floor_char_boundary(line_text, e_clamped);
-                                    value_range = Some((s_floored, e_floored));
+                            // Value context confirmed.
+                            // Try logical mapping.
+                            let mut logical_success = false;
+                            if let (Some(ll), Some(cursor_logical)) = (covering, cursor_logical_opt)
+                            {
+                                let logical_text = ll.text();
+                                let cursor_logical_clamped = cursor_logical.min(logical_text.len());
+                                let cursor_logical_clamped = crate::encoding::floor_char_boundary(
+                                    logical_text,
+                                    cursor_logical_clamped,
+                                );
+                                let logical_prefix = &logical_text[..cursor_logical_clamped];
+                                let tokens = crate::parser::tokenize_with_spans(logical_prefix);
+                                if let Some(tok) = tokens.last() {
+                                    if let Some(pos) = tok.text.rfind('=') {
+                                        let suffix_part = &tok.text[pos + 1..];
+                                        let leading = if suffix_part.starts_with('"')
+                                            || suffix_part.starts_with('\'')
+                                        {
+                                            1
+                                        } else {
+                                            0
+                                        };
+                                        let log_start = tok.start + pos + 1 + leading;
+                                        let (log_s, log_e) =
+                                            if has_trailing_ws && trimmed_suffix.is_empty() {
+                                                (cursor_logical_clamped, cursor_logical_clamped)
+                                            } else {
+                                                (log_start, cursor_logical_clamped)
+                                            };
+                                        let log_s = log_s.min(logical_text.len()).min(log_e);
+                                        let log_e = log_e.min(logical_text.len());
+                                        let log_s = crate::encoding::floor_char_boundary(
+                                            logical_text,
+                                            log_s,
+                                        );
+                                        let log_e = crate::encoding::floor_char_boundary(
+                                            logical_text,
+                                            log_e,
+                                        );
+                                        let range = ll.map_range(log_s, log_e);
+                                        // Convert physical byte offsets per line for utf16 later;
+                                        // store as (start_line, start_byte, end_line, end_byte)
+                                        value_range_phys = Some((
+                                            range.start.line as usize,
+                                            range.start.character as usize,
+                                            range.end.line as usize,
+                                            range.end.character as usize,
+                                        ));
+                                        logical_success = true;
+                                    }
+                                } else if has_trailing_ws && trimmed_suffix.is_empty() {
+                                    let range = ll
+                                        .map_range(cursor_logical_clamped, cursor_logical_clamped);
+                                    value_range_phys = Some((
+                                        range.start.line as usize,
+                                        range.start.character as usize,
+                                        range.end.line as usize,
+                                        range.end.character as usize,
+                                    ));
+                                    logical_success = true;
                                 }
-                            } else if has_trailing_ws && trimmed_suffix.is_empty() {
-                                // No token in prefix (e.g., cursor after "chain= " where
-                                // tokenization of prefix_line yields ["chain="] but we already
-                                // handled; this branch is for safety).
-                                value_range = Some((char_byte, char_byte));
+                            }
+                            if !logical_success {
+                                // Physical fallback (single-line case or no logical coverage).
+                                let prefix_line = &line_text[..char_byte.min(line_text.len())];
+                                let tokens = crate::parser::tokenize_with_spans(prefix_line);
+                                if let Some(tok) = tokens.last() {
+                                    if let Some(pos) = tok.text.rfind('=') {
+                                        let suffix_part = &tok.text[pos + 1..];
+                                        let leading = if suffix_part.starts_with('"')
+                                            || suffix_part.starts_with('\'')
+                                        {
+                                            1
+                                        } else {
+                                            0
+                                        };
+                                        let start = tok.start + pos + 1 + leading;
+                                        let (s, e) = if has_trailing_ws && trimmed_suffix.is_empty()
+                                        {
+                                            (char_byte, char_byte)
+                                        } else {
+                                            (start, char_byte)
+                                        };
+                                        let s_clamped = s.min(line_text.len()).min(e);
+                                        let e_clamped = e.min(line_text.len());
+                                        let s_floored = crate::encoding::floor_char_boundary(
+                                            line_text, s_clamped,
+                                        );
+                                        let e_floored = crate::encoding::floor_char_boundary(
+                                            line_text, e_clamped,
+                                        );
+                                        value_range_phys =
+                                            Some((line_idx, s_floored, line_idx, e_floored));
+                                    }
+                                } else if has_trailing_ws && trimmed_suffix.is_empty() {
+                                    value_range_phys =
+                                        Some((line_idx, char_byte, line_idx, char_byte));
+                                }
                             }
                         }
                     }
-                    if let Some((s_byte, e_byte)) = value_range {
+                    if let Some((s_line, s_byte, e_line, e_byte)) = value_range_phys {
+                        // Convert byte offsets to wire characters per encoding, using
+                        // the physical line text for the corresponding line (so
+                        // multi-byte chars are counted correctly per line).
+                        let lines: Vec<&str> = doc.lines().collect();
+                        let s_line_text = lines.get(s_line).copied().unwrap_or("");
+                        let e_line_text = lines.get(e_line).copied().unwrap_or("");
                         let start_char = match self.position_encoding {
                             PositionEncoding::Utf8 => s_byte as u32,
                             PositionEncoding::Utf16 => {
-                                byte_offset_to_utf16_units(line_text, s_byte)
+                                byte_offset_to_utf16_units(s_line_text, s_byte)
                             }
                         };
                         let end_char = match self.position_encoding {
                             PositionEncoding::Utf8 => e_byte as u32,
                             PositionEncoding::Utf16 => {
-                                byte_offset_to_utf16_units(line_text, e_byte)
+                                byte_offset_to_utf16_units(e_line_text, e_byte)
                             }
                         };
                         for item in &mut items {
-                            // Value items are ENUM_MEMBER (12). Live + static values share it.
                             if item.kind == Some(12) {
                                 let new_text = item
                                     .insert_text
@@ -928,11 +1001,11 @@ impl Server {
                                 item.text_edit = Some(completion::TextEdit {
                                     range: completion::CompletionRange {
                                         start: completion::CompletionPosition {
-                                            line: line_idx as u32,
+                                            line: s_line as u32,
                                             character: start_char,
                                         },
                                         end: completion::CompletionPosition {
-                                            line: line_idx as u32,
+                                            line: e_line as u32,
                                             character: end_char,
                                         },
                                     },
@@ -941,77 +1014,119 @@ impl Server {
                             }
                         }
                     } else {
-                        // Sub-menu / verb prefix case: when not a value context and
-                        // cursor inside a token that prefixes a child/verb, replace it.
-                        // Heuristic: last token in prefix_line is non-empty, does not
-                        // contain `=`, `:`, `/` at token level? Actually path tokens
-                        // contain `/`, so we skip those. We only handle plain word
-                        // prefixes for sub-menus/verbs.
-                        let prefix_line = &line_text[..char_byte.min(line_text.len())];
-                        if !prefix_line.ends_with(char::is_whitespace) && !prefix_line.is_empty() {
-                            let tokens = crate::parser::tokenize_with_spans(prefix_line);
-                            if let Some(tok) = tokens.last() {
-                                // Skip tokens that are path, value, or script word
-                                if !tok.text.contains('=')
+                        // Sub-menu / verb prefix case (logical-aware with physical fallback).
+                        let mut submenu_range_phys: Option<(usize, usize, usize, usize)> = None;
+                        let mut typed_lower: Option<String> = None;
+                        // Try logical first when covering exists.
+                        if let (Some(ll), Some(cursor_logical)) = (covering, cursor_logical_opt) {
+                            let logical_text = ll.text();
+                            let cursor_logical_clamped = cursor_logical.min(logical_text.len());
+                            let cursor_logical_clamped = crate::encoding::floor_char_boundary(
+                                logical_text,
+                                cursor_logical_clamped,
+                            );
+                            let logical_prefix = &logical_text[..cursor_logical_clamped];
+                            if !logical_prefix.ends_with(char::is_whitespace)
+                                && !logical_prefix.is_empty()
+                            {
+                                let tokens = crate::parser::tokenize_with_spans(logical_prefix);
+                                if let Some(tok) = tokens.last()
+                                    && !tok.text.contains('=')
                                     && !tok.text.starts_with(':')
                                     && !tok.text.starts_with('/')
                                     && !tok.text.starts_with('"')
                                     && !tok.text.starts_with('\'')
                                 {
                                     let typed = tok.text.as_str();
-                                    // Check if any CLASS or FUNCTION item is a case-insensitive prefix match
-                                    let lower_typed = typed.to_ascii_lowercase();
+                                    let lower = typed.to_ascii_lowercase();
                                     let needs_edit = items.iter().any(|it| {
                                         (it.kind == Some(9) || it.kind == Some(3))
-                                            && it
-                                                .label
-                                                .to_ascii_lowercase()
-                                                .starts_with(&lower_typed)
+                                            && it.label.to_ascii_lowercase().starts_with(&lower)
+                                    });
+                                    if needs_edit && !typed.is_empty() {
+                                        let log_s = tok.start;
+                                        let log_e = tok.end.min(cursor_logical_clamped);
+                                        let range = ll.map_range(log_s, log_e);
+                                        submenu_range_phys = Some((
+                                            range.start.line as usize,
+                                            range.start.character as usize,
+                                            range.end.line as usize,
+                                            range.end.character as usize,
+                                        ));
+                                        typed_lower = Some(lower);
+                                    }
+                                }
+                            }
+                        }
+                        if submenu_range_phys.is_none() {
+                            // Physical fallback.
+                            let prefix_line = &line_text[..char_byte.min(line_text.len())];
+                            if !prefix_line.ends_with(char::is_whitespace)
+                                && !prefix_line.is_empty()
+                            {
+                                let tokens = crate::parser::tokenize_with_spans(prefix_line);
+                                if let Some(tok) = tokens.last()
+                                    && !tok.text.contains('=')
+                                    && !tok.text.starts_with(':')
+                                    && !tok.text.starts_with('/')
+                                    && !tok.text.starts_with('"')
+                                    && !tok.text.starts_with('\'')
+                                {
+                                    let typed = tok.text.as_str();
+                                    let lower = typed.to_ascii_lowercase();
+                                    let needs_edit = items.iter().any(|it| {
+                                        (it.kind == Some(9) || it.kind == Some(3))
+                                            && it.label.to_ascii_lowercase().starts_with(&lower)
                                     });
                                     if needs_edit && !typed.is_empty() {
                                         let s_byte = tok.start;
                                         let e_byte = tok.end.min(char_byte);
-                                        let start_char = match self.position_encoding {
-                                            PositionEncoding::Utf8 => s_byte as u32,
-                                            PositionEncoding::Utf16 => {
-                                                byte_offset_to_utf16_units(line_text, s_byte)
-                                            }
-                                        };
-                                        let end_char = match self.position_encoding {
-                                            PositionEncoding::Utf8 => e_byte as u32,
-                                            PositionEncoding::Utf16 => {
-                                                byte_offset_to_utf16_units(line_text, e_byte)
-                                            }
-                                        };
-                                        for item in &mut items {
-                                            if item.kind == Some(9) || item.kind == Some(3) {
-                                                // Only add edit if label actually starts with typed (avoid replacing unrelated verbs)
-                                                if item
-                                                    .label
-                                                    .to_ascii_lowercase()
-                                                    .starts_with(&lower_typed)
-                                                {
-                                                    let new_text = item
-                                                        .insert_text
-                                                        .clone()
-                                                        .unwrap_or_else(|| item.label.clone());
-                                                    item.text_edit = Some(completion::TextEdit {
-                                                        range: completion::CompletionRange {
-                                                            start: completion::CompletionPosition {
-                                                                line: line_idx as u32,
-                                                                character: start_char,
-                                                            },
-                                                            end: completion::CompletionPosition {
-                                                                line: line_idx as u32,
-                                                                character: end_char,
-                                                            },
-                                                        },
-                                                        new_text,
-                                                    });
-                                                }
-                                            }
-                                        }
+                                        submenu_range_phys =
+                                            Some((line_idx, s_byte, line_idx, e_byte));
+                                        typed_lower = Some(lower);
                                     }
+                                }
+                            }
+                        }
+                        if let (Some((s_line, s_byte, e_line, e_byte)), Some(lower)) =
+                            (submenu_range_phys, typed_lower)
+                        {
+                            let lines: Vec<&str> = doc.lines().collect();
+                            let s_line_text = lines.get(s_line).copied().unwrap_or("");
+                            let e_line_text = lines.get(e_line).copied().unwrap_or("");
+                            let start_char = match self.position_encoding {
+                                PositionEncoding::Utf8 => s_byte as u32,
+                                PositionEncoding::Utf16 => {
+                                    byte_offset_to_utf16_units(s_line_text, s_byte)
+                                }
+                            };
+                            let end_char = match self.position_encoding {
+                                PositionEncoding::Utf8 => e_byte as u32,
+                                PositionEncoding::Utf16 => {
+                                    byte_offset_to_utf16_units(e_line_text, e_byte)
+                                }
+                            };
+                            for item in &mut items {
+                                if (item.kind == Some(9) || item.kind == Some(3))
+                                    && item.label.to_ascii_lowercase().starts_with(&lower)
+                                {
+                                    let new_text = item
+                                        .insert_text
+                                        .clone()
+                                        .unwrap_or_else(|| item.label.clone());
+                                    item.text_edit = Some(completion::TextEdit {
+                                        range: completion::CompletionRange {
+                                            start: completion::CompletionPosition {
+                                                line: s_line as u32,
+                                                character: start_char,
+                                            },
+                                            end: completion::CompletionPosition {
+                                                line: e_line as u32,
+                                                character: end_char,
+                                            },
+                                        },
+                                        new_text,
+                                    });
                                 }
                             }
                         }
@@ -1829,9 +1944,10 @@ mod tests {
     use crate::diagnostics;
     use crate::menus::MenuData;
     use crate::{Server, is_valid_file_uri};
+    use std::sync::Arc;
 
-    fn synthetic_data() -> MenuData {
-        MenuData::from_toml_str(
+    fn synthetic_data() -> Arc<MenuData> {
+        Arc::new(MenuData::from_toml_str(
             r#"
 [[menus]]
 path = "/ip/address"
@@ -1855,7 +1971,7 @@ required = true
 name = "action"
 type = "enum (accept | drop | reject)"
 "#,
-        )
+        ))
     }
 
     // ── Caps constants ────────────────────────────────────────────────
@@ -2352,5 +2468,75 @@ type = "enum (accept | drop | reject)"
         let direct =
             diagnostics::compute_diagnostics(&synthetic_data(), doc, "file:///consistency.rsc");
         assert_eq!(pull_items.len(), direct.len());
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn completion_textEdit_with_continuation() {
+        // Logical vs physical: gateway + comment split across a RouterOS
+        // `\` continuation. Cursor on continuation line 2's value suffix
+        // must map back to physical line 1, not logical offset 0.
+        let mut server = Server::new(synthetic_data());
+        // Line 0 ends with a continuation backslash; line 1 holds the
+        // dependent property. The value for `action` is on line 1.
+        let doc = "/ip/firewall/filter add chain=input \\\naction=acc";
+        let open = serde_json::json!({
+            "params": {"textDocument": {"uri": "file:///cont.rsc", "text": doc}}
+        });
+        server.handle_message("textDocument/didOpen", &open);
+        // line 1 is "action=acc" (10 chars: "action=" 7 + "acc" 3)
+        // cursor after "acc" (character 10)
+        let comp = serde_json::json!({
+            "id": 99,
+            "params": {"textDocument": {"uri": "file:///cont.rsc"}, "position": {"line": 1, "character": 10}}
+        });
+        let resp = server
+            .handle_message("textDocument/completion", &comp)
+            .unwrap();
+        let items = resp["result"]["items"].as_array().unwrap();
+        // `action` is enum (accept|drop|reject); typed prefix "acc" should
+        // filter to "accept" with a textEdit covering exactly "acc" on line 1
+        let accept = items
+            .iter()
+            .find(|i| i["label"] == "accept")
+            .expect("accept should be suggested for prefix acc");
+        let edit = accept["textEdit"]
+            .as_object()
+            .expect("textEdit must be set via logical mapping");
+        assert_eq!(
+            edit["range"]["start"]["line"], 1,
+            "logical start maps to physical line 1"
+        );
+        assert_eq!(edit["range"]["end"]["line"], 1);
+        // "action=" is 7 bytes, so "acc" starts at character 7
+        assert_eq!(edit["range"]["start"]["character"], 7);
+        assert_eq!(edit["range"]["end"]["character"], 10);
+        assert_eq!(edit["newText"], "accept");
+
+        // Also verify single-line fallback still works: no continuation
+        let mut server2 = Server::new(synthetic_data());
+        let doc2 = "/ip/firewall/filter add action=acc";
+        let open2 = serde_json::json!({
+            "params": {"textDocument": {"uri": "file:///single.rsc", "text": doc2}}
+        });
+        server2.handle_message("textDocument/didOpen", &open2);
+        // line 0 "action=acc" starts at offset of chain value? Actually doc2:
+        // "/ip/firewall/filter add " is 24? Let's just request after "acc"
+        let line0_len = doc2.len();
+        let comp2 = serde_json::json!({
+            "id": 100,
+            "params": {"textDocument": {"uri": "file:///single.rsc"}, "position": {"line": 0, "character": line0_len}}
+        });
+        let resp2 = server2
+            .handle_message("textDocument/completion", &comp2)
+            .unwrap();
+        let items2 = resp2["result"]["items"].as_array().unwrap();
+        let accept2 = items2.iter().find(|i| i["label"] == "accept").unwrap();
+        let edit2 = accept2["textEdit"].as_object().unwrap();
+        assert_eq!(edit2["range"]["start"]["line"], 0);
+        // suffix "acc" after "action=" (7 chars) at end
+        let expected_start = doc2.rfind("acc").unwrap() as u64;
+        assert_eq!(edit2["range"]["start"]["character"], expected_start);
+        assert_eq!(edit2["range"]["end"]["character"], line0_len as u64);
     }
 }

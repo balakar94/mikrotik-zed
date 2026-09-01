@@ -1,4 +1,5 @@
 ; ── MikroTik RouterOS Script — highlights ────────────────────────
+; GENERATED — sync with data/commands.toml verbs
 ; Color scheme:
 ;   Blue   = root menu (first command after /)
 ;   Green  = sub-menus, quoted strings, `yes`
@@ -45,22 +46,22 @@
 ; Override sub_menu / bare-identifier green/orange for commands that
 ; modify/query state.  Must come LAST so they win over @string/@constant.
 ((sub_menu
-  (identifier) @keyword)
-  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping)$"))
+   (identifier) @keyword)
+  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve)$"))
 
 ((menu_command
-  (identifier) @keyword)
-  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping)$"))
+   (identifier) @keyword)
+  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve)$"))
 
 ; Action commands inside [...] → purple
 ((command_substitution
-  (identifier) @keyword)
-  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping)$"))
+   (identifier) @keyword)
+  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve)$"))
 
 ; Action commands in continuation → purple
 ((menu_continuation
-  (identifier) @keyword)
-  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping)$"))
+   (identifier) @keyword)
+  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve)$"))
 
 ; ── Named parameters — property=value ──────────────────────────
 ; Property name → yellow (like the MikroTik terminal)

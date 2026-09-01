@@ -26,8 +26,45 @@ use crate::caps::{
 };
 use crate::logging::{log_debug, log_info, log_warn};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::time::{Duration, Instant};
+
+// ── Bounded fetch concurrency (A-03) ───────────────────────────────
+//
+// `trigger_background_fetch` historically spawned one thread per cache
+// miss, coalesced only by the 2 s window (`LIVE_FETCH_BLOCKING_TIMEOUT_SECS`).
+// Under flapping completions that still allowed bursts. Cap concurrency
+// to 2 threads globally via an `AtomicUsize` semaphore — smallest safe
+// change, no new dependency, preserves the existing coalescing window.
+static ACTIVE_FETCHES: AtomicUsize = AtomicUsize::new(0);
+const MAX_CONCURRENT_FETCHES: usize = 2;
+
+fn try_acquire_fetch_permit() -> bool {
+    let mut cur = ACTIVE_FETCHES.load(Ordering::Acquire);
+    loop {
+        if cur >= MAX_CONCURRENT_FETCHES {
+            return false;
+        }
+        match ACTIVE_FETCHES.compare_exchange(cur, cur + 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return true,
+            Err(next) => cur = next,
+        }
+    }
+}
+
+fn release_fetch_permit() {
+    ACTIVE_FETCHES.fetch_sub(1, Ordering::AcqRel);
+}
+
+struct FetchPermitGuard;
+impl Drop for FetchPermitGuard {
+    fn drop(&mut self) {
+        release_fetch_permit();
+    }
+}
 
 // ── CustomResource ───────────────────────────────────────────────
 
@@ -1472,10 +1509,17 @@ fn trigger_background_fetch(
     resource: ResourceKind,
     key: String,
 ) {
+    if !try_acquire_fetch_permit() {
+        log_debug!(
+            "live fetch semaphore full (cap={MAX_CONCURRENT_FETCHES}), skipping fetch for {resource:?} key={key}"
+        );
+        return;
+    }
     let cache_clone = Arc::clone(cache);
     let config_clone = config.clone();
     log_debug!("live background fetch triggered for {:?}", resource);
     std::thread::spawn(move || {
+        let _guard = FetchPermitGuard;
         let start = Instant::now();
         let result = fetch_resource(&config_clone, resource);
         let elapsed = start.elapsed();
@@ -1614,12 +1658,19 @@ fn trigger_custom_fetch_background(
         guard.record_fetch_attempt(key.clone());
     }
 
+    if !try_acquire_fetch_permit() {
+        log_debug!(
+            "live custom fetch semaphore full (cap={MAX_CONCURRENT_FETCHES}), skipping custom fetch for {key}"
+        );
+        return;
+    }
     let cache_clone = Arc::clone(cache);
     let config_clone = config.clone();
     let custom_clone = custom.clone();
     let key_clone = key.clone();
     log_debug!("live background fetch triggered for custom resource {key_clone}");
     std::thread::spawn(move || {
+        let _guard = FetchPermitGuard;
         let start = Instant::now();
         match fetch_custom_resource(&config_clone, &custom_clone) {
             Ok(vals) => {

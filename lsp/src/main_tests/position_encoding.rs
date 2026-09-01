@@ -3,9 +3,10 @@
 
 use super::*;
 use crate::menus::MenuData;
+use std::sync::Arc;
 
-fn synth_min() -> MenuData {
-    MenuData::from_toml_str(
+fn synth_min() -> Arc<MenuData> {
+    Arc::new(MenuData::from_toml_str(
         r#"
 [[menus]]
 path = "/ip/address"
@@ -26,7 +27,7 @@ type = "Directory"
 name = "chain"
 type = "enum (input | forward | output)"
 "#,
-    )
+    ))
 }
 
 /// Run `initialize` with an optional `general.positionEncodings` array

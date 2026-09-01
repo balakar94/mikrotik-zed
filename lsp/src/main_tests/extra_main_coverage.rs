@@ -1,8 +1,9 @@
 use super::*;
 use crate::menus::MenuData;
+use std::sync::Arc;
 
-fn synth() -> MenuData {
-    MenuData::from_toml_str(
+fn synth() -> Arc<MenuData> {
+    Arc::new(MenuData::from_toml_str(
         r#"
 [[menus]]
 path = "/ip/address"
@@ -28,7 +29,7 @@ type = "Directory"
 name = "chain"
 type = "enum (input | forward | output)"
 "#,
-    )
+    ))
 }
 
 fn make_server() -> Server {

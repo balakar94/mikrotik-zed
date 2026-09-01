@@ -1,8 +1,9 @@
 use super::*;
 use crate::menus::MenuData;
+use std::sync::Arc;
 
-fn synthetic_data() -> MenuData {
-    MenuData::from_toml_str(
+fn synthetic_data() -> Arc<MenuData> {
+    Arc::new(MenuData::from_toml_str(
         r#"
 [[menus]]
 path = "/ip/address"
@@ -35,7 +36,7 @@ type = "Directory"
 path = "/system/clock"
 type = "Directory"
 "#,
-    )
+    ))
 }
 
 // ── Server handle_message integration ─────────────────────────

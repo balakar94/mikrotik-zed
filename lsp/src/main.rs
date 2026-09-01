@@ -83,7 +83,7 @@ fn main() {
     );
     // Hint for observability: when run via Zed, use `zed --foreground` to see these logs,
     // or `zed: open log` action. Setting `RSC_LS_LOG=debug` enables verbose diagnostics.
-    let data = MenuData::load();
+    let data = std::sync::Arc::new(MenuData::load());
     log_info!("language server started, {} menus loaded", data.menus.len());
     log_debug!(
         "limits: MAX_MESSAGE_SIZE={} MAX_HEADER_SIZE={} MAX_DOC_SIZE={} MAX_DOCS={}",
@@ -99,7 +99,7 @@ fn main() {
     let live_cache =
         std::sync::Arc::new(std::sync::Mutex::new(live::LiveCache::with_default_ttl()));
 
-    let mut server = Server::new_with_live(data, live_config, live_cache);
+    let mut server = Server::new_with_live(std::sync::Arc::clone(&data), live_config, live_cache);
     server.run();
     log_info!("language server exiting");
 }

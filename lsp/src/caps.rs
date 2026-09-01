@@ -15,12 +15,43 @@
 // - Quick-fix responses stay bounded even when a client echoes hundreds
 //   of eligible diagnostics.
 //
-// Feature-internal micro-caps deliberately stay beside their features —
-// they tune one algorithm rather than a cross-module resource budget:
-// `MAX_SYNTAX_DIAGNOSTICS` (diagnostics.rs), `MAX_SYMBOLS` (symbols.rs),
-// `MAX_FOLDING_RANGES` (folding.rs), `MAX_REFERENCES` (navigation.rs),
-// `MAX_BRACE_DEPTH` (parser.rs), `MAX_SIGNATURE_PROPERTIES`
-// (signature.rs), `MAX_SUGGEST_INPUT_BYTES` (suggest.rs).
+// Central caps registry — shared caps live here; feature-internal
+// micro-caps live beside their feature but are indexed here so every
+// limit is discoverable from ONE place. Value column is authoritative
+// via the defining `const`; this table is documentary (re-export allies
+// may lag, but the const wins).
+//
+// | Cap                               | Value          | Defined in      | Purpose                                                        |
+// |-----------------------------------|----------------|-----------------|----------------------------------------------------------------|
+// | `MAX_HEADER_SIZE`                 | 32 KiB         | caps.rs         | Content-Length header section cap per frame                      |
+// | `MAX_MESSAGE_SIZE`                | 10 MiB         | caps.rs         | JSON-RPC body cap per frame                                    |
+// | `MAX_DOC_SIZE`                    | 5 MiB          | caps.rs         | Tracked document size (truncate at char boundary)              |
+// | `MAX_DOCS`                        | 100            | caps.rs         | Tracked open-document count                                    |
+// | `MAX_CODE_ACTIONS`                | 8              | caps.rs         | Quick-fix actions per codeAction response                      |
+// | `MAX_DIAG_LINES`                  | 3000           | caps.rs         | Logical lines considered for diagnostics per doc               |
+// | `MAX_DIAG_BYTES`                  | 500 000        | caps.rs         | Bytes considered for diagnostics per doc                       |
+// | `MAX_COMPLETION_ITEMS`            | 200            | caps.rs         | Completion items per response                                  |
+// | `MAX_LIVE_ITEMS`                  | 500            | caps.rs         | Live values per cache entry                                    |
+// | `MAX_LIVE_VALUE_LEN`              | 64             | caps.rs         | Single live value byte length                                  |
+// | `MAX_LIVE_RESPONSE_BYTES`         | 512 KiB        | caps.rs         | Live HTTP response cap                                         |
+// | `MAX_CACHE_ENTRIES`               | 16             | caps.rs         | Distinct live cache keys                                       |
+// | `LIVE_TTL_SECS`                   | 60 s           | caps.rs         | Live entry TTL                                                 |
+// | `LIVE_TIMEOUT_SECS`               | 5 s            | caps.rs         | Live per-request timeout (clamped 1..30)                       |
+// | `LIVE_FETCH_BLOCKING_TIMEOUT_SECS`| 2 s            | caps.rs         | Coalescing window & max blocking fetch                         |
+// | `LIVE_NEGATIVE_TTL_SECS`          | 15 s           | caps.rs         | Negative cache TTL                                             |
+// | `LIVE_MAX_HOSTS`                  | 4              | caps.rs         | Multi-host cap (only primary hydrated)                         |
+// | `LIVE_CUSTOM_RESOURCES_MAX`       | 8              | caps.rs         | Custom live resources via env JSON                             |
+// | `MAX_SYNTAX_DIAGNOSTICS`          | 10             | diagnostics.rs  | Unclosed/unmatched brace+quote diagnostics per publish         |
+// | `MAX_SYMBOLS`                     | 5000           | symbols.rs      | Document symbols per doc                                       |
+// | `MAX_FOLDING_RANGES`              | 5000           | folding.rs      | Folding ranges per doc                                         |
+// | `MAX_REFERENCES`                  | 1000           | navigation.rs   | References per request (incl. declaration)                     |
+// | `MAX_BRACE_DEPTH`                 | 4096           | parser.rs       | Open-brace stack bound (walk_structure + syntax)               |
+// | `MAX_SIGNATURE_PROPERTIES`        | 40             | signature.rs    | Properties per signature label                                 |
+// | `MAX_SUGGEST_INPUT_BYTES`         | 256            | suggest.rs      | Max mistyped token length for quick-fix suggestions            |
+//
+// Scattered micro-caps deliberately stay beside their features —
+// they tune one algorithm rather than a cross-module resource budget,
+// but they are listed above so the caps story is centralized.
 
 /// Hard cap on the header section of one frame.
 pub(crate) const MAX_HEADER_SIZE: usize = 32 * 1024; // 32 KiB
