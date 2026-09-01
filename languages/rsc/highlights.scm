@@ -47,21 +47,21 @@
 ; modify/query state.  Must come LAST so they win over @string/@constant.
 ((sub_menu
    (identifier) @keyword)
-  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve)$"))
+  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve|check|cancel|flush)$"))
 
 ((menu_command
    (identifier) @keyword)
-  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve)$"))
+  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve|check|cancel|flush)$"))
 
 ; Action commands inside [...] → purple
 ((command_substitution
    (identifier) @keyword)
-  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve)$"))
+  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve|check|cancel|flush)$"))
 
 ; Action commands in continuation → purple
 ((menu_continuation
    (identifier) @keyword)
-  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve)$"))
+  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve|check|cancel|flush)$"))
 
 ; ── Named parameters — property=value ──────────────────────────
 ; Property name → yellow (like the MikroTik terminal)

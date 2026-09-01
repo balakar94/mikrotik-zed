@@ -579,9 +579,9 @@ fn get_value_completions_with_live(
         && !live_vals.is_empty()
     {
         let live_set: std::collections::HashSet<&String> = live_vals.iter().collect();
-        // Prefer live: remove static duplicates.
+        // Prefer live: remove static duplicates. Arc clone is cheap (no 500-item Vec clone per keystroke).
         items.retain(|it| !live_set.contains(&it.label));
-        for val in live_vals {
+        for val in live_vals.iter() {
             let mut item = CompletionItem::new(val.clone(), kind::ENUM_MEMBER);
             item.detail = Some(resource.detail_label().to_string());
             item.insert_text = Some(val.clone());

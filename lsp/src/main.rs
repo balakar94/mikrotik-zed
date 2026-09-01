@@ -96,6 +96,15 @@ fn main() {
     // Live device data (opt-in, TTL-scoped, in-memory only).
     let live_config = live::LiveConfig::from_env();
     live_config.log_status();
+    // Startup banner with encoding and TLS state (O-02 observability).
+    log_info!(
+        "rsc-ls {} encoding={} ssl_verify={} ssl_verify_effective={} live_active={}",
+        cli::version_string(),
+        crate::encoding::PositionEncoding::default().as_str(),
+        live_config.ssl_verify,
+        live_config.ssl_verify_effective(),
+        live_config.is_active()
+    );
     let live_cache =
         std::sync::Arc::new(std::sync::Mutex::new(live::LiveCache::with_default_ttl()));
 

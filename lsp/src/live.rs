@@ -110,6 +110,9 @@ pub struct LiveConfig {
     pub timeout_secs: u64,
     /// User-defined custom live resources (capped to `LIVE_CUSTOM_RESOURCES_MAX`).
     pub custom_resources: Vec<CustomResource>,
+    /// Whether loopback/private hosts are allowed (`RSC_LS_LIVE_ALLOW_LOOPBACK=1`).
+    /// Default deny (false) — when false, `127.0.0.0/8`, `::1`, `10/8`, `192.168/16` etc are rejected via `is_loopback_or_private`.
+    pub allow_loopback: bool,
 }
 
 impl std::fmt::Debug for LiveConfig {
@@ -126,6 +129,7 @@ impl std::fmt::Debug for LiveConfig {
             .field("force_http", &self.force_http)
             .field("timeout_secs", &self.timeout_secs)
             .field("custom_resources", &self.custom_resources)
+            .field("allow_loopback", &self.allow_loopback)
             .finish()
     }
 }
@@ -187,6 +191,11 @@ impl LiveConfig {
         let custom_raw = get("RSC_LS_LIVE_RESOURCES").or_else(|| get("MIKROTIK_LIVE_RESOURCES"));
         let custom_resources = parse_custom_resources(custom_raw.as_deref());
 
+        let allow_loopback = get("RSC_LS_LIVE_ALLOW_LOOPBACK")
+            .as_deref()
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false);
+
         LiveConfig {
             enabled,
             host,
@@ -198,6 +207,7 @@ impl LiveConfig {
             force_http,
             timeout_secs,
             custom_resources,
+            allow_loopback,
         }
     }
 
@@ -208,7 +218,7 @@ impl LiveConfig {
         self.enabled
             && !self.host.is_empty()
             && !self.pass.is_empty()
-            && validate_host(&self.host).is_ok()
+            && validate_host_with_allow(&self.host, self.allow_loopback).is_ok()
             && self.port != 0
     }
 
@@ -235,7 +245,7 @@ impl LiveConfig {
         if self.is_active() {
             // Host is safe to log (no pass); port and scheme are non-sensitive.
             log_info!(
-                "live enabled host={} port={} scheme={} user={} ssl_verify={} ssl_verify_effective={} timeout={}s hosts={:?} custom_resources={}",
+                "live enabled host={} port={} scheme={} user={} ssl_verify={} ssl_verify_effective={} timeout={}s hosts={:?} custom_resources={} allow_loopback={}",
                 self.host,
                 self.port,
                 self.scheme(),
@@ -244,7 +254,8 @@ impl LiveConfig {
                 self.ssl_verify_effective(),
                 self.timeout_secs,
                 self.hosts,
-                self.custom_resources.len()
+                self.custom_resources.len(),
+                self.allow_loopback
             );
             if self.hosts.len() > 1 {
                 log_info!(
@@ -340,6 +351,14 @@ impl LiveConfig {
             }
         } else if let Some(s) = get_settings_str(settings_obj, &["RSC_LS_LIVE_RESOURCES"]) {
             cfg.custom_resources = parse_custom_resources(Some(&s));
+        }
+        if let Some(allow) = get_settings_bool(
+            settings_obj,
+            &["allow_loopback", "RSC_LS_LIVE_ALLOW_LOOPBACK"],
+        ) {
+            cfg.allow_loopback = allow;
+        } else if let Some(s) = get_settings_str(settings_obj, &["RSC_LS_LIVE_ALLOW_LOOPBACK"]) {
+            cfg.allow_loopback = s.trim() == "1";
         }
         // Log if multi-host after overlay
         if cfg.hosts.len() > 1 {
@@ -791,13 +810,59 @@ fn is_ssrf_denied_host(host: &str) -> bool {
     false
 }
 
-/// Validate `host` per defensive rules.
+/// Whether `host` is loopback or private (RFC1918 / ULA / loopback).
 ///
-/// - non-empty, max 253 chars
-/// - no null bytes, no control chars
-/// - no URI delimiters that would alter URL parsing (`@`, `?`, `#`, ` `, `%`)
-/// - SSRF denials for `169.254.169.254` and `metadata.google.internal`
-pub fn validate_host(host: &str) -> Result<(), LiveError> {
+/// Used for `RSC_LS_LIVE_ALLOW_LOOPBACK` gating: when loopback is not
+/// allowed, these hosts are SSRF-denied. Handles IPv4 and IPv6 literals,
+/// bracketed IPv6 (`[::1]`), and the hostname `localhost`.
+pub(crate) fn is_loopback_or_private(host: &str) -> bool {
+    let lower = host.trim().to_ascii_lowercase();
+    let inner = if lower.starts_with('[') && lower.ends_with(']') {
+        &lower[1..lower.len() - 1]
+    } else {
+        &lower
+    };
+    if inner == "localhost" {
+        return true;
+    }
+    // Strip zone id / scope (e.g. fe80::1%lo0) for parsing.
+    let host_no_zone = inner.split('%').next().unwrap_or(inner);
+    if let Ok(addr) = host_no_zone.parse::<std::net::IpAddr>() {
+        if addr.is_loopback() {
+            return true;
+        }
+        // RFC1918 private for IPv4; ULA (fc00::/7) is considered private but not required for this flag.
+        match addr {
+            std::net::IpAddr::V4(v4) => {
+                let o = v4.octets();
+                if o[0] == 10 {
+                    return true;
+                }
+                if o[0] == 192 && o[1] == 168 {
+                    return true;
+                }
+                if o[0] == 172 && (16..=31).contains(&o[1]) {
+                    return true;
+                }
+            }
+            std::net::IpAddr::V6(_) => {
+                // Loopback already handled; ULA not denied by default to avoid over-blocking.
+            }
+        }
+    }
+    false
+}
+
+/// Whether loopback/private hosts are allowed via `RSC_LS_LIVE_ALLOW_LOOPBACK=1`.
+fn live_allow_loopback() -> bool {
+    std::env::var("RSC_LS_LIVE_ALLOW_LOOPBACK")
+        .ok()
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false)
+}
+
+/// Validate `host` with explicit loopback allowance.
+pub fn validate_host_with_allow(host: &str, allow_loopback: bool) -> Result<(), LiveError> {
     if host.is_empty() {
         return Err(LiveError::InvalidHost("empty".to_string()));
     }
@@ -812,9 +877,6 @@ pub fn validate_host(host: &str) -> Result<(), LiveError> {
             "contains control characters".to_string(),
         ));
     }
-    // Reject URI-meaningful delimiters that could be interpreted as userinfo,
-    // query, fragment or escape sequence when interpolated into the URL.
-    // Brackets and ':' are intentionally allowed for IPv6 literals (e.g. `[::1]`).
     if host.contains('@')
         || host.contains('?')
         || host.contains('#')
@@ -826,7 +888,27 @@ pub fn validate_host(host: &str) -> Result<(), LiveError> {
     if is_ssrf_denied_host(host) {
         return Err(LiveError::InvalidHost("SSRF denied host".to_string()));
     }
+    if !allow_loopback && is_loopback_or_private(host) {
+        log_warn!(
+            "live host denied (loopback/private) without RSC_LS_LIVE_ALLOW_LOOPBACK=1: {:?}",
+            host
+        );
+        return Err(LiveError::InvalidHost(
+            "loopback/private denied without RSC_LS_LIVE_ALLOW_LOOPBACK=1".to_string(),
+        ));
+    }
     Ok(())
+}
+
+/// Validate `host` per defensive rules.
+///
+/// - non-empty, max 253 chars
+/// - no null bytes, no control chars
+/// - no URI delimiters that would alter URL parsing (`@`, `?`, `#`, ` `, `%`)
+/// - SSRF denials for `169.254.169.254` and `metadata.google.internal`
+/// - loopback/private denied unless `RSC_LS_LIVE_ALLOW_LOOPBACK=1` (via `is_loopback_or_private`)
+pub fn validate_host(host: &str) -> Result<(), LiveError> {
+    validate_host_with_allow(host, live_allow_loopback())
 }
 
 /// Format host for URL: wrap bare IPv6 literals with brackets if needed.
@@ -852,8 +934,18 @@ fn format_host_for_url(host: &str) -> String {
 ///
 /// Keep in sync with `scripts/_mikrotik_shared.py::validate_host` /
 /// `format_host_for_url` / `resolve_scheme`.
+#[allow(dead_code)]
 fn build_base_url(host: &str, port: u16, scheme: &str) -> Result<url::Url, LiveError> {
-    validate_host(host)?;
+    build_base_url_with_allow(host, port, scheme, live_allow_loopback())
+}
+
+fn build_base_url_with_allow(
+    host: &str,
+    port: u16,
+    scheme: &str,
+    allow_loopback: bool,
+) -> Result<url::Url, LiveError> {
+    validate_host_with_allow(host, allow_loopback)?;
     if port == 0 {
         return Err(LiveError::InvalidPort("port 0".to_string()));
     }
@@ -865,6 +957,8 @@ fn build_base_url(host: &str, port: u16, scheme: &str) -> Result<url::Url, LiveE
     if is_ssrf_denied_host(host) {
         return Err(LiveError::InvalidHost("SSRF denied host".to_string()));
     }
+    // Loopback/private check already done via validate_host_with_allow above, but
+    // keep SSRF deny above for explicitness.
     let host_for_url = format_host_for_url(host);
     let url_str = format!("{scheme}://{host_for_url}:{port}/");
     let parsed = url::Url::parse(&url_str)
@@ -880,7 +974,12 @@ fn build_base_url(host: &str, port: u16, scheme: &str) -> Result<url::Url, LiveE
 /// Uses `build_base_url` for shared validation, then appends the resource path.
 /// Handles IPv6 bracket wrapping via `format_host_for_url`.
 fn build_rest_url(config: &LiveConfig, resource: ResourceKind) -> Result<String, LiveError> {
-    let mut base = build_base_url(&config.host, config.port, config.scheme())?;
+    let mut base = build_base_url_with_allow(
+        &config.host,
+        config.port,
+        config.scheme(),
+        config.allow_loopback,
+    )?;
     base.set_path(resource.rest_path());
     let url_str = base.to_string();
     // Re-validate full URL (scheme + host + path) via Url crate.
@@ -897,7 +996,12 @@ fn build_custom_rest_url(
     config: &LiveConfig,
     custom: &CustomResource,
 ) -> Result<String, LiveError> {
-    let mut base = build_base_url(&config.host, config.port, config.scheme())?;
+    let mut base = build_base_url_with_allow(
+        &config.host,
+        config.port,
+        config.scheme(),
+        config.allow_loopback,
+    )?;
     // Ensure custom path starts with /
     let path = if custom.path.starts_with('/') {
         custom.path.clone()
@@ -1154,7 +1258,7 @@ pub(crate) fn sanitize_values(raw: Vec<String>) -> Vec<String> {
 /// One cached live collection.
 #[derive(Clone, Debug)]
 pub struct CachedValue {
-    pub values: Vec<String>,
+    pub values: Arc<[String]>,
     pub fetched_at: Instant,
 }
 
@@ -1192,11 +1296,11 @@ impl LiveCache {
         fetched_at.elapsed() < self.ttl
     }
 
-    /// Non-blocking read: return a cloned value if the entry is fresh.
-    pub fn try_get_cached(&self, key: &str) -> Option<Vec<String>> {
+    /// Non-blocking read: return a cloned Arc if the entry is fresh (cheap, no 500-item Vec clone per keystroke).
+    pub fn try_get_cached(&self, key: &str) -> Option<Arc<[String]>> {
         let entry = self.entries.get(key)?;
         if self.is_fresh(entry.fetched_at) {
-            Some(entry.values.clone())
+            Some(Arc::clone(&entry.values))
         } else {
             None
         }
@@ -1249,10 +1353,11 @@ impl LiveCache {
             self.entries.remove(&oldest_key);
             log_debug!("live cache evicted oldest key {oldest_key:?} at cap {MAX_CACHE_ENTRIES}");
         }
+        let arc: Arc<[String]> = Arc::from(vals.into_boxed_slice());
         self.entries.insert(
             key.clone(),
             CachedValue {
-                values: vals,
+                values: arc,
                 fetched_at: Instant::now(),
             },
         );
@@ -1302,10 +1407,11 @@ impl LiveCache {
         {
             self.entries.remove(&oldest_key);
         }
+        let arc: Arc<[String]> = Arc::from(vals.into_boxed_slice());
         self.entries.insert(
             key.clone(),
             CachedValue {
-                values: vals,
+                values: arc,
                 fetched_at: at,
             },
         );
@@ -1435,7 +1541,7 @@ pub fn live_values_for_property(
     cache: &LiveCache,
     property: &str,
     type_str: &str,
-) -> Option<Vec<String>> {
+) -> Option<Arc<[String]>> {
     let res = live_resource_for_property(property, type_str)?;
     cache.try_get_cached(res.cache_key())
 }
@@ -1446,7 +1552,7 @@ pub fn live_resource_values_for_property(
     menu_path: &str,
     property: &str,
     type_str: &str,
-) -> Option<(ResourceKind, Vec<String>)> {
+) -> Option<(ResourceKind, Arc<[String]>)> {
     let res = live_resource_for_menu_property(menu_path, property, type_str)?;
     let vals = cache.try_get_cached(res.cache_key())?;
     Some((res, vals))
@@ -1460,7 +1566,7 @@ pub fn get_cached_or_fetch_background(
     cache: &Arc<Mutex<LiveCache>>,
     config: &LiveConfig,
     resource: ResourceKind,
-) -> Option<Vec<String>> {
+) -> Option<Arc<[String]>> {
     if !config.is_active() {
         return None;
     }
@@ -2030,7 +2136,18 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    fn cfg_with(map: HashMap<&str, &str>) -> LiveConfig {
+    fn cfg_with(mut map: HashMap<&str, &str>) -> LiveConfig {
+        // Tests historically use private hosts (192.168.88.1) which would now be denied by default.
+        // To keep those fixtures honest while still exercising the new SSRF flag, inject
+        // RSC_LS_LIVE_ALLOW_LOOPBACK=1 unless the test explicitly sets it.
+        if !map.contains_key("RSC_LS_LIVE_ALLOW_LOOPBACK") {
+            map.insert("RSC_LS_LIVE_ALLOW_LOOPBACK", "1");
+        }
+        LiveConfig::from_env_with(|k| map.get(k).map(|v| v.to_string()))
+    }
+
+    #[allow(dead_code)]
+    fn cfg_with_no_loopback(map: HashMap<&str, &str>) -> LiveConfig {
         LiveConfig::from_env_with(|k| map.get(k).map(|v| v.to_string()))
     }
 
@@ -2304,7 +2421,9 @@ mod tests {
 
     #[test]
     fn test_host_validation() {
-        assert!(validate_host("192.168.88.1").is_ok());
+        // Public/non-private hosts remain ok with default deny (loopback/private denied via flag).
+        assert!(validate_host_with_allow("192.168.88.1", true).is_ok());
+        assert!(validate_host_with_allow("192.168.88.1", false).is_err());
         assert!(validate_host("router.local").is_ok());
         assert!(validate_host("").is_err());
         assert!(validate_host("a".repeat(254).as_str()).is_err());
@@ -2312,6 +2431,13 @@ mod tests {
         assert!(validate_host("host\0with-null").is_err());
         assert!(validate_host("host\nnewline").is_err());
         assert!(validate_host("host\tcontrol").is_err());
+        // Loopback/private denied when flag !=1
+        assert!(validate_host_with_allow("127.0.0.1", false).is_err());
+        assert!(validate_host_with_allow("127.0.0.1", true).is_ok());
+        assert!(validate_host_with_allow("10.0.0.5", false).is_err());
+        assert!(validate_host_with_allow("192.168.1.1", false).is_err());
+        assert!(validate_host_with_allow("::1", false).is_err());
+        assert!(validate_host_with_allow("[::1]", false).is_err());
     }
 
     #[test]
@@ -2331,15 +2457,15 @@ mod tests {
                 "host delimiter should be rejected: {bad:?}"
             );
         }
-        // Brackets and ':' intentionally allowed for IPv6 literals.
-        assert!(validate_host("[::1]").is_ok());
+        // Brackets and ':' intentionally allowed for IPv6 literals (when loopback allowed).
+        assert!(validate_host_with_allow("[::1]", true).is_ok());
         assert!(validate_host("[2001:db8::1]").is_ok());
         assert!(validate_host("fe80::1").is_ok());
         // Backslash path separator rejected via fetch_interfaces host slash check (see test_fetch_interfaces_rejects_host_with_slash)
         // but validate_host itself allows '/'? No—fetch layer rejects '/' explicitly, validate rejects control/null/delimiters only.
         // Ensure normal hostnames still pass.
         assert!(validate_host("router-1.local").is_ok());
-        assert!(validate_host("192.168.88.1").is_ok());
+        assert!(validate_host_with_allow("192.168.88.1", true).is_ok());
     }
 
     #[test]
@@ -2361,9 +2487,18 @@ mod tests {
                 "SSRF host should be rejected: {bad:?}"
             );
         }
-        // Normal hosts still ok
-        assert!(validate_host("192.168.88.1").is_ok());
-        assert!(validate_host("10.0.0.1").is_ok());
+        // Normal hosts still ok when loopback allowed; otherwise private is denied.
+        assert!(validate_host_with_allow("192.168.88.1", true).is_ok());
+        assert!(validate_host_with_allow("10.0.0.1", true).is_ok());
+        assert!(validate_host_with_allow("192.168.88.1", false).is_err());
+        // Loopback/private denied without flag
+        assert!(validate_host_with_allow("127.0.0.1", false).is_err());
+        assert!(is_loopback_or_private("127.0.0.1"));
+        assert!(is_loopback_or_private("10.0.0.1"));
+        assert!(is_loopback_or_private("192.168.1.1"));
+        assert!(is_loopback_or_private("::1"));
+        assert!(!is_loopback_or_private("8.8.8.8"));
+        assert!(!is_loopback_or_private("router.local"));
     }
 
     #[test]
@@ -2469,7 +2604,7 @@ mod tests {
         let now = Instant::now();
         cache.insert_with_time("interfaces".to_string(), vec!["ether1".to_string()], now);
         assert_eq!(
-            cache.try_get_cached("interfaces"),
+            cache.try_get_cached("interfaces").map(|a| a.to_vec()),
             Some(vec!["ether1".to_string()])
         );
 
@@ -2509,6 +2644,9 @@ mod tests {
         let vals = cache.try_get_cached("interfaces").unwrap();
         assert!(!vals.contains(&overlong));
         assert!(vals.contains(&"ok".to_string()));
+        // Ensure Arc is cloned cheaply (pointer equality after clone).
+        let vals2 = cache.try_get_cached("interfaces").unwrap();
+        assert!(Arc::ptr_eq(&vals, &vals2));
     }
 
     #[test]
@@ -2521,24 +2659,24 @@ mod tests {
 
         // Property name match
         assert_eq!(
-            live_values_for_property(&cache, "interface", "string"),
+            live_values_for_property(&cache, "interface", "string").map(|a| a.to_vec()),
             Some(vec!["ether1".to_string(), "wlan1".to_string()])
         );
         assert_eq!(
-            live_values_for_property(&cache, "bridge", "string"),
+            live_values_for_property(&cache, "bridge", "string").map(|a| a.to_vec()),
             Some(vec!["ether1".to_string(), "wlan1".to_string()])
         );
         assert_eq!(
-            live_values_for_property(&cache, "actual-interface", "string"),
+            live_values_for_property(&cache, "actual-interface", "string").map(|a| a.to_vec()),
             Some(vec!["ether1".to_string(), "wlan1".to_string()])
         );
         // Type contains iface
         assert_eq!(
-            live_values_for_property(&cache, "foo", "iface_enum"),
+            live_values_for_property(&cache, "foo", "iface_enum").map(|a| a.to_vec()),
             Some(vec!["ether1".to_string(), "wlan1".to_string()])
         );
         assert_eq!(
-            live_values_for_property(&cache, "foo", "IFACE"),
+            live_values_for_property(&cache, "foo", "IFACE").map(|a| a.to_vec()),
             Some(vec!["ether1".to_string(), "wlan1".to_string()])
         );
         // Non-matching property and type => None
@@ -2612,7 +2750,10 @@ mod tests {
         m.insert("MIKROTIK_PASS", "secret");
         let cfg = cfg_with(m);
         let res = get_cached_or_fetch_background(&cache, &cfg, ResourceKind::Interfaces);
-        assert_eq!(res, Some(vec!["ether1".to_string(), "ether2".to_string()]));
+        assert_eq!(
+            res.map(|a| a.to_vec()),
+            Some(vec!["ether1".to_string(), "ether2".to_string()])
+        );
     }
 
     #[test]
@@ -2790,29 +2931,34 @@ mod tests {
         cache.insert("ip_pools".to_string(), vec!["dhcp-pool".to_string()]);
 
         assert_eq!(
-            live_resource_values_for_property(&cache, "", "interface", "string"),
+            live_resource_values_for_property(&cache, "", "interface", "string")
+                .map(|(k, v)| (k, v.to_vec())),
             Some((ResourceKind::Interfaces, vec!["ether1".to_string()]))
         );
         assert_eq!(
-            live_resource_values_for_property(&cache, "", "address", "ipPrefix"),
+            live_resource_values_for_property(&cache, "", "address", "ipPrefix")
+                .map(|(k, v)| (k, v.to_vec())),
             Some((
                 ResourceKind::IpAddresses,
                 vec!["192.168.88.1/24".to_string()]
             ))
         );
         assert_eq!(
-            live_resource_values_for_property(&cache, "", "src-address-list", "string"),
+            live_resource_values_for_property(&cache, "", "src-address-list", "string")
+                .map(|(k, v)| (k, v.to_vec())),
             Some((ResourceKind::AddressLists, vec!["allowed_ips".to_string()]))
         );
         assert_eq!(
-            live_resource_values_for_property(&cache, "/ip/firewall/filter", "chain", "string"),
+            live_resource_values_for_property(&cache, "/ip/firewall/filter", "chain", "string")
+                .map(|(k, v)| (k, v.to_vec())),
             Some((
                 ResourceKind::FirewallFilterChains,
                 vec!["forward".to_string(), "input".to_string()]
             ))
         );
         assert_eq!(
-            live_resource_values_for_property(&cache, "", "pool", "string"),
+            live_resource_values_for_property(&cache, "", "pool", "string")
+                .map(|(k, v)| (k, v.to_vec())),
             Some((ResourceKind::IpPools, vec!["dhcp-pool".to_string()]))
         );
     }
