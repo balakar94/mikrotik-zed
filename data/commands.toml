@@ -2,8 +2,8 @@
 # Auto-generated from llms-full.txt
 # Covers: /app, /beep, /blink, /caps-man, /certificate, /console, /container, /disk, /dude, /environment, /file, /import, … (1077 menus)
 # RouterOS version: 7.23.2
-# Generated: 2026-08-29T15:47:24.041416Z
-# Source hash (sha256[:16]): 5503bd5858cf82d0
+# Generated: 2026-09-01T20:25:24.258597Z
+# Source hash (sha256[:16]): 26931e452e8d23f5
 
 [[menus]]
 path = "/app"
@@ -42818,50 +42818,65 @@ type = "Settings Directory"
 name = "enabled"
 type = "enum (yes | no)"
 enum_values = ["yes", "no"]
+description = "Enables or disables the CWMP protocol."
 [[menus.arguments]]
 name = "acs-url"
 type = "string"
+description = "URL of the Auto Configuration Server (ACS). If the ACS is accessed using HTTPS, a Root CA must be imported in the client certificate store to verify the ACS server certificate."
 [[menus.arguments]]
 name = "username"
 type = "string"
+description = "HTTP authentication username used by the CPE to authenticate with the ACS."
 [[menus.arguments]]
 name = "password"
 type = "string"
+description = "HTTP authentication password used by the CPE to authenticate with the ACS."
 [[menus.arguments]]
 name = "periodic-inform-enabled"
 type = "bool"
+description = "Enables or disables CPE periodic session initiation. The timer starts after every successful session. When a session is started by the periodic interval, the Inform RPC contains a \"2 PERIODIC\" event. Maps to `Device.ManagementServer.PeriodicInformEnable`."
 [[menus.arguments]]
 name = "periodic-inform-interval"
 type = "time"
+description = "Timer interval of the periodic inform. Maps to `Device.ManagementServer.PeriodicInformInterval`."
 [[menus.arguments]]
 name = "connection-request-username"
 type = "string"
+description = "Username used by the ACS to authenticate with the CPE for Connection Requests."
 [[menus.arguments]]
 name = "connection-request-password"
 type = "string"
+description = "Password used by the ACS to authenticate with the CPE for Connection Requests."
 [[menus.arguments]]
 name = "connection-request-port"
 type = "num"
+description = "Port on which the CPE listens for Connection Requests from the ACS."
 [[menus.arguments]]
 name = "provisioning-code"
 type = "string"
+description = "Provisioning code for the device."
 [[menus.arguments]]
 name = "client-certificate"
 type = "enum (none)"
 enum_values = ["none"]
+description = "Certificate from the certificate store that can be used by the ACS for extra authentication."
 [[menus.arguments]]
 name = "check-certificate"
 type = "enum (yes | no)"
 enum_values = ["yes", "no"]
+description = "Whether to check the ACS server certificate."
 [[menus.read_only]]
 name = "status"
 type = "enum (disabled | initializing | error | waiting-url | running)"
+description = "Informative status of the CWMP client. Disabled means the protocol is disabled, waiting-url means the protocol is enabled but the ACS URL is not configured, and running means CWMP is configured correctly and will communicate with the ACS on events."
 [[menus.read_only]]
 name = "last-session-error"
 type = "string"
+description = "User-friendly error description indicating why the previous session did not finish successfully."
 [[menus.read_only]]
 name = "retry-count"
 type = "num"
+description = "Consecutive unsuccessful session count. If greater than 0, last-session-error should indicate the error. Resets to 0 on a successful session, disabled protocol, or reboot."
 
 [[menus]]
 path = "/tr069-client/reset-tr069-config"
