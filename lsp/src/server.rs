@@ -40,6 +40,7 @@ use crate::symbols;
 use std::collections::HashMap;
 use std::io::{BufReader, Write};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 /// Resolved payload of one quick-fix suggestion: the candidate shown in
 /// the action title and the text actually spliced into the document.
@@ -448,9 +449,10 @@ impl Server {
         method: &str,
         params: &serde_json::Value,
     ) -> Option<serde_json::Value> {
+        let start = Instant::now();
         let id = params.get("id").cloned().unwrap_or(serde_json::Value::Null);
 
-        match method {
+        let result = match method {
             "initialize" => {
                 // Reuses the request `id` extracted once above the dispatch.
                 // Negotiate the position encoding (LSP 3.17): prefer utf-8
@@ -1650,7 +1652,27 @@ impl Server {
                     None
                 }
             }
-        }
+        };
+        let duration_ms = start.elapsed().as_millis() as u64;
+        let uri_opt = params
+            .get("params")
+            .and_then(|p| p.get("textDocument"))
+            .and_then(|t| t.get("uri"))
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                params
+                    .pointer("/params/textDocument/uri")
+                    .and_then(|v| v.as_str())
+            })
+            .or_else(|| params.pointer("/params/uri").and_then(|v| v.as_str()));
+        let suffix = crate::logging::request_suffix(
+            method,
+            uri_opt,
+            duration_ms,
+            self.position_encoding.as_str(),
+        );
+        log_debug!("handled {}", suffix); // never logs raw URI or MIKROTIK_PASS
+        result
     }
 
     /// Compute diagnostics for `doc` and convert emitted range characters

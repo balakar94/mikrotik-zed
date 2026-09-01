@@ -11,6 +11,8 @@
 // bodies reference [`should_log`] through the absolute `crate::logging::`
 // path, which resolves correctly at every expansion site inside this crate.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -47,6 +49,17 @@ pub(crate) fn log_level() -> LogLevel {
 
 pub(crate) fn should_log(level: LogLevel) -> bool {
     level <= log_level()
+}
+
+/// Short hash for URI (8 hex, SipHash) — never log raw URI.
+pub(crate) fn uri_hash(uri: &str) -> String {
+    let mut h = DefaultHasher::new();
+    uri.hash(&mut h);
+    format!("{:016x}", h.finish())[..8].to_string()
+}
+pub(crate) fn request_suffix(m: &str, uri: Option<&str>, d: u64, enc: &str) -> String {
+    let h = uri.map(uri_hash).unwrap_or_else(|| "none".to_string());
+    format!("method={m} uri_hash={h} latency={d}ms encoding={enc}")
 }
 
 macro_rules! log_error {
