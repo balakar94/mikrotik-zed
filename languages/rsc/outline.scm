@@ -24,4 +24,4 @@
 
 ; Global commands (e.g., :put, :local, :if)
 (global_command
-  (identifier) @name) @item
+  (global_command_name (identifier) @name) @item)

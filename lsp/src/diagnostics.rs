@@ -293,19 +293,32 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                 {
                     let allowed_vals = arg.enum_members();
                     if !allowed_vals.is_empty() {
-                        // Strip quotes from value
-                        let val = value.trim().trim_matches('"').trim_matches('\'');
-                        // Empty value is not an error here (user may be completing)
+                        // Strip outer quotes and whitespace; empty remains non-error (completion).
+                        let raw = value.trim().trim_matches('"').trim_matches('\'');
+                        let val = raw.trim();
                         if val.is_empty() {
                             continue;
                         }
-                        // Handle comma-separated values? RouterOS may allow comma lists, but we check single
-                        // For simplicity, check if val is in allowed list
-                        // Also allow values with trailing comma?
-                        let is_valid = allowed_vals.iter().any(|v| {
-                            v == val || v.trim() == val
-                            // Handle values that may be prefix? No, strict equality
-                        });
+                        // Comma-separated enum lists (e.g. address-list=foo,bar):
+                        // split on ',' and trim each member; single-value path keeps
+                        // strict equality, list path is lenient — only emit when NO
+                        // member matches (reduces false positives for mixed lists).
+                        let is_valid = if val.contains(',') {
+                            let members: Vec<&str> = val
+                                .split(',')
+                                .map(|s| s.trim().trim_matches('"').trim_matches('\'').trim())
+                                .filter(|s| !s.is_empty())
+                                .collect();
+                            if members.is_empty() {
+                                false
+                            } else {
+                                members
+                                    .iter()
+                                    .any(|m| allowed_vals.iter().any(|v| v == *m || v.trim() == *m))
+                            }
+                        } else {
+                            allowed_vals.iter().any(|v| v == val || v.trim() == val)
+                        };
                         if !is_valid {
                             // Narrow the recorded token span to the value part
                             // only (skip "key="), keeping any quotes in range.
@@ -330,7 +343,53 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
         }
     }
 
-    // If we capped lines, add a hint diagnostic about truncation? Not necessary.
+    // ---- Truncation hint (O-01) -----------------------------------------
+    // When the document was capped by MAX_DIAG_BYTES or MAX_DIAG_LINES, emit
+    // a single Information diagnostic so the user understands some issues
+    // beyond the limit are not shown. The capped slicing above stays intact;
+    // this adds at most one extra diagnostic (bounded).
+    let bytes_truncated = doc.len() > MAX_DIAG_BYTES;
+    let lines_truncated = logical_lines.len() > MAX_DIAG_LINES;
+    let truncation_hint = if bytes_truncated || lines_truncated {
+        let message = match (lines_truncated, bytes_truncated) {
+            (true, true) => format!(
+                "Diagnostic truncated: showing first {} of {} lines (and {} of {} bytes) — some issues beyond limit not shown",
+                MAX_DIAG_LINES,
+                logical_lines.len(),
+                MAX_DIAG_BYTES,
+                doc.len()
+            ),
+            (true, false) => format!(
+                "Diagnostic truncated: showing first {} of {} lines — some issues beyond limit not shown",
+                MAX_DIAG_LINES,
+                logical_lines.len()
+            ),
+            (false, true) => format!(
+                "Diagnostic truncated: showing first {} of {} bytes — some issues beyond limit not shown",
+                MAX_DIAG_BYTES,
+                doc.len()
+            ),
+            (false, false) => unreachable!(),
+        };
+        Some(Diagnostic {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 0,
+                },
+            },
+            severity: Some(severity::INFORMATION),
+            code: Some("truncated".to_string()),
+            source: Some(DIAGNOSTIC_SOURCE.to_string()),
+            message,
+        })
+    } else {
+        None
+    };
 
     // ---- Syntactic structure rules (unclosed/unmatched braces, quotes) ----
     // Computed over the FULL document, deliberately NOT the byte-capped slice
@@ -340,6 +399,10 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
     // profile as folding ranges) and the server already caps tracked
     // documents at 5 MiB.
     diagnostics.extend(syntax_diagnostics(doc));
+
+    if let Some(hint) = truncation_hint {
+        diagnostics.push(hint);
+    }
 
     diagnostics
 }
@@ -1057,8 +1120,9 @@ type = "bool"
         }
         let diags = compute_diagnostics(&data, &doc, "file:///test.rsc");
         // Should be capped at MAX_DIAG_LINES (3000) -> at most 3000 diagnostics (one per line)
+        // plus one truncation hint (Information) when truncated.
         assert!(
-            diags.len() <= MAX_DIAG_LINES,
+            diags.len() <= MAX_DIAG_LINES + 1,
             "diagnostics should be capped, got {}",
             diags.len()
         );
@@ -1191,6 +1255,63 @@ type = "enum (a | b"
         assert!(
             !ok.iter()
                 .any(|d| d.code.as_deref() == Some("invalid-enum-value"))
+        );
+    }
+
+    #[test]
+    fn test_comma_separated_enum_list_valid() {
+        let data = synthetic_data();
+        // Single valid member in list should be considered valid (lenient: any matches)
+        let doc = "/ip/firewall/filter add chain=input,forward action=accept";
+        let diags = compute_diagnostics(&data, doc, "file:///t.rsc");
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("invalid-enum-value")),
+            "comma list with at least one valid member must not hint, got {diags:?}"
+        );
+
+        // Variants with spaces and mixed valid/invalid: still lenient (any valid => no hint)
+        let doc2 = "/ip/firewall/filter add chain=input , forward action=accept,drop";
+        let diags2 = compute_diagnostics(&data, doc2, "file:///t.rsc");
+        assert!(
+            !diags2
+                .iter()
+                .any(|d| d.code.as_deref() == Some("invalid-enum-value")),
+            "comma list with spaces and valid members must not hint, got {diags2:?}"
+        );
+
+        // No member matches -> must hint
+        let doc3 = "/ip/firewall/filter add chain=bogus,also-bogus action=accept";
+        let diags3 = compute_diagnostics(&data, doc3, "file:///t.rsc");
+        assert!(
+            diags3
+                .iter()
+                .any(|d| d.code.as_deref() == Some("invalid-enum-value")),
+            "comma list with zero valid members must hint, got {diags3:?}"
+        );
+
+        // Empty value stays silent (existing early return)
+        let doc4 = "/ip/firewall/filter add chain= action=accept";
+        let diags4 = compute_diagnostics(&data, doc4, "file:///t.rsc");
+        assert!(
+            !diags4
+                .iter()
+                .any(|d| d.code.as_deref() == Some("invalid-enum-value")),
+            "empty value must not hint"
+        );
+    }
+
+    #[test]
+    fn test_comma_separated_enum_single_value_still_strict() {
+        let data = synthetic_data();
+        let doc = "/ip/firewall/filter add chain=invalid action=accept";
+        let diags = compute_diagnostics(&data, doc, "file:///t.rsc");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("invalid-enum-value")),
+            "single invalid value must still hint"
         );
     }
 }
@@ -1517,13 +1638,14 @@ type = "bool"
         let data = synth();
         let doc = "/unknown/menu add x=1\n".repeat(4000);
         let diags = compute_diagnostics(&data, &doc, "file:///a.rsc");
-        assert!(diags.len() <= MAX_DIAG_LINES);
-        assert!(diags.len() <= 3000);
+        assert!(diags.len() <= MAX_DIAG_LINES + 1);
+        assert!(diags.len() <= 3001);
         assert!(!diags.is_empty());
-        // All should be unknown-menu
+        // All except the truncation hint should be unknown-menu
         assert!(
             diags
                 .iter()
+                .filter(|d| d.code.as_deref() != Some("truncated"))
                 .all(|d| d.code.as_deref() == Some("unknown-menu"))
         );
     }
@@ -1537,8 +1659,8 @@ type = "bool"
         let doc = long_line.repeat(2000); // ~1M bytes
         assert!(doc.len() > MAX_DIAG_BYTES);
         let diags = compute_diagnostics(&data, &doc, "file:///a.rsc");
-        // Should be capped (either lines or bytes)
-        assert!(diags.len() <= MAX_DIAG_LINES);
+        // Should be capped (either lines or bytes) plus truncation hint
+        assert!(diags.len() <= MAX_DIAG_LINES + 1);
         assert!(!diags.is_empty());
         // Ensure first diags preserved
         assert_eq!(diags[0].range.start.line, 0);
@@ -1554,7 +1676,7 @@ type = "bool"
         }
         doc.push_str(&"/unknown/menu add x=1\n".repeat(5000));
         let diags = compute_diagnostics(&data, &doc, "file:///a.rsc");
-        assert!(diags.len() <= 3000);
+        assert!(diags.len() <= 3001);
         // First 5 should be present
         for i in 0..5 {
             let needle = format!("/unknown{}/menu", i);

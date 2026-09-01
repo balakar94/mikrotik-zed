@@ -39,6 +39,13 @@ pub(crate) const MAX_CODE_ACTIONS: usize = 8;
 pub(crate) const MAX_DIAG_LINES: usize = 3000;
 pub(crate) const MAX_DIAG_BYTES: usize = 500_000; // cap per-doc bytes considered for diagnostics
 
+/// Maximum number of completion items returned per `textDocument/completion` request.
+///
+/// Bounds the response payload and keeps client fuzzy filtering responsive;
+/// 200 covers even large menu/path sets with headroom while staying well
+/// below the typical client limits for a single completion response.
+pub(crate) const MAX_COMPLETION_ITEMS: usize = 200;
+
 // ── Live device data caps ─────────────────────────────────────────
 // These bound the in-memory, TTL-scoped cache for RouterOS live data
 // (never persisted, never overwrites `data/commands.toml`). They keep

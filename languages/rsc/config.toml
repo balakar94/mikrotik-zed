@@ -1,9 +1,9 @@
 name = "MikroTik Script"
 grammar = "rsc"
 path_suffixes = ["rsc"]
-line_comments = ["# "]
+line_comments = ["#"]
 autoclose_before = ";:.,=}])>\"' \t\n"
-word_characters = ["_", "-", "$"]
+word_characters = ["_", "-", "$", "@"]
 
 brackets = [
     { start = "{", end = "}", close = true, newline = true },

@@ -109,6 +109,18 @@ pub fn compute_hover(
             }
         }
 
+        if !menu.read_only.is_empty() {
+            md.push_str("\n\n**Read-only:**");
+            for ro in &menu.read_only {
+                let desc = if ro.description.is_empty() {
+                    ""
+                } else {
+                    &ro.description
+                };
+                md.push_str(&format!("\n  {} — {}", ro.name, desc));
+            }
+        }
+
         return Some(Hover {
             contents: HoverContents {
                 kind: "markdown".to_string(),
@@ -164,8 +176,11 @@ pub fn compute_hover(
         }
     }
 
-    // Check if it's a standard verb
-    if MenuData::STANDARD_VERBS.contains(&word) {
+    // Check if it's a standard verb (case-insensitive: RouterOS verbs are case-insensitive)
+    if MenuData::STANDARD_VERBS
+        .iter()
+        .any(|v| word.eq_ignore_ascii_case(v))
+    {
         let md = format!("**{}**\n\nStandard RouterOS command.", word);
         return Some(Hover {
             contents: HoverContents {
@@ -519,9 +534,34 @@ enum_values = ["on", "off", "auto"]
     #[test]
     fn test_hover_verb_case_sensitive() {
         let data = synthetic_data();
+        // Verbs are now case-insensitive (RouterOS is case-insensitive for commands)
         let line = "/ip/address Add"; // capital A
         let h = hover_at(&data, line, line.find("Add").unwrap() + 1);
-        assert!(h.is_none(), "verb hover is case-sensitive");
+        assert!(
+            h.is_some(),
+            "verb hover is now case-insensitive — 'Add' should resolve, got None"
+        );
+        assert!(h.unwrap().contents.value.contains("Add"));
+    }
+
+    #[test]
+    fn test_hover_verb_case_insensitive() {
+        let data = synthetic_data();
+        for (line, word) in [
+            ("/ip/address Add", "Add"),
+            ("/ip/address PRINT", "PRINT"),
+            ("/ip/firewall/filter Disable", "Disable"),
+        ] {
+            let pos = line.find(word).unwrap() + 1;
+            let h = hover_at(&data, line, pos)
+                .unwrap_or_else(|| panic!("case-insensitive verb '{word}' should hover"));
+            assert!(
+                h.contents.value.contains(word),
+                "hover for '{word}' must contain original casing, got: {}",
+                h.contents.value
+            );
+            assert!(h.contents.value.contains("Standard RouterOS command"));
+        }
     }
 
     // ── Not found / edge cases ────────────────────────────────────
@@ -877,5 +917,46 @@ type = "Directory"
         let pos = line2.rfind("address=").unwrap() + 1;
         let h2 = compute_hover(&data, line2, pos, line2, 0).expect("real prop");
         assert!(h2.contents.value.contains("address"));
+    }
+
+    #[test]
+    fn test_hover_menu_shows_read_only() {
+        let data = MenuData::from_toml_str(
+            r#"
+[[menus]]
+path = "/demo/ro"
+type = "Directory"
+[[menus.arguments]]
+name = "name"
+type = "string"
+[[menus.flags]]
+name = "X"
+description = "disabled"
+[[menus.read_only]]
+name = "creation-time"
+type = "string"
+description = "when created"
+[[menus.read_only]]
+name = "dynamic-id"
+type = "string"
+description = ""
+"#,
+        );
+        let h = hover_at(&data, "/demo/ro", 2).expect("menu hover with read-only");
+        assert!(h.contents.value.contains("**Arguments:**"));
+        assert!(h.contents.value.contains("**Flags:**"));
+        assert!(h.contents.value.contains("**Read-only:**"));
+        assert!(h.contents.value.contains("creation-time — when created"));
+        // Empty description fallback: "name — " (same as flags)
+        assert!(h.contents.value.contains("dynamic-id —"));
+        assert_eq!(h.contents.kind, "markdown");
+    }
+
+    #[test]
+    fn test_hover_menu_without_read_only_no_section() {
+        let data = synth();
+        // synth has no read_only, so section must be absent
+        let h = hover_at(&data, "/ip/address", 2).expect("menu hover");
+        assert!(!h.contents.value.contains("Read-only:"));
     }
 }

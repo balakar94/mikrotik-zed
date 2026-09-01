@@ -6,5 +6,6 @@
 ; @start.<suffix>, tied to config.toml regex rules).
 ; The legacy @indent.begin/@indent.end/@indent.continue names no longer exist.
 (block) @indent
+(array) @indent
 (command_substitution) @indent
 (subexpression) @indent

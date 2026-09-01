@@ -270,7 +270,7 @@ fn test_large_doc_diagnostics_capped() {
     let data = synth();
     let doc = "/unknown/menu add x=1\n".repeat(4000);
     let diags = diagnostics::compute_diagnostics(&data, &doc, "file:///a.rsc");
-    assert!(diags.len() <= 3000);
+    assert!(diags.len() <= 3001);
 }
 
 #[test]

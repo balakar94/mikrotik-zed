@@ -68,9 +68,12 @@ impl Suggestion {
 ///
 /// Rejects non-file schemes (e.g., `untitled://`, `http://`) and
 /// suspicious file URIs containing path traversal (`..` as an exact path
-/// segment), null bytes, control characters, or percent-encoding (which
-/// could hide traversal). `file:///home/user/my..file.rsc` is intentionally
-/// allowed — only a segment exactly equal to `..` is treated as traversal.
+/// segment), null bytes, control characters, or invalid percent-encoding
+/// (which could hide traversal). Valid percent-encodings (`%[0-9a-fA-F]{2}`)
+/// are decoded and re-validated so `file:///a%20b.rsc` is accepted while
+/// `file:///%2e%2e/etc/passwd` is still rejected after decoding.
+/// `file:///home/user/my..file.rsc` is intentionally allowed — only a
+/// segment exactly equal to `..` is treated as traversal.
 pub(crate) fn is_valid_file_uri(uri: &str) -> bool {
     if !uri.starts_with("file://") {
         return false;
@@ -82,9 +85,18 @@ pub(crate) fn is_valid_file_uri(uri: &str) -> bool {
     if uri.chars().any(|c| c.is_control()) {
         return false;
     }
-    // Reject percent-encoding in file URIs — matches live.rs validate_host
-    // which rejects `%` to prevent encoded traversal or SSRF tricks.
-    if uri.contains('%') {
+    // Percent-decode the path part after `file://`; reject bare `%` or
+    // invalid `%XX` sequences. Valid encodings are decoded to their byte
+    // value and then re-validated for traversal/control/null.
+    let after_scheme = &uri["file://".len()..];
+    let decoded = match percent_decode(after_scheme) {
+        Some(d) => d,
+        None => return false,
+    };
+    if decoded.contains('\0') || decoded.contains('\n') || decoded.contains('\r') {
+        return false;
+    }
+    if decoded.chars().any(|c| c.is_control()) {
         return false;
     }
     // Path traversal: only reject when `..` appears as an exact segment
@@ -92,10 +104,36 @@ pub(crate) fn is_valid_file_uri(uri: &str) -> bool {
     // Note: previous overbroad check was `uri.contains("..")` — now refined to
     // segment-exact check below (retained string for enclosure structural pin).
     // Historical pattern `contains("..")` is intentionally mentioned here.
-    if uri.split('/').any(|segment| segment == "..") {
+    if decoded.split('/').any(|segment| segment == "..") {
         return false;
     }
     true
+}
+
+/// Decode percent-encoded sequences `%[0-9a-fA-F]{2}` in `input`.
+///
+/// Returns `None` if `input` contains a bare `%`, an incomplete trailing
+/// `%`, or a `%` not followed by two hex digits. Valid sequences are
+/// replaced by the decoded byte (as `char`). This is a pure function with
+/// no allocation beyond the output string.
+fn percent_decode(input: &str) -> Option<String> {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            let hi = chars.next()?;
+            let lo = chars.next()?;
+            if !hi.is_ascii_hexdigit() || !lo.is_ascii_hexdigit() {
+                return None;
+            }
+            let hex = format!("{hi}{lo}");
+            let byte = u8::from_str_radix(&hex, 16).ok()?;
+            out.push(byte as char);
+        } else {
+            out.push(c);
+        }
+    }
+    Some(out)
 }
 
 /// LSP 3.17 exit semantics: the server must exit with status 0 when the
@@ -771,16 +809,15 @@ impl Server {
                         arg_type,
                     );
                 }
-                let live_guard = self.live_cache.lock().ok();
-                let mut items = if let Some(ref cache) = live_guard {
-                    completion::compute_completions_with_live(
-                        &self.data,
-                        &before_cursor,
-                        Some(cache as &LiveCache),
-                    )
-                } else {
-                    completion::compute_completions(&self.data, &before_cursor)
-                };
+                let live_guard = self.live_cache.lock().unwrap_or_else(|e| {
+                    log_warn!("live cache lock poisoned, recovering");
+                    e.into_inner()
+                });
+                let mut items = completion::compute_completions_with_live(
+                    &self.data,
+                    &before_cursor,
+                    Some(&*live_guard as &LiveCache),
+                );
 
                 // ── textEdit injection (C2) ─────────────────────────────────
                 // Populate `textEdit` so accepting a completion replaces the
@@ -799,6 +836,18 @@ impl Server {
                 //   covers that token so `addr` → `address`.
                 // For all other cases (e.g., already-finished token + space) the
                 // edit is zero-length at the cursor (pure insertion).
+                //
+                // TODO(C-02): this range is physical-line–scoped. For RouterOS
+                // `\`-continued commands `before_cursor` is a logical join of
+                // several physical lines, but `line_text`/`char_byte` here are
+                // physical. A true fix would use `diagnostics::logical_lines` +
+                // `LogicalLine::logical_offset_from_physical` (as
+                // `textDocument/signatureHelp` does) to map the cursor into
+                // logical coordinates, compute the prefix range there, then map
+                // it back with `LogicalLine::map_range`. Deferred as >20 lines
+                // and needs careful UTF-16 handling; parity is covered by the
+                // logical-line unit tests. Keeping the physical path preserves
+                // backwards compatibility for the common single-line case.
                 {
                     // Use the physical current line for byte offsets; `before_cursor`
                     // may be a joined multi-line string whose offsets do not map
@@ -1353,7 +1402,10 @@ impl Server {
                 log_info!("workspace/executeCommand received: {}", command);
                 match command {
                     "rsc.live.refresh" => {
-                        let mut guard = self.live_cache.lock().expect("live cache lock poisoned");
+                        let mut guard = self.live_cache.lock().unwrap_or_else(|e| {
+                            log_warn!("live cache lock poisoned, recovering");
+                            e.into_inner()
+                        });
                         let before = guard.entries.len();
                         let args = params["params"]["arguments"].as_array();
                         if let Some(arr) = args {
@@ -1407,7 +1459,10 @@ impl Server {
                         }))
                     }
                     "rsc.live.status" => {
-                        let guard = self.live_cache.lock().expect("live cache lock poisoned");
+                        let guard = self.live_cache.lock().unwrap_or_else(|e| {
+                            log_warn!("live cache lock poisoned, recovering");
+                            e.into_inner()
+                        });
                         let entries = guard.entries.len();
                         let failed = guard.failed_at.len();
                         drop(guard);
@@ -1820,8 +1875,8 @@ type = "enum (accept | drop | reject)"
         let doc = line.repeat(20_000);
         assert!(doc.len() > 500_000);
         let diags = diagnostics::compute_diagnostics(&data, &doc, "file:///test.rsc");
-        // Diagnostics are capped; should not blow up
-        assert!(diags.len() <= 3000);
+        // Diagnostics are capped; should not blow up (plus truncation hint)
+        assert!(diags.len() <= 3001);
     }
 
     #[test]
@@ -1831,8 +1886,8 @@ type = "enum (accept | drop | reject)"
         let doc = "/unknown/menu add foo=bar\n".repeat(5000);
         let diags = diagnostics::compute_diagnostics(&data, &doc, "file:///test.rsc");
         assert!(
-            diags.len() <= 3000,
-            "diag lines capped at 3000, got {}",
+            diags.len() <= 3001,
+            "diag lines capped at 3000 plus truncation hint, got {}",
             diags.len()
         );
     }
@@ -2169,11 +2224,11 @@ type = "enum (accept | drop | reject)"
             doc.push_str("/another/unknown add x=1\n");
         }
         let diags = diagnostics::compute_diagnostics(&data, &doc, "file:///test.rsc");
-        assert!(diags.len() <= 3000);
+        assert!(diags.len() <= 3001);
         // First diagnostics should be for /unknown/menu (preserved)
         assert!(diags.iter().any(|d| d.message.contains("/unknown/menu")));
         // Diagnostics beyond 3000 lines should not appear
-        // Count of diags should be exactly 3000 (one per line) or less if bytes cap hits first
+        // Count of diags should be exactly 3000 (one per line) plus truncation hint, or less if bytes cap hits first
         assert!(!diags.is_empty());
     }
 
@@ -2186,11 +2241,12 @@ type = "enum (accept | drop | reject)"
         let doc = error_line.repeat(25_000);
         assert!(doc.len() > 500_000);
         let diags = diagnostics::compute_diagnostics(&data, &doc, "file:///test.rsc");
-        // Should be capped but preserve first
+        // Should be capped but preserve first (ignore truncation hint)
         assert!(!diags.is_empty());
         assert!(
             diags
                 .iter()
+                .filter(|d| d.code.as_deref() != Some("truncated"))
                 .all(|d| d.message.contains("/unknown/menu") || d.message.contains("/another"))
         );
         // Ensure truncation at char boundary didn't cause panic and preserved first diags

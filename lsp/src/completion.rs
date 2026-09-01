@@ -11,6 +11,7 @@
 //   with that typed token — script globals and statement snippets. Menu
 //   paths and property names make no sense after a colon.
 
+use crate::caps::MAX_COMPLETION_ITEMS;
 use crate::live::{LiveCache, live_resource_values_for_property};
 use crate::menus::{ArgEntry, LineContext, MenuData};
 
@@ -98,6 +99,7 @@ impl CompletionItem {
     }
 }
 
+#[allow(dead_code)]
 pub fn compute_completions(data: &MenuData, before_cursor: &str) -> Vec<CompletionItem> {
     compute_completions_with_live(data, before_cursor, None)
 }
@@ -147,6 +149,15 @@ pub fn compute_completions_with_live(
     if let Some(typed) = colon_token {
         let lower = typed.to_ascii_lowercase();
         items.retain(|item| item.label.to_ascii_lowercase().starts_with(&lower));
+    }
+
+    // Cap the final payload to keep the response bounded; live enrichment
+    // has already been merged above so its items participate in the cap
+    // rather than being appended after it. Deterministic order is preserved
+    // (root items are sorted, other contexts have a stable construction
+    // order) so truncation is reproducible.
+    if items.len() > MAX_COMPLETION_ITEMS {
+        items.truncate(MAX_COMPLETION_ITEMS);
     }
 
     items

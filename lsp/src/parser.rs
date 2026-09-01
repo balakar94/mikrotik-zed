@@ -20,35 +20,149 @@ pub(crate) struct SpanToken {
     pub end: usize,
 }
 
+// ── Unified quote / escape / comment contract ───────────────────
+//
+// Single source of truth for RouterOS string and comment semantics. All
+// three scanners (`scan_token`, `effective_content_end`, `walk_structure`)
+// funnel their `"`, `'`, `\`, `#` transitions through [`QuoteState`], so
+// folding and diagnostics cannot drift apart:
+//
+// - Inside `"..."` / `'...'` a `\` escapes the next byte (the escaped byte
+//   loses all structural meaning — it cannot close a quote, start a comment,
+//   or delimit a token). Escape is recognised INSIDE quotes only; a `\`
+//   outside quotes is literal (shipped folding behaviour).
+// - `"` toggles `in_double` only when not inside `'`, and `'` only when not
+//   inside `"`; they never nest.
+// - An unquoted `#` starts a comment that runs to end-of-line; inside a
+//   string it is literal content.
+// - Quote state carries ACROSS physical lines (RouterOS `\` continuations
+//   can split a string); `escaped` and comment states reset at each line
+//   boundary.
+//
+// Any change to RouterOS quoting must be made here and the parity tests
+// (`test_quote_state_parity`) will catch drift.
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct QuoteState {
+    in_double: bool,
+    in_single: bool,
+    escaped: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuoteAdvance {
+    Escaped,
+    EscapeStart,
+    DoubleOpen,
+    DoubleClose,
+    SingleOpen,
+    SingleClose,
+    CommentStart,
+    Other(u8),
+}
+
+impl QuoteState {
+    pub(crate) fn new() -> Self {
+        Self {
+            in_double: false,
+            in_single: false,
+            escaped: false,
+        }
+    }
+
+    pub(crate) fn is_in_quote(&self) -> bool {
+        self.in_double || self.in_single
+    }
+
+    /// Reset per-line transient state (`escaped`) while preserving quote
+    /// continuity across physical lines (see module contract).
+    pub(crate) fn reset_line(&mut self) {
+        self.escaped = false;
+    }
+
+    pub(crate) fn advance_byte(&mut self, b: u8) -> QuoteAdvance {
+        if self.escaped {
+            self.escaped = false;
+            return QuoteAdvance::Escaped;
+        }
+        match b {
+            b'\\' if self.in_double || self.in_single => {
+                self.escaped = true;
+                QuoteAdvance::EscapeStart
+            }
+            b'"' if !self.in_single => {
+                self.in_double = !self.in_double;
+                if self.in_double {
+                    QuoteAdvance::DoubleOpen
+                } else {
+                    QuoteAdvance::DoubleClose
+                }
+            }
+            b'\'' if !self.in_double => {
+                self.in_single = !self.in_single;
+                if self.in_single {
+                    QuoteAdvance::SingleOpen
+                } else {
+                    QuoteAdvance::SingleClose
+                }
+            }
+            b'#' if !self.in_double && !self.in_single => QuoteAdvance::CommentStart,
+            other => QuoteAdvance::Other(other),
+        }
+    }
+
+    pub(crate) fn advance_char(&mut self, c: char) -> QuoteAdvance {
+        if self.escaped {
+            self.escaped = false;
+            return QuoteAdvance::Escaped;
+        }
+        // All structural chars are ASCII; non-ASCII never toggles state.
+        if !c.is_ascii() {
+            return QuoteAdvance::Other(0xFF);
+        }
+        self.advance_byte(c as u8)
+    }
+}
+
 /// Scan one whitespace-delimited token starting at byte offset `start`.
 ///
-/// Tracks quote state so whitespace inside `"..."` or `'...'` does not split
-/// the token and a backslash inside quotes escapes the next byte. An unquoted
-/// `#` also terminates the token mid-word: it starts a comment that runs to
-/// end-of-line (the same rule [`effective_content_end`] centralizes), so a
-/// comment tail can never leak into a token. Returns the exclusive end
-/// offset, which is always a char boundary: quote, backslash, hash and
-/// whitespace bytes only occur as standalone bytes in valid UTF-8.
+/// Quote/comment-aware via [`QuoteState`]: whitespace inside `"..."` or
+/// `'...'` does not split the token, a `\` inside quotes escapes the next
+/// byte, and an unquoted `#` terminates the token mid-word (the same rule
+/// [`effective_content_end`] centralizes). Returns the exclusive end offset,
+/// which is always a char boundary: quote, backslash, hash and whitespace
+/// bytes only occur as standalone bytes in valid UTF-8.
 fn scan_token(bytes: &[u8], start: usize) -> usize {
     let mut i = start;
-    let mut in_double = false;
-    let mut in_single = false;
+    let mut q = QuoteState::new();
     while i < bytes.len() {
-        match bytes[i] {
-            b'\\' if in_double || in_single => {
-                // Escaped byte inside quotes: skip it entirely. Clamp so a
-                // trailing backslash cannot push `i` past `bytes.len()`.
-                i = (i + 2).min(bytes.len());
+        let adv = q.advance_byte(bytes[i]);
+        match adv {
+            QuoteAdvance::Escaped => {
+                // Escaped byte inside quotes — inert, consumed.
+                i += 1;
                 continue;
             }
-            b'"' if !in_single => in_double = !in_double,
-            b'\'' if !in_double => in_single = !in_single,
-            // Unquoted '#' starts a comment to end-of-line, even mid-token.
-            b'#' if !in_double && !in_single => break,
-            _ if !in_double && !in_single && bytes[i].is_ascii_whitespace() => break,
-            _ => {}
+            QuoteAdvance::EscapeStart => {
+                // The '\' itself — the next byte will be reported as Escaped.
+                i += 1;
+                continue;
+            }
+            QuoteAdvance::DoubleOpen
+            | QuoteAdvance::DoubleClose
+            | QuoteAdvance::SingleOpen
+            | QuoteAdvance::SingleClose => {
+                i += 1;
+                continue;
+            }
+            QuoteAdvance::CommentStart => break,
+            QuoteAdvance::Other(b) => {
+                if !q.is_in_quote() && b.is_ascii_whitespace() {
+                    break;
+                }
+                i += 1;
+            }
         }
-        i += 1;
     }
     i
 }
@@ -106,14 +220,10 @@ pub(crate) fn walk_structure<F>(doc: &str, mut on_event: F)
 where
     F: FnMut(StructureEvent),
 {
-    let mut in_double = false;
-    let mut in_single = false;
-    let mut escaped = false;
+    let mut q = QuoteState::new();
     let mut in_comment = false;
     // Position of the quote that opened the currently active quoted string,
     // so EOF can report the OPENING quote instead of the end of input.
-    // Cleared when the string closes; replaced if another quote opens after
-    // a legitimate close.
     let mut quote_open: Option<(usize, usize)> = None;
 
     for (line_idx, line) in doc.lines().enumerate() {
@@ -121,54 +231,55 @@ where
             if in_comment {
                 continue; // comments end at end-of-line (reset below)
             }
-            if escaped {
-                // Escaped byte inside quotes: never structural.
-                escaped = false;
-                continue;
-            }
-            match c {
-                '\\' if in_double || in_single => escaped = true,
-                '"' if !in_single => {
-                    in_double = !in_double;
-                    quote_open = if in_double {
-                        Some((line_idx, col))
-                    } else {
-                        None
-                    };
+            match q.advance_char(c) {
+                QuoteAdvance::Escaped | QuoteAdvance::EscapeStart => continue,
+                QuoteAdvance::DoubleOpen => {
+                    quote_open = Some((line_idx, col));
+                    continue;
                 }
-                '\'' if !in_double => {
-                    in_single = !in_single;
-                    quote_open = if in_single {
-                        Some((line_idx, col))
-                    } else {
-                        None
-                    };
+                QuoteAdvance::DoubleClose => {
+                    quote_open = None;
+                    continue;
                 }
-                '#' if !in_double && !in_single => in_comment = true,
-                '{' if !in_double && !in_single => {
-                    on_event(StructureEvent::OpenBrace {
-                        line: line_idx,
-                        character: col,
-                    });
+                QuoteAdvance::SingleOpen => {
+                    quote_open = Some((line_idx, col));
+                    continue;
                 }
-                '}' if !in_double && !in_single => {
-                    on_event(StructureEvent::CloseBrace {
-                        line: line_idx,
-                        character: col,
-                    });
+                QuoteAdvance::SingleClose => {
+                    quote_open = None;
+                    continue;
                 }
-                _ => {}
+                QuoteAdvance::CommentStart => {
+                    in_comment = true;
+                    continue;
+                }
+                QuoteAdvance::Other(_) => {
+                    if q.is_in_quote() {
+                        continue;
+                    }
+                    match c {
+                        '{' => on_event(StructureEvent::OpenBrace {
+                            line: line_idx,
+                            character: col,
+                        }),
+                        '}' => on_event(StructureEvent::CloseBrace {
+                            line: line_idx,
+                            character: col,
+                        }),
+                        _ => {}
+                    }
+                }
             }
         }
         // Physical line boundary resets per-line states. Quote state does
         // NOT reset: a `\`-continuation can legally split a quoted string.
         in_comment = false;
-        escaped = false;
+        q.reset_line();
     }
 
     // EOF inside a quoted string: point at the opening quote so the user
     // sees where the string started, not where the file happens to end.
-    if (in_double || in_single)
+    if q.is_in_quote()
         && let Some((line, character)) = quote_open
     {
         on_event(StructureEvent::UnterminatedQuote { line, character });
@@ -188,22 +299,29 @@ where
 /// boundary (`#` is a standalone ASCII byte).
 pub(crate) fn effective_content_end(line: &str) -> usize {
     let bytes = line.as_bytes();
-    let mut in_double = false;
-    let mut in_single = false;
+    let mut q = QuoteState::new();
     let mut i = 0usize;
     while i < bytes.len() {
-        match bytes[i] {
-            b'\\' if in_double || in_single => i += 2,
-            b'"' if !in_single => {
-                in_double = !in_double;
+        let adv = q.advance_byte(bytes[i]);
+        match adv {
+            QuoteAdvance::Escaped => {
                 i += 1;
+                continue;
             }
-            b'\'' if !in_double => {
-                in_single = !in_single;
+            QuoteAdvance::EscapeStart => {
+                // The '\' itself; the next byte will be Escaped.
                 i += 1;
+                continue;
             }
-            b'#' if !in_double && !in_single => return i,
-            _ => i += 1,
+            QuoteAdvance::DoubleOpen
+            | QuoteAdvance::DoubleClose
+            | QuoteAdvance::SingleOpen
+            | QuoteAdvance::SingleClose => {
+                i += 1;
+                continue;
+            }
+            QuoteAdvance::CommentStart => return i,
+            QuoteAdvance::Other(_) => i += 1,
         }
     }
     bytes.len()
@@ -1043,5 +1161,109 @@ type = "Directory"
             Some("1.1.1.1/24")
         );
         assert_eq!(ctx.properties.get("extra"), None);
+    }
+
+    // ── QuoteState parity ───────────────────────────────────────────
+
+    #[test]
+    fn test_quote_state_parity_tokenize_vs_effective_content() {
+        // Every line's effective_content_end must equal the prefix that
+        // tokenize_with_spans would keep: tokens joined must be prefix of
+        // the effective content.
+        let cases = [
+            r#"add comment="a # b" x=1 # tail"#,
+            r#"add comment='a # b' url="https://x#frag""#,
+            r#"comment="say \"hi\" # not comment" y=1"#,
+            "plain # comment",
+            r#""open quote without close"#,
+            r#"a=\"escaped\""#,
+        ];
+        for line in cases {
+            let end = effective_content_end(line);
+            let content = &line[..end];
+            let tokens = tokenize(line);
+            // All token texts concatenated with single spaces should be
+            // within the effective content (no token from comment tail).
+            for tok in tokens {
+                assert!(
+                    content.contains(&tok) || content == tok,
+                    "token {tok:?} must be within effective content {content:?} for line {line:?}"
+                );
+                assert!(
+                    !tok.contains('#') || tok.contains('"') || tok.contains('\''),
+                    "unquoted '#' must not appear inside token {tok:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_quote_state_walk_vs_tokenize_agree_on_string_boundaries() {
+        // walk_structure must not emit braces inside quoted strings that
+        // tokenize also treats as inside a single token.
+        // Use a CLOSED single-quoted string on line 1 so the brace on line 2
+        // is outside any string; this verifies that inert braces (line 0) and
+        // real braces (line 2) are distinguished correctly.
+        let doc = ":put \"{\" # comment { still\n'closed { inert'\n:do { real brace }\n";
+        let mut braces = Vec::new();
+        walk_structure(doc, |ev| match ev {
+            StructureEvent::OpenBrace { line, character } => braces.push((line, character, '{')),
+            StructureEvent::CloseBrace { line, character } => braces.push((line, character, '}')),
+            _ => {}
+        });
+        // The '{' inside ":put \"{\"" on line 0 is inert, so first brace is
+        // the real ":do {".
+        assert!(
+            braces.iter().any(|&(l, _, c)| l == 2 && c == '{'),
+            "real brace on line 2 must be reported, got {braces:?}"
+        );
+        assert!(
+            !braces.iter().any(|&(l, _, _)| l == 0),
+            "brace inside quoted string on line 0 must be inert, got {braces:?}"
+        );
+        // Continuation: an unterminated single-quoted string DOES carry across
+        // lines — the brace on the following line stays inert.
+        let doc2 = ":put \"{\" # comment { still\n'open single { inert\n:do { still inert }\n";
+        let mut braces2 = Vec::new();
+        walk_structure(doc2, |ev| match ev {
+            StructureEvent::OpenBrace { line, character } => braces2.push((line, character, '{')),
+            StructureEvent::CloseBrace { line, character } => braces2.push((line, character, '}')),
+            _ => {}
+        });
+        assert!(
+            braces2.is_empty(),
+            "unterminated single quote must keep following brace inert, got {braces2:?}"
+        );
+        // Ensure QuoteState reset_line preserves string across lines.
+        let line0 = r#"comment="a \"b\" c""#;
+        let end = effective_content_end(line0);
+        assert_eq!(end, line0.len());
+        let tok = tokenize(line0);
+        assert_eq!(tok.len(), 1);
+    }
+
+    #[test]
+    fn test_quote_state_escape_inside_quotes_inert() {
+        // Backslash inside quotes escapes next byte — it must not close the string.
+        let doc = r#":put "a\"b{"
+:put "c\\d"
+"#;
+        let mut events = Vec::new();
+        walk_structure(doc, |ev| events.push(ev));
+        // No brace inside the first quoted string should be reported
+        // because the escaped quote keeps the string open and the `{` stays inert.
+        assert!(
+            !events
+                .iter()
+                .any(|ev| matches!(ev, StructureEvent::OpenBrace { line: 0, .. })),
+            "escaped quote must keep string open, events: {events:?}"
+        );
+        // Second line's braces? none
+        assert!(
+            events.is_empty()
+                || !events
+                    .iter()
+                    .any(|ev| matches!(ev, StructureEvent::UnterminatedQuote { .. }))
+        );
     }
 }

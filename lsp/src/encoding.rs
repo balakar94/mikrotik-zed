@@ -162,43 +162,54 @@ pub(crate) enum EditError {
     OutOfBounds,
 }
 
+/// Build the byte offset of every physical line's first character.
+///
+/// One linear `memchr` scan (`b'\n'` is a single ASCII byte, so the byte
+/// index is always a char boundary). The result is the standard LSP
+/// `str::lines()`-equivalent line start table: `starts[0] == 0`,
+/// `starts[i]` points after the `i-1`th `'\n'`. A trailing `'\n'` leaves an
+/// empty final entry at `doc.len()`, matching the protocol's vacant last
+/// line.
+pub(crate) fn line_starts(doc: &str) -> Vec<usize> {
+    let mut starts = Vec::new();
+    starts.push(0);
+    for (i, &b) in doc.as_bytes().iter().enumerate() {
+        if b == b'\n' {
+            // `i+1` is always a char boundary (after ASCII '\n')
+            starts.push(i + 1);
+        }
+    }
+    starts
+}
+
 /// Resolve an LSP position to a byte offset within `doc`.
 ///
 /// `character` is interpreted per `enc`: a UTF-16 code-unit count (spec
-/// default) or already-byte-based. The target line is located by scanning
-/// '\n' separators; its content excludes the trailing '\r' of CRLF endings,
-/// so positions never address the carriage return.
+/// default) or already-byte-based. The target line is located via the
+/// precomputed [`line_starts`] table (`'\n'`-separated, mirroring
+/// `str::lines()`); its content excludes the trailing `'\r'` of CRLF
+/// endings, so positions never address the carriage return. UTF-16 handling
+/// stays byte-correct via [`lsp_character_to_byte_offset`] +
+/// [`floor_char_boundary`].
 pub(crate) fn lsp_position_to_offset(
     doc: &str,
     line: usize,
     character: usize,
     enc: PositionEncoding,
 ) -> Result<usize, EditError> {
-    // Walk the document to find the start of the target line.
-    let mut current_line = 0usize;
-    let mut line_start = 0usize;
-
-    for (idx, ch) in doc.char_indices() {
-        if current_line == line {
-            break;
-        }
-        if ch == '\n' {
-            current_line += 1;
-            line_start = idx + ch.len_utf8();
-        }
+    let starts = line_starts(doc);
+    if line >= starts.len() {
+        return Err(EditError::OutOfBounds);
     }
-
-    if current_line != line {
-        // Requested line beyond end — treat offset as end of doc (append).
-        if line > current_line {
-            return Err(EditError::OutOfBounds);
-        }
-    }
-
-    let line_end = doc[line_start..]
-        .find('\n')
-        .map(|p| line_start + p)
-        .unwrap_or(doc.len());
+    let line_start = starts[line];
+    // Byte index of the next '\n' (the `'\n'` itself) or end of document.
+    // `starts` encodes exactly this: the next line starts one byte past
+    // its preceding '\n', so the `\n` lives at `starts[line+1]-1`.
+    let line_end = if line + 1 < starts.len() {
+        starts[line + 1] - 1
+    } else {
+        doc.len()
+    };
     // Strip trailing '\r' for "\r\n" handling.
     let line_content = doc[line_start..line_end].trim_end_matches('\r');
 

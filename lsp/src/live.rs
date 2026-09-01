@@ -1430,7 +1430,10 @@ pub fn get_cached_or_fetch_background(
     let key = resource.cache_key().to_string();
     // Fast path: fresh cache.
     {
-        let guard = cache.lock().expect("live cache lock poisoned");
+        let guard = cache.lock().unwrap_or_else(|e| {
+            log_warn!("live cache lock poisoned, recovering");
+            e.into_inner()
+        });
         if let Some(vals) = guard.try_get_cached(&key) {
             log_debug!("live cache hit (fresh) for {key}");
             return Some(vals);
@@ -1446,7 +1449,10 @@ pub fn get_cached_or_fetch_background(
     }
     // Record attempt before spawning to coalesce concurrent callers.
     {
-        let mut guard = cache.lock().expect("live cache lock poisoned");
+        let mut guard = cache.lock().unwrap_or_else(|e| {
+            log_warn!("live cache lock poisoned, recovering");
+            e.into_inner()
+        });
         // Re-check after acquiring write lock (avoid TOCTOU).
         if !guard.can_spawn_fetch(&key) {
             return None;
@@ -1488,7 +1494,10 @@ fn trigger_background_fetch(
                     elapsed.as_millis(),
                     values.len()
                 );
-                let mut guard = cache_clone.lock().expect("live cache lock poisoned");
+                let mut guard = cache_clone.lock().unwrap_or_else(|e| {
+                    log_warn!("live cache lock poisoned, recovering");
+                    e.into_inner()
+                });
                 guard.insert(key.clone(), values);
             }
             Err(e) => {
@@ -1499,7 +1508,10 @@ fn trigger_background_fetch(
                     elapsed.as_millis(),
                     config_clone.host
                 );
-                let mut guard = cache_clone.lock().expect("live cache lock poisoned");
+                let mut guard = cache_clone.lock().unwrap_or_else(|e| {
+                    log_warn!("live cache lock poisoned, recovering");
+                    e.into_inner()
+                });
                 guard.insert_negative(key.clone());
             }
         }
@@ -1572,7 +1584,10 @@ fn trigger_custom_fetch_background(
     let key = format!("custom:{}", custom.property);
     // Fast path: fresh cache, negative cooldown, or in-flight fetch.
     {
-        let guard = cache.lock().expect("live cache lock poisoned");
+        let guard = cache.lock().unwrap_or_else(|e| {
+            log_warn!("live cache lock poisoned, recovering");
+            e.into_inner()
+        });
         if guard.try_get_cached(&key).is_some() {
             log_debug!("live cache hit (fresh) for {key}");
             return;
@@ -1589,7 +1604,10 @@ fn trigger_custom_fetch_background(
     // Record the attempt before spawning to coalesce concurrent callers
     // (re-check under the write lock to avoid a TOCTOU double spawn).
     {
-        let mut guard = cache.lock().expect("live cache lock poisoned");
+        let mut guard = cache.lock().unwrap_or_else(|e| {
+            log_warn!("live cache lock poisoned, recovering");
+            e.into_inner()
+        });
         if !guard.can_spawn_fetch(&key) {
             return;
         }
@@ -1619,7 +1637,10 @@ fn trigger_custom_fetch_background(
                     start.elapsed().as_millis(),
                     vals.len()
                 );
-                let mut guard = cache_clone.lock().expect("live cache lock poisoned");
+                let mut guard = cache_clone.lock().unwrap_or_else(|e| {
+                    log_warn!("live cache lock poisoned, recovering");
+                    e.into_inner()
+                });
                 guard.insert(key_clone, vals);
             }
             Err(e) => {
@@ -1630,7 +1651,10 @@ fn trigger_custom_fetch_background(
                     e,
                     start.elapsed().as_millis()
                 );
-                let mut guard = cache_clone.lock().expect("live cache lock poisoned");
+                let mut guard = cache_clone.lock().unwrap_or_else(|e| {
+                    log_warn!("live cache lock poisoned, recovering");
+                    e.into_inner()
+                });
                 guard.insert_negative(key_clone);
             }
         }
@@ -1648,7 +1672,10 @@ fn get_cached_agent(timeout: Duration, ssl_verify: bool) -> ureq::Agent {
     let cache = AGENT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let key = (timeout.as_secs(), ssl_verify);
     {
-        let guard = cache.lock().expect("agent cache lock poisoned");
+        let guard = cache.lock().unwrap_or_else(|e| {
+            log_warn!("agent cache lock poisoned, recovering");
+            e.into_inner()
+        });
         if let Some(agent) = guard.get(&key) {
             log_debug!(
                 "live agent reuse timeout={}s ssl_verify={} ssl_verify_effective={}",
@@ -1677,7 +1704,10 @@ fn get_cached_agent(timeout: Duration, ssl_verify: bool) -> ureq::Agent {
         }
     };
     {
-        let mut guard = cache.lock().expect("agent cache lock poisoned");
+        let mut guard = cache.lock().unwrap_or_else(|e| {
+            log_warn!("agent cache lock poisoned, recovering");
+            e.into_inner()
+        });
         guard.insert(key, agent.clone());
     }
     agent
