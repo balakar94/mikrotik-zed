@@ -2,8 +2,8 @@
 # Auto-generated from llms-full.txt
 # Covers: /app, /beep, /blink, /caps-man, /certificate, /console, /container, /disk, /dude, /environment, /file, /import, … (1077 menus)
 # RouterOS version: 7.23.2
-# Generated: 2026-09-01T20:25:24.258597Z
-# Source hash (sha256[:16]): 26931e452e8d23f5
+# Generated: 2026-09-02T12:07:28.975486Z
+# Source hash (sha256[:16]): c77198cf62ba4db3
 
 [[menus]]
 path = "/app"
@@ -4893,39 +4893,49 @@ type = "Directory"
 [[menus.flags]]
 name = "S"
 type = "shared"
+description = "File is shared"
 [[menus.arguments]]
 name = "name"
 type = "file"
+description = "Name of the file or directory."
 required = true
 [[menus.arguments]]
 name = "type"
 type = "enum (file | directory)"
 enum_values = ["file", "directory"]
+description = "Type of the entry. Default: file."
 [[menus.arguments]]
 name = "contents"
 type = "string"
+description = "The actual content of the file. File size limit is 60 KB."
 [[menus.read_only]]
 name = "size"
 type = "num"
+description = "File size in bytes."
 [[menus.read_only]]
 name = "last-modified"
 type = "date"
-description = "Last modification date and time"
+description = "Time when the file was created or last modified."
 [[menus.read_only]]
 name = "package-name"
 type = "string"
+description = "Name of the installable package. Applies only to RouterOS .npk files."
 [[menus.read_only]]
 name = "package-version"
 type = "string"
+description = "Version of the installable package. Applies only to RouterOS .npk files."
 [[menus.read_only]]
 name = "package-build-time"
 type = "date"
+description = "Time when the package was built. Applies only to RouterOS .npk files."
 [[menus.read_only]]
 name = "package-architecture"
 type = "string"
+description = "Architecture that the package is built for. Applies only to RouterOS .npk files."
 [[menus.read_only]]
 name = "url"
 type = "string"
+description = "URL for cloud VPN file sharing."
 
 [[menus]]
 path = "/file/copy"
@@ -4941,12 +4951,12 @@ type = "Command"
 [[menus.arguments]]
 name = "n"
 type = "num"
-description = "number of lines"
+description = "Number of lines to output from the beginning of the file. Range: 1..1000."
 unset = true
 [[menus.arguments]]
 name = "numbered"
 type = "switch"
-description = "show line numbers"
+description = "Show line numbers in front of each line."
 [[menus.read_only]]
 name = "lines"
 type = ""
@@ -4957,15 +4967,19 @@ type = "Command"
 [[menus.arguments]]
 name = "file"
 type = "file"
+description = "Name of the file to read."
 [[menus.arguments]]
 name = "chunk-size"
 type = "num"
+description = "Chunk size to read from the file. Range: 1..32768."
 [[menus.arguments]]
 name = "offset"
 type = "num"
+description = "Offset where to start reading the file."
 [[menus.read_only]]
 name = "data"
 type = "string"
+description = "The read data returned as a string."
 
 [[menus]]
 path = "/file/rsync-daemon"
@@ -5023,12 +5037,12 @@ type = "Command"
 [[menus.arguments]]
 name = "n"
 type = "num"
-description = "number of lines"
+description = "Number of lines to output from the end of the file. Range: 1..1000."
 unset = true
 [[menus.arguments]]
 name = "numbered"
 type = "switch"
-description = "show line numbers"
+description = "Show line numbers in front of each line."
 [[menus.read_only]]
 name = "lines"
 type = ""
@@ -12328,14 +12342,15 @@ type = "Directory"
 [[menus.flags]]
 name = "*"
 type = "builtin"
-description = "builtin"
+description = "Built-in system list."
 [[menus.flags]]
 name = "D"
 type = "dynamic"
-description = "dynamic"
+description = "Dynamically created list."
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Name of the interface list. Predefined lists include \"all\", \"none\", \"dynamic\", and \"static\"."
 required = true
 [[menus.arguments]]
 name = "include"
@@ -12346,6 +12361,7 @@ type = ""
 [[menus.read_only]]
 name = "dynamic"
 type = "bool"
+description = "Whether the interface list was created dynamically."
 
 [[menus]]
 path = "/interface/list/member"
@@ -12353,22 +12369,25 @@ type = "Directory"
 [[menus.flags]]
 name = "X"
 type = "disabled"
-description = "disabled"
+description = "Member entry is disabled."
 [[menus.flags]]
 name = "D"
 type = "dynamic"
-description = "dynamic"
+description = "Dynamically added member."
 [[menus.arguments]]
 name = "list"
 type = "enum"
+description = "Name of the interface list to which the member belongs."
 required = true
 [[menus.arguments]]
 name = "interface"
 type = "iface_enum"
+description = "Name of the interface that is a member of the list."
 required = true
 [[menus.read_only]]
 name = "dynamic"
 type = "bool"
+description = "Whether the member was added dynamically."
 
 [[menus]]
 path = "/interface/lte"
@@ -27337,54 +27356,71 @@ type = ""
 [[menus.read_only]]
 name = "address4"
 type = "ipAddr"
+description = "IPv4 address configured on a discovered device."
 [[menus.read_only]]
 name = "address6"
 type = "ip6Addr"
+description = "IPv6 address configured on a discovered device."
 [[menus.read_only]]
 name = "mac-address"
 type = "macAddr"
+description = "MAC address of the remote device. Can be used to connect with mac-telnet."
 [[menus.read_only]]
 name = "identity"
 type = "string"
+description = "Configured system identity of the discovered device."
 [[menus.read_only]]
 name = "platform"
 type = "string"
+description = "Name of the platform, e.g. \"MikroTik\", \"cisco\"."
 [[menus.read_only]]
 name = "version"
 type = "string"
+description = "Version number of installed software on the remote device."
 [[menus.read_only]]
 name = "unpack"
 type = "enum (none | simple | uncompress-headers | uncompress-all) { none:0x00, simple:0x01, uncompress-headers:0x03, uncompress-all:0x07 }"
+description = "Discovery packet compression type."
 [[menus.read_only]]
 name = "age"
 type = "time"
+description = "Time interval since the last discovery packet was received."
 [[menus.read_only]]
 name = "uptime"
 type = "time"
+description = "Uptime of the remote device. Shown only for devices with RouterOS installed."
 [[menus.read_only]]
 name = "software-id"
 type = "string"
+description = "RouterOS software ID on the remote device. Applies only to devices with RouterOS installed."
 [[menus.read_only]]
 name = "board"
 type = "string"
+description = "RouterBoard model. Displayed only for devices with RouterOS installed."
 [[menus.read_only]]
 name = "ipv6"
 type = "bool"
+description = "Whether the device has IPv6 enabled."
 [[menus.read_only]]
 name = "interface-name"
 type = "string"
+description = "Interface name on the neighbor device connected to the L2 broadcast domain. Applies to CDP."
 [[menus.read_only]]
 name = "system-description"
 type = "string"
+description = "System description reported by the Link Layer Discovery Protocol (LLDP)."
 [[menus.read_only]]
 name = "system-caps"
 type = "ubit (other, repeater, bridge, wlan-ap, router, telephone, docsis-cable-device, station-only)"
+description = "System capabilities reported by LLDP."
 [[menus.read_only]]
 name = "system-caps-enabled"
 type = "ubit (other, repeater, bridge, wlan-ap, router, telephone, docsis-cable-device, station-only)"
+description = "Enabled system capabilities reported by LLDP."
 [[menus.read_only]]
 name = "discovered-by"
 type = "ubit (cdp, lldp, mndp)"
+description = "Discovery protocols through which the neighbor was discovered."
 [[menus.read_only]]
 name = "running"
 type = ""
@@ -27398,46 +27434,59 @@ type = ""
 [[menus.arguments]]
 name = "discover-interval"
 type = "time"
+description = "Frequency at which neighbor discovery packets are transmitted. Also adjusts the TTL TLV value for CDP and LLDP packets using the formula: (discover-interval * 4) + 1. Range: 5s..9h6m8s. Default: 30s."
 [[menus.arguments]]
 name = "lldp-med"
 type = "bool"
+description = "Whether to advertise the LLDP-MED Media Capabilities TLV. Must be enabled when lldp-med-net-policy-vlan is used. Default: yes."
 [[menus.arguments]]
 name = "lldp-med-net-policy-vlan"
 type = ""
 [[menus.arguments]]
 name = "lldp-mac-phy-config"
 type = "bool"
+description = "Whether to send MAC/PHY Configuration/Status TLV in LLDP, indicating interface capabilities, duplex status, bit rate, and auto-negotiation. Only applies to Ethernet interfaces. Automatically included when sending LLDP-MED. Default: no."
 [[menus.arguments]]
 name = "lldp-max-frame-size"
 type = "bool"
+description = "Whether to send Maximum Frame Size TLV in LLDP, indicating the maximum frame size capability of the interface in bytes (l2mtu + 18). Only applies to Ethernet interfaces. Default: no."
 [[menus.arguments]]
 name = "lldp-vlan-info"
 type = "bool"
+description = "Whether to send IEEE 802.1 Organizationally Specific TLVs in LLDP related to VLANs. When enabled, three TLVs are advertised: Port VLAN ID (bridge port pvid), Port And Protocol VLAN ID (not supported), and VLAN Name (up to 10 active VLANs from the bridge VLAN table). Relevant to interfaces on a vlan-filtering bridge. Default: no."
 [[menus.arguments]]
 name = "lldp-poe-power"
 type = "bool"
+description = "Whether to transmit the IEEE 802.3 Organizationally Specific Power Via MDI TLV in LLDP messages. Replaces the PoE-out port poe-lldp-enabled setting. Relevant only for Ethernet interfaces with PoE-Out support. Default: yes."
 [[menus.arguments]]
 name = "lldp-poe-in-power"
 type = "bool"
+description = "Whether to transmit PoE input power TLVs in LLDP messages."
 [[menus.arguments]]
 name = "lldp-dcbx"
 type = "bool"
+description = "Whether to send Data Center Bridging Capabilities Exchange Protocol (DCBX) TLVs, communicating switch QoS settings and capabilities with neighboring devices using LLDP. Only applies to devices with a Marvell Prestera switch (e.g. CRS3xx). Includes ETS Configuration, Priority Assignment, Bandwidth Allocation, and TSA tables. Default: no."
 [[menus.arguments]]
 name = "protocol"
 type = "ubit (cdp, lldp, mndp)"
+description = "List of discovery protocols to use. Default: cdp,lldp,mndp."
 [[menus.arguments]]
 name = "mode"
 type = "enum (tx-and-rx | tx-only | rx-only)"
 enum_values = ["tx-and-rx", "tx-only", "rx-only"]
+description = "Neighbor discovery packet sending and receiving mode. Default: tx-and-rx."
 [[menus.arguments]]
 name = "dying-gasp"
 type = "bool"
+description = "Whether to send a neighbor discovery packet with TTL=0 before a graceful reboot, shutdown, or upgrade. Not sent in case of power loss or kernel panic. On the receiving side, a TTL=0 packet immediately removes the corresponding neighbor entry. Default: no."
 [[menus.arguments]]
 name = "add-dns-entries"
 type = "bool"
+description = "Whether to create dynamic DNS entries for discovered neighbors, using their identity as the domain name."
 [[menus.arguments]]
 name = "add-dns-entries-suffix"
 type = "string"
+description = "Suffix added to dynamic DNS entries created for each neighbor."
 
 [[menus]]
 path = "/ip/neighbor/lldp"
@@ -27451,42 +27500,55 @@ type = ""
 [[menus.read_only]]
 name = "address4"
 type = "ipAddr"
+description = "IPv4 address of the LLDP neighbor."
 [[menus.read_only]]
 name = "address6"
 type = "ip6Addr"
+description = "IPv6 address of the LLDP neighbor."
 [[menus.read_only]]
 name = "mac-address"
 type = "macAddr"
+description = "MAC address of the LLDP neighbor."
 [[menus.read_only]]
 name = "lldp-chassis-id-subtype"
 type = "enum (chassis-component | interface-alias | port-component | mac-address | network-address | interface-name | local) { chassis-component:1, interf...)"
+description = "Subtype of the LLDP chassis ID."
 [[menus.read_only]]
 name = "lldp-chassis-id"
 type = "string"
+description = "LLDP chassis ID of the neighbor."
 [[menus.read_only]]
 name = "lldp-port-id-subtype"
 type = "enum (interface-alias | port-component | mac-address | network-address | interface-name | agent-circuit-id | local) { interface-alias:1, port-comp...)"
+description = "Subtype of the LLDP port ID."
 [[menus.read_only]]
 name = "lldp-port-id"
 type = "string"
+description = "LLDP port ID of the neighbor."
 [[menus.read_only]]
 name = "lldp-port-description"
 type = "string"
+description = "LLDP port description of the neighbor."
 [[menus.read_only]]
 name = "lldp-system-name"
 type = "string"
+description = "LLDP system name of the neighbor (system identity)."
 [[menus.read_only]]
 name = "lldp-system-description"
 type = "string"
+description = "LLDP system description of the neighbor."
 [[menus.read_only]]
 name = "lldp-ttl"
 type = "time"
+description = "LLDP time-to-live value for the neighbor entry."
 [[menus.read_only]]
 name = "lldp-system-caps"
 type = "ubit (other, repeater, bridge, wlan-ap, router, telephone, docsis-cable-device, station-only)"
+description = "LLDP system capabilities of the neighbor."
 [[menus.read_only]]
 name = "lldp-system-caps-enabled"
 type = "ubit (other, repeater, bridge, wlan-ap, router, telephone, docsis-cable-device, station-only)"
+description = "LLDP enabled system capabilities of the neighbor."
 
 [[menus]]
 path = "/ip/packing"
@@ -27494,10 +27556,11 @@ type = "Directory"
 [[menus.flags]]
 name = "X"
 type = "disabled"
-description = "disabled"
+description = "Packing rule is disabled."
 [[menus.arguments]]
 name = "interface"
 type = "iface_enum"
+description = "Interface on which to aggregate or compress outgoing packets. Both routers must be configured symmetrically."
 required = true
 [[menus.arguments]]
 name = "packing"
@@ -27510,6 +27573,7 @@ enum_values = ["none", "simple", "compress-headers", "compress-all"]
 [[menus.arguments]]
 name = "aggregated-size"
 type = "num"
+description = "Size of an aggregated packet that packing will try to achieve before sending over the network. Range: 20..16384. Default: 1500."
 
 [[menus]]
 path = "/ip/pool"
@@ -37534,21 +37598,27 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "time"
 type = "date"
+description = "HH:MM:SS, where HH - hour 00..23, MM - minutes 00..59, SS - seconds 00..59. Shows current local time on the router."
 [[menus.arguments]]
 name = "date"
 type = "date"
+description = "YYYY-MM-DD, where YYYY - year 1970..2037, MM - month 01..12, DD - date 01..31. Shows current local date on the router. Local time cannot be exported and is not stored with the rest of the configuration."
 [[menus.arguments]]
 name = "time-zone-autodetect"
 type = "bool"
+description = "Available from v6.27. If enabled, the time zone will be set automatically. Default: yes."
 [[menus.arguments]]
 name = "time-zone-name"
 type = "enum"
+description = "Name of the time zone. Case sensitive. Special value \"manual\" applies manually configured GMT offset, which by default is 00:00 with no daylight saving time. Default: manual."
 [[menus.read_only]]
 name = "gmt-offset"
 type = "timezone"
+description = "Current value of GMT offset used by the system, after applying base time zone offset and active daylight saving time offset."
 [[menus.read_only]]
 name = "dst-active"
 type = "bool"
+description = "Has the value \"yes\" while daylight saving time of the current time zone is active."
 
 [[menus]]
 path = "/system/clock/manual"
@@ -37556,15 +37626,19 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "time-zone"
 type = "timezone"
+description = "GMT offset while DST is not active. Default: +00:00."
 [[menus.arguments]]
 name = "dst-delta"
 type = "timezone"
+description = "Additional offset added to time-zone while DST is active. Default: +00:00."
 [[menus.arguments]]
 name = "dst-start"
 type = "date"
+description = "Local time when DST starts. Format: YYYY-MM-DD HH:MM:SS. Date or time can be omitted in the set command. Default: 1970-01-01 00:00:00."
 [[menus.arguments]]
 name = "dst-end"
 type = "date"
+description = "Local time when DST ends. Format: YYYY-MM-DD HH:MM:SS. Date or time can be omitted in the set command. Default: 1970-01-01 00:00:00."
 
 [[menus]]
 path = "/system/console"
@@ -37659,75 +37733,99 @@ type = "Settings Directory"
 [[menus.read_only]]
 name = "mode"
 type = "enum"
+description = "Current device mode: basic, home, advanced, or ros."
 [[menus.read_only]]
 name = "allowed-versions"
 type = "string"
+description = "List of RouterOS versions considered secure. Used to prevent downgrade to vulnerable releases."
 [[menus.read_only]]
 name = "flagged"
 type = "bool"
+description = "Whether the device is in flagged state. Set to yes when suspicious configuration is detected."
 [[menus.read_only]]
 name = "flagging-enabled"
 type = "bool"
+description = "Whether configuration analysis for suspicious code is enabled. Default: yes."
 [[menus.read_only]]
 name = "scheduler"
 type = "bool"
+description = "Whether `/system/scheduler` is allowed."
 [[menus.read_only]]
 name = "socks"
 type = "bool"
+description = "Whether `/ip/socks` is allowed."
 [[menus.read_only]]
 name = "fetch"
 type = "bool"
+description = "Whether `/tool/fetch` is allowed."
 [[menus.read_only]]
 name = "pptp"
 type = "bool"
+description = "Whether PPTP client and server interfaces are allowed."
 [[menus.read_only]]
 name = "l2tp"
 type = "bool"
+description = "Whether L2TP client and server interfaces are allowed."
 [[menus.read_only]]
 name = "bandwidth-test"
 type = "bool"
+description = "Whether `/tool/bandwidth-test` and `/tool/bandwidth-server` are allowed."
 [[menus.read_only]]
 name = "traffic-gen"
 type = "bool"
+description = "Whether `/tool/traffic-generator`, `/tool/flood-ping`, and `/tool/ping-speed` are allowed."
 [[menus.read_only]]
 name = "sniffer"
 type = "bool"
+description = "Whether `/tool/sniffer` is allowed."
 [[menus.read_only]]
 name = "ipsec"
 type = "bool"
+description = "Whether `/ip/ipsec` is allowed."
 [[menus.read_only]]
 name = "romon"
 type = "bool"
+description = "Whether `/tool/romon` is allowed."
 [[menus.read_only]]
 name = "proxy"
 type = "bool"
+description = "Whether `/ip/proxy` is allowed."
 [[menus.read_only]]
 name = "hotspot"
 type = "bool"
+description = "Whether `/ip/hotspot` is allowed."
 [[menus.read_only]]
 name = "smb"
 type = "bool"
+description = "Whether `/ip/smb` is allowed."
 [[menus.read_only]]
 name = "email"
 type = "bool"
+description = "Whether `/tool/e-mail` is allowed."
 [[menus.read_only]]
 name = "zerotier"
 type = "bool"
+description = "Whether `/zerotier` is allowed."
 [[menus.read_only]]
 name = "container"
 type = "bool"
+description = "Whether container functionality is allowed."
 [[menus.read_only]]
 name = "install-any-version"
 type = "bool"
+description = "Whether downgrading to RouterOS versions outside the allowed-versions list is permitted."
 [[menus.read_only]]
 name = "partitions"
 type = "bool"
+description = "Whether changing partition count is allowed."
 [[menus.read_only]]
 name = "routerboard"
 type = "bool"
+description = "Whether `/system/routerboard/settings` (except auto-upgrade) is allowed, and SwOS/RouterOS transition on dual-boot devices."
 [[menus.read_only]]
 name = "attempt-count"
 type = "num"
+description = "Number of unsuccessful device-mode change attempts."
 
 [[menus]]
 path = "/system/device-mode/update"
@@ -37735,75 +37833,99 @@ type = "Command"
 [[menus.arguments]]
 name = "mode"
 type = "enum"
+description = "Device mode to apply: basic, home, advanced, or ros."
 [[menus.arguments]]
 name = "flagged"
 type = "bool"
+description = "Set to no to exit the flagged state. Requires physical confirmation."
 [[menus.arguments]]
 name = "flagging-enabled"
 type = "bool"
+description = "Enable or disable configuration analysis for suspicious code. Default: yes."
 [[menus.arguments]]
 name = "scheduler"
 type = "bool"
+description = "Allow or block `/system/scheduler`."
 [[menus.arguments]]
 name = "socks"
 type = "bool"
+description = "Allow or block `/ip/socks`."
 [[menus.arguments]]
 name = "fetch"
 type = "bool"
+description = "Allow or block `/tool/fetch`."
 [[menus.arguments]]
 name = "pptp"
 type = "bool"
+description = "Allow or block PPTP client and server interfaces."
 [[menus.arguments]]
 name = "l2tp"
 type = "bool"
+description = "Allow or block L2TP client and server interfaces."
 [[menus.arguments]]
 name = "bandwidth-test"
 type = "bool"
+description = "Allow or block `/tool/bandwidth-test` and `/tool/bandwidth-server`."
 [[menus.arguments]]
 name = "traffic-gen"
 type = "bool"
+description = "Allow or block `/tool/traffic-generator`, `/tool/flood-ping`, and `/tool/ping-speed`."
 [[menus.arguments]]
 name = "sniffer"
 type = "bool"
+description = "Allow or block `/tool/sniffer`."
 [[menus.arguments]]
 name = "ipsec"
 type = "bool"
+description = "Allow or block `/ip/ipsec`."
 [[menus.arguments]]
 name = "romon"
 type = "bool"
+description = "Allow or block `/tool/romon`."
 [[menus.arguments]]
 name = "proxy"
 type = "bool"
+description = "Allow or block `/ip/proxy`."
 [[menus.arguments]]
 name = "hotspot"
 type = "bool"
+description = "Allow or block `/ip/hotspot`."
 [[menus.arguments]]
 name = "smb"
 type = "bool"
+description = "Allow or block `/ip/smb`."
 [[menus.arguments]]
 name = "email"
 type = "bool"
+description = "Allow or block `/tool/e-mail`."
 [[menus.arguments]]
 name = "zerotier"
 type = "bool"
+description = "Allow or block `/zerotier`."
 [[menus.arguments]]
 name = "container"
 type = "bool"
+description = "Allow or block container functionality."
 [[menus.arguments]]
 name = "install-any-version"
 type = "bool"
+description = "Allow or block downgrading to RouterOS versions outside the allowed-versions list."
 [[menus.arguments]]
 name = "partitions"
 type = "bool"
+description = "Allow or block changing partition count."
 [[menus.arguments]]
 name = "routerboard"
 type = "bool"
+description = "Allow or block `/system/routerboard/settings` (except auto-upgrade) and SwOS/RouterOS transition on dual-boot devices."
 [[menus.arguments]]
 name = "activation-timeout"
 type = "time"
+description = "Time to wait for physical confirmation (reset button press or power cycle) before canceling the update. Range: 00:00:10 to 1d00:00:00. Default: 5m."
 [[menus.read_only]]
 name = "update"
 type = "string"
+description = "Status message for a pending device-mode update. Prompts the user to confirm by power off or button press."
 
 [[menus]]
 path = "/system/gps"
@@ -38055,6 +38177,7 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "System identity name. Used when the device identifies itself to other routers and services such as DHCP, Neighbour Discovery, and default wireless SSID. Maximum length is 64 characters. Default: MikroTik."
 
 [[menus]]
 path = "/system/keymat-provider"
@@ -40237,30 +40360,37 @@ type = ""
 [[menus.arguments]]
 name = "port"
 type = "num"
+description = "SMTP server port. Default: 25."
 [[menus.arguments]]
 name = "tls"
 type = "enum (no | yes | starttls)"
 enum_values = ["no", "yes", "starttls"]
+description = "TLS encryption mode. yes - sends STARTTLS and drops the session if TLS is not available on the server. no - does not send STARTTLS. starttls - sends STARTTLS and continues without TLS if the server responds that TLS is not available. Default: no."
 [[menus.arguments]]
 name = "vrf"
 type = "enum"
+description = "VRF on which the service creates outgoing connections. Default: main."
 [[menus.arguments]]
 name = "from"
 type = "string"
+description = "Name or email address that will be shown as the sender. Default: <>."
 [[menus.arguments]]
 name = "user"
 type = "string"
+description = "Username used for authenticating to an SMTP server. Default: \"\"."
 [[menus.arguments]]
 name = "password"
 type = "string"
+description = "Password used for authenticating to an SMTP server. Default: \"\"."
 [[menus.arguments]]
 name = "certificate-verification"
 type = "enum (no | yes | yes-without-crl)"
 enum_values = ["no", "yes", "yes-without-crl"]
-description = "TLS certificate validation"
+description = "TLS certificate validation. yes - validates the certificate chain from the local certificate store. yes-without-crl - validates the certificate without performing a CRL check. Default: no."
 [[menus.read_only]]
 name = "last-status"
 type = "enum (none | resolving-dns | in-progress | failed | succeeded)"
+description = "Status of the last email send attempt."
 [[menus.read_only]]
 name = "last-address"
 type = ""
@@ -40274,6 +40404,7 @@ type = ""
 [[menus.arguments]]
 name = "port"
 type = "num"
+description = "SMTP server port. If not specified, the value from the server configuration is used."
 [[menus.arguments]]
 name = "to"
 type = ""
@@ -40283,30 +40414,36 @@ type = ""
 [[menus.arguments]]
 name = "from"
 type = "string"
+description = "Name or email address that will appear as the sender. If not specified, the value from the server configuration is used."
 [[menus.arguments]]
 name = "subject"
 type = "string"
+description = "The subject of the message."
 [[menus.arguments]]
 name = "body"
 type = "string"
+description = "The body text of the email message."
 [[menus.arguments]]
 name = "file"
 type = ""
 [[menus.arguments]]
 name = "user"
 type = "string"
+description = "Username used to authenticate to an SMTP server. If not specified, the value from the server configuration is used."
 [[menus.arguments]]
 name = "password"
 type = "string"
+description = "Password used to authenticate to an SMTP server. If not specified, the value from the server configuration is used."
 [[menus.arguments]]
 name = "tls"
 type = "enum (no | yes | starttls)"
 enum_values = ["no", "yes", "starttls"]
+description = "TLS encryption mode. yes - sends STARTTLS and drops the session if TLS is not available on the server. no - does not send STARTTLS. starttls - sends STARTTLS and continues without TLS if the server responds that TLS is not available. Default: no."
 [[menus.arguments]]
 name = "certificate-verification"
 type = "enum (no | yes | yes-without-crl)"
 enum_values = ["no", "yes", "yes-without-crl"]
-description = "TLS certificate validation"
+description = "TLS certificate validation. yes - validates the certificate chain from the local certificate store. yes-without-crl - validates the certificate without performing a CRL check. Default: no."
 
 [[menus]]
 path = "/tool/fetch"
@@ -40314,23 +40451,25 @@ type = "Command"
 [[menus.arguments]]
 name = "url"
 type = "string"
+description = "Full URL of the resource. Can replace the separate address and src-path parameters. Supports VRF designation by appending `@vrf_name` to the IP in the URL."
 [[menus.arguments]]
 name = "output"
 type = "enum (none | file | user | user-with-headers)"
 enum_values = ["none", "file", "user", "user-with-headers"]
-description = "where to output data, works for all protocols"
 [[menus.arguments]]
 name = "http-method"
 type = "enum (get | post | put | delete | head | patch)"
 enum_values = ["get", "post", "put", "delete", "head", "patch"]
+description = "HTTP method. Default: get."
 [[menus.arguments]]
 name = "http-auth-scheme"
 type = "enum (basic | digest)"
 enum_values = ["basic", "digest"]
+description = "HTTP authentication scheme. Default: basic."
 [[menus.arguments]]
 name = "http-data"
 type = "string"
-description = "POST or PUT request body data"
+description = "POST or PUT request body data. Maximum data limit is 64 KB."
 [[menus.arguments]]
 name = "http-header-field"
 type = ""
@@ -40338,10 +40477,11 @@ type = ""
 name = "check-certificate"
 type = "enum (no | yes | yes-without-crl)"
 enum_values = ["no", "yes", "yes-without-crl"]
-description = "https certificate validation"
+description = "TLS certificate validation. yes - validates the trust chain against the local certificate store. yes-without-crl - validates the certificate without performing a CRL check. Default: no."
 [[menus.arguments]]
 name = "certificate"
 type = "enum"
+description = "Certificate from the certificate store used for server verification in HTTPS mode. Applicable only when check-certificate is enabled."
 [[menus.arguments]]
 name = "address"
 type = ""
@@ -40351,82 +40491,98 @@ type = ""
 [[menus.arguments]]
 name = "port"
 type = "num"
+description = "Port used for the connection."
 [[menus.arguments]]
 name = "mode"
 type = "enum (http | https | ftp | tftp | sftp)"
 enum_values = ["http", "https", "ftp", "tftp", "sftp"]
+description = "Protocol used for the connection. When using the url parameter, the protocol is detected automatically. Default: http."
 [[menus.arguments]]
 name = "http-content-encoding"
 type = "enum (deflate | gzip)"
 enum_values = ["deflate", "gzip"]
-description = "encode payload and add corresponding Content-Encoding header; for HTTP POST and PUT only"
+description = "Encodes the payload using gzip or deflate compression and adds a corresponding Content-Encoding header. Only applicable to POST and PUT methods."
 [[menus.arguments]]
 name = "ip-type"
 type = "enum (any | ipv4 | ipv6)"
 enum_values = ["any", "ipv4", "ipv6"]
+description = "IP family preference when resolving domain names. Default value is `any`."
 [[menus.arguments]]
 name = "src-path"
 type = "file"
+description = "Path of the remote file."
 [[menus.arguments]]
 name = "dst-path"
 type = "file"
+description = "Destination path where the fetched file will be saved."
 [[menus.arguments]]
 name = "user"
 type = "string"
+description = "Username for authentication on the remote device. Default: anonymous."
 [[menus.arguments]]
 name = "password"
 type = "string"
+description = "Password for authentication on the remote device. Default: anonymous."
 [[menus.arguments]]
 name = "host"
 type = "string"
+description = "Hostname or virtual hostname of the remote web server. Useful when the same IP serves multiple virtual hosts. For example, `address=manual.mikrotik.com host=forum.mikrotik.com`."
 [[menus.arguments]]
 name = "ascii"
 type = "bool"
-description = "ftp transfer type"
+description = "Enables ASCII mode for FTP/TFTP transfers. Default: no."
 [[menus.arguments]]
 name = "upload"
 type = "bool"
-description = "ftp and tftp transfer direction"
+description = "Enables upload mode for FTP/SFTP transfers. Requires src-path and dst-path. Default: no."
 [[menus.arguments]]
 name = "keep-result"
 type = "bool"
-description = "depracated, use 'output' argument"
+description = "Deprecated, use the output argument instead."
 [[menus.arguments]]
 name = "idle-timeout"
 type = ""
 [[menus.arguments]]
 name = "http-max-redirect-count"
 type = "num"
-description = "default 0, i.e. no redirects"
+description = "Maximum number of HTTP redirects the fetch will follow automatically. Default: 2."
 [[menus.arguments]]
 name = "http-percent-encoding"
 type = "bool"
-description = "percent-encodes every character in path except for alphanumeric and the following characters: -._~/?^=:"
+description = "Percent-encodes every character in the request path except alphanumeric and `-._~/?^=:`. Default: no."
 [[menus.arguments]]
 name = "http-version"
 type = "enum (http1_1 | http2 | http2-forced)"
 enum_values = ["http1_1", "http2", "http2-forced"]
+description = "HTTP protocol version. HTTP2 is supported only on ARM64 and x86/CHR devices. Default value is `http1_1`."
 [[menus.read_only]]
 name = "status"
 type = "enum (none | connecting | requesting | downloading | uploading | finished | failed)"
+description = "Current status of the fetch operation."
 [[menus.read_only]]
 name = "code"
 type = "num"
+description = "HTTP status code returned by the server."
 [[menus.read_only]]
 name = "downloaded"
 type = "num"
+description = "Number of bytes downloaded."
 [[menus.read_only]]
 name = "uploaded"
 type = "num"
+description = "Number of bytes uploaded."
 [[menus.read_only]]
 name = "total"
 type = "num"
+description = "Total transfer size in bytes."
 [[menus.read_only]]
 name = "duration"
 type = "time"
+description = "The total duration of the fetch operation."
 [[menus.read_only]]
 name = "data"
 type = "string"
+description = "Fetched data stored in a variable when output is set to `user` or `user-with-headers`. Variable limit is 64 KB."
 [[menus.read_only]]
 name = "http-headers"
 type = ""
