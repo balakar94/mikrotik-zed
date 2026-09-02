@@ -19,9 +19,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ── Rust: mirrors `make fmt && make clippy && make test-rust && make build*` ──
+  # ── Linux: compile & check (fmt, clippy, tests, WASM + rsc-ls) ──
   rust:
-    name: Rust (fmt, clippy, test, build)
+    name: Linux • check
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -94,11 +94,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-  # ── Windows: rsc-ls must compile and pass tests on MSVC ────────────
-  # fmt/clippy/wasm are platform-independent (covered by the ubuntu job);
-  # this job only guards Windows-specific compilation of the LSP binary.
+  # ── Windows: compile & check (rsc-ls on MSVC) ──
   windows:
-    name: Windows (rsc-ls compile + test)
+    name: Windows • check
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -144,9 +142,53 @@ jobs:
         shell: bash
         run: ls -lh target/release/rsc-ls.exe || ls -lh target/release/rsc-ls
 
-  # ── Python: mirrors `make test-python && make sync-check && make extract` ──
+  # ── macOS: compile & check (rsc-ls on Apple Silicon/Intel) ──
+  macos:
+    name: macOS • check
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve Rust toolchain
+        id: toolchain
+        run: |
+          CH=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])' 2>/dev/null || python -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])' 2>/dev/null || grep -E 'channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$CH" ]; then echo "::error::failed to resolve toolchain"; exit 1; fi
+          echo "channel=$CH" >> "$GITHUB_OUTPUT"
+          echo "Resolved toolchain: $CH"
+
+      - name: Install Rust ${{ steps.toolchain.outputs.channel }} (MSRV)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 6c977a6
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Tests (cargo test -p rsc-ls)
+        run: cargo test -p rsc-ls --locked
+
+      - name: Build LSP (rsc-ls)
+        run: cargo build -p rsc-ls --locked --release
+
+      - name: Smoke — cross check aarch64/x86_64
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo check -p rsc-ls --locked --target aarch64-apple-darwin
+          cargo check -p rsc-ls --locked --target x86_64-apple-darwin
+
+      - name: Smoke — artifact sizes
+        run: |
+          ls -lh target/release/rsc-ls || true
+          ls -lh target/aarch64-apple-darwin/release/rsc-ls 2>/dev/null || echo "cross aarch64 not built (check only)"
+
+  # ── Docs: extraction & requirements checker ──
   python:
-    name: Python extraction
+    name: Docs • check
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -263,9 +305,9 @@ jobs:
           # Restore file to avoid polluting cache/upload — we only cared about the diff.
           git checkout -- data/commands.toml 2>/dev/null || true
 
-  # ── Grammar: mirrors `make generate-check && make test-grammar` ──
+  # ── Grammar: tree-sitter checks ──
   grammar:
-    name: Tree-sitter grammar
+    name: Grammar • check
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

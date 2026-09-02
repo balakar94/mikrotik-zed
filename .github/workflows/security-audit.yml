@@ -1,4 +1,4 @@
-name: Security Audit
+name: Supply Audit
 
 # Weekly Rust dependency CVE scan. Dependabot was intentionally removed
 # (commit 6528c8e — manual dependency policy for a solo-maintained project);
@@ -22,7 +22,7 @@ env:
 
 jobs:
   cargo-audit:
-    name: cargo audit (RustSec advisories)
+    name: RustSec • audit
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

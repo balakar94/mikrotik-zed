@@ -1,4 +1,4 @@
-name: Docs Drift
+name: Upstream Watchdog
 
 # Weekly watchdog for upstream RouterOS documentation drift.
 #
@@ -28,7 +28,7 @@ concurrency:
 
 jobs:
   watchdog:
-    name: Upstream docs drift watchdog
+    name: Upstream docs • drift check
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
