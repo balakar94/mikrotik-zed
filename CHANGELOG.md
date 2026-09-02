@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-09-02
+
+### Added
+
+- **LSP hardening (`lsp/src/server.rs`, `lsp/src/diagnostics.rs`, `lsp/src/hover.rs`, `lsp/src/encoding.rs`, `lsp/src/parser.rs`, `lsp/src/caps.rs`, `lsp/src/live.rs`)**:
+  - `C-01` percent-encoded `file://` URI decode with traversal re-validation (`%20`, `%2e%2e`).
+  - `O-01` `truncated` Information diagnostic when `MAX_DIAG_BYTES 500KB` / `MAX_DIAG_LINES 3000` capped.
+  - `P-01` `MAX_COMPLETION_ITEMS=200` bound.
+  - `C-04` enum comma-list lenient `any` match (`chain=input,forward`).
+  - `C-03` hover verb case-insensitive, `C-06` `**Read-only:**` section.
+  - `P-02` `line_starts` memchr table for `lsp_position_to_offset`.
+  - `A-01` unified `QuoteState` (`"`, `'`, `\`, `#`) for `scan_token`/`effective_content_end`/`walk_structure`.
+  - `C-02` logical-line aware `completion.textEdit` via `LogicalLine::logical_offset_from_physical` + `map_range`.
+  - `A-02` `Arc<MenuData>` zero-copy, `A-03` bounded fetches `MAX_CONCURRENT_FETCHES=2` (AtomicUsize), `A-05` caps registry, `P-04` `Arc<[String]>` live cache, `S-01` `RSC_LS_LIVE_ALLOW_LOOPBACK` SSRF flag, `O-02` hashed `uri_hash` + `latency` observability + startup banner `encoding/ssl_verify`.
+- **Grammar hardening (`grammars/rsc/grammar.js`, `languages/rsc/*`)**:
+  - `outline.scm` traverses `global_command_name`, `line_continuation` CRLF `\r?`, `command_substitution` multi-statement with GLR conflict, single-quote strings, `array_access prec3`, `function_call` non-recursive, `duration ms|us`, `ip_address` IPv6 tight, `config.toml ["#"] + "@"`, `(array)@indent`.
+  - Highlights verb list `+monitor|watch|fetch|resolve|check|cancel|flush` (4 sites) + `GENERATED` header.
+  - Corpus `72 → 79` (`menu_continuation`×2, `control_flow`×2, `variables $1/$:resolve`, `errors`×2 `("a" . \` + flat `$a $b $c`)).
+
+### Changed
+
+- **Data (`data/commands.toml`, `data/upstream-docs.toml`)**: `upstream 5503bd → c77198` — `26931e` TR069 CWMP enrichment (`+15 descriptions` for `/tr069-client`) + `c77198` file/fetch enrichment (`+182 lines` for `/file`, `/tool/fetch`), `1077 menus` stable `7.23.2`.
+- **Grammar pin (`extension.toml`)**: `2fdfe88 → 24bcf71` (publishes `81998df` + `24bcf71`).
+- **CI (`.github/workflows/ci.yml`, `release.yml`, `docs-drift.yml`, `security-audit.yml`)**: unified short names per OS — `Linux • check` / `Windows • check` / `macOS • check` (new) / `Docs • check` / `Grammar • check`; Release split into explicit per-target jobs (`Build Linux x86/arm64`, `Build macOS arm64/x86`, `Build Windows x86/arm64`, `Validations`, `Create Release`); rely on GitHub native SHA256 digests (2025-06-03) — removed manual `*.sha256`/`SHA256SUMS`; watchdogs renamed `Docs Drift → Upstream Watchdog` / `Security Audit → Supply Audit` (`RustSec • audit`).
+
+### Fixed
+
+- `test(sensor)` dead_code `cfg_with_no_loopback` clippy.
+
 ## [0.5.3] - 2026-08-28
 
 ### Added
@@ -120,7 +149,8 @@ Baseline release tagged `v0.5.0`. Changes since `v0.4.0`:
 - `extension.toml` kept to schema-known keys only.
 - Local `TODO.md` ignored.
 
-[Unreleased]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.5...HEAD
+[0.5.5]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.3...v0.5.5
 [0.5.3]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.0...v0.5.1
