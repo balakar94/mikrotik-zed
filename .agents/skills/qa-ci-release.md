@@ -61,11 +61,13 @@ Triggers: `push` tags `v*.*.*` or `workflow_dispatch` (optional `tag` input, fal
 
 | Job | Runner | Output |
 |-----|--------|--------|
-| `meta` | `ubuntu-latest` | Resolves `tag`/`version`, validates `vMAJOR.MINOR.PATCH`, asserts `Cargo.toml` + `lsp/Cargo.toml` == `tag` (fail), `extension.toml` == `tag` (warn), sets `RSC_LS_BUILD_SHA=${{ github.sha }}` |
-| `wasm` | `ubuntu-latest` | `cargo build --target wasm32-wasip2 --release` → `extension.wasm` + `extension.wasm.sha256` + `SHA256SUMS`, attest provenance, upload 14d |
-| `build` (6-way matrix) | `ubuntu-latest`/`ubuntu-24.04-arm`/`macos-latest`/`windows-latest` | `cargo build -p rsc-ls --target <triple>` native on `ubuntu-24.04-arm` for `aarch64-unknown-linux-gnu` (no `zig`/`cargo-zigbuild` cross), 6 binaries: `rsc-ls-{aarch64,x86_64}-{apple-darwin,unknown-linux-gnu,pc-windows-msvc}` + per-file `.sha256` + `SHA256SUMS`, attest + upload |
-| `release` | `ubuntu-latest` | Guards idempotency (`gh release view`), merges `dist/*`, rebuilds combined `SHA256SUMS`, generates notes, `softprops/action-gh-release` → GH Release with 6 `rsc-ls-<triple>` + `extension.wasm` + `*.sha256` + `SHA256SUMS` |
-| `publish-info` | `ubuntu-latest` | Re-validates `extension.toml` via `check_zed_requirements.py`, placeholder `000...` guard |
+| `meta` | `ubuntu-latest` | Resolves `tag`/`version`, validates `vMAJOR.MINOR.PATCH`, asserts `Cargo.toml` + `lsp/Cargo.toml` == `tag` (fail), `extension.toml` == `tag` (warn), `workflow_dispatch` guard (tag exists + `git rev-parse "$TAG^{commit}"` == `github.sha`), sets `RSC_LS_BUILD_SHA=${{ github.sha }}` |
+| `preflight` (`needs: [meta]`) | `ubuntu-latest` | On the release SHA: `cargo test --workspace --locked`, `cargo clippy -p rsc-ls --all-targets -- -D warnings`, `make check-manifest`, `make generate-check` (grammar clone + Node 24, same recipe as `ci.yml` grammar job) |
+| `wasm` (`needs: [meta, preflight]`) | `ubuntu-latest` | `cargo build --target wasm32-wasip2 --release` → `extension.wasm` + `extension.wasm.sha256` + `SHA256SUMS` (`sha256sum` with `shasum` fallback), attest provenance, upload 14d |
+| `build-*` (6 explicit jobs, `needs: [meta, preflight]`) | `ubuntu-latest`/`ubuntu-24.04-arm`/`macos-latest`/`windows-latest` | `cargo build -p rsc-ls --target <triple>` native on `ubuntu-24.04-arm` for `aarch64-unknown-linux-gnu` (no `zig`/`cargo-zigbuild` cross), 6 binaries: `rsc-ls-{aarch64,x86_64}-{apple-darwin,unknown-linux-gnu,pc-windows-msvc}` + per-file `.sha256` + `SHA256SUMS`, smoke `<binary> --version` (Rosetta-guarded for `x86_64-apple-darwin`, ARM64 PE `file` check for `aarch64-pc-windows-msvc`), attest + upload |
+| `release` | `ubuntu-latest` | Guards idempotency (`gh release view`), merges `dist/*`, rebuilds combined `SHA256SUMS`, generates notes, `softprops/action-gh-release` (`fail_on_unmatched_files: true`) → GH Release with 6 `rsc-ls-<triple>` + `extension.wasm` + `*.sha256` + `SHA256SUMS` |
+| `validations` | `ubuntu-latest` | Re-validates `extension.toml` via `check_zed_requirements.py`, placeholder `000...` guard |
+| `postflight` (`needs: [meta, release]`) | `ubuntu-latest` | Downloads every asset + its `.sha256` companion from the live release (`GITHUB_TOKEN` suffices) and `sha256sum -c` each plus combined `SHA256SUMS` |
 
 Download verification on consumer side is `sha256sum -c SHA256SUMS` (WASM shim does built-in SHA-256 before exec).
 

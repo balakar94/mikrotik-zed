@@ -108,7 +108,7 @@ python scripts/extract_commands.py && git diff --exit-code data/commands.toml
 
 # 4. Tag → triggers .github/workflows/release.yml (multi-platform rsc-ls binaries + WASM)
 git tag v<version> && git push origin v<version>
-# artifacts (v*.*.*): 6 rsc-ls triples (macOS/Linux/Windows × 2) + extension.wasm + per-file *.sha256 + SHA256SUMS (6–7 assets)
+# artifacts (v*.*.*): 6 rsc-ls triples (macOS/Linux/Windows × 2) + extension.wasm + per-file *.sha256 + SHA256SUMS (15 assets: 7 binaries + 7 .sha256 + SHA256SUMS)
 # Linux aarch64 builds natively on ubuntu-24.04-arm — no zig
 
 # 5. PR to zed-industries/extensions
