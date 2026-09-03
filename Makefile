@@ -46,7 +46,7 @@ test-rust: ## Run Rust tests (all workspace members)
 
 test-python: ## Run Python test suite
 	@command -v $(PYTHON) >/dev/null || (echo "skip: $(PYTHON) not found" && exit 0)
-	@command -v pytest >/dev/null 2>&1 || $(PYTHON) -m pytest --version >/dev/null 2>&1 || (echo "skip: pytest not found (pip install pytest)" && exit 0)
+	@command -v pytest >/dev/null 2>&1 || $(PYTHON) -m pytest --version >/dev/null 2>&1 || (echo "error: pytest not found (pip install pytest)" >&2 && exit 1)
 	$(PYTHON) -m pytest tests/ -v
 
 test-all: test-grammar test-rust test-python ## Run all tests

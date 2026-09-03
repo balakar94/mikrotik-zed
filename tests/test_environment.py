@@ -4,9 +4,9 @@ Validates development environment is correctly bootstrapped:
 toolchains, manifests, generated files, and CI configuration.
 
 Design:
-- Deterministic, no network (mocked where needed)
+- Deterministic, no network (real tools with clean skips when absent)
 - Uses tmp_path for round-trip file checks
-- Uses mocking for external subprocess calls
+- Uses real subprocess calls with timeouts
 - Gracefully skips when optional tools are absent
 - Fast and independent (no shared state)
 """
@@ -18,7 +18,6 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from unittest import mock
 
 import pytest
 
@@ -197,13 +196,6 @@ class TestMakefile:
     def test_make_help_exits_zero_and_lists_targets(self):
         if shutil.which("make") is None:
             pytest.skip("make not in PATH")
-        # Demonstrate mocking as well: create a fake result and verify logic
-        fake = subprocess.CompletedProcess(args=["make", "help"], returncode=0, stdout="help\nbuild\nvalidate\n", stderr="")
-        with mock.patch("subprocess.run", return_value=fake):
-            mocked = subprocess.run(["make", "help"], capture_output=True, text=True)
-            assert mocked.returncode == 0
-            assert "help" in mocked.stdout
-
         # Real check
         result = subprocess.run(
             ["make", "-C", str(PROJECT_ROOT), "help"],
@@ -339,12 +331,6 @@ class TestNodeTools:
         r = subprocess.run(["node", "--version"], capture_output=True, text=True, timeout=5)
         assert r.returncode == 0 and r.stdout.strip().startswith("v")
 
-        # tree-sitter-cli via npx — mock demonstrates logic, then real check
-        fake = subprocess.CompletedProcess(args=["npx", "tree-sitter", "--version"], returncode=0, stdout="tree-sitter 0.26.11\n", stderr="")
-        with mock.patch("subprocess.run", return_value=fake):
-            mocked = subprocess.run(["npx", "tree-sitter", "--version"], capture_output=True, text=True)
-            assert "tree-sitter" in mocked.stdout.lower()
-
         if shutil.which("npx") is None:
             pytest.skip("npx not in PATH")
         grammar_dir = PROJECT_ROOT / "grammars" / "rsc"
@@ -371,14 +357,6 @@ class TestNodeTools:
 
 class TestWasmTargets:
     def test_wasm_targets_installed_or_skipped(self):
-        # Mocked path first — deterministic
-        fake_out = "aarch64-apple-darwin\nwasm32-wasip2\n"
-        fake = subprocess.CompletedProcess(args=["rustup", "target", "list", "--installed"], returncode=0, stdout=fake_out, stderr="")
-        with mock.patch("subprocess.run", return_value=fake):
-            mocked = subprocess.run(["rustup", "target", "list", "--installed"], capture_output=True, text=True)
-            assert "wasm32-wasip1" not in mocked.stdout
-            assert "wasm32-wasip2" in mocked.stdout
-
         # Real check
         if shutil.which("rustup") is None:
             pytest.skip("rustup not in PATH")
@@ -428,7 +406,7 @@ class TestCIWorkflows:
 
 
 # ---------------------------------------------------------------------------
-# 24: cargo check for wasm (mocked + file existence)
+# 24: cargo check for wasm (real opt-in + file existence)
 # ---------------------------------------------------------------------------
 
 
@@ -441,12 +419,10 @@ class TestCargoCheck:
         if shutil.which("cargo") is None:
             pytest.skip("cargo not in PATH")
 
-        # Mocked cargo check — validates invocation without heavy compile
-        fake = subprocess.CompletedProcess(args=["cargo", "check", "--target", "wasm32-wasip2"], returncode=0, stdout="Finished\n", stderr="")
-        with mock.patch("subprocess.run", return_value=fake) as m:
-            res = subprocess.run(["cargo", "check", "--target", "wasm32-wasip2"], capture_output=True, text=True)
-            assert res.returncode == 0
-            m.assert_called_once()
+        # NOTE: a mocked `cargo check` success proves nothing about the toolchain,
+        # so no mock assertion lives here. File existence above plus the target
+        # presence check below is the deterministic signal; the heavy real
+        # `cargo check` runs only on explicit opt-in (CARGO_CHECK_REAL=1).
 
         # If wasm targets not installed, skip real check
         if shutil.which("rustup") is None:
@@ -458,7 +434,6 @@ class TestCargoCheck:
         if "wasm32-wasip2" not in tr.stdout:
             pytest.skip("wasm targets not installed")
         # Real cargo check is heavy; only run when explicitly requested.
-        # The mocked check above already validates invocation logic.
         import os
 
         if os.environ.get("CARGO_CHECK_REAL") == "1":
@@ -472,4 +447,4 @@ class TestCargoCheck:
             if result.returncode != 0 and "not installed" in result.stderr.lower():
                 pytest.skip(f"wasm target not installed: {result.stderr[:300]}")
             assert result.returncode == 0, f"cargo check failed: {result.stderr[:500]}"
-        # Otherwise mocked verification is sufficient — test passes on file existence + mock.
+        # Otherwise the test passes on file existence + installed-target presence.

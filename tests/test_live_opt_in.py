@@ -137,9 +137,10 @@ class TestLiveModuleExists:
     def test_completion_wires_live(self):
         txt = _read(COMPLETION_RS)
         assert "compute_completions_with_live" in txt
-        assert "live_values_for_property" in txt
-        assert "live — interface on device" in txt
+        assert "live_resource_values_for_property" in txt
+        assert "detail_label()" in txt
         assert "0live_" in txt
+        assert "live — interface on device" in _read(LIVE_RS)
 
 
 # ── 2. Caps values (defensive hard rule #7) ───────────────────────
@@ -205,10 +206,11 @@ class TestLiveSecurityInvariants:
         assert "\\0" in txt or "'\\0'" in txt or "contains('\\0')" in txt
 
     def test_host_validation_logic_rejects_delimiters(self):
-        # Direct static check: ensure test file covers delimiter case (added in this branch)
+        # Production contract: delimiter hosts map to InvalidHost (no Rust test-name pin).
         txt = _read(LIVE_RS)
-        assert "test_host_validation_rejects_uri_delimiters" in txt, "missing host delimiter rejection test (security fix)"
-        assert "evil@host" in txt or "host?query" in txt
+        assert "validate_host_with_allow" in txt
+        assert "InvalidHost" in txt
+        assert "contains URI delimiter" in txt
 
     def test_debug_redacts_pass(self):
         txt = _read(LIVE_RS)
@@ -216,8 +218,8 @@ class TestLiveSecurityInvariants:
         assert "[REDACTED]" in txt
         # Ensure pass field is not formatted via {:?} directly
         assert 'field("pass", &"[REDACTED]")' in txt
-        # Test exists
-        assert "test_debug_redacts_pass" in txt, "missing Debug redaction test (security fix)"
+        # Spec checklist: pass comes from MIKROTIK_PASS env, never from tasks.json
+        assert "MIKROTIK_PASS" in txt
 
     def test_pass_never_logged(self):
         txt = _read(LIVE_RS)
@@ -235,8 +237,15 @@ class TestLiveSecurityInvariants:
                     assert False, f"potential pass logging found: {line!r}"
         # Also ensure LiveError Display never includes pass
         assert "LiveError" in txt
-        # LiveError variants must not carry pass
-        assert "pass" not in txt.split("enum LiveError")[1].split("}")[0].lower() or True  # sanity
+        # LiveError variants must not carry pass material surfaced to logs
+        m = re.search(r"pub enum LiveError \{(.*?)\}", txt, re.DOTALL)
+        assert m is not None, "LiveError enum block missing"
+        block = "\n".join(
+            line
+            for line in m.group(1).splitlines()
+            if not line.strip().startswith("//") and not line.strip().startswith("*")
+        )
+        assert "pass" not in block.lower(), "LiveError variants must not carry pass"
 
     def test_is_active_requires_host_and_pass(self):
         txt = _read(LIVE_RS)
@@ -257,26 +266,27 @@ class TestLiveDefaultOffAndOptIn:
         txt = _read(LIVE_RS)
         assert "RSC_LS_LIVE" in txt
         assert "MIKROTIK_LIVE" in txt
-        assert "test_disabled_by_default" in txt
+        assert "fn from_env" in txt
+        assert "fn is_active" in txt
 
     def test_completion_honest_zero_items_without_live(self):
         txt = _read(COMPLETION_RS)
-        assert "test_iface_enum_without_live_returns_empty_honest" in txt
+        assert "compute_completions_with_live" in txt
         # The production code path: iface_enum without live must be empty, not fabricated
-        assert "iface_enum without live must be empty" in txt or "honest" in txt.lower()
+        assert "iface_enum" in txt
+        assert "honest" in txt.lower()
 
     def test_completion_with_live_returns_mocked_interfaces(self):
-        txt = _read(COMPLETION_RS)
-        assert "test_iface_enum_with_live_returns_live_items" in txt
-        assert "ether1" in txt and "ether2" in txt or "ether1" in txt
-        # Check kind/detail/sortText wiring in production code
         prod = _read(COMPLETION_RS)
-        assert "resource.detail_label()" in prod or 'detail = Some("live — interface on device"' in prod
-        assert 'sort_text = Some(format!("0live_{val}"))' in prod
-        assert "kind::ENUM_MEMBER" in prod
+        assert "compute_completions_with_live" in prod
+        assert "live_resource_values_for_property" in prod
+        # Live merge wiring: ENUM_MEMBER kind, live detail label, 0live_ sort prefix
+        assert "ENUM_MEMBER" in prod
+        assert "detail_label()" in prod
+        assert "sort_text" in prod
+        assert "0live_" in prod
         live_txt = _read(LIVE_RS)
         assert "live — interface on device" in live_txt
-        assert "0live_" in prod
 
     def test_live_values_mapping(self):
         txt = _read(LIVE_RS)
@@ -306,13 +316,13 @@ class TestLiveDefaultOffAndOptIn:
         assert "filter_ip_value" in txt
 
     def test_opt_in_env_valid_mock(self):
-        # Ensure Rust tests use cfg_with mock and not real network
+        # Spec checklist: opt-in reads host/pass/timeout env, cache bounded by caps
         txt = _read(LIVE_RS)
-        assert "cfg_with" in txt
         assert "from_env_with" in txt
-        # Ensure no test hits real network by default
-        assert "test_get_cached_or_fetch_blocking_returns_cached_without_network" in txt
-        assert "test_get_cached_or_fetch_blocking_disabled_returns_none" in txt
+        assert "MIKROTIK_HOST" in txt
+        assert "MIKROTIK_PASS" in txt
+        assert "LIVE_TIMEOUT_SECS" in txt or "timeout_secs" in txt
+        assert _caps_value("LIVE_TIMEOUT_SECS") == 5
 
 
 # ── 5. Fallback: no crash, no hang >2s ─────────────────────────────
@@ -331,17 +341,18 @@ class TestLiveFallback:
 
     def test_invalid_host_returns_static_honest_set(self):
         txt = _read(LIVE_RS)
-        assert "test_disabled_fallback_fetch_errors" in txt
         assert "InvalidHost" in txt
-        # Completion fallback test: stale cache returns empty, not panic
+        assert "Disabled" in txt
+        # Completion falls back to honest static set when live is unavailable
         comp = _read(COMPLETION_RS)
-        assert "test_stale_cache_returns_empty" in comp
+        assert "compute_completions_with_live" in comp
+        assert "honest" in comp.lower()
 
     def test_host_with_slash_rejected(self):
         txt = _read(LIVE_RS)
-        assert "test_fetch_interfaces_rejects_host_with_slash" in txt
-        # Production code rejects slash
+        # Production contract: slash in host is rejected before URL build
         assert "host.contains('/')" in txt or 'contains(\'/\')' in txt
+        assert "InvalidHost" in txt
 
     def test_response_too_large_handled(self):
         txt = _read(LIVE_RS)
@@ -509,6 +520,26 @@ class TestCIGate:
     def test_live_tests_are_discoverable(self):
         # Ensure pytest will discover this file
         assert Path(__file__).name == "test_live_opt_in.py"
-        # And cargo test will discover live tests
+        # Spec checklist: live surface stays wired (env names + caps), refactor-stable
         txt = _read(LIVE_RS)
-        assert txt.count("#[test]") >= 20, "live.rs should have many tests"
+        assert "RSC_LS_LIVE" in txt
+        assert "MIKROTIK_HOST" in txt
+        assert _caps_value("MAX_LIVE_ITEMS") == 500
+        assert _caps_value("LIVE_TIMEOUT_SECS") == 5
+
+    def test_live_check_dry_run_no_network(self):
+        # Behavioral, refactor-stable: dry-run never touches network, prints DRY-RUN.
+        import subprocess
+        import sys
+
+        script = ROOT / "scripts" / "mikrotik-live-check.py"
+        if not script.exists():
+            pytest.skip("scripts/mikrotik-live-check.py absent")
+        result = subprocess.run(
+            [sys.executable, str(script), "--dry-run", "--host", "192.168.88.1"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode == 0
+        assert "DRY-RUN" in (result.stdout + result.stderr)
