@@ -256,6 +256,17 @@ pub(crate) fn apply_incremental_edit(
     Ok(())
 }
 
+/// Strip a leading Unicode byte-order mark (U+FEFF) from document text.
+///
+/// Returns the string unchanged when no BOM is present. Only a single
+/// leading BOM is removed; U+FEFF occurrences elsewhere are preserved.
+///
+/// Applied to document text on `textDocument/didOpen` (before parse/store)
+/// so a BOM can never shift positions or surface as a phantom token.
+pub(crate) fn strip_bom_prefix(s: &str) -> &str {
+    s.strip_prefix('\u{FEFF}').unwrap_or(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,6 +624,23 @@ mod tests {
                 assert!(b <= line.len(), "unit {u} out of range for {line:?}");
             }
         }
+    }
+
+    // ── strip_bom_prefix ────────────────────────────────────────
+
+    #[test]
+    fn test_strip_bom_prefix_present() {
+        assert_eq!(strip_bom_prefix("\u{FEFF}/ip/route"), "/ip/route");
+    }
+
+    #[test]
+    fn test_strip_bom_prefix_absent() {
+        assert_eq!(strip_bom_prefix("/ip/route"), "/ip/route");
+    }
+
+    #[test]
+    fn test_strip_bom_prefix_empty() {
+        assert_eq!(strip_bom_prefix(""), "");
     }
 
     // ── convert_diagnostic_ranges ─────────────────────────────────

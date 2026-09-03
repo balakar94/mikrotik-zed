@@ -28,6 +28,7 @@ mod logging;
 mod menus;
 mod navigation;
 mod parser;
+mod rename;
 mod server;
 mod signature;
 mod suggest;

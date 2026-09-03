@@ -510,6 +510,118 @@ pub fn parse_line(data: &MenuData, before_cursor: &str) -> LineContext {
     }
 }
 
+// ── Per-document parse cache ──────────────────────────────────────
+//
+// Request handlers used to re-run the continuation-aware logical-line join
+// (`diagnostics::logical_lines`) on every request. This cache memoizes that
+// join per open document so repeated requests (completion, definition,
+// references, rename) only reparse when the text actually changed.
+//
+// Keying: document URI + hash of the full text. The server tracks no
+// per-document version counter (it stores plain `uri -> text`), so the
+// text hash is the change detector: any edit yields a different hash and
+// therefore a miss followed by a reparse. Staleness needs no explicit
+// dirty flag; `invalidate` exists for lifecycle events (didOpen re-insert,
+// didClose) where the entry must die regardless of content.
+//
+// Bound: entries are keyed by tracked-document URI and the server caps
+// tracked documents at `MAX_DOCS`; as belt-and-braces `get_or_insert`
+// evicts one arbitrary entry before exceeding that cap, so the cache can
+// never outgrow the document store it shadows.
+
+/// One cached parse: the hash the entry was built from plus the derived
+/// logical lines it memoizes.
+struct CachedDoc {
+    text_hash: u64,
+    logicals: Vec<crate::diagnostics::LogicalLine>,
+}
+
+/// Memoized logical-line joins keyed by document URI.
+pub(crate) struct ParseCache {
+    entries: HashMap<String, CachedDoc>,
+}
+
+/// Hash the full document text for change detection (SipHash via std).
+fn text_hash(text: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
+impl ParseCache {
+    /// Empty cache; entries accrue lazily via [`ParseCache::get_or_insert`].
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+
+    /// Look up the cached logical lines for the CURRENT text of `uri`.
+    ///
+    /// Returns `Some` only when an entry exists AND its hash matches `doc`
+    /// (warm cache); any edit since the entry was stored yields `None`.
+    pub(crate) fn lookup(
+        &self,
+        uri: &str,
+        doc: &str,
+    ) -> Option<&[crate::diagnostics::LogicalLine]> {
+        self.entries.get(uri).and_then(|entry| {
+            if entry.text_hash == text_hash(doc) {
+                Some(entry.logicals.as_slice())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Return the cached logical lines for the CURRENT text of `uri`,
+    /// parsing and storing them on a miss (cold cache or changed text).
+    ///
+    /// Bounded by the document-store discipline (`MAX_DOCS`): inserting a
+    /// new URI while at the cap evicts one arbitrary entry first.
+    pub(crate) fn get_or_insert(
+        &mut self,
+        uri: &str,
+        doc: &str,
+    ) -> &[crate::diagnostics::LogicalLine] {
+        let hash = text_hash(doc);
+        let fresh = self
+            .entries
+            .get(uri)
+            .is_none_or(|entry| entry.text_hash != hash);
+        if fresh {
+            let logicals = crate::diagnostics::logical_lines(doc);
+            if !self.entries.contains_key(uri)
+                && self.entries.len() >= crate::MAX_DOCS
+                && let Some(victim) = self.entries.keys().next().cloned()
+            {
+                self.entries.remove(&victim);
+            }
+            self.entries.insert(
+                uri.to_string(),
+                CachedDoc {
+                    text_hash: hash,
+                    logicals,
+                },
+            );
+        }
+        &self
+            .entries
+            .get(uri)
+            .expect("parse cache entry was just inserted")
+            .logicals
+    }
+
+    /// Drop the entry for `uri`, if any. Called on didOpen (re-insert) and
+    /// didClose (entries die with the document). Edits need no explicit
+    /// call: the hash check in [`ParseCache::lookup`] already misses.
+    pub(crate) fn invalidate(&mut self, uri: &str) {
+        self.entries.remove(uri);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1264,6 +1376,92 @@ type = "Directory"
                 || !events
                     .iter()
                     .any(|ev| matches!(ev, StructureEvent::UnterminatedQuote { .. }))
+        );
+    }
+
+    // ── ParseCache ────────────────────────────────────────────────
+
+    fn cache_texts(cache: &ParseCache, uri: &str, doc: &str) -> Option<Vec<String>> {
+        cache
+            .lookup(uri, doc)
+            .map(|logicals| logicals.iter().map(|ll| ll.text().to_string()).collect())
+    }
+
+    #[test]
+    fn test_parse_cache_cold_miss_then_warm_hit_matches_fresh_join() {
+        let mut cache = ParseCache::new();
+        let uri = "file:///cache.rsc";
+        let doc = "/ip/address add \\\naddress=1.2.3.4\n:local x\n";
+        // Cold: no entry yet.
+        assert!(cache.lookup(uri, doc).is_none());
+        // First access parses and stores…
+        let warm: Vec<String> = cache
+            .get_or_insert(uri, doc)
+            .iter()
+            .map(|ll| ll.text().to_string())
+            .collect();
+        // …and the warm result is byte-identical to a fresh join, so every
+        // consumer (diagnostics, completions) observes identical input.
+        let fresh: Vec<String> = crate::diagnostics::logical_lines(doc)
+            .iter()
+            .map(|ll| ll.text().to_string())
+            .collect();
+        assert_eq!(warm, fresh);
+        assert_eq!(cache_texts(&cache, uri, doc), Some(fresh));
+    }
+
+    #[test]
+    fn test_parse_cache_edit_invalidates_via_hash_mismatch() {
+        let mut cache = ParseCache::new();
+        let uri = "file:///cache-edit.rsc";
+        let before = ":local x\n:put $x\n";
+        let after = ":local x\n:put $x\n:put $x\n";
+        cache.get_or_insert(uri, before);
+        assert!(cache.lookup(uri, before).is_some());
+        // Same URI, changed text: the stored hash no longer matches, so the
+        // lookup misses (stale entries can never be served)…
+        assert!(
+            cache.lookup(uri, after).is_none(),
+            "edited text must miss the cache"
+        );
+        // …and the next access reparses the new content.
+        let texts: Vec<String> = cache
+            .get_or_insert(uri, after)
+            .iter()
+            .map(|ll| ll.text().to_string())
+            .collect();
+        assert_eq!(texts.len(), 3);
+        assert!(cache.lookup(uri, after).is_some());
+        assert!(cache.lookup(uri, before).is_none());
+    }
+
+    #[test]
+    fn test_parse_cache_invalidate_drops_entry_regardless_of_content() {
+        let mut cache = ParseCache::new();
+        let uri = "file:///cache-close.rsc";
+        let doc = ":put hi\n";
+        cache.get_or_insert(uri, doc);
+        assert!(cache.lookup(uri, doc).is_some());
+        cache.invalidate(uri);
+        assert!(
+            cache.lookup(uri, doc).is_none(),
+            "didClose must kill the entry even for unchanged text"
+        );
+        // Invalidating an unknown URI is a no-op, never a panic.
+        cache.invalidate("file:///never-opened.rsc");
+    }
+
+    #[test]
+    fn test_parse_cache_bounded_by_max_docs_discipline() {
+        let mut cache = ParseCache::new();
+        for i in 0..(crate::MAX_DOCS + 25) {
+            let uri = format!("file:///cache-cap-{i}.rsc");
+            cache.get_or_insert(&uri, ":put hi\n");
+        }
+        assert!(
+            cache.entries.len() <= crate::MAX_DOCS,
+            "cache must never outgrow the document store, got {}",
+            cache.entries.len()
         );
     }
 }
