@@ -257,41 +257,9 @@ Live suggestions appear in the autocomplete dropdown with the `live — ...` lab
 
 Live enrichment is **strictly opt-in** and disabled by default. 
 
-#### Recommended: Configure in Zed `settings.json`
+#### Recommended: Environment Variables / Keychain
 
-The most reliable way to configure Live Data (working whether you launch Zed from the Dock, Spotlight, Finder, or terminal) is via Zed's settings:
-
-- **Per-project:** Create or edit `.zed/settings.json` in your workspace repository root.
-- **Global:** Edit your global Zed settings (`~/.config/zed/settings.json` or `Cmd + ,` in Zed).
-
-```json
-{
-  "lsp": {
-    "rsc-ls": {
-      "binary": {
-        "env": {
-          "RSC_LS_LIVE": "1",
-          "MIKROTIK_HOST": "192.168.88.1",
-          "MIKROTIK_USER": "admin",
-          "MIKROTIK_PASS": "your_password",
-          "MIKROTIK_HTTP": "1",
-          "MIKROTIK_PORT": "80"
-        }
-      }
-    }
-  }
-}
-```
-
-> [!TIP]
-> **HTTP vs HTTPS in RouterOS:**
-> - Most local routers use plain **HTTP on port 80** (`"MIKROTIK_HTTP": "1"`, `"MIKROTIK_PORT": "80"`).
-> - If your router uses **HTTPS on port 443** with a self-signed certificate, set `"MIKROTIK_PORT": "443"` and `"MIKROTIK_SSL": "0"`.
-> - You can add `"RSC_LS_LOG": "debug"` to view real-time fetch logs in Zed via `Cmd + Shift + P` → `zed: open language server logs` → `rsc-ls`.
-
-#### Alternative: Environment Variables (CLI / Shell)
-
-You can also pass environment variables in your shell profile (`~/.zshrc`, `~/.bashrc`) or when launching Zed from the terminal:
+Pass credentials via the process environment (shell profile or keychain-backed env), not via files in the repo:
 
 ```bash
 export RSC_LS_LIVE=1                  # or MIKROTIK_LIVE=1
@@ -303,6 +271,41 @@ export MIKROTIK_PORT=80               # REST port (default: 443)
 export MIKROTIK_SSL=0                 # 0 to disable TLS verification (self-signed certs)
 export MIKROTIK_TIMEOUT=5             # Per-request timeout in seconds (1..30, default: 5)
 ```
+
+#### Alternative: Zed `settings.json` (non-secret fields only)
+
+Non-secret settings can live in Zed's settings (global settings, or per-project `.zed/settings.json`):
+
+- **Per-project:** Create or edit `.zed/settings.json` in your workspace repository root.
+- **Global:** Edit your global Zed settings (`~/.config/zed/settings.json` or `Cmd + ,` in Zed).
+
+> [!WARNING]
+> Per-project `.zed/settings.json` files are committed to shared repos. Never store `MIKROTIK_PASS` (or any secret) in them — keep passwords in the environment/keychain only. If your project uses per-project Zed settings, add `.zed/settings.json` to `.gitignore` unless it is guaranteed secret-free.
+
+```json
+{
+  "lsp": {
+    "rsc-ls": {
+      "binary": {
+        "env": {
+          "RSC_LS_LIVE": "1",
+          "MIKROTIK_HOST": "192.168.88.1",
+          "MIKROTIK_USER": "admin",
+          "MIKROTIK_HTTP": "1",
+          "MIKROTIK_PORT": "80"
+        }
+      }
+    }
+  }
+}
+```
+Set `MIKROTIK_PASS` via the environment (see above), never in `settings.json`.
+
+> [!TIP]
+> **HTTP vs HTTPS in RouterOS:**
+> - Most local routers use plain **HTTP on port 80** (`"MIKROTIK_HTTP": "1"`, `"MIKROTIK_PORT": "80"`).
+> - If your router uses **HTTPS on port 443** with a self-signed certificate, set `"MIKROTIK_PORT": "443"` and `"MIKROTIK_SSL": "0"`.
+> - You can add `"RSC_LS_LOG": "debug"` to view real-time fetch logs in Zed via `Cmd + Shift + P` → `zed: open language server logs` → `rsc-ls`.
 
 Connectivity check: the **"MikroTik: Live — Check connectivity"** task in `.zed/tasks.json` performs a real authenticated `GET /rest/interface` via `scripts/mikrotik-live-check.py` (not a dry-run deploy). It prompts for `MIKROTIK_HOST`/`MIKROTIK_USER` and reads `MIKROTIK_PASS` from env/keychain (never stored in `tasks.json`), sharing the same `MIKROTIK_*` semantics as `live.rs`/`deploy.py` — `MIKROTIK_PORT` (443), `MIKROTIK_SSL=0` (no verify), `MIKROTIK_HTTP=1` (force http, with legacy shim for `SSL=0` on non-standard ports), and `MIKROTIK_TIMEOUT` (5s live default). On success it prints `Live OK: N interfaces`; on failure `Live FAIL: …` with exit 4. Dry-run preview is also available: `python scripts/mikrotik-live-check.py --dry-run` or `--json` for machine output. See `python scripts/mikrotik-live-check.py --help`.
 

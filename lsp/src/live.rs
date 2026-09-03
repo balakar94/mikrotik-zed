@@ -286,9 +286,19 @@ impl LiveConfig {
     }
 
     /// Apply settings overlay to an existing config (mutates in place).
+    ///
+    /// Only objects under an explicit scope (`rsc.live`, `rsc`, `mikrotik`,
+    /// optionally nested under `settings`) are honored. A bare object that
+    /// merely happens to contain a host-like key is IGNORED: accepting it
+    /// would let unrelated editor settings hijack the device connection.
+    /// `enabled` is never settings-overridable (env opt-in only).
     pub fn apply_settings_value(cfg: &mut Self, v: &serde_json::Value) {
-        // Find the most relevant settings object.
-        let settings_obj = find_settings_object(v).unwrap_or(v);
+        // Find the most relevant settings object; without an explicit scope
+        // there is nothing to overlay.
+        let Some(settings_obj) = find_settings_object(v) else {
+            log_debug!("live settings overlay ignored: no rsc.live/mikrotik scope");
+            return;
+        };
 
         if let Some(host_val) = get_settings_str(settings_obj, &["host", "MIKROTIK_HOST"]) {
             let hosts = parse_hosts(&host_val);
@@ -595,7 +605,11 @@ fn parse_custom_resources_from_value(v: &serde_json::Value) -> Vec<CustomResourc
 
 /// Find the most relevant settings object inside a `didChangeConfiguration` value.
 ///
-/// Looks for `rsc.live`, `mikrotik`, or `settings.rsc.live` nesting.
+/// Only explicit scopes resolve: `rsc.live`, `rsc` (itself or carrying host
+/// keys), `mikrotik`, or `settings.*` nesting thereof. A bare object is
+/// NEVER treated as a settings object, even when it contains host-like
+/// keys — otherwise any unrelated editor payload with a `host` field could
+/// hijack the device connection. Returns `None` when no scope matches.
 fn find_settings_object(v: &serde_json::Value) -> Option<&serde_json::Value> {
     if let Some(obj) = v.as_object() {
         // Direct rsc.live
@@ -613,13 +627,6 @@ fn find_settings_object(v: &serde_json::Value) -> Option<&serde_json::Value> {
         }
         if let Some(settings) = obj.get("settings") {
             return find_settings_object(settings);
-        }
-        // If object itself looks like a config (has host), return it.
-        if obj.contains_key("host")
-            || obj.contains_key("MIKROTIK_HOST")
-            || obj.contains_key("MIKROTIK_PASS")
-        {
-            return Some(v);
         }
     }
     None
@@ -810,12 +817,134 @@ fn is_ssrf_denied_host(host: &str) -> bool {
     false
 }
 
+/// Normalize `host` via WHATWG URL parsing and return the IP when numeric.
+///
+/// The HTTP client connects to the WHATWG-normalized host, so all range
+/// checks must run against this value — not the raw string. Lexical checks
+/// alone miss decimal (`2130706433`), hex (`0x7f000001`), short
+/// (`127.1`), octal (`0177.0.0.1`), and mapped (`::ffff:127.0.0.1`) forms.
+/// Returns `None` for domain names or unparsable hosts (callers fall back
+/// to lexical hostname checks).
+fn normalized_host_ip(host: &str) -> Option<std::net::IpAddr> {
+    let trimmed = host.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let host_for_url = format_host_for_url(trimmed);
+    let url_str = format!("http://{host_for_url}/");
+    let parsed = url::Url::parse(&url_str).ok()?;
+    match parsed.host()? {
+        url::Host::Ipv4(v4) => Some(std::net::IpAddr::V4(v4)),
+        url::Host::Ipv6(v6) => Some(std::net::IpAddr::V6(v6)),
+        url::Host::Domain(_) => None,
+    }
+}
+
+/// Whether `host` is a non-canonical numeric literal.
+///
+/// When WHATWG normalization yields an IP whose canonical string differs
+/// from the raw literal (modulo brackets and ASCII case), the input used a
+/// decimal/hex/octal/short or otherwise non-canonical encoding and is
+/// rejected fail-closed — even when the normalized address itself would be
+/// public. Canonical forms (`127.0.0.1`, `8.8.8.8`, `2001:db8::1`) are
+/// unaffected because they already match their canonical string.
+fn is_non_canonical_numeric_host(host: &str) -> bool {
+    let trimmed = host.trim();
+    let inner = if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() >= 2 {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+    let Some(normalized) = normalized_host_ip(trimmed) else {
+        return false;
+    };
+    let canonical = normalized.to_string().to_ascii_lowercase();
+    inner.to_ascii_lowercase() != canonical
+}
+
+/// Whether a normalized IP is unconditionally SSRF-denied.
+///
+/// Covers whole `169.254.0.0/16` link-local (not just `.169.254`),
+/// IPv6 `fe80::/10` link-local, and unspecified addresses. IPv4-mapped
+/// IPv6 (`::ffff:a.b.c.d`) is mapped to IPv4 before the check so
+/// `[::ffff:a9fe:a9fe]` (metadata IP) is denied as link-local.
+fn is_normalized_ssrf_denied(addr: std::net::IpAddr) -> bool {
+    match addr {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            if o[0] == 169 && o[1] == 254 {
+                return true;
+            }
+            if v4.is_unspecified() {
+                return true;
+            }
+            false
+        }
+        std::net::IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_normalized_ssrf_denied(std::net::IpAddr::V4(mapped));
+            }
+            if v6.is_unspecified() {
+                return true;
+            }
+            // fe80::/10: first 10 bits are 1111111010.
+            if (v6.segments()[0] & 0xffc0) == 0xfe80 {
+                return true;
+            }
+            false
+        }
+    }
+}
+
+/// Whether a normalized IP is loopback or RFC1918 private.
+///
+/// IPv4-mapped IPv6 is mapped to IPv4 first so `[::ffff:127.0.0.1]` and
+/// `[::ffff:10.0.0.1]` are judged as their IPv4 equivalents. ULA
+/// (`fc00::/7`) stays allowed to avoid over-blocking, matching prior policy.
+fn is_normalized_loopback_or_private(addr: std::net::IpAddr) -> bool {
+    match addr {
+        std::net::IpAddr::V4(v4) => {
+            if v4.is_loopback() {
+                return true;
+            }
+            let o = v4.octets();
+            if o[0] == 10 {
+                return true;
+            }
+            if o[0] == 192 && o[1] == 168 {
+                return true;
+            }
+            if o[0] == 172 && (16..=31).contains(&o[1]) {
+                return true;
+            }
+            false
+        }
+        std::net::IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_normalized_loopback_or_private(std::net::IpAddr::V4(mapped));
+            }
+            if v6.is_loopback() {
+                return true;
+            }
+            false
+        }
+    }
+}
+
 /// Whether `host` is loopback or private (RFC1918 / ULA / loopback).
 ///
 /// Used for `RSC_LS_LIVE_ALLOW_LOOPBACK` gating: when loopback is not
 /// allowed, these hosts are SSRF-denied. Handles IPv4 and IPv6 literals,
-/// bracketed IPv6 (`[::1]`), and the hostname `localhost`.
+/// bracketed IPv6 (`[::1]`), and the hostname `localhost`. Range checks run
+/// against the WHATWG-normalized IP (via `normalized_host_ip` with IPv4
+///-mapped unmapping) so decimal/hex/short/mapped bypasses are closed.
 pub(crate) fn is_loopback_or_private(host: &str) -> bool {
+    // Normalize-then-check: the HTTP client connects to the normalized host.
+    if let Some(normalized) = normalized_host_ip(host)
+        && is_normalized_loopback_or_private(normalized)
+    {
+        return true;
+    }
     let lower = host.trim().to_ascii_lowercase();
     let inner = if lower.starts_with('[') && lower.ends_with(']') {
         &lower[1..lower.len() - 1]
@@ -888,6 +1017,29 @@ pub fn validate_host_with_allow(host: &str, allow_loopback: bool) -> Result<(), 
     if is_ssrf_denied_host(host) {
         return Err(LiveError::InvalidHost("SSRF denied host".to_string()));
     }
+    // Normalize-then-check: run ALL range checks against the WHATWG-normalized
+    // host the HTTP client actually connects to. Rejects non-canonical numeric
+    // literals fail-closed, then whole 169.254.0.0/16 and fe80::/10, then
+    // loopback/RFC1918 against the normalized IP with IPv4-mapped unmapping.
+    if is_non_canonical_numeric_host(host) {
+        return Err(LiveError::InvalidHost(
+            "non-canonical numeric host".to_string(),
+        ));
+    }
+    if let Some(normalized) = normalized_host_ip(host) {
+        if is_normalized_ssrf_denied(normalized) {
+            return Err(LiveError::InvalidHost("SSRF denied host".to_string()));
+        }
+        if !allow_loopback && is_normalized_loopback_or_private(normalized) {
+            log_warn!(
+                "live host denied (loopback/private) without RSC_LS_LIVE_ALLOW_LOOPBACK=1: {:?}",
+                host
+            );
+            return Err(LiveError::InvalidHost(
+                "loopback/private denied without RSC_LS_LIVE_ALLOW_LOOPBACK=1".to_string(),
+            ));
+        }
+    }
     if !allow_loopback && is_loopback_or_private(host) {
         log_warn!(
             "live host denied (loopback/private) without RSC_LS_LIVE_ALLOW_LOOPBACK=1: {:?}",
@@ -905,8 +1057,11 @@ pub fn validate_host_with_allow(host: &str, allow_loopback: bool) -> Result<(), 
 /// - non-empty, max 253 chars
 /// - no null bytes, no control chars
 /// - no URI delimiters that would alter URL parsing (`@`, `?`, `#`, ` `, `%`)
-/// - SSRF denials for `169.254.169.254` and `metadata.google.internal`
-/// - loopback/private denied unless `RSC_LS_LIVE_ALLOW_LOOPBACK=1` (via `is_loopback_or_private`)
+/// - SSRF denials for whole `169.254.0.0/16`, IPv6 `fe80::/10`, unspecified,
+///   and `metadata.google.internal` (lexical plus WHATWG-normalized checks)
+/// - non-canonical numeric literals rejected fail-closed
+/// - loopback/private denied unless `RSC_LS_LIVE_ALLOW_LOOPBACK=1` (via
+///   `is_loopback_or_private` against the normalized IP with IPv4-mapped unmapping)
 pub fn validate_host(host: &str) -> Result<(), LiveError> {
     validate_host_with_allow(host, live_allow_loopback())
 }
@@ -1633,8 +1788,14 @@ fn trigger_background_fetch(
             Ok(values) => {
                 if values.is_empty() {
                     log_debug!("live fetch {:?} returned empty set", resource);
-                    // Empty set not cached; insert negative to avoid churn if repeated?
-                    // Keep as is: no negative for empty, just skip.
+                    // Cache empty results so repeated completions against an
+                    // endpoint returning `[]` hit the fresh empty entry instead
+                    // of re-hitting the network every time.
+                    let mut guard = cache_clone.lock().unwrap_or_else(|e| {
+                        log_warn!("live cache lock poisoned, recovering");
+                        e.into_inner()
+                    });
+                    guard.insert(key.clone(), values);
                     return;
                 }
                 log_info!(
@@ -1724,8 +1885,9 @@ pub fn trigger_enrichment_for_completion(
 /// Cache key is `custom:<property>`. Mirrors `get_cached_or_fetch_background`
 /// semantics: a fresh cache entry or a negative cooldown short-circuits, and
 /// at most one fetch is in flight per key within
-/// `LIVE_FETCH_BLOCKING_TIMEOUT_SECS`. Empty results are not cached (no
-/// negative either, same as the built-in path).
+/// `LIVE_FETCH_BLOCKING_TIMEOUT_SECS`. Empty results are cached as fresh
+/// empty entries (same as the built-in path) so endpoints returning `[]`
+/// do not re-hit the network on every completion.
 fn trigger_custom_fetch_background(
     cache: &Arc<Mutex<LiveCache>>,
     config: &LiveConfig,
@@ -1785,6 +1947,12 @@ fn trigger_custom_fetch_background(
                         "live custom fetch {} returned empty set",
                         custom_clone.property
                     );
+                    // Cache empty results (see built-in path above).
+                    let mut guard = cache_clone.lock().unwrap_or_else(|e| {
+                        log_warn!("live cache lock poisoned, recovering");
+                        e.into_inner()
+                    });
+                    guard.insert(key_clone, vals);
                     return;
                 }
                 log_info!(
@@ -1844,8 +2012,13 @@ fn get_cached_agent(timeout: Duration, ssl_verify: bool) -> ureq::Agent {
         }
     }
     // Build new agent
+    // Redirects are disabled (`.redirects(0)`): the code treats 3xx as
+    // `LiveError::Status`, so nothing is lost and open-redirect SSRF is closed.
     let agent = if ssl_verify {
-        ureq::AgentBuilder::new().timeout(timeout).build()
+        ureq::AgentBuilder::new()
+            .timeout(timeout)
+            .redirects(0)
+            .build()
     } else {
         log_warn!(
             "live ssl_verify=false — building agent with insecure TLS verifier (host verification disabled)"
@@ -1856,7 +2029,10 @@ fn get_cached_agent(timeout: Duration, ssl_verify: bool) -> ureq::Agent {
                 log_warn!(
                     "live insecure agent build failed, falling back to default verifier (verification will still be attempted)"
                 );
-                ureq::AgentBuilder::new().timeout(timeout).build()
+                ureq::AgentBuilder::new()
+                    .timeout(timeout)
+                    .redirects(0)
+                    .build()
             }
         }
     };
@@ -1930,6 +2106,7 @@ fn build_insecure_agent(timeout: Duration) -> Option<ureq::Agent> {
         .with_no_client_auth();
     let agent = ureq::AgentBuilder::new()
         .timeout(timeout)
+        .redirects(0)
         .tls_config(Arc::new(tls_config))
         .build();
     Some(agent)
@@ -2460,7 +2637,9 @@ mod tests {
         // Brackets and ':' intentionally allowed for IPv6 literals (when loopback allowed).
         assert!(validate_host_with_allow("[::1]", true).is_ok());
         assert!(validate_host("[2001:db8::1]").is_ok());
-        assert!(validate_host("fe80::1").is_ok());
+        // IPv6 link-local fe80::/10 is unconditionally SSRF-denied.
+        assert!(validate_host("fe80::1").is_err());
+        assert!(validate_host_with_allow("fe80::1", true).is_err());
         // Backslash path separator rejected via fetch_interfaces host slash check (see test_fetch_interfaces_rejects_host_with_slash)
         // but validate_host itself allows '/'? No—fetch layer rejects '/' explicitly, validate rejects control/null/delimiters only.
         // Ensure normal hostnames still pass.
@@ -2505,19 +2684,19 @@ mod tests {
     fn test_url_build_ipv6() {
         let mut m = HashMap::new();
         m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "fe80::1");
+        m.insert("MIKROTIK_HOST", "2001:db8::1");
         m.insert("MIKROTIK_PASS", "p");
         m.insert("MIKROTIK_PORT", "443");
         let cfg = cfg_with(m);
         assert!(validate_host(&cfg.host).is_ok());
         // format_host_for_url should wrap bare IPv6
-        assert_eq!(format_host_for_url("fe80::1"), "[fe80::1]");
-        assert_eq!(format_host_for_url("[fe80::1]"), "[fe80::1]");
+        assert_eq!(format_host_for_url("2001:db8::1"), "[2001:db8::1]");
+        assert_eq!(format_host_for_url("[2001:db8::1]"), "[2001:db8::1]");
         assert_eq!(format_host_for_url("192.168.88.1"), "192.168.88.1");
         // build_rest_url should succeed and contain brackets
         let url = build_rest_url(&cfg, ResourceKind::Interfaces).expect("ipv6 url should build");
         assert!(
-            url.contains("[fe80::1]"),
+            url.contains("[2001:db8::1]"),
             "url should contain bracketed ipv6, got {url}"
         );
         assert!(url::Url::parse(&url).is_ok());
@@ -3258,6 +3437,121 @@ mod tests {
         assert_eq!(
             guard.last_fetch_attempt["custom:packet-mark"], recorded_at,
             "custom fetch attempt must be coalesced within the window"
+        );
+    }
+
+    // ── SSRF normalize-then-check regression ───────────────────────
+
+    #[test]
+    fn test_ssrf_bypass_vectors_denied_by_default() {
+        // Independent review proved lexical checks miss WHATWG-normalized
+        // equivalents. All must be denied with default policy (allow=false).
+        for bad in [
+            "127.1",
+            "2130706433",
+            "0x7f000001",
+            "0177.0.0.1",
+            "[::ffff:127.0.0.1]",
+            "[::ffff:a9fe:a9fe]",
+            "[::ffff:10.0.0.1]",
+            "169.254.1.1",
+            "169.254.20.24",
+        ] {
+            assert!(
+                validate_host_with_allow(bad, false).is_err(),
+                "bypass vector should be denied by default: {bad:?}"
+            );
+            assert!(
+                is_non_canonical_numeric_host(bad)
+                    || normalized_host_ip(bad)
+                        .map(is_normalized_ssrf_denied)
+                        .unwrap_or(false)
+                    || normalized_host_ip(bad)
+                        .map(is_normalized_loopback_or_private)
+                        .unwrap_or(false)
+                    || is_loopback_or_private(bad),
+                "bypass vector should hit a normalized deny path: {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ssrf_controls_stay_denied() {
+        for bad in ["169.254.169.254", "127.0.0.1", "localhost"] {
+            assert!(
+                validate_host_with_allow(bad, false).is_err(),
+                "control should stay denied: {bad:?}"
+            );
+        }
+        // Link-local stays denied even when loopback is allowed (unconditional SSRF).
+        assert!(validate_host_with_allow("169.254.169.254", true).is_err());
+        assert!(validate_host_with_allow("169.254.1.1", true).is_err());
+        assert!(validate_host_with_allow("[::ffff:a9fe:a9fe]", true).is_err());
+    }
+
+    #[test]
+    fn test_legitimate_hosts_still_accepted() {
+        // No regression for normal hosts: public DNS names, public IPv4/IPv6,
+        // and private hosts when explicitly allowed.
+        assert!(validate_host_with_allow("router.local", false).is_ok());
+        assert!(validate_host_with_allow("router-1.local", false).is_ok());
+        assert!(validate_host_with_allow("8.8.8.8", false).is_ok());
+        assert!(validate_host_with_allow("[2001:db8::1]", false).is_ok());
+        assert!(validate_host_with_allow("2001:db8::1", false).is_ok());
+        assert!(validate_host_with_allow("192.168.88.1", true).is_ok());
+        assert!(validate_host_with_allow("10.0.0.1", true).is_ok());
+        assert!(validate_host_with_allow("127.0.0.1", true).is_ok());
+        assert!(!is_non_canonical_numeric_host("8.8.8.8"));
+        assert!(!is_non_canonical_numeric_host("router.local"));
+    }
+
+    #[test]
+    fn test_redirects_disabled_on_agents() {
+        // Unit-testable without network: the Debug rendering of ureq agents
+        // exposes the configured `redirects` count.
+        let normal = get_cached_agent(Duration::from_secs(5), true);
+        let normal_dbg = format!("{normal:?}");
+        assert!(
+            normal_dbg.contains("redirects: 0"),
+            "normal agent must disable redirects, got: {normal_dbg}"
+        );
+        let insecure =
+            build_insecure_agent(Duration::from_secs(5)).expect("insecure agent should build");
+        let insecure_dbg = format!("{insecure:?}");
+        assert!(
+            insecure_dbg.contains("redirects: 0"),
+            "insecure agent must disable redirects, got: {insecure_dbg}"
+        );
+    }
+
+    #[test]
+    fn test_empty_fetch_results_cached() {
+        // Endpoints returning `[]` must not re-hit the network on every
+        // completion: a fresh empty entry short-circuits via try_get_cached.
+        let mut cache = LiveCache::new(Duration::from_secs(60));
+        cache.insert("interfaces".to_string(), Vec::new());
+        let cached = cache.try_get_cached("interfaces");
+        assert!(cached.is_some(), "empty results must be cached");
+        assert!(cached.unwrap().is_empty());
+
+        // Through the stale-while-revalidate entry point, the fresh empty hit
+        // returns without recording a new fetch attempt.
+        let shared = Arc::new(Mutex::new(LiveCache::with_default_ttl()));
+        {
+            let mut guard = shared.lock().unwrap();
+            guard.insert("interfaces".to_string(), Vec::new());
+        }
+        let mut m = HashMap::new();
+        m.insert("RSC_LS_LIVE", "1");
+        m.insert("MIKROTIK_HOST", "192.168.88.1");
+        m.insert("MIKROTIK_PASS", "p");
+        let cfg = cfg_with(m);
+        let res = get_cached_or_fetch_background(&shared, &cfg, ResourceKind::Interfaces);
+        assert!(res.is_some(), "fresh empty cache must hit");
+        assert!(res.unwrap().is_empty());
+        assert!(
+            shared.lock().unwrap().last_fetch_attempt.is_empty(),
+            "fresh empty hit must not spawn a fetch"
         );
     }
 
