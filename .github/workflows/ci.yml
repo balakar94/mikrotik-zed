@@ -218,6 +218,13 @@ jobs:
           fi
           echo "grammar pinned at $(git -C grammars/rsc rev-parse HEAD)"
 
+      - name: Setup Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: grammars/rsc/package.json
+
       - name: Setup Python 3.12
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -266,6 +273,33 @@ jobs:
             fi
           fi
           exit 0
+
+      - name: Guard — extraction inputs changed but upstream unreachable
+        if: always()
+        run: |
+          set -eu
+          # Hard-fail only when the PR actually touches extraction inputs AND
+          # the upstream fetch above failed (llms-full.txt still missing).
+          # Unrelated PRs keep the historic warn-and-continue behavior.
+          if [ -f llms-full.txt ]; then
+            echo "Upstream docs present — no guard needed."
+            exit 0
+          fi
+          echo "::warning::llms-full.txt missing — checking if extraction inputs changed"
+          CHANGED=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --quiet origin "${{ github.base_ref }}" || true
+            CHANGED=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" 2>/dev/null || true)
+          else
+            CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || true)
+          fi
+          echo "Changed files:"
+          echo "$CHANGED"
+          if echo "$CHANGED" | grep -Eq '^(data/commands\.toml|data/upstream-docs\.toml|scripts/extract_commands\.py)'; then
+            echo "::error::Extraction inputs changed but upstream llms-full.txt fetch failed — cannot verify staleness"
+            exit 1
+          fi
+          echo "Unrelated changes — warn-and-continue."
 
       - name: Run Python tests (make test-python)
         run: make test-python

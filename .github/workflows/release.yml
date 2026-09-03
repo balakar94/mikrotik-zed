@@ -35,7 +35,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 1
+          # Full history + tags: the workflow_dispatch guard below must
+          # resolve the input tag via `git tag -l` / `git rev-parse`.
+          fetch-depth: 0
 
       - name: Determine tag
         id: tag
@@ -84,10 +86,114 @@ jobs:
             echo "::warning::extension.toml version $EXT_VER != $VERSION — should be bumped together"
           fi
 
+      - name: Guard — workflow_dispatch tag must exist at this SHA
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -eu
+          TAG="${{ steps.tag.outputs.tag }}"
+          echo "Dispatch guard: TAG=$TAG SHA=${{ github.sha }}"
+          if [ -z "$TAG" ]; then
+            echo "::error::Empty tag for workflow_dispatch — pass a vMAJOR.MINOR.PATCH tag"
+            exit 1
+          fi
+          if ! git tag -l "$TAG" | grep -qx "$TAG"; then
+            echo "::error::Dispatch tag '$TAG' does not exist — push it first (git tag $TAG && git push origin $TAG)"
+            exit 1
+          fi
+          TAG_SHA=$(git rev-parse "$TAG^{commit}")
+          echo "tag $TAG -> $TAG_SHA; github.sha=${{ github.sha }}"
+          if [ "$TAG_SHA" != "${{ github.sha }}" ]; then
+            echo "::error::Dispatch tag '$TAG' points at $TAG_SHA, not github.sha ${{ github.sha }} — refusing untested dispatch"
+            exit 1
+          fi
+          echo "Dispatch guard OK: $TAG == ${{ github.sha }}"
+
+  # ── Preflight: test + lint + manifest + grammar on the release SHA ──
+  preflight:
+    name: Preflight checks
+    needs: [meta]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout release SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Resolve Rust toolchain
+        id: toolchain
+        run: |
+          CH=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])' 2>/dev/null || python -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])' 2>/dev/null || grep -E 'channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$CH" ]; then echo "::error::failed to resolve toolchain"; exit 1; fi
+          echo "channel=$CH" >> "$GITHUB_OUTPUT"
+          echo "Resolved toolchain: $CH"
+
+      - name: Install Rust ${{ steps.toolchain.outputs.channel }} (MSRV)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 6c977a6
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          components: clippy
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Tests (cargo test --workspace --locked)
+        run: cargo test --workspace --locked
+
+      - name: Clippy (rsc-ls --all-targets -D warnings)
+        run: cargo clippy -p rsc-ls --all-targets -- -D warnings
+
+      - name: Manifest check (make check-manifest)
+        run: make check-manifest
+
+      # grammars/rsc is an untracked working copy, so clone it at the pinned
+      # rev — same recipe as ci.yml's grammar job.
+      - name: Clone grammar at pinned rev
+        run: |
+          set -eu
+          REV=$(awk '/^\[grammars\.rsc\]/{f=1;next} f&&/^rev/{gsub(/"/,"",$3);print $3;exit}' extension.toml)
+          if [ -z "$REV" ]; then
+            echo "::error::[grammars.rsc].rev missing in extension.toml"
+            exit 1
+          fi
+          case "$REV" in *0000*)
+            echo "::error::placeholder rev found ($REV) — run scripts/publish_grammar.py"; exit 1;;
+          esac
+          echo "$REV" | grep -Eq '^[0-9a-f]{40}$' || { echo "::error::REV must be 40-char hex ($REV)"; exit 1; }
+          git clone --quiet https://github.com/balakar94/tree-sitter-rsc grammars/rsc
+          if [ "$(git -C grammars/rsc rev-parse HEAD)" != "$REV" ]; then
+            git -C grammars/rsc fetch --quiet --depth 1 origin "$REV"
+            git -C grammars/rsc checkout --quiet --detach FETCH_HEAD
+          fi
+          echo "grammar pinned at $(git -C grammars/rsc rev-parse HEAD)"
+
+      - name: Setup Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: grammars/rsc/package.json
+
+      - name: Install tree-sitter-cli
+        working-directory: grammars/rsc
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+          npx tree-sitter --version
+
+      - name: Check parser is up-to-date (make generate-check)
+        run: make generate-check
+
   # ── Build WASM extension (single artifact, any runner) ─────────────
   wasm:
     name: Build WASM
-    needs: [meta]
+    needs: [meta, preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -123,7 +229,7 @@ jobs:
       - name: Build WASM
         run: cargo build --locked --target wasm32-wasip2 --release
 
-      - name: Prepare artifact (extension.wasm)
+      - name: Prepare artifact (extension.wasm + checksums)
         run: |
           set -eu
           SRC="target/wasm32-wasip2/release/mikrotik_zed.wasm"
@@ -144,8 +250,10 @@ jobs:
           fi
           cp "$SRC" extension.wasm
           ls -lh extension.wasm
-          # SHA256 digests are now exposed natively by GitHub Releases (2025-06-03 changelog)
-          # — no need to generate *.sha256 or SHA256SUMS manually.
+          sha256sum extension.wasm > extension.wasm.sha256 2>/dev/null || shasum -a 256 extension.wasm > extension.wasm.sha256
+          cat extension.wasm.sha256
+          # Combined manifest
+          sha256sum extension.wasm > SHA256SUMS 2>/dev/null || shasum -a 256 extension.wasm > SHA256SUMS
 
       - name: Attest WASM provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -159,13 +267,15 @@ jobs:
           name: wasm
           path: |
             extension.wasm
+            extension.wasm.sha256
+            SHA256SUMS
           if-no-files-found: error
           retention-days: 14
 
   # ── Build rsc-ls per target (explicit jobs, no matrix) ──────────
   build-linux-x86:
     name: Build Linux x86
-    needs: [meta]
+    needs: [meta, preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -197,14 +307,34 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
       - name: Build rsc-ls
         run: cargo build -p rsc-ls --locked --release --target x86_64-unknown-linux-gnu
-      - name: Prepare binary
+      - name: Prepare binary + checksums
         shell: bash
         run: |
           set -eu
           SRC="target/x86_64-unknown-linux-gnu/release/rsc-ls"
+          if [ ! -f "$SRC" ]; then
+            echo "::error::Binary not found at $SRC"
+            ls -lh "target/x86_64-unknown-linux-gnu/release/" || true
+            exit 1
+          fi
           ls -lh "$SRC"; file "$SRC" || true
           if command -v strip >/dev/null 2>&1; then strip "$SRC" 2>/dev/null || echo "::notice::strip failed (ignored)"; fi
           cp "$SRC" rsc-ls-x86_64-unknown-linux-gnu; chmod +x rsc-ls-x86_64-unknown-linux-gnu; ls -lh rsc-ls-x86_64-unknown-linux-gnu
+          # Checksums: both per-file and for combined manifest.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "rsc-ls-x86_64-unknown-linux-gnu" > "rsc-ls-x86_64-unknown-linux-gnu.sha256"
+            sha256sum "rsc-ls-x86_64-unknown-linux-gnu" >> SHA256SUMS
+          else
+            shasum -a 256 "rsc-ls-x86_64-unknown-linux-gnu" > "rsc-ls-x86_64-unknown-linux-gnu.sha256"
+            shasum -a 256 "rsc-ls-x86_64-unknown-linux-gnu" >> SHA256SUMS
+          fi
+          cat "rsc-ls-x86_64-unknown-linux-gnu.sha256"
+          cat SHA256SUMS
+      - name: Smoke — run --version
+        shell: bash
+        run: |
+          set -eu
+          ./rsc-ls-x86_64-unknown-linux-gnu --version
       - name: Attest binary provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -213,13 +343,16 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rsc-ls-x86_64-unknown-linux-gnu
-          path: rsc-ls-x86_64-unknown-linux-gnu
+          path: |
+            rsc-ls-x86_64-unknown-linux-gnu
+            rsc-ls-x86_64-unknown-linux-gnu.sha256
+            SHA256SUMS
           if-no-files-found: error
           retention-days: 14
 
   build-linux-arm64:
     name: Build Linux arm64
-    needs: [meta]
+    needs: [meta, preflight]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     permissions:
@@ -251,14 +384,34 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
       - name: Build rsc-ls
         run: cargo build -p rsc-ls --locked --release --target aarch64-unknown-linux-gnu
-      - name: Prepare binary
+      - name: Prepare binary + checksums
         shell: bash
         run: |
           set -eu
           SRC="target/aarch64-unknown-linux-gnu/release/rsc-ls"
+          if [ ! -f "$SRC" ]; then
+            echo "::error::Binary not found at $SRC"
+            ls -lh "target/aarch64-unknown-linux-gnu/release/" || true
+            exit 1
+          fi
           ls -lh "$SRC"; file "$SRC" || true
           if command -v strip >/dev/null 2>&1; then strip "$SRC" 2>/dev/null || echo "::notice::strip failed (ignored)"; fi
           cp "$SRC" rsc-ls-aarch64-unknown-linux-gnu; chmod +x rsc-ls-aarch64-unknown-linux-gnu; ls -lh rsc-ls-aarch64-unknown-linux-gnu
+          # Checksums: both per-file and for combined manifest.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "rsc-ls-aarch64-unknown-linux-gnu" > "rsc-ls-aarch64-unknown-linux-gnu.sha256"
+            sha256sum "rsc-ls-aarch64-unknown-linux-gnu" >> SHA256SUMS
+          else
+            shasum -a 256 "rsc-ls-aarch64-unknown-linux-gnu" > "rsc-ls-aarch64-unknown-linux-gnu.sha256"
+            shasum -a 256 "rsc-ls-aarch64-unknown-linux-gnu" >> SHA256SUMS
+          fi
+          cat "rsc-ls-aarch64-unknown-linux-gnu.sha256"
+          cat SHA256SUMS
+      - name: Smoke — run --version
+        shell: bash
+        run: |
+          set -eu
+          ./rsc-ls-aarch64-unknown-linux-gnu --version
       - name: Attest binary provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -267,13 +420,16 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rsc-ls-aarch64-unknown-linux-gnu
-          path: rsc-ls-aarch64-unknown-linux-gnu
+          path: |
+            rsc-ls-aarch64-unknown-linux-gnu
+            rsc-ls-aarch64-unknown-linux-gnu.sha256
+            SHA256SUMS
           if-no-files-found: error
           retention-days: 14
 
   build-macos-arm64:
     name: Build macOS arm64
-    needs: [meta]
+    needs: [meta, preflight]
     runs-on: macos-latest
     timeout-minutes: 30
     permissions:
@@ -305,14 +461,34 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
       - name: Build rsc-ls
         run: cargo build -p rsc-ls --locked --release --target aarch64-apple-darwin
-      - name: Prepare binary
+      - name: Prepare binary + checksums
         shell: bash
         run: |
           set -eu
           SRC="target/aarch64-apple-darwin/release/rsc-ls"
+          if [ ! -f "$SRC" ]; then
+            echo "::error::Binary not found at $SRC"
+            ls -lh "target/aarch64-apple-darwin/release/" || true
+            exit 1
+          fi
           ls -lh "$SRC"; file "$SRC" || true
           if command -v strip >/dev/null 2>&1; then strip "$SRC" 2>/dev/null || echo "::notice::strip failed (ignored)"; fi
           cp "$SRC" rsc-ls-aarch64-apple-darwin; chmod +x rsc-ls-aarch64-apple-darwin; ls -lh rsc-ls-aarch64-apple-darwin
+          # Checksums: both per-file and for combined manifest.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "rsc-ls-aarch64-apple-darwin" > "rsc-ls-aarch64-apple-darwin.sha256"
+            sha256sum "rsc-ls-aarch64-apple-darwin" >> SHA256SUMS
+          else
+            shasum -a 256 "rsc-ls-aarch64-apple-darwin" > "rsc-ls-aarch64-apple-darwin.sha256"
+            shasum -a 256 "rsc-ls-aarch64-apple-darwin" >> SHA256SUMS
+          fi
+          cat "rsc-ls-aarch64-apple-darwin.sha256"
+          cat SHA256SUMS
+      - name: Smoke — run --version
+        shell: bash
+        run: |
+          set -eu
+          ./rsc-ls-aarch64-apple-darwin --version
       - name: Attest binary provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -321,13 +497,16 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rsc-ls-aarch64-apple-darwin
-          path: rsc-ls-aarch64-apple-darwin
+          path: |
+            rsc-ls-aarch64-apple-darwin
+            rsc-ls-aarch64-apple-darwin.sha256
+            SHA256SUMS
           if-no-files-found: error
           retention-days: 14
 
   build-macos-x86:
     name: Build macOS x86
-    needs: [meta]
+    needs: [meta, preflight]
     runs-on: macos-latest
     timeout-minutes: 30
     permissions:
@@ -359,14 +538,40 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
       - name: Build rsc-ls
         run: cargo build -p rsc-ls --locked --release --target x86_64-apple-darwin
-      - name: Prepare binary
+      - name: Prepare binary + checksums
         shell: bash
         run: |
           set -eu
           SRC="target/x86_64-apple-darwin/release/rsc-ls"
+          if [ ! -f "$SRC" ]; then
+            echo "::error::Binary not found at $SRC"
+            ls -lh "target/x86_64-apple-darwin/release/" || true
+            exit 1
+          fi
           ls -lh "$SRC"; file "$SRC" || true
           if command -v strip >/dev/null 2>&1; then strip "$SRC" 2>/dev/null || echo "::notice::strip failed (ignored)"; fi
           cp "$SRC" rsc-ls-x86_64-apple-darwin; chmod +x rsc-ls-x86_64-apple-darwin; ls -lh rsc-ls-x86_64-apple-darwin
+          # Checksums: both per-file and for combined manifest.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "rsc-ls-x86_64-apple-darwin" > "rsc-ls-x86_64-apple-darwin.sha256"
+            sha256sum "rsc-ls-x86_64-apple-darwin" >> SHA256SUMS
+          else
+            shasum -a 256 "rsc-ls-x86_64-apple-darwin" > "rsc-ls-x86_64-apple-darwin.sha256"
+            shasum -a 256 "rsc-ls-x86_64-apple-darwin" >> SHA256SUMS
+          fi
+          cat "rsc-ls-x86_64-apple-darwin.sha256"
+          cat SHA256SUMS
+      - name: Smoke — run --version via Rosetta (guarded)
+        shell: bash
+        run: |
+          set -eu
+          BIN="rsc-ls-x86_64-apple-darwin"
+          if /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+            echo "Rosetta available — smoke-running $BIN via arch -x86_64"
+            /usr/bin/arch -x86_64 "./$BIN" --version
+          else
+            echo "::warning::Rosetta unavailable — skipping native smoke for $BIN (runner changed)"
+          fi
       - name: Attest binary provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -375,13 +580,16 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rsc-ls-x86_64-apple-darwin
-          path: rsc-ls-x86_64-apple-darwin
+          path: |
+            rsc-ls-x86_64-apple-darwin
+            rsc-ls-x86_64-apple-darwin.sha256
+            SHA256SUMS
           if-no-files-found: error
           retention-days: 14
 
   build-windows-x86:
     name: Build Windows x86
-    needs: [meta]
+    needs: [meta, preflight]
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
@@ -413,13 +621,33 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
       - name: Build rsc-ls
         run: cargo build -p rsc-ls --locked --release --target x86_64-pc-windows-msvc
-      - name: Prepare binary
+      - name: Prepare binary + checksums
         shell: bash
         run: |
           set -eu
           SRC="target/x86_64-pc-windows-msvc/release/rsc-ls.exe"
+          if [ ! -f "$SRC" ]; then
+            echo "::error::Binary not found at $SRC"
+            ls -lh "target/x86_64-pc-windows-msvc/release/" || true
+            exit 1
+          fi
           ls -lh "$SRC"; file "$SRC" || true
           cp "$SRC" rsc-ls-x86_64-pc-windows-msvc; chmod +x rsc-ls-x86_64-pc-windows-msvc 2>/dev/null || true; ls -lh rsc-ls-x86_64-pc-windows-msvc
+          # Checksums: both per-file and for combined manifest.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "rsc-ls-x86_64-pc-windows-msvc" > "rsc-ls-x86_64-pc-windows-msvc.sha256"
+            sha256sum "rsc-ls-x86_64-pc-windows-msvc" >> SHA256SUMS
+          else
+            shasum -a 256 "rsc-ls-x86_64-pc-windows-msvc" > "rsc-ls-x86_64-pc-windows-msvc.sha256"
+            shasum -a 256 "rsc-ls-x86_64-pc-windows-msvc" >> SHA256SUMS
+          fi
+          cat "rsc-ls-x86_64-pc-windows-msvc.sha256"
+          cat SHA256SUMS
+      - name: Smoke — run --version
+        shell: bash
+        run: |
+          set -eu
+          ./rsc-ls-x86_64-pc-windows-msvc --version
       - name: Attest binary provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -428,13 +656,16 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rsc-ls-x86_64-pc-windows-msvc
-          path: rsc-ls-x86_64-pc-windows-msvc
+          path: |
+            rsc-ls-x86_64-pc-windows-msvc
+            rsc-ls-x86_64-pc-windows-msvc.sha256
+            SHA256SUMS
           if-no-files-found: error
           retention-days: 14
 
   build-windows-arm64:
     name: Build Windows arm64
-    needs: [meta]
+    needs: [meta, preflight]
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
@@ -466,13 +697,36 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
       - name: Build rsc-ls
         run: cargo build -p rsc-ls --locked --release --target aarch64-pc-windows-msvc
-      - name: Prepare binary
+      - name: Prepare binary + checksums
         shell: bash
         run: |
           set -eu
           SRC="target/aarch64-pc-windows-msvc/release/rsc-ls.exe"
+          if [ ! -f "$SRC" ]; then
+            echo "::error::Binary not found at $SRC"
+            ls -lh "target/aarch64-pc-windows-msvc/release/" || true
+            exit 1
+          fi
           ls -lh "$SRC"; file "$SRC" || true
           cp "$SRC" rsc-ls-aarch64-pc-windows-msvc; chmod +x rsc-ls-aarch64-pc-windows-msvc 2>/dev/null || true; ls -lh rsc-ls-aarch64-pc-windows-msvc
+          # Checksums: both per-file and for combined manifest.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "rsc-ls-aarch64-pc-windows-msvc" > "rsc-ls-aarch64-pc-windows-msvc.sha256"
+            sha256sum "rsc-ls-aarch64-pc-windows-msvc" >> SHA256SUMS
+          else
+            shasum -a 256 "rsc-ls-aarch64-pc-windows-msvc" > "rsc-ls-aarch64-pc-windows-msvc.sha256"
+            shasum -a 256 "rsc-ls-aarch64-pc-windows-msvc" >> SHA256SUMS
+          fi
+          cat "rsc-ls-aarch64-pc-windows-msvc.sha256"
+          cat SHA256SUMS
+      - name: Smoke — verify ARM64 PE signature (unrunnable on x64 runner)
+        shell: bash
+        run: |
+          set -eu
+          BIN="rsc-ls-aarch64-pc-windows-msvc"
+          file "$BIN"
+          file "$BIN" | grep -Ei 'ARM64|AArch64' || { echo "::error::$BIN is not an ARM64 PE (file output above)"; exit 1; }
+          echo "ARM64 PE signature OK for $BIN"
       - name: Attest binary provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -481,7 +735,10 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rsc-ls-aarch64-pc-windows-msvc
-          path: rsc-ls-aarch64-pc-windows-msvc
+          path: |
+            rsc-ls-aarch64-pc-windows-msvc
+            rsc-ls-aarch64-pc-windows-msvc.sha256
+            SHA256SUMS
           if-no-files-found: error
           retention-days: 14
 
@@ -555,13 +812,41 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: List artifacts (digests now provided by GitHub)
+      - name: Build combined SHA256SUMS
         run: |
           set -eu
-          echo "Artifacts in dist/ (SHA256 now exposed natively by GitHub Releases):"
+          echo "Artifacts in dist/:"
           ls -R dist
+          # Rebuild a single combined SHA256SUMS at top-level for convenience.
+          # Prefer pre-generated per-job SHA256SUMS, then supplement with per-file checksums.
+          echo "# SHA256 checksums for ${{ needs.meta.outputs.tag }}" > SHA256SUMS
+          echo "# Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> SHA256SUMS
+          if ls dist/*.sha256 >/dev/null 2>&1; then
+            cat dist/*.sha256 >> SHA256SUMS
+          fi
+          # Ensure every binary has an entry even if per-file sha missing.
+          for f in dist/rsc-ls-* dist/extension.wasm; do
+            [ -e "$f" ] || continue
+            base=$(basename "$f")
+            if ! grep -q "$base" SHA256SUMS 2>/dev/null; then
+              if command -v sha256sum >/dev/null 2>&1; then
+                (cd dist && sha256sum "$base") >> SHA256SUMS
+              else
+                (cd dist && shasum -a 256 "$base") >> SHA256SUMS
+              fi
+            fi
+          done
+          sort -u SHA256SUMS -o SHA256SUMS || true
+          cat SHA256SUMS
+          # Also produce sorted checksums file in dist for upload.
+          cp SHA256SUMS dist/SHA256SUMS
+          echo "Final dist contents:"
           ls -lh dist/
-          echo "No manual SHA256SUMS generation — GitHub auto-computes digests per asset."
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum dist/* 2>/dev/null | head -n 20
+          else
+            shasum -a 256 dist/* | head -n 20
+          fi
 
       - name: Generate release notes
         run: |
@@ -575,18 +860,18 @@ jobs:
           - `rsc-ls-x86_64-unknown-linux-gnu` – Linux x64
           - `rsc-ls-x86_64-pc-windows-msvc` – Windows x64
           - `rsc-ls-aarch64-pc-windows-msvc` – Windows ARM64
-          SHA256 digests are shown automatically by GitHub next to each asset (REST/GraphQL/`gh release view` `digest` field). Attestations are attached as build provenance.
+
+          SHA256 checksums in `SHA256SUMS` and per-file `*.sha256`. Attestations are attached as build provenance.
 
           ### WASM
           - `extension.wasm` – Zed extension (wasm32-wasip2, `mikrotik_zed.wasm`)
-
 
           The Zed extension auto-downloads the correct binary on first use via `zed::download_file`.
           Manual install:
           ```bash
           cargo build -p rsc-ls --release
           # or download the matching binary and put it in PATH as `rsc-ls`
-          # verify: gh release view ${{ needs.meta.outputs.tag }} --json assets --jq '.assets[] | "\(.name) \(.digest)"'
+          # verify: sha256sum -c SHA256SUMS
           ```
 
           ### Observability
@@ -609,4 +894,59 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Postflight: prove the download contract from the live release ──
+  postflight:
+    name: Postflight verify
+    needs: [meta, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Download published assets from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          TAG="${{ needs.meta.outputs.tag }}"
+          echo "Downloading every asset + .sha256 companion from $TAG..."
+          mkdir -p verify
+          gh release download "$TAG" --repo "${{ github.repository }}" --dir verify
+          echo "Downloaded:"
+          ls -lh verify/
+
+      - name: Verify checksums (sha256sum -c each companion)
+        run: |
+          set -eu
+          cd verify
+          ls -lh
+          # Every published binary must have a same-named .sha256 companion —
+          # this is the exact contract the WASM shim relies on (fetch <asset>.sha256).
+          for asset in rsc-ls-x86_64-unknown-linux-gnu rsc-ls-aarch64-unknown-linux-gnu rsc-ls-aarch64-apple-darwin rsc-ls-x86_64-apple-darwin rsc-ls-x86_64-pc-windows-msvc rsc-ls-aarch64-pc-windows-msvc extension.wasm; do
+            test -f "$asset" || { echo "::error::Missing published asset $asset"; exit 1; }
+            test -f "$asset.sha256" || { echo "::error::Missing companion $asset.sha256 for $asset"; exit 1; }
+          done
+          for sum in *.sha256; do
+            echo "--- $sum ---"
+            cat "$sum"
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum -c "$sum"
+            else
+              shasum -a 256 -c "$sum"
+            fi
+          done
+          if [ -f SHA256SUMS ]; then
+            echo "--- SHA256SUMS ---"
+            cat SHA256SUMS
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum -c SHA256SUMS
+            else
+              shasum -a 256 -c SHA256SUMS
+            fi
+          else
+            echo "::error::Missing combined SHA256SUMS in release"
+            exit 1
+          fi
+          echo "Postflight OK: every companion verified."
 

@@ -256,6 +256,91 @@ class TestReleaseYml:
     def test_release_yml_has_id_token_permission(self):
         assert "id-token: write" in self.text, "release.yml missing id-token: write for attestations"
 
+    def test_each_binary_generates_and_uploads_sha256(self):
+        """Every rsc-ls triple + extension.wasm needs a same-named .sha256.
+
+        The WASM shim (src/verify.rs) fetches `<asset>.sha256` over HTTP and
+        fails closed without it — a missing companion breaks auto-download.
+        Each companion must appear at least twice: once in the Prepare
+        (generation) step and once in the upload-artifact path.
+        """
+        binaries = [
+            "rsc-ls-x86_64-unknown-linux-gnu",
+            "rsc-ls-aarch64-unknown-linux-gnu",
+            "rsc-ls-aarch64-apple-darwin",
+            "rsc-ls-x86_64-apple-darwin",
+            "rsc-ls-x86_64-pc-windows-msvc",
+            "rsc-ls-aarch64-pc-windows-msvc",
+            "extension.wasm",
+        ]
+        for binary in binaries:
+            companion = f"{binary}.sha256"
+            assert companion in self.text, f"release.yml missing companion {companion!r}"
+            count = self.text.count(companion)
+            assert count >= 2, (
+                f"{companion!r} appears {count}x — expected generation + upload (>=2)"
+            )
+        # sha256sum with shasum fallback (macOS runners lack sha256sum).
+        assert "sha256sum" in self.text, "release.yml missing sha256sum generation"
+        assert "shasum -a 256" in self.text, "release.yml missing shasum fallback generation"
+
+    def test_release_job_rebuilds_combined_sha256sums(self):
+        """The release job must rebuild a combined SHA256SUMS from dist/*.sha256."""
+        assert "Build combined SHA256SUMS" in self.text, (
+            "release.yml missing 'Build combined SHA256SUMS' step"
+        )
+        assert "dist/*.sha256" in self.text, "release job must aggregate dist/*.sha256"
+        assert "dist/SHA256SUMS" in self.text, "release job must write dist/SHA256SUMS"
+        assert "fail_on_unmatched_files: true" in self.text, (
+            "release.yml must keep fail_on_unmatched_files: true"
+        )
+
+    def test_preflight_exists_and_build_jobs_need_it(self):
+        """Preflight gates all builds on tests, clippy, manifest and grammar."""
+        assert re.search(r"^\s*preflight:", self.text, re.MULTILINE), (
+            "release.yml missing preflight job"
+        )
+        for cmd in [
+            "cargo test --workspace --locked",
+            "cargo clippy -p rsc-ls --all-targets -- -D warnings",
+            "make check-manifest",
+            "make generate-check",
+        ]:
+            assert cmd in self.text, f"preflight missing command {cmd!r}"
+        build_jobs = [
+            "wasm",
+            "build-linux-x86",
+            "build-linux-arm64",
+            "build-macos-arm64",
+            "build-macos-x86",
+            "build-windows-x86",
+            "build-windows-arm64",
+        ]
+        for job in build_jobs:
+            m = re.search(rf"^\s*{re.escape(job)}:\s*\n.*?needs:\s*\[([^\]]+)\]", self.text, re.MULTILINE | re.DOTALL)
+            assert m, f"job {job!r} missing needs: [...]"
+            needs = m.group(1)
+            assert "preflight" in needs, f"job {job!r} must need preflight (needs: [{needs}])"
+
+    def test_postflight_verifies_companions(self):
+        """Postflight must prove the download contract from the live release."""
+        assert re.search(r"^\s*postflight:", self.text, re.MULTILINE), (
+            "release.yml missing postflight job"
+        )
+        m = re.search(r"^\s*postflight:\s*\n.*?needs:\s*\[([^\]]+)\]", self.text, re.MULTILINE | re.DOTALL)
+        assert m, "postflight missing needs: [...]"
+        assert "release" in m.group(1), (
+            f"postflight must need release (needs: [{m.group(1)}])"
+        )
+        assert "gh release download" in self.text, (
+            "postflight must download published assets via gh release download"
+        )
+        assert "sha256sum -c" in self.text, (
+            "postflight must verify companions via sha256sum -c"
+        )
+        # The exact contract the shim relies on: every asset has a companion.
+        assert ".sha256" in self.text, "postflight must reference .sha256 companions"
+
 
 # ── Makefile bump target ─────────────────────────────────────────────
 

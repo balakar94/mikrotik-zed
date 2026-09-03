@@ -48,7 +48,7 @@ impl VerificationFailure {
     /// and shows only [`DIGEST_LOG_PREFIX`]-character digest prefixes — full
     /// hashes never appear in status/log text.
     pub(crate) fn describe(self, source_url: &str) -> String {
-        let companion_url = format!("{source_url}.sha256");
+        let companion_url = companion_url(source_url);
         match self {
             Self::CompanionFetch(e) => format!(
                 "Checksum verification failed: could not fetch .sha256 companion \
@@ -80,10 +80,18 @@ impl VerificationFailure {
     }
 }
 
+/// Builds the `<asset>.sha256` companion URL for a release download URL.
+///
+/// Pure constructor (`{url}.sha256`); fetching and parsing stay with the
+/// callers so this stays unit-testable without HTTP.
+pub(crate) fn companion_url(download_url: &str) -> String {
+    format!("{download_url}.sha256")
+}
+
 /// Fetches `{download_url}.sha256` through the Zed extension host HTTP client
 /// and returns the expected digest parsed from the companion content.
 fn fetch_companion_digest(download_url: &str) -> std::result::Result<String, VerificationFailure> {
-    let companion_url = format!("{download_url}.sha256");
+    let companion_url = companion_url(download_url);
     let request = HttpRequest::builder()
         .method(HttpMethod::Get)
         .url(companion_url.as_str())
@@ -200,6 +208,20 @@ mod tests {
                 "fail-closed wording missing: {msg}"
             );
         }
+    }
+
+    #[test]
+    fn companion_url_appends_sha256_suffix() {
+        assert_eq!(
+            companion_url(
+                "https://github.com/x/y/releases/download/v1.2.3/rsc-ls-aarch64-apple-darwin"
+            ),
+            "https://github.com/x/y/releases/download/v1.2.3/rsc-ls-aarch64-apple-darwin.sha256"
+        );
+        assert_eq!(
+            companion_url("https://example.com/asset"),
+            "https://example.com/asset.sha256"
+        );
     }
 
     #[test]
