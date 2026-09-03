@@ -1,0 +1,26 @@
+# Curated additive overrides for data/commands.toml.
+#
+# Each entry adds ONE property that upstream docs (llms-full.txt) omit but a
+# real RouterOS device exposes. Rules:
+# - Verifiable only: every entry must be confirmable against a real device
+#   via /export (e.g. /ip/route/export showing comment=...). Never invent a
+#   menu path, property name, or type from memory.
+# - Additive only: applied AFTER upstream parsing by
+#   scripts/extract_commands.py (apply_overrides). An override whose property
+#   is already documented upstream, or whose path is unknown, is skipped with
+#   a stderr warning — upstream entries are never modified.
+# - Keep this list tiny and rock-solid. If upstream starts documenting a
+#   property listed here, the extractor warns on every run: delete the
+#   now-redundant entry.
+#
+# Why each entry exists:
+# - /ip/route + comment (string): upstream documents 11 args for /ip/route
+#   but omits the real `comment` property that every RouterOS route accepts
+#   (visible in /ip/route/export output). Without this override users never
+#   get `comment=` completed on routes.
+
+[[overrides]]
+path = "/ip/route"
+property = "comment"
+type = "string"
+description = "Descriptive comment for the route (shown by /ip/route/export as comment=...; omitted from upstream docs, verified on-device)"

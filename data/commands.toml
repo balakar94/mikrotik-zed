@@ -2,8 +2,9 @@
 # Auto-generated from llms-full.txt
 # Covers: /app, /beep, /blink, /caps-man, /certificate, /console, /container, /disk, /dude, /environment, /file, /import, … (1077 menus)
 # RouterOS version: 7.23.2
-# Generated: 2026-09-02T12:07:28.975486Z
+# Generated: 2026-09-03T12:20:42.164201Z
 # Source hash (sha256[:16]): c77198cf62ba4db3
+# overrides_applied = 1 (data/overrides.toml)
 
 [[menus]]
 path = "/app"
@@ -28112,6 +28113,10 @@ unset = true
 [[menus.arguments]]
 name = "suppress-hw-offload"
 type = "bool"
+[[menus.arguments]]
+name = "comment"
+type = "string"
+description = "Descriptive comment for the route (shown by /ip/route/export as comment=...; omitted from upstream docs, verified on-device)"
 [[menus.read_only]]
 name = "immediate-gw"
 type = ""

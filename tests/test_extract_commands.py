@@ -17,6 +17,9 @@ from extract_commands import (
     write_if_changed,
     synthesize_directories,
     finalize_menus,
+    load_overrides,
+    apply_overrides,
+    OverrideError,
     _extract_heading_path,
     _extract_bare_cli_root,
     _strip_generated_line,
@@ -1428,3 +1431,132 @@ Some overview text with a stray **Type:**-looking mention.
         finally:
             os.unlink(path)
         assert [m["path"] for m in menus] == ["/ip/firewall/filter"]
+
+
+class TestOverrides:
+    """Curated additive overrides (data/overrides.toml).
+
+    Conflict policy: ignore-with-warning (stderr). An override whose
+    property already exists upstream, or whose path is unknown, is skipped
+    without touching upstream-derived entries, so `make extract` stays green
+    when upstream eventually documents the property. A missing overrides
+    file is fine ([]); a malformed one raises OverrideError.
+    """
+
+    @staticmethod
+    def _menu(path: str, arguments: list | None = None) -> dict:
+        return {
+            "path": path,
+            "type": "Directory",
+            "flags": [],
+            "arguments": list(arguments) if arguments else [],
+            "read_only": [],
+        }
+
+    def _write_temp(self, content: str, suffix: str = ".toml") -> Path:
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False, encoding="utf-8")
+        tmp.write(content)
+        tmp.flush()
+        tmp.close()
+        return Path(tmp.name)
+
+    def test_override_adds_missing_property(self):
+        menus = [self._menu("/ip/route", [{"name": "gateway", "type": "ipAddr"}])]
+        applied = apply_overrides(
+            menus,
+            [{"path": "/ip/route", "property": "comment", "type": "string", "description": "Route note"}],
+        )
+        assert applied == 1
+        names = [a["name"] for a in menus[0]["arguments"]]
+        assert names == ["gateway", "comment"]
+        comment = menus[0]["arguments"][1]
+        assert comment["type"] == "string"
+        assert comment["description"] == "Route note"
+        assert comment["required"] is False
+
+    def test_conflicting_override_ignored_with_warning_upstream_untouched(self, capsys):
+        upstream = {"name": "comment", "type": "string", "required": False, "description": "Upstream text"}
+        menus = [self._menu("/ip/route", [dict(upstream)])]
+        applied = apply_overrides(
+            menus,
+            [{"path": "/ip/route", "property": "comment", "type": "string", "description": "Override text"}],
+        )
+        assert applied == 0
+        assert menus[0]["arguments"] == [upstream]
+        assert "already documents" in capsys.readouterr().err
+
+    def test_conflict_with_flag_or_read_only_also_skipped(self, capsys):
+        menus = [self._menu("/ip/route")]
+        menus[0]["flags"] = [{"name": "X", "type": "", "description": ""}]
+        applied = apply_overrides(
+            menus,
+            [{"path": "/ip/route", "property": "X", "type": "", "description": ""}],
+        )
+        assert applied == 0
+        assert "already documents" in capsys.readouterr().err
+
+    def test_unknown_path_skipped_with_warning(self, capsys):
+        menus = [self._menu("/ip/route")]
+        applied = apply_overrides(
+            menus,
+            [{"path": "/ip/no-such-menu", "property": "comment", "type": "string", "description": ""}],
+        )
+        assert applied == 0
+        assert [m["path"] for m in menus] == ["/ip/route"]
+        assert "unknown menu" in capsys.readouterr().err
+
+    def test_missing_overrides_file_is_fine(self):
+        assert load_overrides(Path(tempfile.mkdtemp()) / "overrides.toml") == []
+
+    def test_load_overrides_parses_valid_file(self):
+        path = self._write_temp(
+            '[[overrides]]\npath = "/ip/route"\nproperty = "comment"\n'
+            'type = "string"\ndescription = "Route note"\n'
+        )
+        try:
+            assert load_overrides(path) == [
+                {"path": "/ip/route", "property": "comment", "type": "string", "description": "Route note"}
+            ]
+        finally:
+            os.unlink(path)
+
+    def test_malformed_overrides_file_fails_loudly(self):
+        bad_inputs = [
+            "not = [valid",  # invalid TOML
+            'overrides = "nope"\n',  # not a list
+            '[[overrides]]\nproperty = "comment"\n',  # missing path
+            '[[overrides]]\npath = "/ip/route"\n',  # missing property
+            '[[overrides]]\npath = "no-slash"\nproperty = "comment"\n',  # bad path
+        ]
+        for content in bad_inputs:
+            path = self._write_temp(content)
+            try:
+                try:
+                    load_overrides(path)
+                except OverrideError:
+                    pass
+                else:
+                    raise AssertionError(f"expected OverrideError for {content!r}")
+            finally:
+                os.unlink(path)
+
+    def test_header_records_overrides_count(self):
+        menus = [self._menu("/ip/route")]
+        assert "# overrides_applied = 1 (data/overrides.toml)" in generate_toml(menus, overrides_applied=1)
+        assert "# overrides_applied = 0 (data/overrides.toml)" in generate_toml(menus)
+
+    def test_override_flows_into_generated_toml(self):
+        import tomllib
+
+        menus = finalize_menus([self._menu("/ip/route", [{"name": "gateway", "type": "ipAddr"}])])
+        applied = apply_overrides(
+            menus,
+            [{"path": "/ip/route", "property": "comment", "type": "string", "description": "Route note"}],
+        )
+        assert applied == 1
+        parsed = tomllib.loads(generate_toml(menus, overrides_applied=applied))
+        route = next(m for m in parsed["menus"] if m["path"] == "/ip/route")
+        by_name = {a["name"]: a for a in route.get("arguments", [])}
+        assert by_name["comment"]["type"] == "string"
+        assert by_name["comment"]["description"] == "Route note"
+        assert by_name["gateway"]["type"] == "ipAddr"

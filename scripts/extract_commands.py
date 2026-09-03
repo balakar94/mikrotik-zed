@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import tempfile
+import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -484,7 +485,107 @@ def finalize_menus(menus: list[dict]) -> list[dict]:
     return unique
 
 
-def generate_toml(menus: list[dict], llms_path: Path | None = None) -> str:
+# Curated additive overrides (data/overrides.toml) — properties the upstream
+# docs omit but real devices expose (verifiable via /export). Applied AFTER
+# upstream parsing, recorded in the commands.toml header provenance
+# (`# overrides_applied = N`). Additive ONLY: an override never modifies an
+# upstream-derived entry. Conflict policy is ignore-with-warning (stderr):
+# an override whose property already exists on the menu, or whose path is
+# unknown upstream, is skipped with a warning so `make extract` stays green
+# when upstream eventually documents the property (the warning tells the
+# maintainer to drop the now-redundant entry). A malformed overrides file
+# fails loudly via OverrideError (non-zero exit from main()).
+_OVERRIDES_FILENAME = "overrides.toml"
+
+
+class OverrideError(ValueError):
+    """Raised when data/overrides.toml exists but cannot be applied."""
+
+
+def load_overrides(overrides_path: Path) -> list[dict]:
+    """Load curated overrides from `overrides_path`, or [] when absent.
+
+    A missing file is fine (upstream-only output). Malformed TOML, a
+    non-list `overrides` key, or an entry missing/invalid `path`/`property`
+    raises OverrideError. Optional per-entry keys: `type` and `description`
+    (both default to "").
+    """
+    try:
+        raw = overrides_path.read_bytes()
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        raise OverrideError(f"cannot read {overrides_path}: {e}") from e
+    try:
+        data = tomllib.loads(raw.decode("utf-8"))
+    except Exception as e:
+        raise OverrideError(f"malformed {overrides_path}: {e}") from e
+    if not isinstance(data, dict):
+        raise OverrideError(f"malformed {overrides_path}: top level must be a table")
+    entries = data.get("overrides", [])
+    if not isinstance(entries, list):
+        raise OverrideError(f"malformed {overrides_path}: 'overrides' must be a list")
+    overrides: list[dict] = []
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise OverrideError(f"malformed {overrides_path}: overrides[{i}] must be a table")
+        path = entry.get("path")
+        prop = entry.get("property")
+        typ = entry.get("type", "")
+        desc = entry.get("description", "")
+        if not isinstance(path, str) or not path.startswith("/") or " " in path:
+            raise OverrideError(
+                f"malformed {overrides_path}: overrides[{i}] needs a CLI 'path' (e.g. \"/ip/route\")"
+            )
+        if not isinstance(prop, str) or not prop or " " in prop:
+            raise OverrideError(
+                f"malformed {overrides_path}: overrides[{i}] needs a non-empty 'property' name"
+            )
+        if not isinstance(typ, str) or not isinstance(desc, str):
+            raise OverrideError(
+                f"malformed {overrides_path}: overrides[{i}] 'type'/'description' must be strings"
+            )
+        overrides.append({"path": path, "property": prop, "type": typ, "description": desc})
+    return overrides
+
+
+def apply_overrides(menus: list[dict], overrides: list[dict]) -> int:
+    """Append override properties to matching menus; return the count applied.
+
+    Additive-only: new properties go to the menu's `arguments` list. Skipped
+    with a stderr warning (never modified): unknown paths (no invented
+    menus) and properties already present in `arguments`/`flags`/`read_only`.
+    """
+    by_path = {m["path"]: m for m in menus}
+    applied = 0
+    for o in overrides:
+        menu = by_path.get(o["path"])
+        if menu is None:
+            print(f"warning: override skipped, unknown menu {o['path']!r}", file=sys.stderr)
+            continue
+        existing = set()
+        for section in ("arguments", "flags", "read_only"):
+            for e in menu.get(section, []):
+                existing.add(e.get("name", ""))
+        if o["property"] in existing:
+            print(
+                f"warning: override skipped, {o['path']!r} already documents {o['property']!r} "
+                "(upstream now covers it — remove the redundant entry)",
+                file=sys.stderr,
+            )
+            continue
+        menu.setdefault("arguments", []).append({
+            "name": o["property"],
+            "type": o["type"],
+            "required": False,
+            "unset": False,
+            "description": o["description"],
+        })
+        applied += 1
+    return applied
+
+
+def generate_toml(menus: list[dict], llms_path: Path | None = None, overrides_applied: int = 0) -> str:
     """Generate TOML output from parsed menus."""
     lines = []
     lines.append("# MikroTik RouterOS CLI Command Table")
@@ -501,6 +602,7 @@ def generate_toml(menus: list[dict], llms_path: Path | None = None) -> str:
     lines.append(f"# RouterOS version: {version}")
     lines.append(f"# Generated: {generated}")
     lines.append(f"# Source hash (sha256[:16]): {src_hash}")
+    lines.append(f"# overrides_applied = {overrides_applied} (data/{_OVERRIDES_FILENAME})")
     lines.append("")
 
     # Hygiene counters — track empty descriptions for quality traceability
@@ -680,7 +782,16 @@ def main():
 
     unique = finalize_menus(menus)
 
-    toml_content = generate_toml(unique, llms_path=input_file)
+    try:
+        overrides = load_overrides(project_root / "data" / _OVERRIDES_FILENAME)
+    except OverrideError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    applied = apply_overrides(unique, overrides)
+    if applied:
+        print(f"Applied {applied} curated override(s) from data/{_OVERRIDES_FILENAME}.")
+
+    toml_content = generate_toml(unique, llms_path=input_file, overrides_applied=applied)
 
     if write_if_changed(output_file, toml_content):
         print(f"Wrote {output_file} ({len(unique)} menus)")
