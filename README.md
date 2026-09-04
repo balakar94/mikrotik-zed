@@ -280,7 +280,7 @@ Non-secret settings can live in Zed's settings (global settings, or per-project 
 - **Global:** Edit your global Zed settings (`~/.config/zed/settings.json` or `Cmd + ,` in Zed).
 
 > [!WARNING]
-> Per-project `.zed/settings.json` files are committed to shared repos. Never store `MIKROTIK_PASS` (or any secret) in them — keep passwords in the environment/keychain only. If your project uses per-project Zed settings, add `.zed/settings.json` to `.gitignore` unless it is guaranteed secret-free.
+> Per-project `.zed/settings.json` files are committed to shared repos. Never store `MIKROTIK_PASS` (or any secret) in them — keep passwords in the environment/keychain only. If a `pass`/`password`/`MIKROTIK_PASS` key is present in workspace settings, the LSP ignores it with a warning (env/keychain is the sole password source). If your project uses per-project Zed settings, add `.zed/settings.json` to `.gitignore` unless it is guaranteed secret-free.
 
 ```json
 {
@@ -299,7 +299,7 @@ Non-secret settings can live in Zed's settings (global settings, or per-project 
   }
 }
 ```
-Set `MIKROTIK_PASS` via the environment (see above), never in `settings.json`.
+Set `MIKROTIK_PASS` via the environment (see above) — a pass in `settings.json` is ignored with a warning, never applied.
 
 > [!TIP]
 > **HTTP vs HTTPS in RouterOS:**
@@ -313,7 +313,7 @@ Connectivity check: the **"MikroTik: Live — Check connectivity"** task in `.ze
 
 - **Zero Disk Modifications:** Live data is stored strictly in an in-memory TTL cache (60 seconds, max 16 collections, 512 KiB cap) and never touches `data/commands.toml` or any files on disk.
 - **Never Blocks Typing:** Completion never blocks the LSP loop — background hydrator is coalesced (2s) and negative-cached (15s); if the router is offline, the editor falls back instantly to static placeholders without hammering the device.
-- **Credential Protection:** `MIKROTIK_PASS` is strictly redacted from all logs and error messages; host validation and SSRF denial (`169.254.169.254`) are enforced before any request.
+- **Credential Protection:** `MIKROTIK_PASS` is strictly redacted from all logs and error messages; a pass in workspace settings is ignored with a warning (env/keychain is the sole password source); host validation and SSRF denial (`169.254.169.254`) are enforced before any request.
 - **Strict Caps:** Responses capped at 512 KiB / 500 items / 64 chars per value; custom resources capped at 8, hosts at 4.
 
 </details>

@@ -315,10 +315,13 @@ impl LiveConfig {
                 cfg.user = trimmed.to_string();
             }
         }
-        if let Some(pass_val) =
-            get_settings_str(settings_obj, &["pass", "password", "MIKROTIK_PASS"])
-        {
-            cfg.pass = pass_val;
+        // SECURITY: secrets in workspace settings are ignored (warn-only).
+        // `MIKROTIK_PASS` must come from env/keychain — settings files can be
+        // committed to shared repos, so they are never a password source.
+        if get_settings_str(settings_obj, &["pass", "password", "MIKROTIK_PASS"]).is_some() {
+            log_warn!(
+                "live settings pass/password ignored: never store MIKROTIK_PASS in workspace settings; use env/keychain instead"
+            );
         }
         if let Some(port_val) = get_settings_port(settings_obj) {
             cfg.port = port_val;
@@ -3265,6 +3268,40 @@ mod tests {
         assert_eq!(cfg3.host, "10.0.0.5");
         assert_eq!(cfg3.port, 8728);
         assert_eq!(cfg3.hosts, vec!["10.0.0.5".to_string()]);
+    }
+
+    #[test]
+    fn test_settings_pass_is_ignored_env_pass_wins() {
+        // SECURITY: a settings-provided secret must never reach `cfg.pass`;
+        // env/keychain stays the sole password source.
+        let cfg = LiveConfig::from_env_with(|k| match k {
+            "RSC_LS_LIVE" => Some("1".to_string()),
+            "MIKROTIK_HOST" => Some("192.168.88.1".to_string()),
+            "MIKROTIK_PASS" => Some("envpass".to_string()),
+            _ => None,
+        });
+        assert_eq!(cfg.pass, "envpass");
+        let settings = serde_json::json!({
+            "rsc": {
+                "live": {
+                    "MIKROTIK_PASS": "settings-secret",
+                    "password": "settings-secret-2",
+                }
+            }
+        });
+        let mut overlaid = cfg.clone();
+        LiveConfig::apply_settings_value(&mut overlaid, &settings);
+        assert_eq!(overlaid.pass, "envpass");
+        // Without an env pass, a settings pass must not fill the gap.
+        let bare = LiveConfig::from_env_with(|k| match k {
+            "RSC_LS_LIVE" => Some("1".to_string()),
+            "MIKROTIK_HOST" => Some("192.168.88.1".to_string()),
+            _ => None,
+        });
+        assert!(bare.pass.is_empty());
+        let mut overlaid_bare = bare.clone();
+        LiveConfig::apply_settings_value(&mut overlaid_bare, &settings);
+        assert!(overlaid_bare.pass.is_empty());
     }
 
     // ── Shared fetch tail (D1) ───────────────────────────────────
