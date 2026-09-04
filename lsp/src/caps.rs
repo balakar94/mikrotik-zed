@@ -72,6 +72,17 @@ pub(crate) const MAX_CODE_ACTIONS: usize = 8;
 pub(crate) const MAX_DIAG_LINES: usize = 3000;
 pub(crate) const MAX_DIAG_BYTES: usize = 500_000; // cap per-doc bytes considered for diagnostics
 
+/// Cap on total semantic diagnostics per publish.
+///
+/// Bounds the otherwise uncapped per-property loop in `compute_diagnostics`:
+/// a single logical line carrying tens of thousands of distinct unknown keys
+/// would allocate one heap `Diagnostic` per key (50k+ findings from one
+/// line). 2000 sits well above any legitimate file's distinct findings (real
+/// scripts yield tens; even a 3000-line file capped by `MAX_DIAG_LINES`
+/// rarely approaches it) yet far below that pathological case, and keeps the
+/// publish payload bounded.
+pub(crate) const MAX_DIAGNOSTICS: usize = 2000;
+
 /// Maximum number of completion items returned per `textDocument/completion` request.
 ///
 /// Bounds the response payload and keeps client fuzzy filtering responsive;

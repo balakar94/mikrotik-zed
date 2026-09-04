@@ -27,7 +27,7 @@
 
 use crate::StructureEvent;
 use crate::menus::MenuData;
-use crate::{MAX_DIAG_BYTES, MAX_DIAG_LINES};
+use crate::{MAX_DIAG_BYTES, MAX_DIAG_LINES, MAX_DIAGNOSTICS};
 use std::collections::{HashMap, HashSet};
 
 /// Source tag stamped on every diagnostic this server emits. Crate-visible
@@ -343,33 +343,46 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
         }
     }
 
+    // Bound the otherwise uncapped semantic loop: a single logical line
+    // with thousands of distinct unknown keys would otherwise yield one
+    // heap `Diagnostic` per key. Truncate BEFORE the syntax extend + hint
+    // push below so the truncation hint still fires and the syntax family
+    // still appends within its own cap.
+    let count_truncated = diagnostics.len() > MAX_DIAGNOSTICS;
+    diagnostics.truncate(MAX_DIAGNOSTICS);
+
     // ---- Truncation hint (O-01) -----------------------------------------
-    // When the document was capped by MAX_DIAG_BYTES or MAX_DIAG_LINES, emit
+    // When the document was capped by MAX_DIAG_BYTES, MAX_DIAG_LINES, or
+    // MAX_DIAGNOSTICS, emit
     // a single Information diagnostic so the user understands some issues
     // beyond the limit are not shown. The capped slicing above stays intact;
     // this adds at most one extra diagnostic (bounded).
     let bytes_truncated = doc.len() > MAX_DIAG_BYTES;
     let lines_truncated = logical_lines.len() > MAX_DIAG_LINES;
-    let truncation_hint = if bytes_truncated || lines_truncated {
-        let message = match (lines_truncated, bytes_truncated) {
-            (true, true) => format!(
+    let truncation_hint = if bytes_truncated || lines_truncated || count_truncated {
+        let message = match (lines_truncated, bytes_truncated, count_truncated) {
+            (true, true, _) => format!(
                 "Diagnostic truncated: showing first {} of {} lines (and {} of {} bytes) — some issues beyond limit not shown",
                 MAX_DIAG_LINES,
                 logical_lines.len(),
                 MAX_DIAG_BYTES,
                 doc.len()
             ),
-            (true, false) => format!(
+            (true, false, _) => format!(
                 "Diagnostic truncated: showing first {} of {} lines — some issues beyond limit not shown",
                 MAX_DIAG_LINES,
                 logical_lines.len()
             ),
-            (false, true) => format!(
+            (false, true, _) => format!(
                 "Diagnostic truncated: showing first {} of {} bytes — some issues beyond limit not shown",
                 MAX_DIAG_BYTES,
                 doc.len()
             ),
-            (false, false) => unreachable!(),
+            (false, false, true) => format!(
+                "Diagnostic truncated: showing first {} diagnostics — some issues beyond limit not shown",
+                MAX_DIAGNOSTICS
+            ),
+            (false, false, false) => unreachable!(),
         };
         Some(Diagnostic {
             range: Range {
@@ -1128,6 +1141,44 @@ type = "bool"
         );
         // Should still have some diagnostics
         assert!(!diags.is_empty());
+    }
+
+    #[test]
+    fn test_single_line_semantic_count_capped_with_hint() {
+        // Regression: one logical line with thousands of distinct unknown
+        // keys must not yield one Diagnostic per key. The semantic loop is
+        // bounded by MAX_DIAGNOSTICS; the count-only truncation still emits
+        // the "truncated" hint. The input stays under MAX_DIAG_BYTES/LINES
+        // so only the count cap applies (no syntax findings on this line).
+        let data = synthetic_data();
+        let mut doc = String::from("/ip/address add address=1.1.1.1/24 interface=ether1");
+        for i in 0..(MAX_DIAGNOSTICS + 1000) {
+            doc.push_str(&format!(" unknownkey{i}=1"));
+        }
+        assert!(
+            doc.len() < MAX_DIAG_BYTES,
+            "test input must stay under the byte cap, got {} bytes",
+            doc.len()
+        );
+        let diags = compute_diagnostics(&data, &doc, "file:///test.rsc");
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("truncated")),
+            "count truncation must emit a hint, got {} diagnostics",
+            diags.len()
+        );
+        let non_hint = diags
+            .iter()
+            .filter(|d| d.code.as_deref() != Some("truncated"))
+            .count();
+        assert!(
+            non_hint <= MAX_DIAGNOSTICS,
+            "semantic findings must be capped at {MAX_DIAGNOSTICS}, got {non_hint}"
+        );
+        assert!(
+            diags.len() <= MAX_DIAGNOSTICS + 1 + MAX_SYNTAX_DIAGNOSTICS,
+            "total stays bounded (semantic + hint + syntax), got {}",
+            diags.len()
+        );
     }
 
     #[test]

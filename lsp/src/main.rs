@@ -35,7 +35,8 @@ mod suggest;
 mod symbols;
 
 pub(crate) use caps::{
-    MAX_DIAG_BYTES, MAX_DIAG_LINES, MAX_DOC_SIZE, MAX_DOCS, MAX_HEADER_SIZE, MAX_MESSAGE_SIZE,
+    MAX_DIAG_BYTES, MAX_DIAG_LINES, MAX_DIAGNOSTICS, MAX_DOC_SIZE, MAX_DOCS, MAX_HEADER_SIZE,
+    MAX_MESSAGE_SIZE,
 };
 pub(crate) use encoding::{convert_position, floor_char_boundary};
 pub(crate) use logging::{log_debug, log_error, log_info, log_level, log_warn};
