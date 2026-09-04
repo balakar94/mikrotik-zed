@@ -133,6 +133,9 @@ Focus gates on highest-risk surfaces: data integrity (extraction → `data/comma
 
 ## Flaky-Test & Timeout Diagnostics
 
+- Grammar corpus `Simple array` (`grammars/rsc/test/corpus/arrays.txt:2`, `:put {1; 2; 3}`) deterministically
+  emits `Warning: Slow parse rate` on stderr with non-deterministic bytes/ms (CLI timing noise on a ~15-byte
+  input; 79/79 tests still pass). This warning is expected, must not be triaged as a regression, and CI must never gate on stderr rate numbers.
 - E2E flakes: check 5s `RECV_TIMEOUT` panics — increase only if cold debug build on loaded CI; prefer `RSC_LS_E2E_STDERR=1` to see server stderr vs bumping timeout.
 - Live timeout clamps (1..30s `MIKROTIK_TIMEOUT`, blocking 2s / per-request 5s): validate with `scripts/mikrotik-live-check.py --dry-run --json` before enabling enrichment.
 - Python `pytest` flakes from network: `sync_llms.py --check` exit 1 is warning-only; re-run `make sync` then `make test-python` with local `llms-full.txt` present.

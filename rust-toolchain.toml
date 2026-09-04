@@ -1,5 +1,5 @@
 # Pinned Rust toolchain — MSRV 1.90 (matches the zed-industries/extensions packaging toolchain).
-# Ensures local `cargo` and CI use the same compiler; workflows also pin 1.90 explicitly.
+# Single source of truth: workflows resolve `toolchain.channel` dynamically (see `Resolve Rust toolchain` in ci.yml/release.yml); keep in sync with `rust-version` in Cargo.toml and lsp/Cargo.toml.
 [toolchain]
 channel = "1.90"
 targets = ["wasm32-wasip2"]

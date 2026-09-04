@@ -30,6 +30,7 @@
 // | `MAX_CODE_ACTIONS`                | 8              | caps.rs         | Quick-fix actions per codeAction response                      |
 // | `MAX_DIAG_LINES`                  | 3000           | caps.rs         | Logical lines considered for diagnostics per doc               |
 // | `MAX_DIAG_BYTES`                  | 500 000        | caps.rs         | Bytes considered for diagnostics per doc                       |
+// | `MAX_DIAGNOSTICS`                 | 2000           | caps.rs         | Total semantic diagnostics per publish                         |
 // | `MAX_COMPLETION_ITEMS`            | 200            | caps.rs         | Completion items per response                                  |
 // | `MAX_LIVE_ITEMS`                  | 500            | caps.rs         | Live values per cache entry                                    |
 // | `MAX_LIVE_VALUE_LEN`              | 64             | caps.rs         | Single live value byte length                                  |
@@ -41,6 +42,7 @@
 // | `LIVE_NEGATIVE_TTL_SECS`          | 15 s           | caps.rs         | Negative cache TTL                                             |
 // | `LIVE_MAX_HOSTS`                  | 4              | caps.rs         | Multi-host cap (only primary hydrated)                         |
 // | `LIVE_CUSTOM_RESOURCES_MAX`       | 8              | caps.rs         | Custom live resources via env JSON                             |
+// | `MAX_CONCURRENT_FETCHES`          | 2              | live.rs         | fetch-thread semaphore                                         |
 // | `MAX_SYNTAX_DIAGNOSTICS`          | 10             | diagnostics.rs  | Unclosed/unmatched brace+quote diagnostics per publish         |
 // | `MAX_SYMBOLS`                     | 5000           | symbols.rs      | Document symbols per doc                                       |
 // | `MAX_FOLDING_RANGES`              | 5000           | folding.rs      | Folding ranges per doc                                         |
