@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- **LSP diagnostics (`lsp/src/diagnostics.rs`, `lsp/src/caps.rs`)**: `MAX_DIAGNOSTICS=2000` bound on total semantic diagnostics per publish — `compute_diagnostics` now truncates before the syntax extend, and the `truncated` hint covers the count-only case. Previously a single logical line carrying tens of thousands of distinct unknown keys yielded one heap `Diagnostic` per key.
+
+### Changed
+
+- **Data (`data/commands.toml`, `data/upstream-docs.toml`)**: `upstream c77198 → c043cd8f` — `nd-ping` description enrichment for `/tool/ping` ("Use IPv6 Neighbor Discovery (NS/NA) instead of ICMP echo to discover hosts"), `1077 menus` stable `7.23.2`.
+- **Toolchain (`rust-toolchain.toml`)**: fixed stale comment — workflows resolve `toolchain.channel` dynamically from this file (single source of truth); they never pinned `1.90` explicitly.
+- **Caps registry (`lsp/src/caps.rs`)**: indexed `MAX_CONCURRENT_FETCHES=2` and `MAX_DIAGNOSTICS=2000` in the central table, per the "every limit discoverable from ONE place" policy.
+- **LSP internals**: removed dead `build_base_url` wrapper (all callers use `build_base_url_with_allow`), unused test helper `cfg_with_no_loopback`, and write-only `LineContext.last_token` field; fixed stale "Uses `build_base_url`" doc references.
+- **Docs**: grammar corpus `Simple array` slow-parse warning documented as expected CLI timing noise (`.agents/skills/qa-ci-release.md`); README credential sections now state settings-provided secrets are ignored with a warning.
+
+### Fixed
+
+- **LSP live security (`lsp/src/live.rs`)**: `MIKROTIK_PASS` (and `pass`/`password`) in workspace settings is now ignored with a warning — env/keychain is the sole password source. Previously a secret in `.zed/settings.json` (a committable file) was silently ingested. **Behavior change**: live auth configured only via settings stops working; move the password to the environment/keychain.
+
 ## [0.5.5] - 2026-09-02
 
 ### Added
