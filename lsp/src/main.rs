@@ -73,20 +73,34 @@ fn main() {
 
     // Initialize log level early (reads RSC_LS_LOG)
     let level = log_level();
-    // Startup banner carries version + pid so multiple server instances are
-    // correlatable in `zed: open log`; the version token matches the output
-    // of `rsc-ls --version` exactly.
+    // Startup banner (4 lines, always printed): version + UTC time + pid +
+    // log level, dataset provenance, live status, encoding + TLS. Zed shows
+    // server stderr as plain text (no ANSI, no timestamps of its own), so the
+    // banner carries one absolute timestamp while every line carries a
+    // monotonic `[T+…s]` tag. The version token matches `rsc-ls --version`.
+    let log_src = match std::env::var("RSC_LS_LOG") {
+        Ok(v) => format!("RSC_LS_LOG={}", v.trim().replace(['\n', '\r'], " ")),
+        Err(_) => "default".to_string(),
+    };
     eprintln!(
-        "[rsc-ls][INFO] {} starting (pid={}, RSC_LS_LOG={:?} -> {:?})",
+        "[rsc-ls][INFO]{} {} starting at {} (pid={}, log={} ({}))",
+        crate::logging::elapsed_tag(),
         cli::version_string(),
+        crate::logging::utc_rfc3339_now(),
         std::process::id(),
-        std::env::var("RSC_LS_LOG").unwrap_or_else(|_| "(unset, default info)".to_string()),
-        level
+        level.as_str(),
+        log_src
     );
     // Hint for observability: when run via Zed, use `zed --foreground` to see these logs,
     // or `zed: open log` action. Setting `RSC_LS_LOG=debug` enables verbose diagnostics.
     let data = std::sync::Arc::new(MenuData::load());
-    log_info!("language server started, {} menus loaded", data.menus.len());
+    let prov = menus::dataset_provenance();
+    log_info!(
+        "dataset: RouterOS {}, {} menus (src {})",
+        prov.version,
+        data.menus.len(),
+        prov.src_hash
+    );
     log_debug!(
         "limits: MAX_MESSAGE_SIZE={} MAX_HEADER_SIZE={} MAX_DOC_SIZE={} MAX_DOCS={}",
         MAX_MESSAGE_SIZE,
@@ -98,15 +112,27 @@ fn main() {
     // Live device data (opt-in, TTL-scoped, in-memory only).
     let live_config = live::LiveConfig::from_env();
     live_config.log_status();
-    // Startup banner with encoding and TLS state (O-02 observability).
-    log_info!(
-        "rsc-ls {} encoding={} ssl_verify={} ssl_verify_effective={} live_active={}",
-        cli::version_string(),
-        crate::encoding::PositionEncoding::default().as_str(),
-        live_config.ssl_verify,
-        live_config.ssl_verify_effective(),
-        live_config.is_active()
-    );
+    // Encoding + effective TLS state (O-02 observability). Requested vs
+    // effective differ only when hardened paths override the request; an
+    // insecure effective state is always loud (WARN).
+    let tls_effective = live_config.ssl_verify_effective();
+    if live_config.ssl_verify == tls_effective {
+        log_info!(
+            "encoding={} tls_verify={}",
+            crate::encoding::PositionEncoding::default().as_str(),
+            tls_effective
+        );
+    } else {
+        log_info!(
+            "encoding={} tls_verify_effective={} (requested {})",
+            crate::encoding::PositionEncoding::default().as_str(),
+            tls_effective,
+            live_config.ssl_verify
+        );
+    }
+    if !tls_effective {
+        log_warn!("tls verification disabled (MIKROTIK_SSL=0) — device connections are insecure");
+    }
     let live_cache =
         std::sync::Arc::new(std::sync::Mutex::new(live::LiveCache::with_default_ttl()));
 

@@ -13,6 +13,7 @@
 - **Caps registry (`lsp/src/caps.rs`)**: indexed `MAX_CONCURRENT_FETCHES=2` and `MAX_DIAGNOSTICS=2000` in the central table, per the "every limit discoverable from ONE place" policy.
 - **LSP internals**: removed dead `build_base_url` wrapper (all callers use `build_base_url_with_allow`), unused test helper `cfg_with_no_loopback`, and write-only `LineContext.last_token` field; fixed stale "Uses `build_base_url`" doc references.
 - **Docs**: grammar corpus `Simple array` slow-parse warning documented as expected CLI timing noise (`.agents/skills/qa-ci-release.md`); README credential sections now state settings-provided secrets are ignored with a warning.
+- **LSP startup banner (`lsp/src/main.rs`, `lsp/src/logging.rs`, `lsp/src/menus.rs`)**: Zed-only 4-line banner — start time (UTC) + pid + log level, dataset provenance (`RouterOS` version, menus, src hash), live status, encoding + effective TLS (WARN when insecure); every line carries a monotonic `[T+…s]` tag. No ANSI colors (Zed shows server stderr as plain text).
 
 ### Fixed
 

@@ -139,6 +139,34 @@ pub struct MenuData {
     pub ancestor_prefixes: HashSet<String>,
 }
 
+/// Provenance of the embedded dataset for the startup banner.
+pub struct DatasetProvenance {
+    pub version: String,
+    pub src_hash: String,
+}
+
+/// Provenance parsed from the generated header of the embedded table.
+///
+/// Independent of the TOML body parse, so it stays available on the
+/// fail-safe empty path. Prefixes must match `scripts/extract_commands.py`
+/// header output; unknown fields degrade to `"unknown"` (never panic).
+pub fn dataset_provenance() -> DatasetProvenance {
+    parse_provenance(COMMANDS_TOML)
+}
+
+fn parse_provenance(text: &str) -> DatasetProvenance {
+    let mut version = "unknown".to_string();
+    let mut src_hash = "unknown".to_string();
+    for line in text.lines().take(12) {
+        if let Some(v) = line.strip_prefix("# RouterOS version:") {
+            version = v.trim().to_string();
+        } else if let Some(h) = line.strip_prefix("# Source hash (sha256[:16]):") {
+            src_hash = h.trim().to_string();
+        }
+    }
+    DatasetProvenance { version, src_hash }
+}
+
 impl MenuData {
     pub fn load() -> Self {
         match toml::from_str::<CommandsFile>(COMMANDS_TOML) {
@@ -319,6 +347,36 @@ impl From<RawArgEntry> for ArgEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provenance_parses_generated_header() {
+        let text = "# MikroTik RouterOS CLI Command Table\n\
+            # RouterOS version: 7.23.2\n\
+            # Source hash (sha256[:16]): c043cd8fd9e2215c\n\
+            \n\
+            [[menus]]\n";
+        let prov = parse_provenance(text);
+        assert_eq!(prov.version, "7.23.2");
+        assert_eq!(prov.src_hash, "c043cd8fd9e2215c");
+    }
+
+    #[test]
+    fn provenance_degrades_to_unknown_on_missing_header() {
+        let prov = parse_provenance("[[menus]]\n");
+        assert_eq!(prov.version, "unknown");
+        assert_eq!(prov.src_hash, "unknown");
+    }
+
+    #[test]
+    fn embedded_dataset_provenance_matches_committed_header() {
+        // Guards the banner against header renames in extract_commands.py.
+        // Value-agnostic on purpose: the version/hash rotate on every
+        // `make sync`, so only assert they parsed (not "unknown").
+        let prov = dataset_provenance();
+        assert!(!prov.version.contains("unknown") && !prov.version.is_empty());
+        assert!(!prov.src_hash.contains("unknown"));
+        assert_eq!(prov.src_hash.len(), 16);
+    }
 
     fn test_commands_toml() -> &'static str {
         r#"
