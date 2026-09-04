@@ -1083,17 +1083,12 @@ fn format_host_for_url(host: &str) -> String {
 
 /// Shared base URL builder — single source for host/port/scheme validation.
 ///
-/// Validates host (`validate_host`, SSRF, slash, port), wraps bare IPv6,
-/// parses via `url::Url::parse`, and checks scheme. Path is left as `/`
+/// Validates host (`validate_host_with_allow`, SSRF, slash, port), wraps bare
+/// IPv6, parses via `url::Url::parse`, and checks scheme. Path is left as `/`
 /// for callers to set via `Url::set_path`. Keeps caps single source.
 ///
 /// Keep in sync with `scripts/_mikrotik_shared.py::validate_host` /
 /// `format_host_for_url` / `resolve_scheme`.
-#[allow(dead_code)]
-fn build_base_url(host: &str, port: u16, scheme: &str) -> Result<url::Url, LiveError> {
-    build_base_url_with_allow(host, port, scheme, live_allow_loopback())
-}
-
 fn build_base_url_with_allow(
     host: &str,
     port: u16,
@@ -1126,7 +1121,7 @@ fn build_base_url_with_allow(
 
 /// Build and validate the REST URL for a given resource.
 ///
-/// Uses `build_base_url` for shared validation, then appends the resource path.
+/// Uses `build_base_url_with_allow` for shared validation, then appends the resource path.
 /// Handles IPv6 bracket wrapping via `format_host_for_url`.
 fn build_rest_url(config: &LiveConfig, resource: ResourceKind) -> Result<String, LiveError> {
     let mut base = build_base_url_with_allow(
@@ -2123,7 +2118,7 @@ fn build_insecure_agent(timeout: Duration) -> Option<ureq::Agent> {
 ///
 /// `label` identifies the resource in logs (e.g. `Interfaces` or a custom
 /// property name). Callers are responsible for `config.is_active()`, host
-/// validation, and URL construction (via `build_base_url`). `pass` is only
+/// validation, and URL construction (via `build_base_url_with_allow`). `pass` is only
 /// used in the Authorization header and never logged.
 fn fetch_live_resource(
     config: &LiveConfig,
@@ -2245,7 +2240,7 @@ fn extract_and_sanitize(
 /// Fetch live data for a specific resource kind from the RouterOS REST API.
 ///
 /// Thin wrapper over `fetch_live_resource`: builds the resource-specific URL
-/// (which runs the shared host/port/scheme validation via `build_base_url`)
+/// (which runs the shared host/port/scheme validation via `build_base_url_with_allow`)
 /// and selects the resource's JSON field and value filter.
 pub fn fetch_resource(
     config: &LiveConfig,
@@ -2320,11 +2315,6 @@ mod tests {
         if !map.contains_key("RSC_LS_LIVE_ALLOW_LOOPBACK") {
             map.insert("RSC_LS_LIVE_ALLOW_LOOPBACK", "1");
         }
-        LiveConfig::from_env_with(|k| map.get(k).map(|v| v.to_string()))
-    }
-
-    #[allow(dead_code)]
-    fn cfg_with_no_loopback(map: HashMap<&str, &str>) -> LiveConfig {
         LiveConfig::from_env_with(|k| map.get(k).map(|v| v.to_string()))
     }
 
@@ -3330,7 +3320,7 @@ mod tests {
 
     #[test]
     fn test_fetch_custom_resource_rejects_host_with_slash() {
-        // Same shared validation as the built-in fetchers (via build_base_url).
+        // Same shared validation as the built-in fetchers (via build_base_url_with_allow).
         let mut m = HashMap::new();
         m.insert("RSC_LS_LIVE", "1");
         m.insert("MIKROTIK_HOST", "host/with/slash");

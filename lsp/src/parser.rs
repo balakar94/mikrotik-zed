@@ -462,7 +462,6 @@ pub fn parse_line(data: &MenuData, before_cursor: &str) -> LineContext {
     let mut path_parts: Vec<String> = Vec::new();
     let mut command: Option<String> = None;
     let mut properties: HashMap<String, String> = HashMap::new();
-    let last_token = tokens.last().cloned().unwrap_or_default();
 
     for token in &tokens {
         if token.starts_with('/') {
@@ -506,7 +505,6 @@ pub fn parse_line(data: &MenuData, before_cursor: &str) -> LineContext {
         },
         command,
         properties,
-        last_token,
     }
 }
 
@@ -1124,7 +1122,6 @@ type = "Directory"
         assert_eq!(ctx.path, "/ip/address");
         assert!(ctx.command.is_none());
         assert!(ctx.properties.is_empty());
-        assert_eq!(ctx.last_token, "/ip/address");
     }
 
     #[test]
@@ -1133,7 +1130,6 @@ type = "Directory"
         let ctx = parse_line(&data, "/ip/address add");
         assert_eq!(ctx.path, "/ip/address");
         assert_eq!(ctx.command.as_deref(), Some("add"));
-        assert_eq!(ctx.last_token, "add");
     }
 
     #[test]
@@ -1169,7 +1165,6 @@ type = "Directory"
             ctx.properties.get("interface").map(|s| s.as_str()),
             Some("ether1")
         );
-        assert_eq!(ctx.last_token, "interface=ether1");
     }
 
     #[test]
@@ -1177,7 +1172,6 @@ type = "Directory"
         let data = synthetic_data();
         let ctx = parse_line(&data, "/ip/firewall/filter add chain=");
         assert_eq!(ctx.properties.get("chain").map(|s| s.as_str()), Some(""));
-        assert_eq!(ctx.last_token, "chain=");
     }
 
     #[test]
@@ -1194,7 +1188,7 @@ type = "Directory"
         let ctx = parse_line(&data, "");
         assert_eq!(ctx.path, "");
         assert!(ctx.command.is_none());
-        assert_eq!(ctx.last_token, "");
+        assert!(ctx.properties.is_empty());
     }
 
     #[test]
@@ -1218,8 +1212,6 @@ type = "Directory"
             ctx2.properties.get("comment").map(|s| s.as_str()),
             Some("\"hello world\"")
         );
-        // last_token remains the RAW token text (key included), per LineContext.
-        assert_eq!(ctx2.last_token, r#"comment="hello world""#);
     }
 
     #[test]
