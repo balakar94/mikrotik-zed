@@ -112,19 +112,21 @@ fn main() {
     // Live device data (opt-in, TTL-scoped, in-memory only).
     let live_config = live::LiveConfig::from_env();
     live_config.log_status();
-    // Encoding + effective TLS state (O-02 observability). Requested vs
-    // effective differ only when hardened paths override the request; an
+    // Encoding + effective TLS state (O-02 observability). `encoding=` is the
+    // pre-negotiation default (utf-16 per LSP 3.17); the value actually agreed
+    // with the client is logged at debug on `initialize`. Requested vs
+    // effective TLS differ only when hardened paths override the request; an
     // insecure effective state is always loud (WARN).
     let tls_effective = live_config.ssl_verify_effective();
     if live_config.ssl_verify == tls_effective {
         log_info!(
-            "encoding={} tls_verify={}",
+            "encoding={} (startup default) tls_verify={}",
             crate::encoding::PositionEncoding::default().as_str(),
             tls_effective
         );
     } else {
         log_info!(
-            "encoding={} tls_verify_effective={} (requested {})",
+            "encoding={} (startup default) tls_verify_effective={} (requested {})",
             crate::encoding::PositionEncoding::default().as_str(),
             tls_effective,
             live_config.ssl_verify
