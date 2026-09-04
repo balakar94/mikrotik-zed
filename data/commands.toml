@@ -2,8 +2,8 @@
 # Auto-generated from llms-full.txt
 # Covers: /app, /beep, /blink, /caps-man, /certificate, /console, /container, /disk, /dude, /environment, /file, /import, … (1077 menus)
 # RouterOS version: 7.23.2
-# Generated: 2026-09-03T12:20:42.164201Z
-# Source hash (sha256[:16]): c77198cf62ba4db3
+# Generated: 2026-09-04T15:30:37.946389Z
+# Source hash (sha256[:16]): c043cd8fd9e2215c
 # overrides_applied = 1 (data/overrides.toml)
 
 [[menus]]
@@ -41068,6 +41068,7 @@ description = "Number of ICMP echo requests to send"
 [[menus.arguments]]
 name = "nd-ping"
 type = "bool"
+description = "Use IPv6 Neighbor Discovery (NS/NA) instead of ICMP echo to discover hosts"
 [[menus.arguments]]
 name = "interface"
 type = "iface_enum"
