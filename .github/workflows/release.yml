@@ -73,17 +73,19 @@ jobs:
           LSP_VER=$(grep '^version' lsp/Cargo.toml | head -n1 | sed -E 's/.*"(.*)"/\1/')
           EXT_VER=$(grep '^version' extension.toml | head -n1 | sed -E 's/.*"(.*)"/\1/')
           echo "tag version=$VERSION cargo=$CARGO_VER lsp=$LSP_VER extension=$EXT_VER"
-          # Enforce Cargo.toml matches tag; extension.toml should too but warn if not.
+          # Enforce every release manifest matches the tag — Zed publishes
+          # extension.toml's version, so a stale one ships the wrong version.
           if [ "$CARGO_VER" != "$VERSION" ]; then
             echo "::error::Cargo.toml version $CARGO_VER != tag $TAG — bump via 'make bump VERSION=$VERSION'"
             exit 1
           fi
           if [ "$LSP_VER" != "$VERSION" ]; then
-            echo "::error::lsp/Cargo.toml version $LSP_VER != $VERSION"
+            echo "::error::lsp/Cargo.toml version $LSP_VER != $VERSION — bump via 'make bump VERSION=$VERSION'"
             exit 1
           fi
           if [ "$EXT_VER" != "$VERSION" ]; then
-            echo "::warning::extension.toml version $EXT_VER != $VERSION — should be bumped together"
+            echo "::error::extension.toml version $EXT_VER != tag $TAG — bump via 'make bump VERSION=$VERSION'"
+            exit 1
           fi
 
       - name: Guard — workflow_dispatch tag must exist at this SHA
@@ -151,24 +153,9 @@ jobs:
 
       # grammars/rsc is an untracked working copy, so clone it at the pinned
       # rev — same recipe as ci.yml's grammar job.
+      # Single source of truth: scripts/clone_grammar.py (also used by `make grammar-clone`).
       - name: Clone grammar at pinned rev
-        run: |
-          set -eu
-          REV=$(awk '/^\[grammars\.rsc\]/{f=1;next} f&&/^rev/{gsub(/"/,"",$3);print $3;exit}' extension.toml)
-          if [ -z "$REV" ]; then
-            echo "::error::[grammars.rsc].rev missing in extension.toml"
-            exit 1
-          fi
-          case "$REV" in *0000*)
-            echo "::error::placeholder rev found ($REV) — run scripts/publish_grammar.py"; exit 1;;
-          esac
-          echo "$REV" | grep -Eq '^[0-9a-f]{40}$' || { echo "::error::REV must be 40-char hex ($REV)"; exit 1; }
-          git clone --quiet https://github.com/balakar94/tree-sitter-rsc grammars/rsc
-          if [ "$(git -C grammars/rsc rev-parse HEAD)" != "$REV" ]; then
-            git -C grammars/rsc fetch --quiet --depth 1 origin "$REV"
-            git -C grammars/rsc checkout --quiet --detach FETCH_HEAD
-          fi
-          echo "grammar pinned at $(git -C grammars/rsc rev-parse HEAD)"
+        run: python3 scripts/clone_grammar.py
 
       - name: Setup Node 24
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -763,7 +750,7 @@ jobs:
           VERSION="${{ needs.meta.outputs.version }}"
           EXT_VER=$(grep '^version' extension.toml | head -n1 | sed -E 's/.*"(.*)"/\1/')
           echo "extension.toml version=$EXT_VER tag=$TAG"
-          if [ -n "$VERSION" ] && [ "$EXT_VER" != "$VERSION" ]; then echo "::warning::extension.toml version $EXT_VER != tag $TAG"; fi
+          if [ -n "$VERSION" ] && [ "$EXT_VER" != "$VERSION" ]; then echo "::error::extension.toml version $EXT_VER != tag $TAG — bump via 'make bump VERSION=$VERSION'"; exit 1; fi
           echo "extension.toml OK"
       - name: WASM artifact info
         run: |

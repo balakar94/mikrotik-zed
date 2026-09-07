@@ -1,13 +1,19 @@
 name: Supply Audit
 
-# Weekly Rust dependency CVE scan. Dependabot was intentionally removed
+# Weekly dependency CVE scans. Dependabot was intentionally removed
 # (commit 6528c8e — manual dependency policy for a solo-maintained project);
-# this workflow keeps an automated eye on the RustSec Advisory Database only.
-# Runs Mondays and on demand; failure means Cargo.lock matches a known advisory.
+# this workflow keeps an automated eye on advisories with no new infra.
+# Policy (solo-maintainer noise control): the Python/npm job fails on
+# HIGH/CRITICAL only; LOW/MODERATE findings are log-visible and non-failing.
+# The Rust job keeps its existing fail-on-any-advisory behavior (RustSec
+# entries against the locked Cargo.lock are already curated to actionable).
+# No Dependabot config by policy — do not re-add it here.
+# Runs Mondays and on demand; failure means a gated advisory matches.
 
 on:
   schedule:
-    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC (Rust job slot)
+    - cron: "27 6 * * 1" # Mondays 06:27 UTC (adjacent slot; triggers whole workflow)
   workflow_dispatch:
 
 permissions:
@@ -40,3 +46,98 @@ jobs:
         run: |
           cargo audit --version
           cargo audit --file Cargo.lock
+
+  py-npm-audit:
+    name: Python/npm • audit (HIGH/CRITICAL only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Setup Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: grammars/rsc/package.json
+
+      - name: Python audit (pip-audit, HIGH/CRITICAL only)
+        run: |
+          set -eu
+          python -m pip install --upgrade pip
+          # No requirements.txt in repo: audit the effective env with the
+          # network-facing surface installed (scripts/mikrotik-deploy.py uses
+          # requests for REST and paramiko for SSH; tests run on pytest).
+          pip install pip-audit requests paramiko pytest
+          pip freeze | grep -Ei "pip-audit|requests|paramiko|^pytest==" || true
+          # pip-audit has no native severity gate, so capture JSON and fail
+          # only on HIGH/CRITICAL markers; LOW/MODERATE stay log-visible.
+          # The exit code is decided by the gate below, not by pip-audit.
+          set +e
+          pip-audit --desc --format=json --output pip-audit.json
+          AUDIT_RC=$?
+          set -e
+          echo "pip-audit exit=$AUDIT_RC"
+          cat pip-audit.json || true
+          # pip-audit exits 0 (clean) or 1 (vulns found); anything else is a tool failure.
+          if [ "$AUDIT_RC" -ne 0 ] && [ "$AUDIT_RC" -ne 1 ]; then echo "::error::pip-audit tool failure (exit=$AUDIT_RC)"; exit 1; fi
+          python3 - <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          report = Path("pip-audit.json")
+          try:
+              data = json.loads(report.read_text(encoding="utf-8"))
+          except Exception as e:
+              print(f"::error::cannot parse pip-audit.json: {e}")
+              sys.exit(1)
+
+          # pip-audit JSON is a list of deps; tolerate a {"dependencies": [...]} shape.
+          deps = data.get("dependencies", data) if isinstance(data, dict) else data
+          if not isinstance(deps, list):
+              print(f"::error::unexpected pip-audit.json shape: {type(deps).__name__}")
+              sys.exit(1)
+
+          high_re = re.compile(r"\b(high|critical)\b", re.IGNORECASE)
+          high = []
+          other = []
+          for dep in deps:
+              if not isinstance(dep, dict):
+                  continue
+              name = dep.get("name", "?")
+              ver = dep.get("version", "?")
+              for vuln in dep.get("vulns", []) or []:
+                  vid = vuln.get("id", "?") if isinstance(vuln, dict) else "?"
+                  blob = json.dumps(vuln, sort_keys=True)
+                  entry = f"{name}=={ver} {vid}"
+                  (high if high_re.search(blob) else other).append(entry)
+
+          for entry in high:
+              print(f"::error::pip-audit HIGH/CRITICAL: {entry}")
+          for entry in other:
+              print(f"::warning::pip-audit below threshold (log only): {entry}")
+          print(f"pip-audit HIGH/CRITICAL={len(high)} below-threshold={len(other)}")
+          sys.exit(1 if high else 0)
+          PY
+
+      - name: npm audit (grammars/rsc, HIGH/CRITICAL only)
+        working-directory: grammars/rsc
+        run: |
+          set -eu
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+          # No --omit=dev: tree-sitter-cli lives in devDependencies, so omitting
+          # dev would audit nothing. --audit-level=high implements the
+          # HIGH/CRITICAL-only policy (LOW/MODERATE stay log-visible).
+          npm audit --audit-level=high
