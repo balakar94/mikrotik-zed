@@ -234,10 +234,62 @@ class TestCheckModeNeverWrites:
     """Drives main() decision points directly via its injectable root/fetch
     parameters (no network, no monkeypatching of internals needed)."""
 
-    def test_check_mode_writes_nothing_when_files_missing(self, tmp_path):
+    def _write_manifest_for(self, tmp_path, payloads: dict[str, bytes]) -> Path:
+        """Write a manifest whose recorded hashes match the given payloads."""
+        import hashlib as _hashlib
+
+        sources = [
+            {
+                "name": "index",
+                "path": "llms.txt",
+                "url": "https://manual.mikrotik.com/llms.txt",
+                "sha256": _hashlib.sha256(payloads["llms.txt"]).hexdigest(),
+            },
+            {
+                "name": "full",
+                "path": "llms-full.txt",
+                "url": "https://manual.mikrotik.com/llms-full.txt",
+                "sha256": _hashlib.sha256(payloads["llms-full.txt"]).hexdigest(),
+            },
+        ]
+        manifest = tmp_path / "data" / "upstream-docs.toml"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(build_manifest_text("7.22", "2026-08-26T12:34:56Z", sources), encoding="utf-8")
+        return manifest
+
+    def test_check_mode_missing_files_matching_manifest_is_clean(self, tmp_path):
+        """Missing locals + remote matching the manifest -> no drift (rc 0).
+
+        Fresh checkouts never have the gitignored llms.txt/llms-full.txt, so
+        --check falls back to the recorded manifest hashes instead of
+        reporting false drift.
+        """
+        manifest = self._write_manifest_for(tmp_path, PAYLOADS)
+        before = manifest.read_text(encoding="utf-8")
         fetch, _ = _fake_fetch(PAYLOADS)
         rc = sync_main(argv=["--check"], project_root=tmp_path, fetch=fetch)
-        assert rc == 2, "missing local files mean drift (--check must report exit 2)"
+        assert rc == 0, "remote matching the manifest must not count as drift"
+        assert not (tmp_path / "llms.txt").exists()
+        assert not (tmp_path / "llms-full.txt").exists()
+        assert manifest.read_text(encoding="utf-8") == before, "--check must never touch the manifest"
+
+    def test_check_mode_missing_files_differing_from_manifest_is_drift(self, tmp_path):
+        """Missing locals + remote differing from the manifest -> drift (rc 2)."""
+        self._write_manifest_for(tmp_path, PAYLOADS)
+        drifted = dict(PAYLOADS)
+        drifted["llms-full.txt"] = PAYLOADS["llms-full.txt"] + b"\n# upstream moved on\n"
+        fetch, _ = _fake_fetch(drifted)
+        rc = sync_main(argv=["--check"], project_root=tmp_path, fetch=fetch)
+        assert rc == 2, "remote differing from the manifest must report drift"
+        assert not (tmp_path / "llms.txt").exists()
+        assert not (tmp_path / "llms-full.txt").exists()
+        assert (tmp_path / "data" / "upstream-docs.toml").is_file(), "--check must never delete the manifest"
+
+    def test_check_mode_missing_files_without_manifest_is_drift(self, tmp_path):
+        """Missing locals + no manifest -> drift (rc 2, bootstrap needed)."""
+        fetch, _ = _fake_fetch(PAYLOADS)
+        rc = sync_main(argv=["--check"], project_root=tmp_path, fetch=fetch)
+        assert rc == 2, "missing files with no manifest to compare against mean drift (bootstrap needed)"
         assert not (tmp_path / "llms.txt").exists()
         assert not (tmp_path / "llms-full.txt").exists()
         assert not (tmp_path / "data" / "upstream-docs.toml").exists(), "--check must never create the manifest"

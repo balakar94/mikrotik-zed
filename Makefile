@@ -51,16 +51,8 @@ test-python: ## Run Python test suite
 
 test-all: test-grammar test-rust test-python ## Run all tests
 grammar-clone: ## Clone grammar working copy at rev pinned in extension.toml
-	@if [ -d $(GRAMMAR_DIR)/.git ] || [ -f $(GRAMMAR_DIR)/.git ]; then \
-		echo "grammars/rsc already present"; \
-	else \
-		git clone https://github.com/balakar94/tree-sitter-rsc $(GRAMMAR_DIR); \
-	fi
-	@REV=$$(awk '/^\[grammars\.rsc\]/{f=1;next} f&&/^rev/{gsub(/"/,"",$$3);print $$3;exit}' extension.toml); \
-	if [ -n "$$REV" ] && [ "$$(git -C $(GRAMMAR_DIR) rev-parse HEAD)" != "$$REV" ]; then \
-		echo "$$REV" | grep -Eq '^[0-9a-f]{40}$$' || (echo "error: REV must be 40-char hex" && false); \
-		git -C $(GRAMMAR_DIR) fetch --depth 1 origin "$$REV" && git -C $(GRAMMAR_DIR) checkout --detach FETCH_HEAD; fi
-	@git -C $(GRAMMAR_DIR) log --oneline -1
+	@command -v $(PYTHON) >/dev/null || (echo "error: $(PYTHON) not found — run 'make install-tools'" && false)
+	$(PYTHON) scripts/clone_grammar.py --dir $(GRAMMAR_DIR)
 parse: ## Parse a file (usage: make parse FILE=path/to/file.rsc)
 	@test -n "$(FILE)" || (echo "usage: make parse FILE=path/to/file.rsc" && false)
 	@test -f "$(FILE)" || (echo "error: file not found: $(FILE)" && false)

@@ -74,7 +74,20 @@ def fetch_url(url: str) -> bytes:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
                 if resp.status != 200:
                     raise urllib.error.HTTPError(url, resp.status, f"HTTP {resp.status}", resp.headers, None)
-                return resp.read()
+                data = resp.read()
+                # Truncated-read guard: when the server sends Content-Length, a
+                # short body means a cut connection (observed in the wild as an
+                # IncompleteRead surfacing only on some attempts). Fail here so
+                # the retry loop fetches again instead of hashing a partial
+                # snapshot as the new upstream truth.
+                expected_len = resp.getheader("Content-Length")
+                if expected_len is not None and expected_len.strip().isdigit():
+                    if len(data) != int(expected_len.strip()):
+                        raise IOError(
+                            f"short read for {url}: got {len(data)} bytes, "
+                            f"expected {expected_len.strip()}"
+                        )
+                return data
         except Exception as e:
             last_exc = e
             print(f"Attempt {attempt}/{RETRIES} failed for {url}: {e}", file=sys.stderr)
@@ -193,6 +206,34 @@ def full_version_hint(text: str) -> str:
     return ".".join(str(p) for p in best) if best else ""
 
 
+def _load_manifest_hashes(root: Path) -> dict[str, str] | None:
+    """Return {path -> sha256} from data/upstream-docs.toml, or None.
+
+    None means the manifest is missing or unparseable, so the caller must
+    treat the comparison as drift (bootstrap needed). Pure read-only helper
+    used only for --check fallback when local files are absent; never writes.
+    """
+    try:
+        import tomllib
+
+        raw = (root / MANIFEST_RELPATH).read_bytes().decode("utf-8")
+        data = tomllib.loads(raw)
+        sources = data.get("sources")
+        if not isinstance(sources, list):
+            return None
+        out: dict[str, str] = {}
+        for entry in sources:
+            if not isinstance(entry, dict):
+                continue
+            path = entry.get("path")
+            digest = entry.get("sha256")
+            if isinstance(path, str) and isinstance(digest, str):
+                out[path] = digest
+        return out
+    except Exception:
+        return None
+
+
 def main(argv: list[str] | None = None, *, project_root: Path | None = None, fetch=None) -> int:
     parser = argparse.ArgumentParser(description="Sync llms.txt and llms-full.txt from manual.mikrotik.com")
     parser.add_argument("--check", action="store_true", help="Dry-run diff check without writing")
@@ -205,6 +246,12 @@ def main(argv: list[str] | None = None, *, project_root: Path | None = None, fet
 
     overall_changed = False
     has_error = False
+    # --check fallback state: manifest hashes loaded lazily on the first
+    # missing local file (read-only; --check never writes). _manifest_loaded
+    # tracks whether we attempted the load; _manifest_hashes is None when the
+    # manifest is missing/unparseable -> drift (bootstrap needed).
+    _manifest_hashes: dict[str, str] | None = None
+    _manifest_loaded = False
     # Staged writes for atomic two-file transaction (both held in memory until both fetches succeed).
     pending_writes: list[tuple[Path, bytes]] = []
     # Provenance record per successfully fetched file, in FILES order (index first).
@@ -261,6 +308,17 @@ def main(argv: list[str] | None = None, *, project_root: Path | None = None, fet
             remote_headings = sum(1 for l in remote_lines if l.startswith("## "))
             print(f"    headings (##): {local_headings} -> {remote_headings} ({remote_headings - local_headings:+d})")
         else:
+            # Local file absent. In --check mode only, fall back to the
+            # recorded hash in data/upstream-docs.toml so fresh checkouts
+            # (gitignored llms.txt/llms-full.txt) do not report false drift.
+            # Real runs are untouched: a missing file is still staged/written.
+            if args.check and not args.force:
+                if not _manifest_loaded:
+                    _manifest_hashes = _load_manifest_hashes(root)
+                    _manifest_loaded = True
+                if _manifest_hashes is not None and _manifest_hashes.get(filename) == remote_hash:
+                    print(f"  {filename}: unchanged (matches manifest {remote_hash[:16]}, version {remote_version})")
+                    continue
             print(f"  {filename}: new file (remote hash {remote_hash[:16]}, version {remote_version})")
 
         overall_changed = True
