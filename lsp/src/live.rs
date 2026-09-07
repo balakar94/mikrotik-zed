@@ -300,12 +300,26 @@ impl LiveConfig {
             return;
         };
 
+        let prev_host = cfg.host.clone();
+        let prev_hosts = cfg.hosts.clone();
         if let Some(host_val) = get_settings_str(settings_obj, &["host", "MIKROTIK_HOST"]) {
             let hosts = parse_hosts(&host_val);
             if !hosts.is_empty() {
                 cfg.host = hosts[0].clone();
                 cfg.hosts = hosts;
             }
+        }
+        // SECURITY: workspace settings can redirect credentials. Warn loudly
+        // whenever the overlay actually changes the effective live target so
+        // the user notices a malicious `.zed/settings.json` redirect. The
+        // overlay still applies (warn, not block); `pass` stays env-only.
+        if cfg.host != prev_host || cfg.hosts != prev_hosts {
+            log_warn!(
+                "live target host came from workspace settings (was {:?} now {:?} hosts {:?}): credentials will be sent there — verify the host is trusted",
+                prev_host,
+                cfg.host,
+                cfg.hosts
+            );
         }
         if let Some(user_val) =
             get_settings_str(settings_obj, &["user", "username", "MIKROTIK_USER"])
@@ -797,6 +811,15 @@ fn is_ssrf_denied_host(host: &str) -> bool {
         return true;
     }
     if inner == "metadata.google.internal" {
+        return true;
+    }
+    // Minimal alias denials (exact hosts only, no DNS resolution): bare
+    // `metadata.google` and `metadata.goog` are well-known metadata
+    // endpoints. No suffix matching to avoid over-blocking normal hosts.
+    if inner == "metadata.google" {
+        return true;
+    }
+    if inner == "metadata.goog" {
         return true;
     }
     // Note: the zone-id form "::ffff:169.254.169.254%lo0" is intentionally not
@@ -3580,6 +3603,101 @@ mod tests {
             shared.lock().unwrap().last_fetch_attempt.is_empty(),
             "fresh empty hit must not spawn a fetch"
         );
+    }
+
+    #[test]
+    fn test_workspace_host_overlay_applies() {
+        // A scoped workspace object that changes the host overlays cleanly
+        // (no panic). The host change itself is log-only warning; behavior
+        // stays warn-not-block so the config reflects the new host.
+        let mut cfg = LiveConfig::from_env_with(|k| match k {
+            "RSC_LS_LIVE" => Some("1".to_string()),
+            "MIKROTIK_HOST" => Some("192.168.88.1".to_string()),
+            "MIKROTIK_PASS" => Some("envpass".to_string()),
+            _ => None,
+        });
+        assert_eq!(cfg.host, "192.168.88.1");
+        let settings = serde_json::json!({
+            "rsc": {
+                "live": {
+                    "host": "attacker.example.com"
+                }
+            }
+        });
+        LiveConfig::apply_settings_value(&mut cfg, &settings);
+        assert_eq!(cfg.host, "attacker.example.com");
+        assert_eq!(cfg.hosts, vec!["attacker.example.com".to_string()]);
+        // Env-only secrets are untouched by the overlay.
+        assert_eq!(cfg.pass, "envpass");
+
+        // Same path via `from_settings_value`: the scoped host wins over env
+        // regardless of ambient process env (overlay overwrites unconditionally).
+        let via_from = LiveConfig::from_settings_value(&settings);
+        assert_eq!(via_from.host, "attacker.example.com");
+        assert_eq!(via_from.hosts, vec!["attacker.example.com".to_string()]);
+    }
+
+    #[test]
+    fn test_workspace_multi_host_overlay_applies() {
+        // Multi-host (`hosts`) overlay changes the effective target list and
+        // primary host; warn-not-block keeps the overlay applied.
+        let mut cfg = LiveConfig::from_env_with(|k| match k {
+            "RSC_LS_LIVE" => Some("1".to_string()),
+            "MIKROTIK_HOST" => Some("192.168.88.1".to_string()),
+            "MIKROTIK_PASS" => Some("envpass".to_string()),
+            _ => None,
+        });
+        let settings = serde_json::json!({
+            "rsc": {
+                "live": {
+                    "host": "attacker.example.com, 10.0.0.2"
+                }
+            }
+        });
+        LiveConfig::apply_settings_value(&mut cfg, &settings);
+        assert_eq!(cfg.host, "attacker.example.com");
+        assert_eq!(
+            cfg.hosts,
+            vec!["attacker.example.com".to_string(), "10.0.0.2".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_ssrf_denies_metadata_aliases() {
+        // Minimal exact-host denials beyond `metadata.google.internal`.
+        // Case-insensitive exact matches are denied.
+        for bad in [
+            "metadata.google",
+            "METADATA.GOOGLE",
+            "Metadata.Google",
+            "metadata.goog",
+            "METADATA.GOOG",
+            "[metadata.google]",
+        ] {
+            assert!(
+                is_ssrf_denied_host(bad),
+                "metadata alias should be denied: {bad:?}"
+            );
+            assert!(
+                validate_host_with_allow(bad, true).is_err(),
+                "metadata alias should fail validation: {bad:?}"
+            );
+        }
+        // No over-blocking: normal hosts stay accepted.
+        for ok in [
+            "google.com",
+            "metadata.google.example.com",
+            "example-metadata.goog.example.com",
+            "router.local",
+            "8.8.8.8",
+        ] {
+            assert!(
+                !is_ssrf_denied_host(ok),
+                "normal host must not be denied: {ok:?}"
+            );
+        }
+        assert!(validate_host_with_allow("google.com", false).is_ok());
+        assert!(validate_host_with_allow("router.local", false).is_ok());
     }
 
     // Helper trait for sorted check in tests (stable in std from 1.82?).
