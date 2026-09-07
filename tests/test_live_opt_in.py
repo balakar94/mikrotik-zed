@@ -560,31 +560,62 @@ class TestLiveCheckUnexpectedShapeFails:
         spec.loader.exec_module(mod)
         return mod
 
+    @staticmethod
+    def _mock_transport(monkeypatch, mod, payload_text):
+        """Mock the HTTP transport for whichever client is available.
+
+        The CI python job installs only pytest+tomli (no `requests`), so the
+        live-check falls back to urllib there; the dev venv has `requests`.
+        Both paths must fail closed (exit 4) on unexpected shapes.
+        """
+        if mod.HAS_REQUESTS:
+
+            class FakeResp:
+                status_code = 200
+                encoding = "utf-8"
+                text = payload_text
+
+                def iter_content(self, chunk_size=8192):
+                    yield self.text.encode("utf-8")
+
+            class FakeSession:
+                def __init__(self):
+                    self.auth = None
+                    self.verify = True
+                    self.headers = {}
+
+                def get(self, url, timeout=None, stream=False):
+                    return FakeResp()
+
+            monkeypatch.setattr(mod.requests, "Session", FakeSession)
+        else:
+            import urllib.request as _urlreq
+
+            payload = payload_text.encode("utf-8")
+
+            class FakeUrlopenResp:
+                status = 200
+
+                def read(self, n=-1):
+                    return payload
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    return False
+
+            def _fake_urlopen(req, timeout=None, context=None):
+                return FakeUrlopenResp()
+
+            monkeypatch.setattr(_urlreq, "urlopen", _fake_urlopen)
+
     def test_unexpected_json_shape_exits_4(self, monkeypatch, capsys):
         """HTTP-200 with a non-list, non-error JSON payload must exit 4 (mocks only)."""
         import sys as _sys
 
         mod = self._load_module()
-        assert mod.HAS_REQUESTS, "live-check requests path required for this test"
-
-        class FakeResp:
-            status_code = 200
-            encoding = "utf-8"
-            text = '{"foo": "bar"}'
-
-            def iter_content(self, chunk_size=8192):
-                yield self.text.encode("utf-8")
-
-        class FakeSession:
-            def __init__(self):
-                self.auth = None
-                self.verify = True
-                self.headers = {}
-
-            def get(self, url, timeout=None, stream=False):
-                return FakeResp()
-
-        monkeypatch.setattr(mod.requests, "Session", FakeSession)
+        self._mock_transport(monkeypatch, mod, '{"foo": "bar"}')
         monkeypatch.setenv("MIKROTIK_PASS", "s3cret")
         monkeypatch.setattr(
             _sys, "argv", ["mikrotik-live-check.py", "--host", "192.168.88.1"]
@@ -602,26 +633,7 @@ class TestLiveCheckUnexpectedShapeFails:
         import sys as _sys
 
         mod = self._load_module()
-        assert mod.HAS_REQUESTS
-
-        class FakeResp:
-            status_code = 200
-            encoding = "utf-8"
-            text = '42'
-
-            def iter_content(self, chunk_size=8192):
-                yield self.text.encode("utf-8")
-
-        class FakeSession:
-            def __init__(self):
-                self.auth = None
-                self.verify = True
-                self.headers = {}
-
-            def get(self, url, timeout=None, stream=False):
-                return FakeResp()
-
-        monkeypatch.setattr(mod.requests, "Session", FakeSession)
+        self._mock_transport(monkeypatch, mod, '42')
         monkeypatch.setenv("MIKROTIK_PASS", "s3cret")
         monkeypatch.setattr(
             _sys, "argv", ["mikrotik-live-check.py", "--host", "192.168.88.1"]
