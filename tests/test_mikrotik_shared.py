@@ -110,6 +110,43 @@ class TestValidateHost:
         assert validate_host("a\\b") == "host contains path separator"
 
 
+class TestValidateHostSsrfDenylist:
+    def test_exact_denials(self):
+        for bad in [
+            "169.254.169.254",
+            "[169.254.169.254]",
+            "metadata.google.internal",
+            "metadata.google",
+            "metadata.goog",
+            "0.0.0.0",
+            "::",
+            "[::]",
+            "[0.0.0.0]",
+        ]:
+            assert validate_host(bad) is not None, f"should deny {bad!r}"
+
+    def test_denials_case_insensitive_and_bracket_tolerant(self):
+        assert validate_host("Metadata.Google.Internal") is not None
+        assert validate_host("METADATA.GOOGLE") is not None
+        assert validate_host("[Metadata.Goog]") is not None
+        assert validate_host("[169.254.169.254]") is not None
+
+    def test_whole_link_local_range_denied(self):
+        assert validate_host("169.254.0.1") is not None
+        assert validate_host("169.254.10.20") is not None
+        assert validate_host("169.254.255.255") is not None
+        assert validate_host("[169.254.10.20]") is not None
+
+    def test_adjacent_and_public_hosts_allowed(self):
+        assert validate_host("169.253.1.1") is None
+        assert validate_host("192.168.88.1") is None
+        assert validate_host("router.local") is None
+
+    def test_lexical_only_no_dns(self):
+        # Hostnames that merely contain a denied string are not denied.
+        assert validate_host("not169.254.169.254.example.com") is None
+
+
 # ── format_host_for_url ───────────────────────────────────────────
 
 class TestFormatHostForUrl:

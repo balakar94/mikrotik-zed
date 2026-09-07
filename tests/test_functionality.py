@@ -376,6 +376,84 @@ class TestDeployScript:
         assert "shlex" in self.text, "should use shlex.quote for filename safety"
         assert "shlex.quote" in self.text
 
+    def test_rest_dry_run_prints_primary_execute_first(self):
+        """Dry-run must show the primary POST /rest/execute before the fallback."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".rsc", delete=False, encoding="utf-8") as f:
+            f.write("/ip address add address=1.1.1.1/24 interface=ether1\n")
+            tmp_path = f.name
+        try:
+            result = subprocess.run(
+                [sys.executable, str(self.path), tmp_path, "--dry-run", "--host", "1.2.3.4"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            assert result.returncode == 0, f"dry-run failed: {result.stderr}"
+            combined = result.stdout + result.stderr
+            assert "/rest/execute" in combined
+            assert "/rest/file" in combined
+            assert combined.index("/rest/execute") < combined.index("/rest/file"), (
+                f"primary /rest/execute must print before fallback /rest/file: {combined!r}"
+            )
+        finally:
+            os.unlink(tmp_path)
+
+    def test_rest_timeout_threaded_from_cli(self):
+        """deploy_via_rest must take a timeout (no hardcoded 30) and main must pass --timeout."""
+        assert "def deploy_via_rest" in self.text
+        sig = self.text[self.text.index("def deploy_via_rest"): self.text.index("def deploy_via_rest") + 300]
+        assert "timeout" in sig, f"deploy_via_rest signature missing timeout: {sig!r}"
+        rest_section = self.text[self.text.index("def deploy_via_rest"):self.text.index("def deploy_via_ssh")]
+        assert "timeout=30" not in rest_section, "REST calls must not hardcode timeout=30"
+        assert "timeout=args.timeout" in self.text, "main must pass --timeout to deploy_via_rest"
+        assert "1..300" in self.text, "deploy timeout clamp 1..300 must be documented"
+
+    def test_pass_argv_emits_runtime_warning(self):
+        """--pass via argv must warn on stderr but still succeed (no breaking change)."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".rsc", delete=False, encoding="utf-8") as f:
+            f.write("/ip address add address=1.1.1.1/24 interface=ether1\n")
+            tmp_path = f.name
+        try:
+            env = {k: v for k, v in os.environ.items() if k != "MIKROTIK_PASS"}
+            result = subprocess.run(
+                [sys.executable, str(self.path), tmp_path, "--dry-run", "--host", "1.2.3.4",
+                 "--pass", "s3cret"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=env,
+            )
+            assert result.returncode == 0, f"dry-run with --pass failed: {result.stderr}"
+            assert "visible in process listings" in result.stderr, (
+                f"expected argv password warning on stderr: {result.stderr!r}"
+            )
+        finally:
+            os.unlink(tmp_path)
+
+    def test_pass_from_env_does_not_warn(self):
+        """Password via env must not trigger the argv warning."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".rsc", delete=False, encoding="utf-8") as f:
+            f.write("/ip address add address=1.1.1.1/24 interface=ether1\n")
+            tmp_path = f.name
+        try:
+            env = {**os.environ, "MIKROTIK_PASS": "s3cret"}
+            result = subprocess.run(
+                [sys.executable, str(self.path), tmp_path, "--dry-run", "--host", "1.2.3.4"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=env,
+            )
+            assert result.returncode == 0, f"dry-run failed: {result.stderr}"
+            assert "visible in process listings" not in result.stderr
+        finally:
+            os.unlink(tmp_path)
+
+    def test_rest_error_path_redacts_password(self):
+        assert 'replace(password, "[REDACTED]")' in self.text, (
+            "deploy REST error path must redact password like live-check"
+        )
+
 
 # ── Tasks JSON ───────────────────────────────────────────────────────
 

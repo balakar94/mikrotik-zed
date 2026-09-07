@@ -543,3 +543,89 @@ class TestCIGate:
         )
         assert result.returncode == 0
         assert "DRY-RUN" in (result.stdout + result.stderr)
+
+
+# ── 10. Live-check health semantics: unexpected shape fails closed ──
+
+class TestLiveCheckUnexpectedShapeFails:
+    def _load_module(self):
+        import importlib.util
+        import sys as _sys
+
+        script = ROOT / "scripts" / "mikrotik-live-check.py"
+        spec = importlib.util.spec_from_file_location("mikrotik_live_check", str(script))
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        _sys.modules["mikrotik_live_check"] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_unexpected_json_shape_exits_4(self, monkeypatch, capsys):
+        """HTTP-200 with a non-list, non-error JSON payload must exit 4 (mocks only)."""
+        import sys as _sys
+
+        mod = self._load_module()
+        assert mod.HAS_REQUESTS, "live-check requests path required for this test"
+
+        class FakeResp:
+            status_code = 200
+            encoding = "utf-8"
+            text = '{"foo": "bar"}'
+
+            def iter_content(self, chunk_size=8192):
+                yield self.text.encode("utf-8")
+
+        class FakeSession:
+            def __init__(self):
+                self.auth = None
+                self.verify = True
+                self.headers = {}
+
+            def get(self, url, timeout=None, stream=False):
+                return FakeResp()
+
+        monkeypatch.setattr(mod.requests, "Session", FakeSession)
+        monkeypatch.setenv("MIKROTIK_PASS", "s3cret")
+        monkeypatch.setattr(
+            _sys, "argv", ["mikrotik-live-check.py", "--host", "192.168.88.1"]
+        )
+        with pytest.raises(SystemExit) as exc:
+            mod.main()
+        assert exc.value.code == 4
+        out = capsys.readouterr()
+        combined = out.out + out.err
+        assert "unexpected JSON shape" in combined
+        assert "Live OK" not in combined
+
+    def test_unexpected_scalar_shape_exits_4(self, monkeypatch, capsys):
+        """A bare JSON scalar on HTTP-200 must also fail closed with exit 4."""
+        import sys as _sys
+
+        mod = self._load_module()
+        assert mod.HAS_REQUESTS
+
+        class FakeResp:
+            status_code = 200
+            encoding = "utf-8"
+            text = '42'
+
+            def iter_content(self, chunk_size=8192):
+                yield self.text.encode("utf-8")
+
+        class FakeSession:
+            def __init__(self):
+                self.auth = None
+                self.verify = True
+                self.headers = {}
+
+            def get(self, url, timeout=None, stream=False):
+                return FakeResp()
+
+        monkeypatch.setattr(mod.requests, "Session", FakeSession)
+        monkeypatch.setenv("MIKROTIK_PASS", "s3cret")
+        monkeypatch.setattr(
+            _sys, "argv", ["mikrotik-live-check.py", "--host", "192.168.88.1"]
+        )
+        with pytest.raises(SystemExit) as exc:
+            mod.main()
+        assert exc.value.code == 4

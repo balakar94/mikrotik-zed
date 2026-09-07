@@ -15,7 +15,7 @@ Env vars (all can be overridden by CLI flags, mirrored in lsp/src/live.rs LiveCo
                     verification only — it NEVER selects the URL scheme
   MIKROTIK_METHOD - "rest" or "ssh" (default: auto; live uses REST only)
   MIKROTIK_HTTP   - "1" to force plain HTTP for REST transport (default: https)
-  MIKROTIK_TIMEOUT - seconds to wait for the remote SSH /import (default: 60; live defaults to 5, clamped 1..30)
+  MIKROTIK_TIMEOUT - per-request REST timeout and seconds to wait for the remote SSH /import (default: 60, clamped 1..300; live defaults to 5, clamped 1..30; SSH connect stays at fixed 15s)
   MIKROTIK_ACCEPT_HOST_KEY - "1" to trust unknown SSH host keys (TOFU; deploy SSH only)
 
 Import success caveat: HTTP 200 or SSH exit code 0 does NOT guarantee the
@@ -24,6 +24,14 @@ RouterOS failure markers ("syntax error", "input does not match",
 "bad command name", "failure:") and treated as failed on a match. Direct
 /rest/execute script output is printed verbatim and intentionally NOT scanned
 (arbitrary scripts may legitimately echo such words).
+
+Security note: REST/SSH targets are intentionally NOT passed through
+``_mikrotik_shared.validate_host`` (lexical SSRF denylist:
+169.254.169.254 / metadata.google* / 0.0.0.0 / :: / 169.254.0.0/16);
+that CLI behavior predates the shared extraction and is preserved as-is.
+``mikrotik-live-check.py`` DOES call ``validate_host`` and gains the
+protection. Deploy reuses only ``resolve_scheme`` / ``env_int`` from the
+shared module.
 
 Usage:
   python scripts/mikrotik-deploy.py path/to/file.rsc
@@ -123,9 +131,10 @@ def validate_filename(filename: str) -> str | None:
     # Path separators — never allow directory traversal
     if "/" in filename or "\\" in filename:
         return "contains path separator (/ or \\)"
-    # Exact '..' segment check (split by '/') — defensive even though '/' already rejected,
-    # mirrors lsp/src/live.rs path validation and server.rs is_valid_file_uri.
-    if ".." in filename.split("/"):
+    # '/' and '\\' are already rejected above, so only the exact '..'
+    # filename remains reachable; keep it explicitly (it would otherwise
+    # pass the allowlist below).
+    if filename == "..":
         return "contains parent directory segment '..'"
     # URI delimiters that could alter URL parsing if interpolated
     if "%" in filename or "?" in filename or "#" in filename or "@" in filename:
@@ -148,7 +157,7 @@ def _sanitize_and_validate_filename(raw: str) -> str:
     return raw
 
 
-def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: bool, content: str, filename: str, dry_run: bool, force_http: bool = False) -> None:
+def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: bool, content: str, filename: str, dry_run: bool, force_http: bool = False, timeout: int = 30) -> None:
     no_ssl_verify = not ssl_verify
     scheme, legacy_shim = resolve_scheme(port, force_http, no_ssl_verify)
     if legacy_shim:
@@ -161,9 +170,16 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
     filename = _sanitize_and_validate_filename(filename)
     # URL-encode validated filename for REST path segment (safe after allowlist).
     encoded_filename = urllib.parse.quote(filename, safe="")
+    # Clamp per-request timeout to 1..300s (mirrors live 1..30 clamp, wider for file upload).
+    try:
+        effective_timeout = int(timeout)
+    except (ValueError, TypeError):
+        effective_timeout = 30
+    effective_timeout = min(max(effective_timeout, 1), 300)
     if dry_run:
-        log(f"DRY-RUN REST: would POST {len(content)} bytes to {scheme}://{host}:{port}/rest/file/{encoded_filename} as {user}")
-        log(f"DRY-RUN REST: would POST to {scheme}://{host}:{port}/rest/execute {{script: /import file={filename}}}")
+        log(f"DRY-RUN REST: would POST {len(content)} bytes to {scheme}://{host}:{port}/rest/execute as {user} (primary: direct execute)")
+        log(f"DRY-RUN REST: fallback would PUT {len(content)} bytes to {scheme}://{host}:{port}/rest/file/{encoded_filename} as {user}")
+        log(f"DRY-RUN REST: fallback would POST to {scheme}://{host}:{port}/rest/execute {{script: /import file={filename}}}")
         return
     if not HAS_REQUESTS:
         print("error: REST method requires 'requests' (pip install requests)", file=sys.stderr)
@@ -182,7 +198,7 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
     log(f"REST: uploading {len(content)} bytes to {host} as {user} (direct execute)")
     try:
         # Try direct execute
-        resp = session.post(f"{base}/rest/execute", json={"script": content}, timeout=30)
+        resp = session.post(f"{base}/rest/execute", json={"script": content}, timeout=effective_timeout)
         if resp.status_code in (200, 201, 204):
             log(f"REST: execute OK ({resp.status_code})")
             if resp.text and resp.text.strip():
@@ -193,22 +209,28 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
         log("REST: falling back to PUT /rest/file upload — EXPERIMENTAL: RouterOS's file API varies across versions")
         # File upload via /rest/file (PUT) — filename already validated and URL-encoded.
         # RouterOS file API is not well documented; we try PUT with contents field
-        put_resp = session.put(f"{base}/rest/file/{encoded_filename}", json={"contents": content}, timeout=30)
+        put_resp = session.put(f"{base}/rest/file/{encoded_filename}", json={"contents": content}, timeout=effective_timeout)
         if put_resp.status_code in (200, 201, 204):
             log(f"REST: file upload OK ({put_resp.status_code}), now importing")
             # RouterOS console accepts single-quoted strings; quoting guards
             # filenames containing spaces/special chars.
-            imp = session.post(f"{base}/rest/execute", json={"script": f"/import file={shlex.quote(filename)}"}, timeout=30)
+            imp = session.post(f"{base}/rest/execute", json={"script": f"/import file={shlex.quote(filename)}"}, timeout=effective_timeout)
             log(f"REST: import result {imp.status_code}: {imp.text[:1000]}")
             marker = _match_import_failure_marker(imp.text)
             if marker:
                 print(f"error: REST import failed (failure marker {marker!r}): {imp.text[:1000]}", file=sys.stderr)
                 sys.exit(5)
             return
-        print(f"error: REST deploy failed: execute={resp.status_code} {resp.text[:1000]} file={put_resp.status_code} {put_resp.text[:1000]}", file=sys.stderr)
+        msg = f"error: REST deploy failed: execute={resp.status_code} {resp.text[:1000]} file={put_resp.status_code} {put_resp.text[:1000]}"
+        if password and password in msg:
+            msg = msg.replace(password, "[REDACTED]")
+        print(msg, file=sys.stderr)
         sys.exit(4)
     except requests.exceptions.RequestException as e:
-        print(f"error: REST request failed: {e}", file=sys.stderr)
+        msg = f"error: REST request failed: {e}"
+        if password and password in msg:
+            msg = msg.replace(password, "[REDACTED]")
+        print(msg, file=sys.stderr)
         sys.exit(4)
 
 
@@ -231,6 +253,8 @@ def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str,
         log("SSH: --accept-host-key active: unknown host keys will be trusted (MITM risk)")
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
+        # SSH connect timeout stays at a fixed 15s (independent of --timeout,
+        # which only bounds the remote /import poll below).
         client.connect(hostname=host, port=port, username=user, password=password, look_for_keys=False, allow_agent=False, timeout=15)
     except Exception as e:
         print(f"error: SSH connect failed: {e}", file=sys.stderr)
@@ -303,7 +327,7 @@ def parse_args() -> argparse.Namespace:
         "--timeout",
         type=int,
         default=env_int("MIKROTIK_TIMEOUT", 60),
-        help="Seconds to wait for the remote /import to finish, SSH (env MIKROTIK_TIMEOUT, default 60)",
+        help="Per-request REST timeout and seconds to wait for the remote SSH /import (env MIKROTIK_TIMEOUT, default 60, clamped 1..300; SSH connect stays at fixed 15s)",
     )
     p.add_argument(
         "--accept-host-key",
@@ -318,6 +342,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
+    # Runtime warning when the password actually comes from argv: values
+    # passed via --pass are visible in process listings. Prefer
+    # MIKROTIK_PASS env or the getpass prompt.
+    if args.password and any(a == "--pass" or a.startswith("--pass=") for a in sys.argv[1:]):
+        print(
+            "warning: password supplied via --pass argv is visible in process listings;"
+            " prefer MIKROTIK_PASS env or interactive prompt",
+            file=sys.stderr,
+        )
 
     if not args.host:
         print("error: --host or MIKROTIK_HOST is required", file=sys.stderr)
@@ -386,7 +420,7 @@ def main() -> None:
             sys.exit(3)
 
     if method == "rest":
-        deploy_via_rest(args.host, args.user, args.password or "", port, ssl_verify, content, filename, args.dry_run, force_http=args.http)
+        deploy_via_rest(args.host, args.user, args.password or "", port, ssl_verify, content, filename, args.dry_run, force_http=args.http, timeout=args.timeout)
     elif method == "ssh":
         # For SSH, default port 22 if auto gave 443
         if args.port is None and port == 443:

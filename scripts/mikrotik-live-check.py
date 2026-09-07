@@ -25,9 +25,9 @@ Usage:
   MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret python scripts/mikrotik-live-check.py --json
 
 Exit codes:
-  0 - Live OK (reachable, valid JSON)
+  0 - Live OK (reachable, valid JSON list)
   2 - Usage error (missing host)
-  4 - Live FAIL (network, auth, status, parse, or host validation failure)
+  4 - Live FAIL (network, auth, status, parse, unexpected JSON shape, or host validation failure)
 """
 
 from __future__ import annotations
@@ -316,14 +316,15 @@ def main() -> None:
                         print(f"Live FAIL: {msg} status={status}")
                     sys.exit(4)
                 else:
-                    # Unexpected shape but treat as success with 0?
-                    msg = f"unexpected JSON shape: {type(data).__name__}"
-                    print(f"warning: {msg}", file=sys.stderr)
+                    # Unexpected shape: fail closed — a health check must not
+                    # report OK on a payload it cannot understand.
+                    msg = f"unexpected JSON shape: {type(data).__name__} (expected a list)"
+                    print(f"error: {msg}", file=sys.stderr)
                     if args.json:
-                        print(json.dumps({"ok": True, "host": host, "url": url, "status": status, "count": 0, "warning": msg}))
+                        print(json.dumps({"ok": False, "error": msg, "status": status, "host": host, "url": url}))
                     else:
-                        print(f"Live OK: 0 interfaces (unexpected shape)")
-                    sys.exit(0)
+                        print(f"Live FAIL: {msg} status={status}")
+                    sys.exit(4)
             else:
                 # Auth or other error
                 body_preview = text[:500].replace("\n", " ")
@@ -385,11 +386,15 @@ def main() -> None:
                                 print(f"Live OK: {count} interfaces")
                             sys.exit(0)
                         else:
+                            # Unexpected shape: fail closed — a health check must
+                            # not report OK on a payload it cannot understand.
+                            msg = f"unexpected JSON shape: {type(data).__name__} (expected a list)"
+                            print(f"error: {msg}", file=sys.stderr)
                             if args.json:
-                                print(json.dumps({"ok": True, "host": host, "url": url, "status": status, "count": 0}))
+                                print(json.dumps({"ok": False, "error": msg, "status": status, "host": host, "url": url}))
                             else:
-                                print("Live OK: 0 interfaces (unexpected shape)")
-                            sys.exit(0)
+                                print(f"Live FAIL: {msg} status={status}")
+                            sys.exit(4)
                     else:
                         body_preview = text[:500].replace("\n", " ")
                         msg = f"http status {status}"

@@ -20,6 +20,7 @@ Usage notes:
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import sys
 
@@ -67,7 +68,16 @@ def validate_host(host: str) -> str | None:
 
     Returns None on success, an error string on failure.
     Checks: non-empty, <=253 chars, no null/control chars, no URI delimiters
-    (@ ? # % space), no path separators (/ \\).
+    (@ ? # % space), no path separators (/ \\), plus a lexical SSRF denylist
+    (no DNS): exact ``169.254.169.254``, ``metadata.google.internal``,
+    ``metadata.google``, ``metadata.goog``, ``0.0.0.0``, ``::``
+    (case-insensitive, bracket-tolerant) and whole ``169.254.0.0/16`` for
+    IPv4 literals via stdlib ``ipaddress``.
+
+    Intentional divergence from the Rust side: private/loopback ranges and
+    IPv6 link-local stay ALLOWED here (routers live on LAN, and this path has
+    no ALLOW_LOOPBACK-style escape hatch), while the cloud-metadata and IPv4
+    link-local ranges — the exfiltration-relevant ones — are denied.
     """
     if not host:
         return "empty"
@@ -83,6 +93,28 @@ def validate_host(host: str) -> str | None:
         return "contains URI delimiter (@?#% or space)"
     if "/" in host or "\\" in host:
         return "host contains path separator"
+    # Lexical SSRF denylist (no DNS): case-insensitive, bracket-tolerant.
+    stripped = host.strip()
+    lowered = stripped.lower()
+    inner = lowered
+    if inner.startswith("[") and inner.endswith("]") and len(inner) >= 2:
+        inner = inner[1:-1]
+    if inner in (
+        "169.254.169.254",
+        "metadata.google.internal",
+        "metadata.google",
+        "metadata.goog",
+        "0.0.0.0",
+        "::",
+    ):
+        return "SSRF denied host"
+    # Whole 169.254.0.0/16 for IPv4 literals (lexical, no DNS).
+    try:
+        addr = ipaddress.ip_address(inner)
+    except ValueError:
+        addr = None
+    if addr is not None and addr.version == 4 and addr.is_link_local:
+        return "SSRF denied host"
     return None
 
 
