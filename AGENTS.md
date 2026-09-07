@@ -57,8 +57,10 @@ Individual suites: `make test-grammar` · `make test-rust` · `make test-python`
 | `lsp/src/**`                           | `make fmt clippy test-rust`                                                                                     |
 | `src/lib.rs` (shim)                    | `make check-wasm clippy`, then _Install Dev Extension_ in Zed and watch `zed: open log`                         |
 | `grammars/rsc/grammar.js`              | inside `grammars/rsc/`: `npx tree-sitter generate && npx test`; then bump pointer (see _Release_)               |
-| `languages/rsc/*.scm`                  | mirror into `grammars/rsc/queries/` (deduped copy must stay in sync), then smoke-test in Zed                    |
+| `languages/rsc/highlights.scm`         | copy to `grammars/rsc/queries/highlights.scm` (only this file is mirrored; equality enforced by `tests/test_enclosure.py::test_highlights_deduped`), then smoke-test in Zed |
 | Extraction pipeline or `llms-full.txt` | `make extract`, diff `data/commands.toml`, spot-check against <https://manual.mikrotik.com/docs/cli-reference/> |
+
+Only `highlights.scm` is mirrored: `brackets`/`indents`/`outline.scm` are Zed-side only, while `injections.scm` lives grammar-side only (`grammars/rsc/queries/injections.scm`, intentionally empty and wired via `tree-sitter.json`).
 
 ## Data pipeline
 

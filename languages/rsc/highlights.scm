@@ -1,5 +1,6 @@
 ; ── MikroTik RouterOS Script — highlights ────────────────────────
-; GENERATED — sync with data/commands.toml verbs
+; CURATED — hand-maintained action-verb list
+; No generator exists; edit the (#match? ...) alternations below in place (data/commands.toml holds per-menu argument enums, not this list).
 ; Color scheme:
 ;   Blue   = root menu (first command after /)
 ;   Green  = sub-menus, quoted strings, `yes`

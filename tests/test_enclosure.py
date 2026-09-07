@@ -31,6 +31,8 @@ INJECTIONS_SCM = REPO_ROOT / "languages" / "rsc" / "injections.scm"
 INDENTS_SCM = REPO_ROOT / "languages" / "rsc" / "indents.scm"
 HIGHLIGHTS_A = REPO_ROOT / "languages" / "rsc" / "highlights.scm"
 HIGHLIGHTS_B = REPO_ROOT / "grammars" / "rsc" / "queries" / "highlights.scm"
+CORPUS_DIR = REPO_ROOT / "grammars" / "rsc" / "test" / "corpus"
+COMMANDS_TOML = REPO_ROOT / "data" / "commands.toml"
 CI_YML = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 RELEASE_YML = REPO_ROOT / ".github" / "workflows" / "release.yml"
 
@@ -428,6 +430,36 @@ class TestGrammar:
         assert "@comment" in txt
         assert "@keyword" in txt
         assert "global_command_name" in txt or "global_command" in txt
+
+    def test_highlights_verbs_attested(self):
+        """Anti-typo guard for the curated verb list in highlights.scm.
+
+        Every branch of the (#match? ...) alternations must occur at least
+        once in data/commands.toml or the grammar corpus, so a typo like
+        `froce-update` fails here instead of silently highlighting nothing.
+        Curation stays unconstrained: attestation is an OR, not a whitelist.
+        """
+        if not CORPUS_DIR.is_dir():
+            pytest.skip("grammars/rsc corpus absent (untracked; run 'make grammar-clone')")
+        txt = _read(HIGHLIGHTS_A)
+        verbs = set()
+        for raw in re.findall(r'#match\?\s+@\S+\s+"([^"]+)"', txt):
+            core = raw.strip()
+            if core.startswith("^"):
+                core = core[1:]
+            if core.endswith("$"):
+                core = core[:-1]
+            if core.startswith("(") and core.endswith(")"):
+                core = core[1:-1]
+            verbs.update(v for v in core.split("|") if v)
+        assert verbs, "no verb alternations found in highlights.scm"
+        commands_txt = _read(COMMANDS_TOML)
+        corpus_txt = "".join(
+            p.read_text(encoding="utf-8", errors="ignore")
+            for p in sorted(CORPUS_DIR.glob("*.txt"))
+        )
+        missing = sorted(v for v in verbs if v not in commands_txt and v not in corpus_txt)
+        assert missing == [], f"highlight verbs unattested (typo?): {missing}"
 
 
 # ----------------------------------------------------------------------
