@@ -485,6 +485,189 @@ def finalize_menus(menus: list[dict]) -> list[dict]:
     return unique
 
 
+# Universal add-item properties (Common commands): upstream llms-full.txt
+# documents `comment`, `disabled`, `place-before`, and `copy-from` only as
+# prose in the "Common commands" add-row description, not in per-menu
+# ArgTables (tabulated ~0-3 times), so per-menu extraction misses them and
+# diagnostics surface them as unknown-property on real item menus
+# (e.g. /ipv6/firewall/mangle, /ipv6/nd/prefix, /system/scheduler).
+# Injected additively for every menu with type exactly "Directory" at the
+# top of generate_toml() (NOT in finalize_menus, so curated overrides keep
+# precedence: overrides run first in main(), generics only fill gaps).
+# Scope split: `comment`/`disabled` stay universal to all Directory menus
+# (every addable item accepts them); `place-before`/`copy-from` are
+# restricted to ordered item-list menus. Scope choice: explicit denylist
+# over an ordered-item allowlist — an allowlist would need ~470 entries
+# covering every item list and would rot on every upstream sync, while the
+# denylist needs only a bare-ancestor rule plus a handful of known
+# read-only tables. Bare ancestors (synthesized empty Directories such as
+# /ip, /system, /tool, /caps-man, /console — no flags/arguments/read_only
+# upstream) are containers, never ordered lists. Known read-only status
+# tables (registration-table, remote-cap, hardware radio views) expose
+# read-only rows but no ordered add semantics.
+# Menus with type "Command" or "Settings Directory" (singleton settings
+# such as /system/clock) are skipped entirely. A generic whose name already
+# exists in arguments/flags/read_only is skipped (never modifies existing
+# rows); note the `disabled` bool property is distinct from the
+# single-letter `X` disabled print flag, so only an exact `disabled` name
+# collides.
+GENERIC_ITEM_PROPS: tuple[dict[str, str], ...] = (
+    {
+        "name": "comment",
+        "type": "string",
+        "description": "Descriptive comment for the item (universal add/set property from Common commands; omitted from upstream per-menu tables).",
+    },
+    {
+        "name": "disabled",
+        "type": "bool",
+        "description": "Whether the item is disabled (universal add property from Common commands; distinct from the X disabled print flag).",
+    },
+    {
+        "name": "place-before",
+        "type": "string",
+        "description": "Place a new item before the given item number (universal add property from Common commands for ordered item lists).",
+    },
+    {
+        "name": "copy-from",
+        "type": "string",
+        "description": "Copy property values from an existing item (universal add property from Common commands).",
+    },
+)
+
+
+# Split scope within GENERIC_ITEM_PROPS: universal vs. ordered-only names.
+_GENERIC_UNIVERSAL_NAMES: tuple[str, ...] = ("comment", "disabled")
+_GENERIC_ORDERED_NAMES: tuple[str, ...] = ("place-before", "copy-from")
+
+GENERIC_NAMES: frozenset[str] = frozenset(g["name"] for g in GENERIC_ITEM_PROPS)
+
+# Denylist for ordered-only generics (see scope-split comment above).
+# Exact paths: hardware radio views with zero writable arguments (status
+# tables, not ordered lists). Suffixes match any depth (e.g.
+# /interface/wifi/registration-table and /interface/wireless/registration-table
+# alike). NOTE: "/radio" is deliberately NOT a suffix — /interface/wifi/network/radio
+# is a real configurable item list (20 upstream args) and keeps ordering props;
+# only the two zero-arg radio status views are listed exactly. /caps-man and
+# /console are bare ancestors covered by the empty-menu rule below and listed
+# here explicitly only to pin the audited examples.
+_NO_ORDER_EXACT: frozenset[str] = frozenset({
+    "/caps-man",
+    "/console",
+    "/caps-man/radio",
+    "/interface/wifi/radio",
+})
+_NO_ORDER_SUFFIXES: tuple[str, ...] = (
+    "/registration-table",
+    "/remote-cap",
+)
+
+
+def _is_bare_ancestor(menu: dict) -> bool:
+    """True when a Directory carries no upstream rows at all.
+
+    Synthesized ancestors (synthesize_directories) are born empty, and a few
+    upstream pages (e.g. /caps-man, /console) are documented without any
+    ArgTable. Either way the menu is a hierarchy container, never an ordered
+    item list, so ordered-only generics do not apply.
+    """
+    return not menu.get("flags") and not menu.get("arguments") and not menu.get("read_only")
+
+
+def _allows_ordered_generics(menu: dict) -> bool:
+    """True when `place-before`/`copy-from` may be injected into `menu`.
+
+    Denied for bare ancestors (empty rule above) and for known read-only
+    tables in _NO_ORDER_EXACT / _NO_ORDER_SUFFIXES. Everything else with
+    type Directory is treated as a (potentially) ordered item list — a
+    missing `comment=` breaks diagnostics, while two extra completions on a
+    borderline container are harmless.
+    """
+    if _is_bare_ancestor(menu):
+        return False
+    path = menu.get("path", "")
+    if path in _NO_ORDER_EXACT:
+        return False
+    return not any(path.endswith(suffix) for suffix in _NO_ORDER_SUFFIXES)
+
+
+def override_overlaps_generics(override: dict) -> bool:
+    """True when an override property would also be injected as a generic.
+
+    Overlap alone does not make the entry redundant: /ip/route+comment
+    overlaps but is kept for its richer on-device description (see
+    data/overrides.toml). Use override_fully_subsumed_by_generics() to detect
+    entries that add nothing beyond the generic text.
+    """
+    return override.get("property") in GENERIC_NAMES
+
+
+def override_fully_subsumed_by_generics(override: dict) -> bool:
+    """True when an override adds nothing beyond the generic row.
+
+    Fully subsumed = name overlaps a generic AND the override carries no
+    richer payload (empty description, or byte-identical to the generic
+    description). Such entries should be retired: the generic already ships
+    the property, so the override only adds header noise. A richer
+    description (like /ip/route+comment) is NOT subsumed and is kept.
+    """
+    prop = override.get("property")
+    if prop not in GENERIC_NAMES:
+        return False
+    generic = next(g for g in GENERIC_ITEM_PROPS if g["name"] == prop)
+    desc = (override.get("description") or "").strip()
+    return not desc or desc == generic["description"]
+
+
+def _generic_additions_for_menu(menu: dict) -> list[dict]:
+    """Return the generic item properties missing from `menu` (pure, no mutation).
+
+    Only menus with type exactly "Directory" qualify. `comment`/`disabled`
+    apply universally; `place-before`/`copy-from` additionally require
+    _allows_ordered_generics(). A generic is missing when its name appears
+    in NONE of arguments/flags/read_only. Returned rows are fresh argument
+    dicts (required/unset False) ready to emit.
+    """
+    if menu.get("type") != "Directory":
+        return []
+    existing: set[str] = set()
+    for section in ("arguments", "flags", "read_only"):
+        for entry in menu.get(section, []) or []:
+            existing.add(entry.get("name", ""))
+    allow_ordered = _allows_ordered_generics(menu)
+    additions: list[dict] = []
+    for generic in GENERIC_ITEM_PROPS:
+        if generic["name"] not in existing:
+            if generic["name"] in _GENERIC_ORDERED_NAMES and not allow_ordered:
+                continue
+            additions.append({
+                "name": generic["name"],
+                "type": generic["type"],
+                "required": False,
+                "unset": False,
+                "description": generic["description"],
+            })
+            existing.add(generic["name"])
+    return additions
+
+
+def apply_generic_item_props(menus: list[dict]) -> int:
+    """Append missing generic item properties to Directory menus; return count.
+
+    Additive-only mutating helper for tests and offline use: new rows go to
+    the menu's `arguments` list, existing names (in any section) are never
+    touched. The production pipeline does NOT call this (generate_toml()
+    emits generics purely without mutating its input, so repeated runs stay
+    byte-identical); calling both would make the generate_toml header count
+    read 0 because nothing is missing anymore.
+    """
+    applied = 0
+    for menu in menus:
+        for addition in _generic_additions_for_menu(menu):
+            menu.setdefault("arguments", []).append(addition)
+            applied += 1
+    return applied
+
+
 # Curated additive overrides (data/overrides.toml) — properties the upstream
 # docs omit but real devices expose (verifiable via /export). Applied AFTER
 # upstream parsing, recorded in the commands.toml header provenance
@@ -555,6 +738,10 @@ def apply_overrides(menus: list[dict], overrides: list[dict]) -> int:
     Additive-only: new properties go to the menu's `arguments` list. Skipped
     with a stderr warning (never modified): unknown paths (no invented
     menus) and properties already present in `arguments`/`flags`/`read_only`.
+    Applied overrides that overlap a generic name keep precedence (generics
+    only fill still-missing names downstream); an overlap is noted on stderr
+    as info, and a fully-subsumed overlap (no richer description than the
+    generic) warns so CI tells the maintainer to retire the entry.
     """
     by_path = {m["path"]: m for m in menus}
     applied = 0
@@ -582,11 +769,47 @@ def apply_overrides(menus: list[dict], overrides: list[dict]) -> int:
             "description": o["description"],
         })
         applied += 1
+        if override_fully_subsumed_by_generics(o):
+            print(
+                f"warning: override {o['path']!r} {o['property']!r} is fully subsumed by generics "
+                "(no richer description — remove the redundant entry)",
+                file=sys.stderr,
+            )
+        elif override_overlaps_generics(o):
+            print(
+                f"info: override {o['path']!r} {o['property']!r} overlaps a generic item property "
+                "(kept for description quality)",
+                file=sys.stderr,
+            )
     return applied
 
 
-def generate_toml(menus: list[dict], llms_path: Path | None = None, overrides_applied: int = 0) -> str:
-    """Generate TOML output from parsed menus."""
+def generate_toml(
+    menus: list[dict],
+    llms_path: Path | None = None,
+    overrides_applied: int = 0,
+    generics_applied: int | None = None,
+) -> str:
+    """Generate TOML output from parsed menus.
+
+    Universal add-item generics (GENERIC_ITEM_PROPS) are emitted here,
+    purely: per-menu missing rows are computed via _generic_additions_for_menu
+    without mutating the input, so repeated calls stay byte-identical modulo
+    the Generated timestamp. Pass generics_applied explicitly only when the
+    caller already previewed the count (main() does); None auto-computes it.
+    """
+    # Pure preview of generic rows per menu path (paths are unique after
+    # finalize_menus). Computed once so the header count and the emitted rows
+    # always agree, and the input list is never mutated.
+    generic_map: dict[str, list[dict]] = {}
+    auto_generics = 0
+    for menu in menus:
+        additions = _generic_additions_for_menu(menu)
+        if additions:
+            generic_map[menu["path"]] = additions
+            auto_generics += len(additions)
+    if generics_applied is None:
+        generics_applied = auto_generics
     lines = []
     lines.append("# MikroTik RouterOS CLI Command Table")
     lines.append("# Auto-generated from llms-full.txt")
@@ -603,6 +826,7 @@ def generate_toml(menus: list[dict], llms_path: Path | None = None, overrides_ap
     lines.append(f"# Generated: {generated}")
     lines.append(f"# Source hash (sha256[:16]): {src_hash}")
     lines.append(f"# overrides_applied = {overrides_applied} (data/{_OVERRIDES_FILENAME})")
+    lines.append(f"# generics_applied = {generics_applied} (comment/disabled universal; place-before/copy-from ordered-only)")
     lines.append("")
 
     # Hygiene counters — track empty descriptions for quality traceability
@@ -637,8 +861,10 @@ def generate_toml(menus: list[dict], llms_path: Path | None = None, overrides_ap
                 if flag.get("required"):
                     lines.append("required = true")
 
-        # Arguments — deduplicated, type escaped
+        # Arguments — deduplicated, type escaped, plus missing universal
+        # add-item generics (pure: precomputed in generic_map, input unmutated).
         arguments = _dedupe_entries(menu.get("arguments", []), path, "arg", resolved_duplicates)
+        arguments = arguments + generic_map.get(path, [])
         total_args += len(arguments)
         empty_args += sum(1 for a in arguments if not a.get("description"))
         if arguments:
@@ -791,7 +1017,18 @@ def main():
     if applied:
         print(f"Applied {applied} curated override(s) from data/{_OVERRIDES_FILENAME}.")
 
-    toml_content = generate_toml(unique, llms_path=input_file, overrides_applied=applied)
+    # Pure preview of generic rows (no mutation): overrides keep precedence
+    # because generics only fill names still missing after overrides.
+    generics_preview = sum(len(_generic_additions_for_menu(m)) for m in unique)
+    if generics_preview:
+        print(f"Applied {generics_preview} generic item propertie(s) (universal add-item properties).")
+
+    toml_content = generate_toml(
+        unique,
+        llms_path=input_file,
+        overrides_applied=applied,
+        generics_applied=generics_preview,
+    )
 
     if write_if_changed(output_file, toml_content):
         print(f"Wrote {output_file} ({len(unique)} menus)")

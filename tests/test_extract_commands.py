@@ -20,6 +20,14 @@ from extract_commands import (
     load_overrides,
     apply_overrides,
     OverrideError,
+    GENERIC_ITEM_PROPS,
+    GENERIC_NAMES,
+    _generic_additions_for_menu,
+    apply_generic_item_props,
+    _allows_ordered_generics,
+    _is_bare_ancestor,
+    override_overlaps_generics,
+    override_fully_subsumed_by_generics,
     _extract_heading_path,
     _extract_bare_cli_root,
     _strip_generated_line,
@@ -523,10 +531,20 @@ class TestSynthesisPipeline:
         parsed = tomllib.loads(result)
         entries = {m["path"]: m["type"] for m in parsed["menus"]}
         assert entries == {"/ip/address": "Directory", "/ip": "Directory"}
-        # The synthesized parent stays bare: no argument rows leak into it.
+        # The synthesized bare-ancestor parent carries ONLY the universal
+        # generics (comment/disabled) — ordered-only place-before/copy-from
+        # are denied to empty containers — and no child-specific rows
+        # (e.g. `address`) leak into it.
         blocks = result.split("[[menus]]")[1:]
         parent_block = next(b for b in blocks if b.startswith('\npath = "/ip"\n'))
-        assert "arguments" not in parent_block
+        parent = next(m for m in parsed["menus"] if m["path"] == "/ip")
+        assert {a["name"] for a in parent.get("arguments", [])} == {
+            "comment",
+            "disabled",
+        }
+        assert 'name = "address"' not in parent_block
+        assert 'name = "place-before"' not in parent_block
+        assert 'name = "copy-from"' not in parent_block
 
     def test_generation_twice_is_byte_identical_modulo_timestamp(self):
         content = "## routing/ospf/area\n\n## system/note\n"
@@ -1560,3 +1578,167 @@ class TestOverrides:
         assert by_name["comment"]["type"] == "string"
         assert by_name["comment"]["description"] == "Route note"
         assert by_name["gateway"]["type"] == "ipAddr"
+
+
+class TestGenericItemProps:
+    """Universal add-item generics (Common commands prose, not per-menu tables).
+
+    Split scope: `comment`/`disabled` inject universally into every menu with
+    type exactly "Directory"; `place-before`/`copy-from` only into ordered
+    item-list menus (denied to bare ancestors and known read-only tables via
+    the explicit denylist in extract_commands — denylist chosen over an
+    ordered-item allowlist to avoid ~470-entry rot). Additive-only, never
+    modifies existing rows; curated overrides keep precedence because they
+    run first in main().
+    """
+
+    @staticmethod
+    def _menu(path: str, arguments: list | None = None, menu_type: str = "Directory") -> dict:
+        return {
+            "path": path,
+            "type": menu_type,
+            "flags": [],
+            "arguments": list(arguments) if arguments else [],
+            "read_only": [],
+        }
+
+    def test_constant_covers_universal_add_params(self):
+        by_name = {g["name"]: g for g in GENERIC_ITEM_PROPS}
+        assert by_name["comment"]["type"] == "string"
+        assert by_name["disabled"]["type"] == "bool"
+        assert by_name["place-before"]["type"] == "string"
+        assert by_name["copy-from"]["type"] == "string"
+        assert GENERIC_NAMES == {"comment", "disabled", "place-before", "copy-from"}
+
+    def test_missing_generics_added_to_directory(self):
+        menus = [self._menu("/ipv6/firewall/mangle", arguments=[{"name": "chain", "type": "string"}])]
+        assert apply_generic_item_props(menus) == 4
+        names = [a["name"] for a in menus[0]["arguments"]]
+        assert names[-4:] == ["comment", "disabled", "place-before", "copy-from"]
+        assert menus[0]["arguments"][-4]["required"] is False
+
+    def test_existing_names_skipped_in_any_section(self):
+        menus = [self._menu("/ip/route", arguments=[{"name": "comment", "type": "string"}])]
+        assert apply_generic_item_props(menus) == 3
+        assert [a["name"] for a in menus[0]["arguments"]].count("comment") == 1
+        # An exact `disabled` name collides, but the X print flag does not.
+        flagged = self._menu("/user")
+        flagged["flags"] = [{"name": "X", "type": "", "description": ""}]
+        additions = _generic_additions_for_menu(flagged)
+        assert {a["name"] for a in additions} == {"comment", "disabled", "place-before", "copy-from"}
+
+    def test_bare_ancestor_gets_only_universal(self):
+        # Synthesized-style empty containers (/ip, /caps-man, /console) are
+        # never ordered lists: only comment/disabled apply.
+        assert _is_bare_ancestor(self._menu("/ip")) is True
+        additions = _generic_additions_for_menu(self._menu("/ip"))
+        assert [a["name"] for a in additions] == ["comment", "disabled"]
+        assert _allows_ordered_generics(self._menu("/ip")) is False
+        # Explicit pins for the audited examples (also covered by the rule).
+        assert _allows_ordered_generics(self._menu("/caps-man")) is False
+        assert _allows_ordered_generics(self._menu("/console")) is False
+
+    def test_read_only_tables_denied_ordered_generics(self):
+        denied = [
+            self._menu("/caps-man/radio"),
+            self._menu("/interface/wifi/radio"),
+            self._menu("/caps-man/registration-table"),
+            self._menu("/interface/wifi/registration-table"),
+            self._menu("/interface/wireless/registration-table"),
+            self._menu("/caps-man/remote-cap"),
+            self._menu("/interface/wifi/capsman/remote-cap"),
+        ]
+        # Give each a read-only row so none is a bare ancestor: the denylist
+        # itself must deny ordering, not the empty rule.
+        for menu in denied:
+            menu["read_only"] = [{"name": "radio-mac", "type": "macAddr"}]
+            assert _allows_ordered_generics(menu) is False, menu["path"]
+            assert [a["name"] for a in _generic_additions_for_menu(menu)] == [
+                "comment",
+                "disabled",
+            ]
+
+    def test_configurable_radio_keeps_ordered_generics(self):
+        # /interface/wifi/network/radio is a real configurable item list (20
+        # upstream args) — the "/radio" exact entries must not shadow it.
+        menu = self._menu("/interface/wifi/network/radio", [{"name": "country", "type": "string"}])
+        assert _allows_ordered_generics(menu) is True
+        assert {a["name"] for a in _generic_additions_for_menu(menu)} == {
+            "comment",
+            "disabled",
+            "place-before",
+            "copy-from",
+        }
+
+    def test_non_directory_types_skipped(self):
+        for menu_type in ("Command", "Settings Directory"):
+            menus = [self._menu("/system/clock", menu_type=menu_type)]
+            assert apply_generic_item_props(menus) == 0
+            assert menus[0]["arguments"] == []
+
+    def test_header_records_generics_count(self):
+        ordered = [self._menu("/ip/address", [{"name": "address", "type": "ipPrefix"}])]
+        assert "# generics_applied = 4 (comment/disabled universal; place-before/copy-from ordered-only)" in generate_toml(ordered)
+        assert "# generics_applied = 2 (comment/disabled universal; place-before/copy-from ordered-only)" in generate_toml(
+            [self._menu("/ip")]
+        )
+        assert "# generics_applied = 0 (comment/disabled universal; place-before/copy-from ordered-only)" in generate_toml(
+            [self._menu("/password", menu_type="Command")]
+        )
+
+    def test_generate_toml_does_not_mutate_input_and_stays_stable(self):
+        import copy
+        import tomllib
+
+        menus = finalize_menus([self._menu("/system/scheduler", [{"name": "name", "type": "string"}])])
+        snapshot = copy.deepcopy(menus)
+        first = generate_toml(menus)
+        assert menus == snapshot, "generate_toml must not mutate its input"
+        second = generate_toml(menus)
+        assert _strip_generated_line(first) == _strip_generated_line(second)
+        parsed = tomllib.loads(first)
+        sched = next(m for m in parsed["menus"] if m["path"] == "/system/scheduler")
+        assert {"comment", "disabled", "place-before", "copy-from"} <= {
+            a["name"] for a in sched.get("arguments", [])
+        }
+        # The synthesized /system ancestor keeps only the universal pair.
+        system = next(m for m in parsed["menus"] if m["path"] == "/system")
+        assert {a["name"] for a in system.get("arguments", [])} == {"comment", "disabled"}
+
+    def test_override_keeps_precedence_over_generic(self):
+        import tomllib
+
+        menus = finalize_menus([self._menu("/ip/route", [{"name": "gateway", "type": "ipAddr"}])])
+        applied = apply_overrides(
+            menus,
+            [{"path": "/ip/route", "property": "comment", "type": "string", "description": "Route note"}],
+        )
+        assert applied == 1
+        parsed = tomllib.loads(generate_toml(menus, overrides_applied=applied))
+        route = next(m for m in parsed["menus"] if m["path"] == "/ip/route")
+        by_name = {a["name"]: a for a in route.get("arguments", [])}
+        # Curated text wins; the generic only fills the other three names.
+        assert by_name["comment"]["description"] == "Route note"
+        assert {"disabled", "place-before", "copy-from"} <= set(by_name)
+
+    def test_generic_overlap_helpers_and_subsumed_warning(self, capsys):
+        richer = {"path": "/ip/route", "property": "comment", "type": "string", "description": "Route note"}
+        assert override_overlaps_generics(richer) is True
+        assert override_fully_subsumed_by_generics(richer) is False
+        generic_text = next(g for g in GENERIC_ITEM_PROPS if g["name"] == "comment")["description"]
+        subsumed = {"path": "/ip/route", "property": "comment", "type": "string", "description": generic_text}
+        assert override_fully_subsumed_by_generics(subsumed) is True
+        empty_desc = {"path": "/ip/route", "property": "comment", "type": "string", "description": ""}
+        assert override_fully_subsumed_by_generics(empty_desc) is True
+        unrelated = {"path": "/ip/route", "property": "gateway", "type": "string", "description": "GW"}
+        assert override_overlaps_generics(unrelated) is False
+        assert override_fully_subsumed_by_generics(unrelated) is False
+        # Applying the richer overlap keeps precedence and notes quality-keep.
+        menus = [self._menu("/ip/route", [{"name": "gateway", "type": "ipAddr"}])]
+        assert apply_overrides(menus, [dict(richer)]) == 1
+        err = capsys.readouterr().err
+        assert "kept for description quality" in err
+        # A fully-subsumed duplicate warns to retire the entry.
+        menus = [self._menu("/ip/route", [{"name": "gateway", "type": "ipAddr"}])]
+        assert apply_overrides(menus, [dict(subsumed)]) == 1
+        assert "fully subsumed" in capsys.readouterr().err

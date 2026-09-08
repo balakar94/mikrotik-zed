@@ -39,6 +39,11 @@ _VALID_MENU_TYPES = {"Directory", "Command", "Settings Directory"}
 
 _ENTRY_SECTIONS = ("flags", "arguments", "read_only")
 
+# Generic add-item names injected by scripts/extract_commands.py. Subtracted
+# for upstream-only assertions so injected rows can never mask an upstream
+# zero-row regression (see TestMainCommandCoverage).
+_GENERIC_NAMES: set[str] = {"comment", "disabled", "place-before", "copy-from"}
+
 
 def _names(menu: dict, section: str) -> set[str]:
     """Property names recorded under one section of a menu."""
@@ -48,6 +53,19 @@ def _names(menu: dict, section: str) -> set[str]:
 def _total_properties(menu: dict) -> int:
     """All documented properties across flags + arguments + read-only."""
     return sum(len(menu.get(section, [])) for section in _ENTRY_SECTIONS)
+
+
+def _upstream_total(menu: dict) -> int:
+    """Properties excluding generic add-item names.
+
+    Generics are injected only into [[menus.arguments]], so any argument
+    whose name is a generic name is discounted; flags/read-only keep their
+    full counts. A menu whose only rows are generics scores 0 — exactly the
+    upstream regression this guards against.
+    """
+    total = sum(len(menu.get(section, [])) for section in ("flags", "read_only"))
+    total += sum(1 for entry in menu.get("arguments", []) if entry.get("name") not in _GENERIC_NAMES)
+    return total
 
 
 class TestGeneratedTableHygiene:
@@ -234,6 +252,43 @@ class TestMainCommandCoverage:
             "audited menus present but without any documented property "
             f"(flags+arguments+read_only == 0): {empty}"
         )
+
+    def test_required_menus_have_upstream_properties_beyond_generics(self):
+        # Generic injection (comment/disabled/place-before/copy-from) must
+        # never mask an upstream zero-row regression: every non-container
+        # checklist menu must carry at least one property that is NOT a
+        # generic add-item name.
+        empty_upstream = [
+            path
+            for path in self.REQUIRED_MENUS
+            if path not in self.HIERARCHY_ONLY_CONTAINERS
+            and BY_PATH.get(path) is not None
+            and _upstream_total(BY_PATH[path]) <= 0
+        ]
+        assert not empty_upstream, (
+            "menus kept alive only by generic injection (upstream rows vanished): "
+            f"{empty_upstream}"
+        )
+
+    def test_top_menu_upstream_floors(self):
+        # Minimal upstream floors for the highest-traffic menus: far below
+        # today's counts (so ordinary doc growth/shrinkage passes) but well
+        # above zero (so a dropped ArgTable fails loudly). Counts exclude
+        # generic names (see _upstream_total).
+        floors = {
+            "/ip/address": 5,
+            "/ip/route": 10,
+            "/ip/firewall/filter": 30,
+            "/ipv6/address": 8,
+        }
+        for path, floor in floors.items():
+            menu = BY_PATH.get(path)
+            assert menu is not None, f"top menu {path} vanished from the table"
+            upstream = _upstream_total(menu)
+            assert upstream >= floor, (
+                f"{path} upstream properties collapsed to {upstream} "
+                f"(floor {floor}) — upstream ArgTable likely lost"
+            )
 
     def test_hierarchy_only_containers_exist_as_directories(self):
         # The four known pure-container roots must still EXIST (prefix
@@ -426,3 +481,101 @@ class TestSectionLeakRegressions:
         queue_type = BY_PATH["/queue/type"]
         assert queue_type["type"] == "Directory", f"type drifted: {queue_type['type']!r}"
         assert {"name", "kind"} <= _names(queue_type, "arguments")
+
+
+class TestExportFixtures:
+    """Every property used in docs/export-fixtures/ must exist in the table.
+
+    The fixtures are sanitized anonymized `/export`-style samples (TEST-NET
+    addresses, no secrets; hand-built from llms-full.txt property names —
+    see docs/export-fixtures/README.md). If a fixture property is missing
+    here, either the table lost real CLI surface or the fixture invented a
+    name: both must fail loudly.
+    """
+
+    FIXTURES_DIR = Path(__file__).resolve().parents[1] / "docs" / "export-fixtures"
+
+    # Print selectors, not properties — never asserted against the table.
+    _NON_PROPERTY_KEYS = {"numbers"}
+
+    @classmethod
+    def _parse_fixture(cls, text: str) -> list[tuple[str, str, str]]:
+        """Parse one .rsc fixture into (menu_path, verb, property) triples."""
+        import shlex
+
+        found: list[tuple[str, str, str]] = []
+        current_menu: str | None = None
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("/"):
+                current_menu = line.split()[0]
+                continue
+            assert current_menu is not None, f"property row before any /menu header: {line!r}"
+            try:
+                tokens = shlex.split(line, posix=True)
+            except ValueError:
+                tokens = line.split()
+            if not tokens:
+                continue
+            verb = tokens[0]
+            for token in tokens[1:]:
+                if "=" not in token:
+                    continue
+                key = token.split("=", 1)[0].lstrip("!+")
+                if not key or key in cls._NON_PROPERTY_KEYS:
+                    continue
+                found.append((current_menu, verb, key))
+        return found
+
+    def test_fixtures_directory_holds_expected_samples(self):
+        assert self.FIXTURES_DIR.is_dir(), f"missing {self.FIXTURES_DIR}"
+        names = sorted(p.name for p in self.FIXTURES_DIR.glob("*.rsc"))
+        for expected in ("ip-address.rsc", "ip-route.rsc", "system-scheduler.rsc"):
+            assert expected in names, f"expected fixture {expected} missing (found {names})"
+
+    def test_every_fixture_property_exists_in_commands_toml(self):
+        assert list(self.FIXTURES_DIR.glob("*.rsc")), "no .rsc fixtures to check"
+        unknown_menus: list[str] = []
+        unknown_props: list[str] = []
+        for fixture in sorted(self.FIXTURES_DIR.glob("*.rsc")):
+            for menu_path, verb, prop in self._parse_fixture(
+                fixture.read_text(encoding="utf-8")
+            ):
+                menu = BY_PATH.get(menu_path)
+                if menu is None:
+                    unknown_menus.append(f"{fixture.name}: {menu_path}")
+                    continue
+                known = (
+                    _names(menu, "flags")
+                    | _names(menu, "arguments")
+                    | _names(menu, "read_only")
+                )
+                if prop not in known:
+                    unknown_props.append(f"{fixture.name}: {menu_path} {verb} {prop!r}")
+        assert not unknown_menus, f"fixture menus missing from table: {unknown_menus}"
+        assert not unknown_props, f"fixture properties missing from table: {unknown_props}"
+
+    def test_fixtures_contain_no_secrets(self):
+        # Guard against accidental credential commits: fixtures must stay on
+        # TEST-NET documentation addresses and carry no secret-looking keys.
+        import re
+
+        secret_key = re.compile(r"(password|passwd|secret|private-key|certificate)", re.IGNORECASE)
+        real_ip = re.compile(r"(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)")
+        offenders: list[str] = []
+        for fixture in sorted(self.FIXTURES_DIR.glob("*.rsc")):
+            for menu_path, _verb, prop in self._parse_fixture(
+                fixture.read_text(encoding="utf-8")
+            ):
+                if secret_key.search(prop):
+                    offenders.append(f"{fixture.name}: secret-looking key {prop!r}")
+            text = fixture.read_text(encoding="utf-8")
+            for line in text.splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if real_ip.search(stripped):
+                    offenders.append(f"{fixture.name}: RFC1918 address in {stripped!r}")
+        assert not offenders, f"fixture hygiene violations: {offenders}"

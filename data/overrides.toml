@@ -12,12 +12,18 @@
 # - Keep this list tiny and rock-solid. If upstream starts documenting a
 #   property listed here, the extractor warns on every run: delete the
 #   now-redundant entry.
+# - Generics overlap: scripts/extract_commands.py now injects `comment` /
+#   `disabled` universally, so an override naming a generic property is kept
+#   ONLY for a richer description. A fully-subsumed override (same name, no
+#   richer description than the generic) warns on every run — retire it.
 #
 # Why each entry exists:
-# - /ip/route + comment (string): upstream documents 11 args for /ip/route
-#   but omits the real `comment` property that every RouterOS route accepts
-#   (visible in /ip/route/export output). Without this override users never
-#   get `comment=` completed on routes.
+# - /ip/route + comment (string): KEPT FOR DESCRIPTION QUALITY. The generic
+#   injector already ships a plain `comment` row for every Directory menu, so
+#   presence alone would not need this entry; it is kept because the curated
+#   on-device text below (export visibility note) is richer than the generic
+#   sentence. If the generic text ever matches this, the extractor's
+#   fully-subsumed warning fires and this entry should be retired.
 
 [[overrides]]
 path = "/ip/route"
