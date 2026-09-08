@@ -56,13 +56,18 @@ impl zed::Extension for RscExtension {
         let stored_name = platform::stored_binary_name(os, version);
 
         // 1) Fast path: binary in PATH (developer local build or manual install).
-        //    The plain name is probed everywhere; Windows manual installs keep
-        //    the `.exe` suffix, so probe that there too (no-op elsewhere).
+        //    PATH wins over auto-download by design so local iterations are
+        //    picked up without a release round-trip. The plain name is probed
+        //    everywhere; Windows manual installs keep the `.exe` suffix, so
+        //    probe that there too (no-op elsewhere).
         if let Some(path) = worktree
             .which(BINARY_NAME)
             .or_else(|| worktree.which(binary_name))
         {
             eprintln!("[mikrotik-zed] using {BINARY_NAME} from PATH: {path}");
+            eprintln!(
+                "[mikrotik-zed] warning: PATH binary bypasses the checksum/.verified gate used by the auto-download path (see verify.rs/cache.rs); ensure it is trusted"
+            );
             self.cached_binary = Some(path.clone());
             return Ok(zed::Command {
                 command: path,

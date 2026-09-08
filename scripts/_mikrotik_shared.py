@@ -9,13 +9,14 @@ Mirrors the Rust counterparts in ``lsp/src/live.rs`` (``validate_host``,
 ``parse_env_u64`` semantics): keep both sides in sync when the rules change.
 
 Usage notes:
-- ``mikrotik-deploy.py`` imports ``resolve_scheme`` and ``env_int`` only; it
-  deliberately does NOT run ``validate_host`` / ``format_host_for_url`` on
-  its REST/SSH targets (its CLI behavior predates the extraction and is
-  preserved as-is).
-- ``resolve_scheme`` returns a ``(scheme, legacy_shim_fired)`` tuple so
-  callers can warn about the legacy ``--no-ssl-verify`` http fallback; the
-  live client applies the same rules without emitting that warning.
+- ``mikrotik-deploy.py`` and ``mikrotik-live-check.py`` both run
+  ``validate_host`` / ``format_host_for_url`` on their REST/SSH targets
+  before any network access (lexical SSRF denylist, no DNS).
+- ``resolve_scheme`` returns a ``(scheme, legacy_shim_fired)`` tuple for
+  caller compatibility; the legacy ``--no-ssl-verify`` http fallback is
+  removed (always ``False``) so ``MIKROTIK_SSL=0`` only disables
+  verification and never changes the scheme. Plain HTTP requires explicit
+  ``--http`` / ``MIKROTIK_HTTP=1``.
 """
 
 from __future__ import annotations
@@ -49,17 +50,18 @@ def resolve_scheme(port: int, force_http: bool, no_ssl_verify: bool) -> tuple[st
     via --http (or MIKROTIK_HTTP=1). SSL verification (--no-ssl-verify /
     MIKROTIK_SSL=0) only controls certificate validation, never the scheme.
 
-    Legacy shim: --no-ssl-verify used to also force http:// on non-standard
-    ports (anything outside 443/8729), which plain-HTTP-on-port-80 setups
-    relied on. That observable behavior is preserved — with a warning — until
-    those users migrate to --http.
+    The legacy ``--no-ssl-verify`` http fallback on non-standard ports
+    (anything outside 443/8729) is removed: it silently downgraded HTTPS to
+    plain HTTP. Plain-HTTP-on-port-80 setups must pass ``--http``
+    (or ``MIKROTIK_HTTP=1``) explicitly.
 
-    Returns (scheme, legacy_shim_fired).
+    Returns (scheme, legacy_shim_fired) where the flag is always False
+    (kept for caller compatibility; the warning branch never fires).
 
-    Mirrors ``lsp/src/live.rs::resolve_scheme``.
+    Intentional divergence from ``lsp/src/live.rs::resolve_scheme``, which
+    still preserves the legacy fallback.
     """
-    if not force_http and no_ssl_verify and port not in (443, 8729):
-        return "http", True
+    _ = (port, no_ssl_verify)
     return ("http" if force_http else "https"), False
 
 

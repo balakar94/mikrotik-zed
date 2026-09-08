@@ -25,13 +25,12 @@ RouterOS failure markers ("syntax error", "input does not match",
 /rest/execute script output is printed verbatim and intentionally NOT scanned
 (arbitrary scripts may legitimately echo such words).
 
-Security note: REST/SSH targets are intentionally NOT passed through
+Security note: REST/SSH targets ARE passed through
 ``_mikrotik_shared.validate_host`` (lexical SSRF denylist:
-169.254.169.254 / metadata.google* / 0.0.0.0 / :: / 169.254.0.0/16);
-that CLI behavior predates the shared extraction and is preserved as-is.
-``mikrotik-live-check.py`` DOES call ``validate_host`` and gains the
-protection. Deploy reuses only ``resolve_scheme`` / ``env_int`` from the
-shared module.
+169.254.169.254 / metadata.google* / 0.0.0.0 / :: / 169.254.0.0/16)
+before any network access, including ``--dry-run`` (validated first, then
+previewed). Denied hosts exit 2 with no connection attempted. IPv6 hosts
+are formatted with ``format_host_for_url`` before URL construction.
 
 Usage:
   python scripts/mikrotik-deploy.py path/to/file.rsc
@@ -57,7 +56,7 @@ import urllib.parse
 # (direct run as `python scripts/<name>.py`, or importlib in the test suite).
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from _mikrotik_shared import env_int, resolve_scheme  # noqa: E402
+from _mikrotik_shared import env_int, format_host_for_url, resolve_scheme, validate_host  # noqa: E402
 
 # Optional dependencies - imported lazily
 try:
@@ -157,7 +156,34 @@ def _sanitize_and_validate_filename(raw: str) -> str:
     return raw
 
 
+def _clamp_deploy_timeout(timeout: object, default: int = 60) -> int:
+    """Clamp a deploy timeout to 1..300s, guarding non-numeric input.
+
+    Callers pass the already-parsed ``env_int`` / argparse value through;
+    anything unparseable falls back to ``default`` with a warning (never
+    raises, never returns 0/negative/unbounded).
+    """
+    try:
+        value = int(timeout)  # type: ignore[arg-type]
+    except (ValueError, TypeError):
+        print(f"warning: invalid timeout {timeout!r}, using default {default}", file=sys.stderr)
+        value = default
+    return min(max(value, 1), 300)
+
+
+def _deny_ssrf_host_or_exit(host: str) -> None:
+    """Validate ``host`` against the shared SSRF denylist; exit 2 on denial."""
+    err = validate_host(host)
+    if err:
+        print(f"error: invalid host {host!r}: {err}", file=sys.stderr)
+        sys.exit(2)
+
+
 def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: bool, content: str, filename: str, dry_run: bool, force_http: bool = False, timeout: int = 30) -> None:
+    # SSRF gate before any URL construction, logging, or network access —
+    # enforced even on --dry-run.
+    _deny_ssrf_host_or_exit(host)
+    host_for_url = format_host_for_url(host)
     no_ssl_verify = not ssl_verify
     scheme, legacy_shim = resolve_scheme(port, force_http, no_ssl_verify)
     if legacy_shim:
@@ -171,20 +197,16 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
     # URL-encode validated filename for REST path segment (safe after allowlist).
     encoded_filename = urllib.parse.quote(filename, safe="")
     # Clamp per-request timeout to 1..300s (mirrors live 1..30 clamp, wider for file upload).
-    try:
-        effective_timeout = int(timeout)
-    except (ValueError, TypeError):
-        effective_timeout = 30
-    effective_timeout = min(max(effective_timeout, 1), 300)
+    effective_timeout = _clamp_deploy_timeout(timeout, default=30)
     if dry_run:
-        log(f"DRY-RUN REST: would POST {len(content)} bytes to {scheme}://{host}:{port}/rest/execute as {user} (primary: direct execute)")
-        log(f"DRY-RUN REST: fallback would PUT {len(content)} bytes to {scheme}://{host}:{port}/rest/file/{encoded_filename} as {user}")
-        log(f"DRY-RUN REST: fallback would POST to {scheme}://{host}:{port}/rest/execute {{script: /import file={filename}}}")
+        log(f"DRY-RUN REST: would POST {len(content)} bytes to {scheme}://{host_for_url}:{port}/rest/execute as {user} (primary: direct execute)")
+        log(f"DRY-RUN REST: fallback would PUT {len(content)} bytes to {scheme}://{host_for_url}:{port}/rest/file/{encoded_filename} as {user}")
+        log(f"DRY-RUN REST: fallback would POST to {scheme}://{host_for_url}:{port}/rest/execute {{script: /import file={filename}}}")
         return
     if not HAS_REQUESTS:
         print("error: REST method requires 'requests' (pip install requests)", file=sys.stderr)
         sys.exit(3)
-    base = f"{scheme}://{host}:{port}"
+    base = f"{scheme}://{host_for_url}:{port}"
 
     session = requests.Session()
     session.auth = (user, password)
@@ -235,6 +257,8 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
 
 
 def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str, filename: str, dry_run: bool, accept_host_key: bool, timeout: int = 60) -> None:
+    # SSRF gate before any SSH dial — enforced even on --dry-run.
+    _deny_ssrf_host_or_exit(host)
     # Sanitize filename before SFTP — same gate as REST.
     filename = _sanitize_and_validate_filename(filename)
     if dry_run:
@@ -279,9 +303,10 @@ def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str,
         stdin, stdout, stderr = client.exec_command(f"/import file={shlex.quote(filename)}")
         # Poll for completion instead of calling recv_exit_status() directly,
         # which blocks forever if the device never terminates the /import.
-        # Clamp to >=1s so --timeout 0 / negative values cannot spin-loop or
-        # time out before the command is even dispatched.
-        effective_timeout = max(int(timeout), 1)
+        # Clamp to 1..300s like REST so --timeout 0 / negative values cannot
+        # spin-loop and huge values cannot hang the session; non-numeric
+        # input falls back to the deploy default with a warning.
+        effective_timeout = _clamp_deploy_timeout(timeout, default=60)
         deadline = time.monotonic() + effective_timeout
         while not stdout.channel.exit_status_ready():
             if time.monotonic() >= deadline:
@@ -357,6 +382,10 @@ def main() -> None:
         print("error: --host or MIKROTIK_HOST is required", file=sys.stderr)
         print("example: MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret python scripts/mikrotik-deploy.py file.rsc --dry-run", file=sys.stderr)
         sys.exit(2)
+
+    # SSRF gate before any file handling preview, transport dispatch, or
+    # network access — enforced even on --dry-run (no connection attempted).
+    _deny_ssrf_host_or_exit(args.host)
 
     if not args.password and not args.dry_run:
         # Prompt securely if not provided and not dry-run

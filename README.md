@@ -93,7 +93,7 @@ cp target/release/rsc-ls /opt/homebrew/bin/rsc-ls  # macOS
 
 Using the extension requires no manual builds. When you open a `.rsc` file, the extension locates its language server by trying three sources in order, stopping at the first success:
 
-1. **Your PATH** — an `rsc-ls` you installed yourself takes precedence (the development override; Windows probes `rsc-ls.exe` too).
+1. **Your PATH** — an `rsc-ls` you installed yourself takes precedence (the development override; Windows probes `rsc-ls.exe` too). PATH wins over auto-download by design for fast dev iteration, but a PATH binary bypasses the checksum/`.verified` gate used by the download path — only keep trusted builds on PATH (the extension logs a warning when this fast path is used).
 2. **The cache** — the copy downloaded by a previous session, reused as-is.
 3. **GitHub Releases** — otherwise it downloads the build that matches your platform from the table below, verifies it against the published SHA-256 companion _before_ making it executable or running it, and surfaces progress through Zed's installation-status UI. Any failure — missing asset, checksum mismatch — aborts cleanly and shows manual instructions: an unverified binary is never executed.
 
