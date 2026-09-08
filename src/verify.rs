@@ -17,10 +17,11 @@ use zed_extension_api::http_client::{HttpMethod, HttpRequest, RedirectPolicy};
 
 use crate::sha256;
 
-/// Sanity cap for reading a downloaded binary into memory for hashing.
-/// Real `rsc-ls` artifacts are a few MiB; anything beyond this is treated as
-/// a verification failure rather than hashed (WASM memory is bounded).
-pub(crate) const MAX_VERIFIED_BINARY_BYTES: u64 = 256 * 1024 * 1024;
+/// Sanity cap for hashing a downloaded binary for verification.
+/// Real `rsc-ls` artifacts are a few MiB; 64 MiB leaves an order of
+/// magnitude of headroom while keeping WASM linear memory bounded.
+/// Anything beyond this fails closed rather than being hashed.
+pub(crate) const MAX_VERIFIED_BINARY_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Number of hex characters shown in logs/status messages for each digest.
 /// Full hashes are never emitted (log hygiene).
@@ -30,6 +31,7 @@ const DIGEST_LOG_PREFIX: usize = 12;
 ///
 /// Variant order mirrors the pipeline stages; every variant fails closed at
 /// the call site.
+#[derive(Debug)]
 pub(crate) enum VerificationFailure {
     /// The `<asset>.sha256` companion could not be fetched over HTTP.
     CompanionFetch(String),
@@ -109,6 +111,26 @@ fn fetch_companion_digest(download_url: &str) -> std::result::Result<String, Ver
     sha256::parse_digest_companion(content).map_err(VerificationFailure::CompanionParse)
 }
 
+/// Hashes `binary_name` in streaming chunks under `max_bytes`.
+///
+/// Thin fail-closed wrapper over [`crate::sha256::sha256_file_hex`]:
+/// oversized artifacts map to [`VerificationFailure::BinaryTooLarge`],
+/// unreadable ones to [`VerificationFailure::BinaryRead`]. The injectable
+/// cap keeps tests practical (tiny caps flag small fixtures); production
+/// always passes [`MAX_VERIFIED_BINARY_BYTES`].
+fn hash_binary_capped(
+    binary_name: &str,
+    max_bytes: u64,
+) -> std::result::Result<String, VerificationFailure> {
+    match sha256::sha256_file_hex(binary_name, max_bytes) {
+        Ok(digest) => Ok(digest),
+        Err(sha256::FileHashError::TooLarge(observed)) => {
+            Err(VerificationFailure::BinaryTooLarge(observed))
+        }
+        Err(sha256::FileHashError::Io(detail)) => Err(VerificationFailure::BinaryRead(detail)),
+    }
+}
+
 /// Verifies the just-downloaded binary against its `.sha256` companion.
 ///
 /// `binary_name` is the work-dir-relative path `download_file` wrote to.
@@ -122,8 +144,9 @@ pub(crate) fn verify_downloaded_binary(
 ) -> std::result::Result<String, VerificationFailure> {
     let expected = fetch_companion_digest(download_url)?;
 
-    // Cap before reading: refuse absurdly large artifacts instead of loading
-    // them into memory inside the WASM component.
+    // Cap before reading: refuse absurdly large artifacts instead of
+    // buffering them inside the WASM component. The streaming hash below
+    // re-enforces the same cap during the read (TOCTOU-safe).
     let size = std::fs::metadata(binary_name)
         .map_err(|e| VerificationFailure::BinaryRead(e.to_string()))?
         .len();
@@ -131,9 +154,7 @@ pub(crate) fn verify_downloaded_binary(
         return Err(VerificationFailure::BinaryTooLarge(size));
     }
 
-    let bytes =
-        std::fs::read(binary_name).map_err(|e| VerificationFailure::BinaryRead(e.to_string()))?;
-    let actual = sha256::sha256_hex(&bytes);
+    let actual = hash_binary_capped(binary_name, MAX_VERIFIED_BINARY_BYTES)?;
 
     if !sha256::digests_match(&expected, &actual) {
         return Err(VerificationFailure::Mismatch { expected, actual });
@@ -232,5 +253,65 @@ mod tests {
         }
         .describe("https://github.com/x/y/releases/download/v1.2.3/rsc-ls-aarch64-apple-darwin");
         assert!(msg.contains("v1.2.3/rsc-ls-aarch64-apple-darwin"));
+    }
+
+    #[test]
+    fn verification_cap_is_64_mib() {
+        // Real rsc-ls artifacts are a few MiB; 64 MiB leaves headroom while
+        // keeping WASM linear memory bounded (was 256 MiB).
+        assert_eq!(MAX_VERIFIED_BINARY_BYTES, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn streaming_hash_matches_one_shot_hash() {
+        // Chunked file hashing must agree byte-for-byte with the in-memory
+        // one-shot helper, including multi-block inputs.
+        let path = std::env::temp_dir().join(format!(
+            "mikrotik-zed-verify-stream-{}.tmp",
+            std::process::id()
+        ));
+        let path_str = path.to_string_lossy().into_owned();
+        let bytes: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &bytes).unwrap();
+        let streamed = hash_binary_capped(&path_str, MAX_VERIFIED_BINARY_BYTES).unwrap();
+        assert_eq!(streamed, sha256::sha256_hex(&bytes));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn oversized_binary_is_rejected_against_the_injected_cap() {
+        // Mirrors cache.rs oversize pattern: a tiny injected cap flags a
+        // small fixture without needing a 64 MiB file on disk.
+        let path = std::env::temp_dir().join(format!(
+            "mikrotik-zed-verify-oversize-{}.tmp",
+            std::process::id()
+        ));
+        let path_str = path.to_string_lossy().into_owned();
+        std::fs::write(&path, b"rsc-ls verify size vector").unwrap();
+        let err = hash_binary_capped(&path_str, 8).expect_err("tiny cap must flag the file");
+        match err {
+            VerificationFailure::BinaryTooLarge(size) => assert!(size > 8),
+            other => panic!(
+                "expected BinaryTooLarge, got {}",
+                other.describe("https://example.com/asset")
+            ),
+        }
+        // The production cap accepts the same small file.
+        assert!(hash_binary_capped(&path_str, MAX_VERIFIED_BINARY_BYTES).is_ok());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn missing_binary_fails_closed_as_binary_read() {
+        let missing = std::env::temp_dir().join(format!(
+            "mikrotik-zed-verify-missing-{}-{}.tmp",
+            std::process::id(),
+            "absent"
+        ));
+        let err = hash_binary_capped(&missing.to_string_lossy(), MAX_VERIFIED_BINARY_BYTES)
+            .expect_err("missing file must fail");
+        let msg = err.describe("https://example.com/asset");
+        assert!(msg.contains("could not be read"));
+        assert!(msg.contains("Refusing to run unverified"));
     }
 }

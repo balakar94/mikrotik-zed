@@ -29,6 +29,8 @@ EXTRACT_PY = REPO_ROOT / "scripts" / "extract_commands.py"
 DEPLOY_PY = REPO_ROOT / "scripts" / "mikrotik-deploy.py"
 INJECTIONS_SCM = REPO_ROOT / "languages" / "rsc" / "injections.scm"
 INDENTS_SCM = REPO_ROOT / "languages" / "rsc" / "indents.scm"
+OUTLINE_SCM = REPO_ROOT / "languages" / "rsc" / "outline.scm"
+TASKS_JSON = REPO_ROOT / "languages" / "rsc" / "tasks.json"
 HIGHLIGHTS_A = REPO_ROOT / "languages" / "rsc" / "highlights.scm"
 HIGHLIGHTS_B = REPO_ROOT / "grammars" / "rsc" / "queries" / "highlights.scm"
 CORPUS_DIR = REPO_ROOT / "grammars" / "rsc" / "test" / "corpus"
@@ -460,6 +462,115 @@ class TestGrammar:
         )
         missing = sorted(v for v in verbs if v not in commands_txt and v not in corpus_txt)
         assert missing == [], f"highlight verbs unattested (typo?): {missing}"
+
+    def test_highlights_action_patterns_deduped(self):
+        """The four action-verb (#match? ...) alternations (sub_menu,
+        menu_command, command_substitution, menu_continuation) must stay
+        identical: a typo in one copy would silently diverge highlighting
+        between positions. Mirrors test_highlights_deduped (file-level
+        equality) at the pattern level."""
+        txt = _read(HIGHLIGHTS_A)
+        patterns = []
+        for raw in re.findall(r'#match\?\s+@\S+\s+"([^"]+)"', txt):
+            core = raw.strip()
+            if core.startswith("^"):
+                core = core[1:]
+            if core.endswith("$"):
+                core = core[:-1]
+            if core.startswith("(") and core.endswith(")"):
+                core = core[1:-1]
+            parts = [v for v in core.split("|") if v]
+            if len(parts) >= 10:
+                patterns.append(core)
+        assert len(patterns) >= 2, (
+            f"expected the 4 action-verb alternations, found {len(patterns)}"
+        )
+        first = patterns[0]
+        for i, other in enumerate(patterns[1:], start=1):
+            assert other == first, (
+                f"action-verb alternation {i} diverged from the first "
+                f"({len(first)} vs {len(other)} chars)"
+            )
+
+    def test_highlights_cover_standard_verbs(self):
+        """Every STANDARD_VERBS entry (lsp/src/menus.rs, derived from the
+        data/commands.toml pipeline) must appear in the highlights.scm
+        action-verb list: coverage direction of the attestation guard above.
+        A verb missing here would complete/hover but never highlight."""
+        menus_txt = _read(LSP_MENUS)
+        m = re.search(
+            r"STANDARD_VERBS[^=]*=\s*&\[(.*?)\];", menus_txt, re.S
+        )
+        assert m, "STANDARD_VERBS declaration not parseable in menus.rs"
+        standard = set(re.findall(r'"([^"]+)"', m.group(1)))
+        assert standard, "no STANDARD_VERBS entries found"
+        txt = _read(HIGHLIGHTS_A)
+        action_verbs: set[str] = set()
+        for raw in re.findall(r'#match\?\s+@\S+\s+"([^"]+)"', txt):
+            core = raw.strip()
+            if core.startswith("^"):
+                core = core[1:]
+            if core.endswith("$"):
+                core = core[:-1]
+            if core.startswith("(") and core.endswith(")"):
+                core = core[1:-1]
+            parts = [v for v in core.split("|") if v]
+            if len(parts) >= 10:
+                action_verbs.update(parts)
+        missing = sorted(v for v in standard if v not in action_verbs)
+        assert missing == [], (
+            f"STANDARD_VERBS missing from highlights.scm action verbs: {missing}"
+        )
+
+    def test_indents_outline_modern_captures(self):
+        """Outline/indents stay on the modern Zed query contract (test-only;
+        no @outdent/@end fix applied: single @indent per bracketing node
+        covers open and close, single-line matches are ignored, so closers
+        like } / ] outdent automatically)."""
+        indents = _read(INDENTS_SCM)
+        code = "\n".join(
+            line for line in indents.splitlines() if not line.strip().startswith(";")
+        )
+        assert "(block) @indent" in code
+        for legacy in ("@indent.begin", "@indent.end", "@indent.continue"):
+            assert legacy not in code, f"legacy capture {legacy} in indents.scm"
+        assert "@outdent" not in code and "@end" not in code, (
+            "indents.scm needs no @outdent/@end under the single-@indent contract"
+        )
+        outline = _read(OUTLINE_SCM)
+        ocode = "\n".join(
+            line for line in outline.splitlines() if not line.strip().startswith(";")
+        )
+        assert "@item" in ocode, "outline.scm must mark symbols with @item"
+        assert "@name" in ocode, "outline.scm must label symbols with @name"
+        assert "@context" in ocode, "outline.scm must keep the root-menu @context"
+        for legacy in ("@indent.begin", "@indent.end", "@indent.continue"):
+            assert legacy not in ocode, f"legacy capture {legacy} in outline.scm"
+
+    def test_tasks_shell_consistent_and_validate_surfaces_errors(self):
+        """All 6 tasks run through the same shell so $ZED_FILE/$ZED_WORKTREE_ROOT
+        expand identically on every platform (Zed expands task variables at
+        spawn time; an explicit shell avoids Unix/Windows divergence), and the
+        Validate task surfaces failures instead of swallowing them."""
+        import json
+
+        tasks = json.loads(_read(TASKS_JSON))
+        assert len(tasks) == 6, f"expected 6 tasks, got {len(tasks)}"
+        shells = {t.get("label"): t.get("shell") for t in tasks}
+        assert set(shells.values()) == {"system"}, (
+            f"shell must be 'system' on all 6 tasks, got {shells}"
+        )
+        validate = next(t for t in tasks if "Validate" in t.get("label", ""))
+        assert validate.get("reveal") in ("on_error", "always"), (
+            f"Validate reveal must surface failures, got {validate.get('reveal')!r}"
+        )
+        # Never store a password: no task may carry a MIKROTIK_PASS env entry.
+        # (The enable-hint task names the variable in guidance text so users
+        # pass it via env/keychain — that is documentation, not storage.)
+        for t in tasks:
+            assert "MIKROTIK_PASS" not in t.get("env", {}), (
+                f"task {t.get('label')!r} must not store MIKROTIK_PASS in env"
+            )
 
 
 # ----------------------------------------------------------------------

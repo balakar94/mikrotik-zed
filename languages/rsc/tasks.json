@@ -22,6 +22,7 @@
     "allow_concurrent_runs": false,
     "reveal": "always",
     "hide": "on_success",
+    "shell": "system",
     "tags": ["mikrotik-deploy", "mikrotik-ssh"]
   },
   {
@@ -33,6 +34,7 @@
     "use_new_terminal": false,
     "allow_concurrent_runs": true,
     "reveal": "always",
+    "shell": "system",
     "tags": ["mikrotik-deploy", "mikrotik-dry-run"]
   },
   {
@@ -42,7 +44,8 @@
     "env": { "MIKROTIK_HOST": "dry-run-only" },
     "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": false,
-    "reveal": "never",
+    "reveal": "on_error",
+    "shell": "system",
     "tags": ["mikrotik-validate"]
   },
   {
@@ -76,6 +79,7 @@
     "allow_concurrent_runs": false,
     "reveal": "always",
     "hide": "on_success",
+    "shell": "system",
     "tags": ["mikrotik-live", "mikrotik-deploy"]
   },
   {
@@ -89,6 +93,7 @@
     "use_new_terminal": true,
     "allow_concurrent_runs": true,
     "reveal": "always",
+    "shell": "system",
     "tags": ["mikrotik-live"]
   }
 ]

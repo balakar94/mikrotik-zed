@@ -29,50 +29,138 @@ const INITIAL_STATE: [u32; 8] = [
 
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
-/// Computes the SHA-256 digest of `data` as lowercase hex (64 characters).
+/// Chunk size for streaming file hashes (32 KiB): bounds WASM heap use
+/// while keeping syscall overhead negligible.
+pub(crate) const FILE_HASH_CHUNK_BYTES: usize = 32 * 1024;
+
+/// Incremental SHA-256 hasher (FIPS 180-4).
 ///
-/// One-shot by design: callers hold the full artifact in memory behind an
-/// explicit size cap, so a streaming incremental API would be unused surface.
-pub(crate) fn sha256_hex(data: &[u8]) -> String {
-    let mut state = INITIAL_STATE;
+/// The one-shot [`sha256_hex`] is a thin wrapper over this; file
+/// verification ([`sha256_file_hex`]) feeds chunks through it so a
+/// 64 MiB artifact never sits wholly in WASM linear memory.
+pub(crate) struct Sha256 {
+    state: [u32; 8],
+    /// Partial block carried between `update` calls (fewer than 64 bytes).
+    buf: [u8; 64],
+    buf_len: usize,
+    /// Total bytes fed so far (drives the length padding in `finalize`).
+    total_len: u64,
+}
 
-    let mut blocks = data.chunks_exact(64);
-    for block in blocks.by_ref() {
-        compress(
-            &mut state,
-            block.try_into().expect("chunks_exact yields 64 bytes"),
-        );
-    }
-    let remainder = blocks.remainder();
-    debug_assert!(remainder.len() < 64);
-
-    // Padding (FIPS 180-4, section 5.1.1): append 0x80, zero-fill up to the
-    // last 8 bytes of a block boundary, then the big-endian bit length.
-    let mut tail = [0u8; 128];
-    tail[..remainder.len()].copy_from_slice(remainder);
-    tail[remainder.len()] = 0x80;
-    let padded_len = if remainder.len() + 9 <= 64 { 64 } else { 128 };
-    let bit_len: u64 = u64::try_from(data.len())
-        .ok()
-        .and_then(|len| len.checked_mul(8))
-        .expect("caller enforces a size cap far below the SHA-256 length encoding limit");
-    tail[padded_len - 8..padded_len].copy_from_slice(&bit_len.to_be_bytes());
-
-    for block in tail[..padded_len].chunks_exact(64) {
-        compress(
-            &mut state,
-            block.try_into().expect("tail blocks are exactly 64 bytes"),
-        );
-    }
-
-    let mut out = String::with_capacity(64);
-    for word in state {
-        for byte in word.to_be_bytes() {
-            out.push(HEX_DIGITS[usize::from(byte >> 4)] as char);
-            out.push(HEX_DIGITS[usize::from(byte & 0x0f)] as char);
+impl Sha256 {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: INITIAL_STATE,
+            buf: [0u8; 64],
+            buf_len: 0,
+            total_len: 0,
         }
     }
-    out
+
+    pub(crate) fn update(&mut self, mut data: &[u8]) {
+        self.total_len = self.total_len.saturating_add(data.len() as u64);
+        // Fill any carried partial block first.
+        if self.buf_len > 0 {
+            let take = (64 - self.buf_len).min(data.len());
+            self.buf[self.buf_len..self.buf_len + take].copy_from_slice(&data[..take]);
+            self.buf_len += take;
+            data = &data[take..];
+            if self.buf_len == 64 {
+                let block: [u8; 64] = self.buf;
+                compress(&mut self.state, &block);
+                self.buf_len = 0;
+            }
+        }
+        // Compress whole blocks directly from the input.
+        let mut chunks = data.chunks_exact(64);
+        for block in chunks.by_ref() {
+            compress(
+                &mut self.state,
+                block.try_into().expect("chunks_exact yields 64 bytes"),
+            );
+        }
+        // Carry the remainder.
+        let remainder = chunks.remainder();
+        if !remainder.is_empty() {
+            self.buf[..remainder.len()].copy_from_slice(remainder);
+            self.buf_len = remainder.len();
+        }
+    }
+
+    pub(crate) fn finalize(self) -> String {
+        let mut state = self.state;
+        let mut tail = [0u8; 128];
+        tail[..self.buf_len].copy_from_slice(&self.buf[..self.buf_len]);
+        tail[self.buf_len] = 0x80;
+        let padded_len = if self.buf_len + 9 <= 64 { 64 } else { 128 };
+        let bit_len: u64 = self
+            .total_len
+            .checked_mul(8)
+            .expect("caller enforces a size cap far below the SHA-256 length encoding limit");
+        tail[padded_len - 8..padded_len].copy_from_slice(&bit_len.to_be_bytes());
+        for block in tail[..padded_len].chunks_exact(64) {
+            compress(
+                &mut state,
+                block.try_into().expect("tail blocks are exactly 64 bytes"),
+            );
+        }
+        let mut out = String::with_capacity(64);
+        for word in state {
+            for byte in word.to_be_bytes() {
+                out.push(HEX_DIGITS[usize::from(byte >> 4)] as char);
+                out.push(HEX_DIGITS[usize::from(byte & 0x0f)] as char);
+            }
+        }
+        out
+    }
+}
+
+/// Why streaming file hashing refused a path.
+#[derive(Debug)]
+pub(crate) enum FileHashError {
+    /// More than `cap` bytes were observed while streaming.
+    TooLarge(u64),
+    /// The file could not be opened or read.
+    Io(String),
+}
+
+/// Computes the SHA-256 digest of the file at `path` as lowercase hex.
+///
+/// Streams in [`FILE_HASH_CHUNK_BYTES`] chunks so peak heap use stays flat;
+/// aborts fail-closed with [`FileHashError::TooLarge`] once more than
+/// `cap_bytes` are observed (TOCTOU-safe: enforced during the read, not just
+/// via a pre-read metadata check).
+pub(crate) fn sha256_file_hex(path: &str, cap_bytes: u64) -> Result<String, FileHashError> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).map_err(|e| FileHashError::Io(e.to_string()))?;
+    let mut hasher = Sha256::new();
+    let mut observed: u64 = 0;
+    let mut chunk = [0u8; FILE_HASH_CHUNK_BYTES];
+    loop {
+        let n = file
+            .read(&mut chunk)
+            .map_err(|e| FileHashError::Io(e.to_string()))?;
+        if n == 0 {
+            break;
+        }
+        observed = observed.saturating_add(n as u64);
+        if observed > cap_bytes {
+            return Err(FileHashError::TooLarge(observed));
+        }
+        hasher.update(&chunk[..n]);
+    }
+    Ok(hasher.finalize())
+}
+
+/// Computes the SHA-256 digest of `data` as lowercase hex (64 characters).
+///
+/// One-shot convenience over [`Sha256`]: callers hashing in-memory buffers
+/// use this; callers hashing files use streaming [`sha256_file_hex`] so a
+/// large artifact never sits wholly in WASM linear memory.
+pub(crate) fn sha256_hex(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher.finalize()
 }
 
 /// Runs the 64-round compression function over one 512-bit block.
@@ -302,5 +390,53 @@ mod tests {
         let base = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         let flipped = "f3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         assert!(!digests_match(base, flipped));
+    }
+
+    #[test]
+    fn incremental_updates_match_one_shot_across_chunk_boundaries() {
+        // Feed byte-at-a-time, block-aligned, and odd splits: all must agree
+        // with the one-shot helper (exercises the partial-block carry).
+        let input: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
+        let expected = sha256_hex(&input);
+        for split in [1usize, 31, 63, 64, 65, 1000, 8192] {
+            let mut h = Sha256::new();
+            for chunk in input.chunks(split) {
+                h.update(chunk);
+            }
+            assert_eq!(h.finalize(), expected, "split at {split}");
+        }
+        // Empty update stream equals the empty-input vector.
+        let mut h = Sha256::new();
+        h.update(b"");
+        h.update(b"abc");
+        assert_eq!(
+            h.finalize(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn file_hash_streams_and_enforces_the_cap() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "mikrotik-zed-sha256-file-{}.tmp",
+            std::process::id()
+        ));
+        let path_str = path.to_string_lossy().into_owned();
+        let bytes: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            sha256_file_hex(&path_str, 64 * 1024 * 1024).unwrap(),
+            sha256_hex(&bytes)
+        );
+        match sha256_file_hex(&path_str, 16).unwrap_err() {
+            FileHashError::TooLarge(observed) => assert!(observed > 16),
+            FileHashError::Io(e) => panic!("expected TooLarge, got Io: {e}"),
+        }
+        match sha256_file_hex("/nonexistent/mikrotik-zed-sha256-absent.tmp", 1024).unwrap_err() {
+            FileHashError::Io(_) => {}
+            FileHashError::TooLarge(n) => panic!("expected Io, got TooLarge({n})"),
+        }
+        let _ = std::fs::remove_file(&path);
     }
 }
