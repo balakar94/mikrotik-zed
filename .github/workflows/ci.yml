@@ -48,7 +48,12 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          # Only save on main to avoid PR cache poisoning.
+          # Main-only saves are deliberate, not an omission: PR runs (notably
+          # from forks) must never publish to the shared cache, otherwise a
+          # malicious or broken dependency tree could poison main's cache
+          # (cache poisoning). PR runs still RESTORE the latest main cache for
+          # speed; only main re-saves it. Keep this even if CI feels slow on
+          # PRs — correctness of the cache beats per-PR warm-cache hits.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Format check (make fmt)
@@ -122,6 +127,8 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          # Main-only saves on purpose (see Linux job): PRs restore but never
+          # publish, so a fork PR cannot poison the shared cache.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Tests (cargo test -p rsc-ls)
@@ -167,6 +174,8 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          # Main-only saves on purpose (see Linux job): PRs restore but never
+          # publish, so a fork PR cannot poison the shared cache.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Tests (cargo test -p rsc-ls)
@@ -216,13 +225,18 @@ jobs:
           python-version: "3.12"
           # No pip cache: repo has no requirements.txt/pyproject.toml, so the default
           # cache-dependency-path (**/requirements.txt) would fail with "No file matched".
-          # pip install is just pytest+tomli (tiny), so caching is not worth the complexity.
+          # pip install is just pytest+tomli+requests+paramiko (tiny), so caching
+          # is not worth the complexity.
 
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
-          pip install pytest tomli
-          pip freeze | grep -E "pytest|tomli" || true
+          # requests+paramiko mirror `make install-tools` and security-audit.yml:
+          # scripts/mikrotik-live-check.py prefers requests (urllib fallback) and
+          # scripts/mikrotik-deploy.py needs both, so the live-check requests-path
+          # tests exercise the real transport instead of false-failing/skipping.
+          pip install pytest tomli requests paramiko
+          pip freeze | grep -Ei "pytest|tomli|requests|paramiko" || true
 
       - name: Manifest schema check (make check-manifest)
         run: make check-manifest

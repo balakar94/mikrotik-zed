@@ -9,7 +9,12 @@ name: Upstream Watchdog
 #     --check, plus exact maintainer fix instructions. One comment per run
 #     (weekly cadence caps noise; 24h dedup deliberately skipped).
 #   - ok    → auto-close any open drift issue as completed ("Resolved").
-#   - error → warn only; transient network failures must not paint the repo red.
+#   - error → warn only AND streak-track via a dedicated `upstream-docs`
+#     tracker issue ("Upstream docs check - transient errors"): first failure
+#     is log-level noise, the comment escalates once the streak reaches 2
+#     consecutive failures, and any later ok/drift run closes the tracker
+#     (streak reset). Transient network failures must not paint the repo red,
+#     so the error path never exits non-zero and never opens a PR.
 # Scheduled workflows only run on the default branch.
 
 on:
@@ -122,7 +127,75 @@ jobs:
           gh issue comment "$number" --body "Resolved (snapshot re-synced)"
           gh issue close "$number" --reason completed
 
-      # ── error: transient failure stays green ────────────────────────
-      - name: Fetch error — warn only
+      # ── error: transient failure stays green, streak-tracked ────────
+      - name: Fetch error — streak-track, warn only
         if: steps.check.outputs.result == 'error'
-        run: echo "::warning::sync_llms.py --check failed (network/upstream error) — will retry next scheduled run"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          # Streak state lives on a dedicated tracker issue (no extra infra,
+          # no cache permissions needed). Marker comments carry
+          # `<!-- watchdog-error -->` so the streak is countable; the visible
+          # escalation only appears at streak >= 2. Never exits non-zero.
+          gh label create upstream-docs --color D93F0B \
+            --description "Upstream RouterOS docs drifted from the recorded snapshot" >/dev/null 2>&1 || true
+
+          tracker=$(gh issue list --state open --label upstream-docs \
+            --json number,title \
+            --jq '.[] | select(.title | startswith("Upstream docs check - transient errors")) | .number' \
+            | head -n1)
+
+          if [ -z "$tracker" ]; then
+            echo "No tracker issue — creating one (streak 1)."
+            tracker=$(gh issue create \
+              --title "Upstream docs check - transient errors" \
+              --label upstream-docs \
+              --body "The weekly upstream-docs check failed to reach manual.mikrotik.com. This tracker counts CONSECUTIVE failures and auto-closes once a check succeeds or reports drift. The first failure is warn-only noise control — escalation starts at streak 2." \
+              --json number --jq '.number')
+            prior=0
+          else
+            prior=$(gh issue view "$tracker" --json comments \
+              --jq '[.comments[] | select(.body | contains("<!-- watchdog-error -->"))] | length')
+          fi
+          streak=$((prior + 1))
+          echo "Consecutive-error streak: $streak (tracker #$tracker)"
+
+          {
+            echo "<!-- watchdog-error -->"
+            echo "Transient check failure (streak $streak) at $(date -u '+%Y-%m-%dT%H:%M:%SZ')."
+            echo ""
+            echo '```text'
+            cat "$RUNNER_TEMP/check.out"
+            echo '```'
+            if [ "$streak" -ge 2 ]; then
+              echo ""
+              echo "**Second consecutive failure** — upstream may be down or the network path broken. No action yet; this tracker auto-closes on recovery. Escalate manually only if the streak keeps growing."
+            else
+              echo ""
+              echo "First failure in a row — warn only, will retry on the next weekly run."
+            fi
+          } > "$RUNNER_TEMP/error.md"
+          gh issue comment "$tracker" --body-file "$RUNNER_TEMP/error.md"
+          echo "::warning::sync_llms.py --check failed (streak $streak, network/upstream error) — will retry next scheduled run"
+
+      # ── streak reset: any successful contact (ok or drift) clears the count
+      - name: Error streak reset — close transient-errors tracker on ok/drift
+        if: steps.check.outputs.result != 'error'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          tracker=$(gh issue list --state open --label upstream-docs \
+            --json number,title \
+            --jq '.[] | select(.title | startswith("Upstream docs check - transient errors")) | .number' \
+            | head -n1)
+          if [ -z "$tracker" ]; then
+            echo "No transient-errors tracker open — streak already at zero."
+            exit 0
+          fi
+          echo "Check recovered (result: ${{ steps.check.outputs.result }}) — closing tracker #$tracker."
+          gh issue comment "$tracker" --body "Recovered (check ${{ steps.check.outputs.result }}) — streak reset."
+          gh issue close "$tracker" --reason completed

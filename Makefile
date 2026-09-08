@@ -164,13 +164,14 @@ bump: ## Bump version (usage: make bump VERSION=0.2.0)
 	@test -n "$(VERSION)" || (echo "usage: make bump VERSION=0.2.0" && false)
 	@echo "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$$' || (echo "error: VERSION must be semver x.y.z" && false)
 	@echo "Bumping to $(VERSION) ..."
-	# NOTE: regex is fragile — only first occurrence is replaced (count=1) and relies on version under [package] being first.
-	# For robustness, parse TOML with tomllib and rewrite only [package] version if this grows fragile.
-	@python3 -c 'import re,pathlib,sys; v=sys.argv[1]; [pathlib.Path(p).write_text(re.sub(r"^version = \".*\"", f"version = \"{v}\"", pathlib.Path(p).read_text(), count=1, flags=re.M)) for p in ["Cargo.toml","lsp/Cargo.toml","extension.toml"]]' "$(VERSION)"
+	# Section-aware edit via scripts/bump_version.py (tomllib-verified): [package]
+	# version in Cargo.toml + lsp/Cargo.toml, root version in extension.toml — then
+	# cargo check refreshes Cargo.lock and the script asserts the lock carries it.
+	@python3 scripts/bump_version.py "$(VERSION)" Cargo.toml lsp/Cargo.toml extension.toml
 	@echo "Note: grammars/rsc versions live in the separate tree-sitter-rsc repo (untracked working copy)"
 	@echo "      never bumped from here — publish_grammar.py handles that repo."
-	@echo "Note: Cargo.lock refreshes on next cargo command — commit it with the bumps."
-	@echo "Bumped. Now run: cargo check && git diff"
+	@echo "Note: Cargo.lock refreshed via cargo check above — commit it with the bumps."
+	@echo "Bumped. Now run: git diff"
 
 # ── Cleanup ──────────────────────────────────────────────────────
 _clean-artifacts:
