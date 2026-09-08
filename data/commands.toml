@@ -2,8 +2,8 @@
 # Auto-generated from llms-full.txt
 # Covers: /app, /beep, /blink, /caps-man, /certificate, /console, /container, /disk, /dude, /environment, /file, /import, … (1077 menus)
 # RouterOS version: 7.23.2
-# Generated: 2026-09-08T15:26:15.525214Z
-# Source hash (sha256[:16]): c043cd8fd9e2215c
+# Generated: 2026-09-08T16:16:57.659019Z
+# Source hash (sha256[:16]): 47e817df6ab21479
 # overrides_applied = 1 (data/overrides.toml)
 # generics_applied = 1944 (comment/disabled universal; place-before/copy-from ordered-only)
 
@@ -38856,7 +38856,7 @@ description = "Time To Live (hop limit) that will be recorded in sent TCP packet
 name = "local.role"
 type = "enum (ibgp | ibgp-rr | ebgp | ebgp-provider | ebgp-rs | ebgp-rs-client | ebgp-customer | ebgp-peer)"
 enum_values = ["ibgp", "ibgp-rr", "ebgp", "ebgp-provider", "ebgp-rs", "ebgp-rs-client", "ebgp-customer", "ebgp-peer"]
-description = "BGP role. In most scenarios, set to iBGP or eBGP. For more information on BGP roles, see the corresponding [RFC 9234](https://tools.ietf.org/html/rfc9234)."
+description = "BGP role. In most scenarios, set to iBGP or eBGP. For more information on BGP roles and route leak prevention, see [Route Leak Prevention](../../../user-guides/routing-and-networking-protocols/unicast/bgp/route-leak-prevention.md) and the corresponding [RFC 9234](https://tools.ietf.org/html/rfc9234)."
 required = true
 [[menus.arguments]]
 name = "tcp-md5-key"
@@ -39301,9 +39301,11 @@ description = "List of address families that received end-of-rib from remote pee
 [[menus.read_only]]
 name = "remote.role"
 type = "enum (provider | route-server | route-server-client | customer | peer)"
+description = "Role received from the remote peer. See [Route Leak Prevention](../../../../user-guides/routing-and-networking-protocols/unicast/bgp/route-leak-prevention.md)."
 [[menus.read_only]]
 name = "local.role"
 type = "enum (ibgp | ibgp-rr | ebgp | ebgp-provider | ebgp-rs | ebgp-rs-client | ebgp-customer | ebgp-peer)"
+description = "Locally configured role. See [Route Leak Prevention](../../../../user-guides/routing-and-networking-protocols/unicast/bgp/route-leak-prevention.md)."
 [[menus.read_only]]
 name = "local.address"
 type = "address (flags=46iv:)"
