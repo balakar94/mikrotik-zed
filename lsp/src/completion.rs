@@ -190,14 +190,13 @@ fn match_context_with_live(
         .last()
         .cloned()
         .unwrap_or_default();
-    if let Some(eq_pos) = trimmed_last.rfind('=') {
-        let raw_suffix = &trimmed_last[eq_pos + 1..];
-        let trimmed_suffix = raw_suffix.trim_matches(|c| c == '"' || c == '\'');
+    if let Some((key_part, value_part)) = crate::parser::split_key_value(&trimmed_last) {
+        let trimmed_suffix = value_part.trim_matches(|c| c == '"' || c == '\'');
         // If trailing whitespace present with a non-empty value, the value
         // token is finished — suggest next property, not values.
         if !has_trailing_ws || trimmed_suffix.is_empty() {
-            let key = trimmed_last[..eq_pos].trim_start_matches(':').to_string();
-            let typed_suffix = trimmed_last[eq_pos + 1..].to_string();
+            let key = key_part.trim_start_matches(':').to_string();
+            let typed_suffix = value_part.to_string();
             let items = get_value_completions_with_live(data, context, &key, live_cache);
             return filter_by_typed_prefix(items, &typed_suffix);
         }

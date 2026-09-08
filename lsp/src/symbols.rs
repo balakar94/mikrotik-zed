@@ -110,9 +110,26 @@ fn menu_command_symbol(
     let mut path_parts: Vec<String> = vec![first.text.trim_start_matches('/').to_string()];
     let mut tail_end = first.end; // end offset of the last path segment
 
+    let mut depth: u32 = 0;
+    {
+        let (opens, _) = crate::parser::bracket_counts(&tokens[0].text);
+        depth = depth.saturating_add(opens).min(32);
+    }
     for tok in &tokens[1..] {
+        let (opens, closes) = crate::parser::bracket_counts(&tok.text);
+        // Bracket regions are inert: inner words never extend the head, not
+        // even the token that closes the region.
+        let was_inside = depth > 0 || opens > 0;
+        depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
+        if was_inside {
+            continue;
+        }
         // Properties (and a second absolute path) end the head of the command.
-        if tok.text.contains('=') || tok.text.starts_with('/') {
+        if crate::parser::split_key_value(&tok.text).is_some() || tok.text.starts_with('/') {
+            break;
+        }
+        // Expression debris with an outside-quote `=` is not a verb either.
+        if tok.text.contains('=') {
             break;
         }
         let current_path = format!("/{}", path_parts.join("/"));

@@ -456,24 +456,207 @@ pub fn build_before_cursor(doc: &str, cursor_line: usize, cursor_char: usize) ->
     parts.join(" ")
 }
 
+/// Split `token` into `(key, value)` at the first `=` outside quotes.
+///
+/// Quote-aware via [`QuoteState`]: an `=` inside `"..."` or `'...'` (with
+/// `\` escaping the next byte inside quotes) is literal content, so
+/// `/log info ("a=b" . $x)` yields no key and `comment="a=b c=d"` yields
+/// key `comment`. Returns `None` when there is no outside-quote `=`, when
+/// `=` sits at index 0, when the key fails `^[A-Za-z][A-Za-z0-9_-]*$`
+/// (covers `pool-name`, `tcp-flags`, `start-date`, `place-before`), or when
+/// the token leads with `([$"\'` (expression debris like `("a=b"`).
+pub(crate) fn split_key_value(token: &str) -> Option<(&str, &str)> {
+    if token.is_empty() {
+        return None;
+    }
+    // Expression leaders can never open a property assignment.
+    if matches!(token.as_bytes()[0], b'(' | b'[' | b'$' | b'"' | b'\'') {
+        return None;
+    }
+    let bytes = token.as_bytes();
+    let mut q = QuoteState::new();
+    let mut eq_idx: Option<usize> = None;
+    for (i, &b) in bytes.iter().enumerate() {
+        let adv = q.advance_byte(b);
+        match adv {
+            QuoteAdvance::Escaped | QuoteAdvance::EscapeStart => continue,
+            QuoteAdvance::DoubleOpen
+            | QuoteAdvance::DoubleClose
+            | QuoteAdvance::SingleOpen
+            | QuoteAdvance::SingleClose => continue,
+            // An unquoted `#` ends meaningful content; nothing after it
+            // can be a structural `=`.
+            QuoteAdvance::CommentStart => break,
+            QuoteAdvance::Other(byte) => {
+                if byte == b'=' && !q.is_in_quote() {
+                    eq_idx = Some(i);
+                    break;
+                }
+            }
+        }
+    }
+    let eq = eq_idx?;
+    if eq == 0 {
+        return None;
+    }
+    let key = &token[..eq];
+    let value = &token[eq + 1..];
+    // `=` is ASCII so both slices sit on char boundaries.
+    if !is_valid_property_key(key) {
+        return None;
+    }
+    Some((key, value))
+}
+
+/// True when `key` matches `^[A-Za-z][A-Za-z0-9_-]*$`.
+fn is_valid_property_key(key: &str) -> bool {
+    let bytes = key.as_bytes();
+    let Some(&first) = bytes.first() else {
+        return false;
+    };
+    if !first.is_ascii_alphabetic() {
+        return false;
+    }
+    for &b in &bytes[1..] {
+        if !(b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+            return false;
+        }
+    }
+    true
+}
+
+/// True when `token` may introduce a command verb: the first byte is ASCII
+/// alphabetic. RouterOS verbs are plain words (`add`, `print`, `set`,
+/// `force-update`); this generalizes the [`split_key_value`] leader rule
+/// (`([$"\'` can never lead) to also reject expression debris the key
+/// regex never contemplated: the `.` concatenation operator, `+`, and
+/// value fragments like `2h)`. Without this, such debris becomes the
+/// command (blocking the trailing-verb split) on lines like
+/// `/ipv6/nd/prefix/add ... comment=("X" . $y)`.
+fn is_command_leader(token: &str) -> bool {
+    matches!(token.as_bytes().first(), Some(b) if b.is_ascii_alphabetic())
+}
+
+/// Count unquoted `[` / `]` bytes in `token` via [`QuoteState`].
+///
+/// Quoted brackets are literal content; an unquoted `#` ends the scan.
+/// Returns `(opens, closes)`.
+pub(crate) fn bracket_counts(token: &str) -> (u32, u32) {
+    let mut q = QuoteState::new();
+    let mut opens: u32 = 0;
+    let mut closes: u32 = 0;
+    for &b in token.as_bytes() {
+        let adv = q.advance_byte(b);
+        match adv {
+            QuoteAdvance::Escaped
+            | QuoteAdvance::EscapeStart
+            | QuoteAdvance::DoubleOpen
+            | QuoteAdvance::DoubleClose
+            | QuoteAdvance::SingleOpen
+            | QuoteAdvance::SingleClose => continue,
+            QuoteAdvance::CommentStart => break,
+            QuoteAdvance::Other(byte) => {
+                if q.is_in_quote() {
+                    continue;
+                }
+                if byte == b'[' {
+                    opens += 1;
+                } else if byte == b']' {
+                    closes += 1;
+                }
+            }
+        }
+    }
+    (opens, closes)
+}
+
+/// Split a trailing verb off a slash path (`/ipv6/nd/prefix/add`).
+///
+/// Returns `(parent, verb-as-written)` only when `path` itself is unknown
+/// (neither in `menu_by_path` nor `ancestor_prefixes`), the parent before
+/// the final `/` is known, and the final segment case-insensitively names
+/// a [`MenuData::STANDARD_VERBS`] entry. Single level only; a bare `/add`
+/// (empty parent) never splits.
+pub(crate) fn split_trailing_verb(path: &str, data: &MenuData) -> Option<(String, String)> {
+    if path.is_empty() {
+        return None;
+    }
+    if data.menu_by_path.contains_key(path) || data.ancestor_prefixes.contains(path) {
+        return None;
+    }
+    let (parent, last) = path.rsplit_once('/')?;
+    if parent.is_empty() || last.is_empty() {
+        return None;
+    }
+    if !(data.menu_by_path.contains_key(parent) || data.ancestor_prefixes.contains(parent)) {
+        return None;
+    }
+    if !MenuData::STANDARD_VERBS
+        .iter()
+        .any(|v| v.eq_ignore_ascii_case(last))
+    {
+        return None;
+    }
+    Some((parent.to_string(), last.to_string()))
+}
+
 /// Parse a line of RouterOS script into structural components.
 pub fn parse_line(data: &MenuData, before_cursor: &str) -> LineContext {
-    let tokens = tokenize(before_cursor);
+    let tokens = tokenize_with_spans(before_cursor);
     let mut path_parts: Vec<String> = Vec::new();
     let mut command: Option<String> = None;
     let mut properties: HashMap<String, String> = HashMap::new();
+    // Depth of unquoted `[...]` nesting: tokens inside a bracket region or
+    // opening one are skipped entirely so inner `key=value` pairs (e.g.
+    // `[find pool-name=x]`) never leak into the outer context.
+    let mut depth: u32 = 0;
 
-    for token in &tokens {
-        if token.starts_with('/') {
-            path_parts.push(token.trim_start_matches('/').to_string());
+    for tok in &tokens {
+        let token = tok.text.as_str();
+        let (opens, closes) = bracket_counts(token);
+        if depth > 0 || opens > 0 {
+            depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
             continue;
         }
 
-        if let Some(eq_idx) = token.find('=') {
-            let key = token[..eq_idx].to_string();
-            let value = token[eq_idx + 1..].to_string();
-            properties.insert(key, value);
+        if token.starts_with('/') {
+            path_parts.push(token.trim_start_matches('/').to_string());
+            depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
             continue;
+        }
+
+        if let Some((key, value)) = split_key_value(token) {
+            properties.insert(key.to_string(), value.to_string());
+            depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
+            continue;
+        }
+
+        // A token carrying an outside-quote `=` that is not a valid
+        // property (e.g. `=debris`) is neither property nor verb.
+        if token.contains('=') {
+            let mut q = QuoteState::new();
+            let mut outside_eq = false;
+            for &b in token.as_bytes() {
+                match q.advance_byte(b) {
+                    QuoteAdvance::Escaped
+                    | QuoteAdvance::EscapeStart
+                    | QuoteAdvance::DoubleOpen
+                    | QuoteAdvance::DoubleClose
+                    | QuoteAdvance::SingleOpen
+                    | QuoteAdvance::SingleClose => continue,
+                    QuoteAdvance::CommentStart => break,
+                    QuoteAdvance::Other(byte) => {
+                        if byte == b'=' && !q.is_in_quote() {
+                            outside_eq = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if outside_eq {
+                depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
+                continue;
+            }
         }
 
         if !path_parts.is_empty() {
@@ -484,25 +667,41 @@ pub fn parse_line(data: &MenuData, before_cursor: &str) -> LineContext {
             let is_sub_menu = data
                 .child_names_by_parent
                 .get(&current_path)
-                .map(|children| children.iter().any(|c| c.name == *token))
+                .map(|children| children.iter().any(|c| c.name == token))
                 .unwrap_or(false);
             if is_sub_menu {
-                path_parts.push(token.clone());
-            } else {
-                command = Some(token.clone());
+                path_parts.push(token.to_string());
+            } else if command.is_none() && is_command_leader(token) {
+                command = Some(token.to_string());
             }
+            depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
             continue;
         }
 
-        command = Some(token.clone());
+        if command.is_none() && is_command_leader(token) {
+            command = Some(token.to_string());
+        }
+        depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
+    }
+
+    let mut path = if path_parts.is_empty() {
+        String::new()
+    } else {
+        format!("/{}", path_parts.join("/"))
+    };
+    // Valid RouterOS shorthand: menu+verb in one slash token. Only when no
+    // explicit space-separated verb was typed; explicit verbs are never
+    // overwritten.
+    if command.is_none()
+        && !path.is_empty()
+        && let Some((parent, verb)) = split_trailing_verb(&path, data)
+    {
+        path = parent;
+        command = Some(verb);
     }
 
     LineContext {
-        path: if path_parts.is_empty() {
-            String::new()
-        } else {
-            format!("/{}", path_parts.join("/"))
-        },
+        path,
         command,
         properties,
     }
@@ -515,28 +714,43 @@ pub fn parse_line(data: &MenuData, before_cursor: &str) -> LineContext {
 // join per open document so repeated requests (completion, definition,
 // references, rename) only reparse when the text actually changed.
 //
-// Keying: document URI + hash of the full text. The server tracks no
-// per-document version counter (it stores plain `uri -> text`), so the
-// text hash is the change detector: any edit yields a different hash and
-// therefore a miss followed by a reparse. Staleness needs no explicit
-// dirty flag; `invalidate` exists for lifecycle events (didOpen re-insert,
-// didClose) where the entry must die regardless of content.
+// Keying: document URI + byte length + hash of the full text. The server
+// tracks no per-document version counter (it stores plain `uri -> text`),
+// so the text hash is the change detector: any edit yields a different
+// hash and therefore a miss followed by a reparse. The stored length is a
+// fast reject: a length mismatch misses without hashing the full document.
+// Staleness needs no explicit dirty flag; `invalidate` exists for lifecycle
+// events (didOpen re-insert, didClose) where the entry must die regardless
+// of content.
 //
 // Bound: entries are keyed by tracked-document URI and the server caps
-// tracked documents at `MAX_DOCS`; as belt-and-braces `get_or_insert`
-// evicts one arbitrary entry before exceeding that cap, so the cache can
-// never outgrow the document store it shadows.
+// tracked documents at `MAX_DOCS`; as belt-and-braces insertion evicts the
+// oldest-inserted URI (FIFO via `order`) before exceeding that cap, so the
+// cache can never outgrow the document store it shadows. FIFO (not LRU)
+// is deliberate: no new dependency, O(1) bookkeeping, and request locality
+// comes from document-count bounds rather than recency.
+//
+// Hot-path discipline: call [`ParseCache::lookup_or_insert`] (single full
+// document hash per request). Separate probe-then-insert sequences would
+// hash the same bytes twice per request; the combined entry point hashes
+// at most once and returns the slice directly. Join
+// output semantics are untouched: warm results are byte-identical to a
+// fresh `diagnostics::logical_lines` call (pinned by tests below).
 
-/// One cached parse: the hash the entry was built from plus the derived
-/// logical lines it memoizes.
+/// One cached parse: the length/hash the entry was built from plus the
+/// derived logical lines it memoizes.
 struct CachedDoc {
+    text_len: usize,
     text_hash: u64,
     logicals: Vec<crate::diagnostics::LogicalLine>,
 }
 
-/// Memoized logical-line joins keyed by document URI.
+/// Memoized logical-line joins keyed by document URI (FIFO-bounded).
 pub(crate) struct ParseCache {
     entries: HashMap<String, CachedDoc>,
+    /// Insertion order of `entries` keys (oldest front). Kept in sync on
+    /// insert/evict/invalidate; drives FIFO eviction at the `MAX_DOCS` cap.
+    order: std::collections::VecDeque<String>,
 }
 
 /// Hash the full document text for change detection (SipHash via std).
@@ -549,61 +763,113 @@ fn text_hash(text: &str) -> u64 {
 }
 
 impl ParseCache {
-    /// Empty cache; entries accrue lazily via [`ParseCache::get_or_insert`].
+    /// Empty cache; entries accrue lazily via [`ParseCache::lookup_or_insert`].
     pub(crate) fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            order: std::collections::VecDeque::new(),
         }
+    }
+
+    /// Insert `logicals` for `uri` built from `doc` (`text_hash` precomputed
+    /// by the caller so the hash is computed exactly once per miss).
+    /// New URIs at the `MAX_DOCS` cap evict the oldest-inserted entry first.
+    fn insert_with_hash(
+        &mut self,
+        uri: &str,
+        doc: &str,
+        hash: u64,
+        logicals: Vec<crate::diagnostics::LogicalLine>,
+    ) {
+        let is_new = !self.entries.contains_key(uri);
+        if is_new {
+            while self.entries.len() >= crate::MAX_DOCS {
+                let Some(victim) = self.order.pop_front() else {
+                    break;
+                };
+                if self.entries.remove(&victim).is_some() {
+                    break;
+                }
+                // Stale order entry (invalidated earlier): keep draining.
+            }
+            self.order.push_back(uri.to_string());
+        }
+        self.entries.insert(
+            uri.to_string(),
+            CachedDoc {
+                text_len: doc.len(),
+                text_hash: hash,
+                logicals,
+            },
+        );
     }
 
     /// Look up the cached logical lines for the CURRENT text of `uri`.
     ///
-    /// Returns `Some` only when an entry exists AND its hash matches `doc`
-    /// (warm cache); any edit since the entry was stored yields `None`.
+    /// Returns `Some` only when an entry exists AND its length and hash both
+    /// match `doc` (warm cache); any edit since the entry was stored yields
+    /// `None`. Length is checked first so edits that change the byte count
+    /// miss without hashing the full document.
+    ///
+    /// Read-only probe: unlike [`ParseCache::lookup_or_insert`] it never
+    /// parses or inserts, so tests can assert cache state (cold miss,
+    /// edit invalidation, didClose drop) without mutating it. The production
+    /// hot path uses `lookup_or_insert`; the current in-crate users of this
+    /// probe are the test suite, hence the scoped allow for non-test builds.
+    #[allow(dead_code)]
     pub(crate) fn lookup(
         &self,
         uri: &str,
         doc: &str,
     ) -> Option<&[crate::diagnostics::LogicalLine]> {
-        self.entries.get(uri).and_then(|entry| {
-            if entry.text_hash == text_hash(doc) {
-                Some(entry.logicals.as_slice())
-            } else {
-                None
-            }
-        })
+        let entry = self.entries.get(uri)?;
+        if entry.text_len != doc.len() {
+            return None;
+        }
+        if entry.text_hash == text_hash(doc) {
+            Some(entry.logicals.as_slice())
+        } else {
+            None
+        }
     }
 
     /// Return the cached logical lines for the CURRENT text of `uri`,
     /// parsing and storing them on a miss (cold cache or changed text).
     ///
-    /// Bounded by the document-store discipline (`MAX_DOCS`): inserting a
-    /// new URI while at the cap evicts one arbitrary entry first.
-    pub(crate) fn get_or_insert(
+    /// Single-hash entry point: the full-document hash is computed at most
+    /// once per call, whether the outcome is a hit or a miss. Request
+    /// handlers must call this directly instead of a separate `lookup`
+    /// followed by an inserting call (which would hash the same bytes twice).
+    /// Output is identical to a fresh `diagnostics::logical_lines` join.
+    pub(crate) fn lookup_or_insert(
         &mut self,
         uri: &str,
         doc: &str,
     ) -> &[crate::diagnostics::LogicalLine] {
+        // Fast path without hashing: no entry, or length mismatch.
+        let len_miss = match self.entries.get(uri) {
+            None => true,
+            Some(entry) => entry.text_len != doc.len(),
+        };
+        if len_miss {
+            let hash = text_hash(doc);
+            let logicals = crate::diagnostics::logical_lines(doc);
+            self.insert_with_hash(uri, doc, hash, logicals);
+            return &self
+                .entries
+                .get(uri)
+                .expect("parse cache entry was just inserted")
+                .logicals;
+        }
+        // Same length: exactly one hash decides hit vs. miss.
         let hash = text_hash(doc);
-        let fresh = self
+        let hit = self
             .entries
             .get(uri)
-            .is_none_or(|entry| entry.text_hash != hash);
-        if fresh {
+            .is_some_and(|entry| entry.text_hash == hash);
+        if !hit {
             let logicals = crate::diagnostics::logical_lines(doc);
-            if !self.entries.contains_key(uri)
-                && self.entries.len() >= crate::MAX_DOCS
-                && let Some(victim) = self.entries.keys().next().cloned()
-            {
-                self.entries.remove(&victim);
-            }
-            self.entries.insert(
-                uri.to_string(),
-                CachedDoc {
-                    text_hash: hash,
-                    logicals,
-                },
-            );
+            self.insert_with_hash(uri, doc, hash, logicals);
         }
         &self
             .entries
@@ -614,9 +880,12 @@ impl ParseCache {
 
     /// Drop the entry for `uri`, if any. Called on didOpen (re-insert) and
     /// didClose (entries die with the document). Edits need no explicit
-    /// call: the hash check in [`ParseCache::lookup`] already misses.
+    /// call: the length/hash check in [`ParseCache::lookup`] already misses.
+    /// Also drops the FIFO slot eagerly so `order` stays bounded by the
+    /// live entry count (no stale-slot accumulation across open/close cycles).
     pub(crate) fn invalidate(&mut self, uri: &str) {
         self.entries.remove(uri);
+        self.order.retain(|u| u != uri);
     }
 }
 
@@ -1388,7 +1657,7 @@ type = "Directory"
         assert!(cache.lookup(uri, doc).is_none());
         // First access parses and stores…
         let warm: Vec<String> = cache
-            .get_or_insert(uri, doc)
+            .lookup_or_insert(uri, doc)
             .iter()
             .map(|ll| ll.text().to_string())
             .collect();
@@ -1403,12 +1672,47 @@ type = "Directory"
     }
 
     #[test]
+    fn test_parse_cache_no_reparse_on_repeat_lookup_or_insert() {
+        // Repeat access with unchanged text must reuse the stored vector
+        // (no reparse): both slices point at the same allocation, and the
+        // content stays identical to a fresh join (join semantics unchanged).
+        let mut cache = ParseCache::new();
+        let uri = "file:///cache-repeat.rsc";
+        let doc = "/ip/address add \\\naddress=1.2.3.4\n";
+        let first_ptr = {
+            let slice = cache.lookup_or_insert(uri, doc);
+            assert!(!slice.is_empty());
+            slice.as_ptr()
+        };
+        let second_ptr = cache.lookup_or_insert(uri, doc).as_ptr();
+        assert_eq!(
+            first_ptr, second_ptr,
+            "repeat lookup_or_insert must not reparse"
+        );
+        assert!(cache.lookup(uri, doc).is_some());
+        let fresh: Vec<String> = crate::diagnostics::logical_lines(doc)
+            .iter()
+            .map(|ll| ll.text().to_string())
+            .collect();
+        assert_eq!(cache_texts(&cache, uri, doc), Some(fresh));
+        // Same-length edit still misses (hash differs) and reparses.
+        let edited = "/ip/address add \\\naddress=9.9.9.9\n";
+        assert_eq!(edited.len(), doc.len());
+        assert!(cache.lookup(uri, edited).is_none());
+        let third_ptr = cache.lookup_or_insert(uri, edited).as_ptr();
+        assert_ne!(
+            first_ptr, third_ptr,
+            "edited text must reparse into a new allocation"
+        );
+    }
+
+    #[test]
     fn test_parse_cache_edit_invalidates_via_hash_mismatch() {
         let mut cache = ParseCache::new();
         let uri = "file:///cache-edit.rsc";
         let before = ":local x\n:put $x\n";
         let after = ":local x\n:put $x\n:put $x\n";
-        cache.get_or_insert(uri, before);
+        cache.lookup_or_insert(uri, before);
         assert!(cache.lookup(uri, before).is_some());
         // Same URI, changed text: the stored hash no longer matches, so the
         // lookup misses (stale entries can never be served)…
@@ -1418,7 +1722,7 @@ type = "Directory"
         );
         // …and the next access reparses the new content.
         let texts: Vec<String> = cache
-            .get_or_insert(uri, after)
+            .lookup_or_insert(uri, after)
             .iter()
             .map(|ll| ll.text().to_string())
             .collect();
@@ -1432,7 +1736,7 @@ type = "Directory"
         let mut cache = ParseCache::new();
         let uri = "file:///cache-close.rsc";
         let doc = ":put hi\n";
-        cache.get_or_insert(uri, doc);
+        cache.lookup_or_insert(uri, doc);
         assert!(cache.lookup(uri, doc).is_some());
         cache.invalidate(uri);
         assert!(
@@ -1443,12 +1747,162 @@ type = "Directory"
         cache.invalidate("file:///never-opened.rsc");
     }
 
+    // ── Centralized parser fix (slash-verb, quote-aware =, brackets) ──
+
+    fn slash_verb_data() -> MenuData {
+        MenuData::from_toml_str(
+            r#"
+[[menus]]
+path = "/ipv6/nd/prefix"
+type = "Directory"
+[[menus.arguments]]
+name = "interface"
+type = "iface_enum"
+[[menus.arguments]]
+name = "prefix"
+type = "string"
+[[menus.arguments]]
+name = "comment"
+type = "string"
+[[menus]]
+path = "/log"
+type = "Directory"
+[[menus]]
+path = "/ip/address"
+type = "Directory"
+[[menus.arguments]]
+name = "address"
+type = "ipPrefix"
+[[menus.arguments]]
+name = "interface"
+type = "iface_enum"
+[[menus.arguments]]
+name = "comment"
+type = "string"
+"#,
+        )
+    }
+
+    #[test]
+    fn test_split_key_value_valid_keys() {
+        assert_eq!(split_key_value("pool-name=x"), Some(("pool-name", "x")));
+        assert_eq!(split_key_value("tcp-flags=syn"), Some(("tcp-flags", "syn")));
+        assert_eq!(
+            split_key_value("start-date=nov/01/2024"),
+            Some(("start-date", "nov/01/2024"))
+        );
+        assert_eq!(
+            split_key_value("place-before=0"),
+            Some(("place-before", "0"))
+        );
+        assert_eq!(split_key_value("chain="), Some(("chain", "")));
+    }
+
+    #[test]
+    fn test_split_key_value_rejects_quote_blind_equals() {
+        // `=` inside quotes is literal content, not a separator.
+        assert!(split_key_value(r#"("a=b""#).is_none());
+        assert!(split_key_value("$x").is_none());
+        assert!(split_key_value("[find").is_none());
+        assert!(split_key_value("=value").is_none());
+        assert!(split_key_value("9bad=x").is_none());
+        assert!(split_key_value("foo.bar=x").is_none());
+        assert!(split_key_value("no-equals").is_none());
+    }
+
+    #[test]
+    fn test_split_key_value_first_outside_equals_wins() {
+        // Quoted value containing `=` keeps the outer key.
+        assert_eq!(
+            split_key_value(r#"comment="a=b c=d""#),
+            Some(("comment", r#""a=b c=d""#))
+        );
+    }
+
+    #[test]
+    fn test_parse_line_slash_verb_shorthand() {
+        let data = slash_verb_data();
+        let ctx = parse_line(&data, "/ipv6/nd/prefix/add interface=bridge");
+        assert_eq!(ctx.path, "/ipv6/nd/prefix");
+        assert_eq!(ctx.command.as_deref(), Some("add"));
+        assert_eq!(
+            ctx.properties.get("interface").map(|s| s.as_str()),
+            Some("bridge")
+        );
+    }
+
+    #[test]
+    fn test_parse_line_slash_verb_never_overwrites_explicit_verb() {
+        let data = slash_verb_data();
+        let ctx = parse_line(&data, "/ipv6/nd/prefix print");
+        assert_eq!(ctx.path, "/ipv6/nd/prefix");
+        assert_eq!(ctx.command.as_deref(), Some("print"));
+        // Bare `/add` (empty parent) never splits.
+        let ctx2 = parse_line(&data, "/add");
+        assert_eq!(ctx2.command, None);
+    }
+
+    #[test]
+    fn test_parse_line_log_info_with_quoted_equals_has_no_properties() {
+        let data = slash_verb_data();
+        let ctx = parse_line(&data, r#"/log info ("digi prevPd=" . $x)"#);
+        assert_eq!(ctx.path, "/log");
+        assert_eq!(ctx.command.as_deref(), Some("info"));
+        assert!(
+            ctx.properties.is_empty(),
+            "quoted `=` must not spawn properties, got {:?}",
+            ctx.properties
+        );
+    }
+
+    #[test]
+    fn test_parse_line_bracket_find_ignored_command_stays_set() {
+        let data = slash_verb_data();
+        let ctx = parse_line(
+            &data,
+            "/ip/address set [find pool-name=digi-ipv6] address=1.1.1.1",
+        );
+        assert_eq!(ctx.path, "/ip/address");
+        assert_eq!(ctx.command.as_deref(), Some("set"));
+        assert!(
+            !ctx.properties.contains_key("pool-name"),
+            "inner bracket key must not leak, got {:?}",
+            ctx.properties
+        );
+        assert_eq!(
+            ctx.properties.get("address").map(|s| s.as_str()),
+            Some("1.1.1.1")
+        );
+    }
+
+    #[test]
+    fn test_parse_line_quoted_comment_still_property() {
+        let data = slash_verb_data();
+        let ctx = parse_line(&data, r#"/ip/address add comment="a=b c=d""#);
+        assert_eq!(
+            ctx.properties.get("comment").map(|s| s.as_str()),
+            Some(r#""a=b c=d""#)
+        );
+    }
+
+    #[test]
+    fn test_parse_line_concat_comment_still_property() {
+        let data = slash_verb_data();
+        let ctx = parse_line(&data, r#"/ip/address add comment=("X old=" . $y)"#);
+        assert_eq!(ctx.command.as_deref(), Some("add"));
+        assert!(
+            ctx.properties.contains_key("comment"),
+            "concat comment must stay a property, got {:?}",
+            ctx.properties
+        );
+    }
+
     #[test]
     fn test_parse_cache_bounded_by_max_docs_discipline() {
         let mut cache = ParseCache::new();
         for i in 0..(crate::MAX_DOCS + 25) {
             let uri = format!("file:///cache-cap-{i}.rsc");
-            cache.get_or_insert(&uri, ":put hi\n");
+            cache.lookup_or_insert(&uri, ":put hi\n");
         }
         assert!(
             cache.entries.len() <= crate::MAX_DOCS,

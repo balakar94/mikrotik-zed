@@ -54,6 +54,29 @@ pub struct Hover {
     pub contents: HoverContents,
 }
 
+/// One-line help for `:`-prefixed script keywords (`:put`, `:if`, ...).
+/// `find_word_start` deliberately excludes `:` so word extraction stays
+/// shared with navigation; hover re-attaches the prefix locally instead.
+fn colon_builtin_doc(colon_word: &str) -> Option<&'static str> {
+    if colon_word.eq_ignore_ascii_case(":put") {
+        Some("Output values to the console.")
+    } else if colon_word.eq_ignore_ascii_case(":if") {
+        Some("Conditional execution.")
+    } else if colon_word.eq_ignore_ascii_case(":foreach") {
+        Some("Iterate over a list.")
+    } else if colon_word.eq_ignore_ascii_case(":for") {
+        Some("Counted loop.")
+    } else if colon_word.eq_ignore_ascii_case(":do") {
+        Some("Group commands.")
+    } else if colon_word.eq_ignore_ascii_case(":local") {
+        Some("Declare a local variable.")
+    } else if colon_word.eq_ignore_ascii_case(":global") {
+        Some("Declare or access a global variable.")
+    } else {
+        None
+    }
+}
+
 pub fn compute_hover(
     data: &MenuData,
     line: &str,
@@ -69,6 +92,13 @@ pub fn compute_hover(
     if word.is_empty() {
         return None;
     }
+    // Re-include a leading `:` without touching `find_word_start`.
+    let colon_word: Option<String> =
+        if word_start > 0 && line.as_bytes().get(word_start - 1) == Some(&b':') {
+            Some(format!(":{word}"))
+        } else {
+            None
+        };
 
     // Check if it's a menu path
     // let chains (requires Rust 1.88+, MSRV is 1.94) — collapsed for clippy collapsible_if
@@ -186,6 +216,26 @@ pub fn compute_hover(
             contents: HoverContents {
                 kind: "markdown".to_string(),
                 value: md,
+            },
+        });
+    }
+
+    // `:`-prefixed script keywords (`:put`, `:if`, ...). The extracted `word`
+    // excludes the colon by design; `colon_word` above re-attaches it locally.
+    if let Some(cw) = colon_word {
+        if let Some(doc) = colon_builtin_doc(&cw) {
+            return Some(Hover {
+                contents: HoverContents {
+                    kind: "markdown".to_string(),
+                    value: format!("**{cw}**\n\n{doc}"),
+                },
+            });
+        }
+        // Fallback for other `:keyword` forms: still a script command.
+        return Some(Hover {
+            contents: HoverContents {
+                kind: "markdown".to_string(),
+                value: format!("**{cw}**\n\nScript command."),
             },
         });
     }
@@ -646,6 +696,34 @@ enum_values = ["on", "off", "auto"]
         let prop_pos = line.rfind("address=").unwrap() + 2;
         let h = compute_hover(&data, line, prop_pos, line, 0).expect("real property hover");
         assert!(h.contents.value.contains("address"));
+    }
+
+    #[test]
+    fn test_hover_colon_put() {
+        let data = synthetic_data();
+        let line = ":put hello";
+        let h = hover_at(&data, line, 2).expect(":put should hover");
+        assert!(h.contents.value.contains(":put"));
+        assert!(h.contents.value.contains("console"));
+    }
+
+    #[test]
+    fn test_hover_colon_foreach() {
+        let data = synthetic_data();
+        let line = ":foreach i in=[find] do={ :put $i }";
+        let pos = line.find("foreach").unwrap() + 1;
+        let h = hover_at(&data, line, pos).expect(":foreach should hover");
+        assert!(h.contents.value.contains(":foreach"));
+    }
+
+    #[test]
+    fn test_hover_colon_unknown_fallback() {
+        let data = synthetic_data();
+        let line = ":delay 1s";
+        let pos = line.find("delay").unwrap() + 1;
+        let h = hover_at(&data, line, pos).expect("unknown :keyword gets fallback");
+        assert!(h.contents.value.contains(":delay"));
+        assert!(h.contents.value.contains("Script command"));
     }
 }
 

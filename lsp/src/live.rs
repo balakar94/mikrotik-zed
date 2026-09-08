@@ -1855,15 +1855,18 @@ fn trigger_background_fetch(
 /// Called by the `textDocument/completion` handler once per request; it
 /// encapsulates what the handler used to inline around live data:
 ///
-/// 1. Resource resolution — `resolve_resource_with_custom` on (menu path,
-///    property, arg type), i.e. the built-in heuristic with
-///    custom-resource fallback; when `property` is `None` (cursor not inside
-///    a `key=value` assignment) interfaces are prefetched as the likely target.
-/// 2. Built-in background fetch — coalescing-aware spawn via
-///    `get_cached_or_fetch_background` (`try_get_cached`,
-///    `is_negative_cooldown`, `can_spawn_fetch`, `record_fetch_attempt`).
-/// 3. Custom background fetch — a separate coalescing-aware spawn under
-///    cache key `custom:<property>` (see `trigger_custom_fetch_background`).
+/// 1. Custom match — when `property` names a custom resource, ONLY the
+///    custom key `custom:<property>` is fetched; the generic Interfaces
+///    prefetch is skipped to avoid a double fetch.
+/// 2. Built-in background fetch — `resolve_resource_with_custom` on (menu
+///    path, property, arg type); when `property` is `None` (cursor not
+///    inside a `key=value` assignment) interfaces are prefetched as the
+///    likely target. Interfaces prefetch only for interface-like/empty
+///    context: an unresolvable property fetches nothing.
+/// 3. Coalescing-aware spawn via `get_cached_or_fetch_background`
+///    (`try_get_cached`, `is_negative_cooldown`, `can_spawn_fetch`,
+///    `record_fetch_attempt`) or `trigger_custom_fetch_background` for the
+///    custom key (never collides with built-in entries).
 ///
 /// Never blocks and never logs `pass`. `context_path` is the menu path of
 /// the line being completed; `arg_type` is the menu-declared argument type
@@ -1875,30 +1878,27 @@ pub fn trigger_enrichment_for_completion(
     context_path: &str,
     arg_type: &str,
 ) {
+    // Custom resource wins alone: fetch ONLY the custom key, skip the
+    // generic Interfaces prefetch (avoids a double fetch per keystroke).
+    if let Some(key) = property
+        && let Some(custom) = config.custom_resource_for_property(key).cloned()
+    {
+        trigger_custom_fetch_background(cache, config, &custom);
+        return;
+    }
+
     let target_resource = match property {
         Some(key) => config.resolve_resource_with_custom(context_path, key, arg_type),
         None => Some(ResourceKind::Interfaces),
     };
 
-    match target_resource {
-        Some(res) => {
-            let _ = get_cached_or_fetch_background(cache, config, res);
-            log_debug!("live background fetch triggered for {res:?}");
-        }
-        None => {
-            // Property has no known resource; prefetch interfaces anyway so
-            // the next keystroke can enrich.
-            let _ = get_cached_or_fetch_background(cache, config, ResourceKind::Interfaces);
-        }
+    if let Some(res) = target_resource {
+        let _ = get_cached_or_fetch_background(cache, config, res);
+        log_debug!("live background fetch triggered for {res:?}");
     }
-
-    // Custom resource: separate background fetch under its own cache key so
-    // it never collides with built-in entries.
-    if let Some(key) = property
-        && let Some(custom) = config.custom_resource_for_property(key).cloned()
-    {
-        trigger_custom_fetch_background(cache, config, &custom);
-    }
+    // Else: property has no known resource — fetch nothing. Interfaces are
+    // prefetched only for interface-like/empty context, not as a generic
+    // fallback for unrelated properties.
 }
 
 /// Spawn a coalescing-aware background fetch for a custom resource.
@@ -3437,14 +3437,14 @@ mod tests {
     }
 
     #[test]
-    fn test_trigger_enrichment_unknown_property_falls_back_to_interfaces() {
+    fn test_trigger_enrichment_unknown_property_fetches_nothing() {
         let cache = Arc::new(Mutex::new(LiveCache::with_default_ttl()));
         let cfg = active_test_cfg();
         trigger_enrichment_for_completion(&cache, &cfg, Some("comment"), "", "");
         let guard = cache.lock().unwrap();
-        // Only the interfaces prefetch; no custom key involved.
-        assert!(guard.last_fetch_attempt.contains_key("interfaces"));
-        assert_eq!(guard.last_fetch_attempt.len(), 1);
+        // Unresolvable property fetches nothing; Interfaces prefetch is
+        // reserved for interface-like/empty context.
+        assert!(guard.last_fetch_attempt.is_empty());
     }
 
     #[test]
@@ -3469,10 +3469,11 @@ mod tests {
             "string",
         );
         let guard = cache.lock().unwrap();
-        // Custom property resolves to the generic Interfaces kind...
-        assert!(guard.last_fetch_attempt.contains_key("interfaces"));
-        // ...and the custom resource is tracked under `custom:<property>`.
+        // Custom match fetches ONLY the custom key (no generic prefetch).
+        assert!(!guard.last_fetch_attempt.contains_key("interfaces"));
+        // ...the custom resource is tracked under `custom:<property>`.
         assert!(guard.last_fetch_attempt.contains_key("custom:packet-mark"));
+        assert_eq!(guard.last_fetch_attempt.len(), 1);
         let recorded_at = guard.last_fetch_attempt["custom:packet-mark"];
         drop(guard);
         // Second call within the coalescing window must not re-record.

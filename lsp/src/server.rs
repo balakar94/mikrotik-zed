@@ -826,10 +826,10 @@ impl Server {
                     // trailing `key=value` token, if the cursor is inside a
                     // property assignment.
                     let tokens = crate::parser::tokenize(&before_cursor);
-                    let property = tokens
-                        .last()
-                        .filter(|tok| tok.contains('='))
-                        .map(|tok| tok.split('=').next().unwrap_or("").trim_start_matches(':'));
+                    let property = tokens.last().and_then(|tok| {
+                        crate::parser::split_key_value(tok)
+                            .map(|(key, _)| key.trim_start_matches(':'))
+                    });
                     // Menu-declared argument type for the property (empty
                     // string when the property is unknown to the menu).
                     let arg_type = property
@@ -902,23 +902,20 @@ impl Server {
                     let mut value_range_phys: Option<(usize, usize, usize, usize)> = None;
                     // (phys_start_line, phys_start_char_byte, phys_end_line, phys_end_char_byte) in byte offsets
                     // Helper: try logical path first, fallback to physical.
-                    // Cached join: look up first; reparse+store only on a
-                    // miss (cold cache or changed text). Identical bytes to
-                    // a fresh `logical_lines` either way, so mapping
-                    // behavior is identical warm or cold.
-                    if self.parse_cache.lookup(uri, doc).is_none() {
-                        self.parse_cache.get_or_insert(uri, doc);
-                    }
-                    let logicals = self
-                        .parse_cache
-                        .lookup(uri, doc)
-                        .expect("parse cache populated just above");
+                    // Cached join: single-hash lookup-or-insert (cold cache or
+                    // changed text reparses once; warm hits reuse the slice).
+                    // Identical bytes to a fresh `logical_lines` either way,
+                    // so mapping behavior is identical warm or cold.
+                    let logicals = self.parse_cache.lookup_or_insert(uri, doc);
                     let covering = diagnostics::covering_logical_line(logicals, line_idx);
                     let cursor_logical_opt = covering
                         .and_then(|ll| ll.logical_offset_from_physical(line_idx, char_byte));
 
-                    if let Some(eq_pos) = trimmed_last.rfind('=') {
-                        let raw_suffix = &trimmed_last[eq_pos + 1..];
+                    if let Some((key_part, value_part)) =
+                        crate::parser::split_key_value(&trimmed_last)
+                    {
+                        let _ = key_part;
+                        let raw_suffix = value_part;
                         let trimmed_suffix = raw_suffix.trim_matches(|c| c == '"' || c == '\'');
                         if !has_trailing_ws || trimmed_suffix.is_empty() {
                             // Value context confirmed.
@@ -935,7 +932,10 @@ impl Server {
                                 let logical_prefix = &logical_text[..cursor_logical_clamped];
                                 let tokens = crate::parser::tokenize_with_spans(logical_prefix);
                                 if let Some(tok) = tokens.last() {
-                                    if let Some(pos) = tok.text.rfind('=') {
+                                    if let Some((key_part, _)) =
+                                        crate::parser::split_key_value(&tok.text)
+                                    {
+                                        let pos = key_part.len();
                                         let suffix_part = &tok.text[pos + 1..];
                                         let leading = if suffix_part.starts_with('"')
                                             || suffix_part.starts_with('\'')
@@ -989,7 +989,10 @@ impl Server {
                                 let prefix_line = &line_text[..char_byte.min(line_text.len())];
                                 let tokens = crate::parser::tokenize_with_spans(prefix_line);
                                 if let Some(tok) = tokens.last() {
-                                    if let Some(pos) = tok.text.rfind('=') {
+                                    if let Some((key_part, _)) =
+                                        crate::parser::split_key_value(&tok.text)
+                                    {
+                                        let pos = key_part.len();
                                         let suffix_part = &tok.text[pos + 1..];
                                         let leading = if suffix_part.starts_with('"')
                                             || suffix_part.starts_with('\'')
@@ -1081,11 +1084,15 @@ impl Server {
                             {
                                 let tokens = crate::parser::tokenize_with_spans(logical_prefix);
                                 if let Some(tok) = tokens.last()
+                                    && crate::parser::split_key_value(&tok.text).is_none()
                                     && !tok.text.contains('=')
                                     && !tok.text.starts_with(':')
                                     && !tok.text.starts_with('/')
                                     && !tok.text.starts_with('"')
                                     && !tok.text.starts_with('\'')
+                                    && !tok.text.starts_with('(')
+                                    && !tok.text.starts_with('[')
+                                    && !tok.text.starts_with('$')
                                 {
                                     let typed = tok.text.as_str();
                                     let lower = typed.to_ascii_lowercase();
@@ -1116,11 +1123,15 @@ impl Server {
                             {
                                 let tokens = crate::parser::tokenize_with_spans(prefix_line);
                                 if let Some(tok) = tokens.last()
+                                    && crate::parser::split_key_value(&tok.text).is_none()
                                     && !tok.text.contains('=')
                                     && !tok.text.starts_with(':')
                                     && !tok.text.starts_with('/')
                                     && !tok.text.starts_with('"')
                                     && !tok.text.starts_with('\'')
+                                    && !tok.text.starts_with('(')
+                                    && !tok.text.starts_with('[')
+                                    && !tok.text.starts_with('$')
                                 {
                                     let typed = tok.text.as_str();
                                     let lower = typed.to_ascii_lowercase();
@@ -1939,9 +1950,10 @@ impl Server {
                     // this edit replaces.
                     let tokens = tokenize_with_spans(ll.text());
                     let Some(key) = tokens.iter().find_map(|t| {
-                        let eq = t.text.find('=')?;
+                        let (key_part, _) = crate::parser::split_key_value(&t.text)?;
+                        let eq = key_part.len();
                         let value_start = t.start + eq + 1;
-                        (log_start < t.end && log_end > value_start).then(|| &t.text[..eq])
+                        (log_start < t.end && log_end > value_start).then_some(key_part)
                     }) else {
                         continue;
                     };

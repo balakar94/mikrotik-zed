@@ -101,13 +101,38 @@ fn sorted_properties(menu: &MenuEntry) -> Vec<&ArgEntry> {
 /// exists (the caller's anti-noise gate).
 pub(crate) fn resolve_verb_token(data: &MenuData, tokens: &[SpanToken]) -> Option<usize> {
     let mut path_parts: Vec<String> = Vec::new();
+    let mut depth: u32 = 0;
     for (idx, tok) in tokens.iter().enumerate() {
-        if tok.text.starts_with('/') {
-            path_parts.push(tok.text.trim_start_matches('/').to_string());
+        let (opens, closes) = crate::parser::bracket_counts(&tok.text);
+        // Bracket regions are inert: inner words are never path or verb.
+        if depth > 0 || opens > 0 {
+            depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
             continue;
         }
-        if tok.text.contains('=') {
+        if tok.text.starts_with('/') {
+            // Valid shorthand menu+verb in one slash token carries the verb.
+            if crate::parser::split_trailing_verb(&tok.text, data).is_some() {
+                return Some(idx);
+            }
+            path_parts.push(tok.text.trim_start_matches('/').to_string());
+            depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
+            continue;
+        }
+        if crate::parser::split_key_value(&tok.text).is_some() {
+            depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
             continue; // key=value property, wherever it appears
+        }
+        // Verbs are alphabetic words (mirrors `parser::is_command_leader`):
+        // expression debris (`(...)`, `[...]`, `$var`, `.`, `+`, `2h)`,
+        // quoted words) is never a verb; anything with an outside-quote
+        // `=` that failed validation is debris as well.
+        let is_debris = !matches!(
+            tok.text.as_bytes().first(),
+            Some(b) if b.is_ascii_alphabetic()
+        ) || tok.text.contains('=');
+        if is_debris {
+            depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
+            continue;
         }
         let current_path = format!("/{}", path_parts.join("/"));
         let is_sub_menu = data
@@ -116,6 +141,7 @@ pub(crate) fn resolve_verb_token(data: &MenuData, tokens: &[SpanToken]) -> Optio
             .is_some_and(|children| children.iter().any(|c| c.name == tok.text));
         if is_sub_menu {
             path_parts.push(tok.text.clone());
+            depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
             continue;
         }
         return Some(idx);
@@ -142,15 +168,35 @@ fn detect_active_parameter(
     cursor_byte: usize,
     properties: &[&ArgEntry],
 ) -> Option<u32> {
+    // Newest token after the verb that the cursor has reached, skipping
+    // inert bracket-region tokens so `[find pool-name=x]` never highlights
+    // an outer property.
+    let mut depth_by_index: Vec<u32> = Vec::with_capacity(tokens.len());
+    let mut depth: u32 = 0;
+    for t in tokens.iter() {
+        let (opens, closes) = crate::parser::bracket_counts(&t.text);
+        depth_by_index.push(depth);
+        if depth > 0 || opens > 0 {
+            depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
+            continue;
+        }
+        depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
+    }
     let token = tokens[verb_token_idx + 1..]
         .iter()
+        .enumerate()
         .rev()
+        .filter(|(i, _)| {
+            depth_by_index
+                .get(verb_token_idx + 1 + i)
+                .is_some_and(|&d| d == 0)
+        })
+        .map(|(_, t)| t)
         .find(|t| t.start < cursor_byte)?;
 
     // `key=value` → key; bare (possibly partial) word → the word itself.
-    let eq_idx = token.text.find('=');
-    let key = match eq_idx {
-        Some(eq) => &token.text[..eq],
+    let key = match crate::parser::split_key_value(&token.text) {
+        Some((k, _)) => k,
         None => token.text.as_str(),
     };
     // Empty key (`=value` debris) or identifier-absurd length ⇒ no highlight.
@@ -194,11 +240,21 @@ pub(crate) fn compute_signature_help(
     }
 
     // Single-line label: `/menu verb name=type name=type …`. The verb text
-    // comes from the anchored token, so the label shows the verb AS WRITTEN.
-    // Each segment's byte offsets are recorded while assembling so
-    // ParameterInformation labels point EXACTLY at their slice of the
-    // finished string.
-    let verb = &tokens.get(verb_token_idx)?.text;
+    // comes from the anchored token, so the label shows the verb AS WRITTEN;
+    // a slash shorthand token (`/ipv6/nd/prefix/add`) contributes only its
+    // trailing verb segment.
+    let raw_verb = &tokens.get(verb_token_idx)?.text;
+    let verb_owned;
+    let verb: &str = if raw_verb.starts_with('/') {
+        verb_owned = raw_verb
+            .rsplit('/')
+            .next()
+            .unwrap_or(raw_verb.as_str())
+            .to_string();
+        &verb_owned
+    } else {
+        raw_verb
+    };
     let mut label = format!("{} {}", menu.path, verb);
     let mut parameters = Vec::with_capacity(properties.len());
     for arg in &properties {
@@ -238,6 +294,12 @@ pub(crate) fn compute_signature_help(
     );
     if properties.iter().any(|p| p.required) {
         documentation.push_str("\n\nRequired properties listed first.");
+    }
+    // Truncation note: the property list stays capped at
+    // MAX_SIGNATURE_PROPERTIES, but the header says how many were hidden.
+    let total = menu.arguments.len();
+    if total > properties.len() {
+        documentation.push_str(&format!("\n\n… (+{} more)", total - properties.len()));
     }
 
     let active_parameter =
@@ -465,6 +527,28 @@ type = "Directory"
         let last = help.signatures[0].parameters.last().unwrap();
         let seg = &help.signatures[0].label[last.label[0]..last.label[1]];
         assert_eq!(seg.split('=').next().unwrap(), "prop39");
+    }
+
+    #[test]
+    fn test_truncation_note_reports_hidden_count() {
+        let mut toml = String::from("[[menus]]\npath = \"/big60\"\ntype = \"Directory\"\n");
+        for i in 0..60 {
+            toml.push_str(&format!(
+                "[[menus.arguments]]\nname = \"prop{i:02}\"\ntype = \"string\"\n"
+            ));
+        }
+        let data = MenuData::from_toml_str(&toml);
+        let help =
+            help_for(&data, "/big60", "/big60 add ", 11).expect("capped list still non-empty");
+        assert_eq!(
+            help.signatures[0].parameters.len(),
+            MAX_SIGNATURE_PROPERTIES
+        );
+        assert!(
+            help.signatures[0].documentation.contains("(+20 more)"),
+            "truncation note must report hidden count, got {}",
+            help.signatures[0].documentation
+        );
     }
 
     // ── activeParameter detection ─────────────────────────────────

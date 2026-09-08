@@ -99,6 +99,17 @@ const EMOJI_REST_OF_LINE: &str = "interface=bridge1";
 /// to aim a probe INSIDE the emoji run's surrogate pairs.
 const EMOJI_QUOTE_PREFIX: &str = "/ip/address set address=1.2.3.4 comment=\"";
 
+/// Finished quoted value containing `=`: the inner text is value content,
+/// not an outer property. Completion after the trailing space must offer
+/// the REMAINING outer properties (`comment` is used, so `interface` and
+/// `address` remain) and never leak an `a` candidate.
+const QUOTED_EQUALS_COMPLETION_DOC: &str = "/ip/address add comment=\"a=b\" ";
+
+/// Bracket `[find ...]` probe: `pool-name` is a real property elsewhere
+/// (DHCP) but unknown under `/ip/address`, so only bracket-inert handling
+/// keeps it silent — a leak would surface as `unknown-property`.
+const BRACKET_INERT_DOC: &str = "/ip/address set [find pool-name=digi-ipv6] address=1.1.1.1";
+
 // ── Small fixture helpers ───────────────────────────────────────────
 
 /// UTF-16 code units of `s` — how LSP clients must count `character`
@@ -982,5 +993,65 @@ fn positions_default_to_utf16_units_when_client_sends_no_encoding() {
     assert!(
         near_emoji.is_null(),
         "position inside an astral char must not resolve to a word, got {near_emoji}"
+    );
+}
+
+#[test]
+fn completion_after_quoted_value_with_equals_suggests_outer_properties() {
+    let mut client = initialized_client();
+    open_text_document(
+        &mut client,
+        "file:///e2e-quoted-equals.rsc",
+        QUOTED_EQUALS_COMPLETION_DOC,
+    );
+    let result = match client.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": "file:///e2e-quoted-equals.rsc"},
+            // After the trailing space: the quoted value is finished, so the
+            // request is for the NEXT outer property. `.len()` is exact here
+            // (ASCII-only fixture) and keeps the probe drift-proof.
+            "position": {"line": 0, "character": QUOTED_EQUALS_COMPLETION_DOC.len()},
+        }),
+    ) {
+        Response::Ok(v) => v,
+        Response::Err(err) => panic!("completion errored: {err}"),
+    };
+    let items = result["items"].as_array().expect("CompletionList.items");
+    let labels: Vec<&str> = items.iter().filter_map(|i| i["label"].as_str()).collect();
+    assert!(
+        labels.contains(&"interface"),
+        "remaining outer properties expected after a finished quoted value, got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"a"),
+        "inner quoted `a=b` must not leak an `a` property candidate, got {labels:?}"
+    );
+}
+
+#[test]
+fn did_open_bracket_find_publishes_no_inner_key_diagnostics() {
+    let mut client = initialized_client();
+    open_text_document(
+        &mut client,
+        "file:///e2e-bracket-inert.rsc",
+        BRACKET_INERT_DOC,
+    );
+    let publish = client.expect_notification("textDocument/publishDiagnostics");
+    let uri = publish["params"]["uri"].as_str().expect("publish uri");
+    assert_eq!(uri, "file:///e2e-bracket-inert.rsc");
+    let diags = publish["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        !diags.iter().any(|d| d["code"] == "unknown-property"),
+        "inner bracket keys must stay inert, got {diags:?}"
+    );
+    assert!(
+        !diags.iter().any(|d| d["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("pool-name")),
+        "pool-name lives inside [find ...] and must never be reported, got {diags:?}"
     );
 }

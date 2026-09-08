@@ -177,10 +177,18 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
         // key → (value text, full-token span) of the LAST occurrence.
         let mut key_values: HashMap<String, (String, (usize, usize))> = HashMap::new();
 
+        // Bracket regions (`[find ...]`, `[/sys/clock/get ...]`) are inert:
+        // inner `key=value` pairs must not leak into outer Rule 2/4 state,
+        // mirroring `parse_line` over the same single token stream.
+        let mut depth: u32 = 0;
         for token in &tokens {
-            if let Some(eq_idx) = token.text.find('=') {
-                let key = &token.text[..eq_idx];
-                let value = &token.text[eq_idx + 1..];
+            let (opens, closes) = crate::parser::bracket_counts(&token.text);
+            if depth > 0 || opens > 0 {
+                depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
+                continue;
+            }
+            if let Some((key, value)) = crate::parser::split_key_value(&token.text) {
+                let eq_idx = key.len();
                 *key_counts.entry(key.to_string()).or_insert(0) += 1;
                 key_spans
                     .entry(key.to_string())
@@ -191,6 +199,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                     (value.to_string(), (token.start, token.end)),
                 );
             }
+            depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
         }
 
         // Whole-token span of the command verb (first token whose text equals
@@ -202,6 +211,36 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                 .find(|t| t.text == cmd)
                 .map(|t| (t.start, t.end))
         });
+
+        // ---- Rule 8: Unknown command verb ----
+        // Fires only when the path itself is known (exact menu or ancestor
+        // prefix); unknown paths already produced Rule 1 and return early
+        // above, so no cascade. Verbs are case-insensitive on RouterOS.
+        // Menu-specific verbs outside STANDARD_VERBS (e.g. `run` on
+        // /system/script, `info`/`warning`/`error`/`debug` on /log) are
+        // allowlisted so valid device commands stay silent.
+        const MENU_SPECIFIC_VERBS: &[&str] =
+            &["run", "info", "warning", "error", "debug", "monitor"];
+        if let Some(cmd) = ctx.command.as_deref()
+            && !ctx.path.is_empty()
+            && (data.menu_by_path.contains_key(&ctx.path)
+                || data.ancestor_prefixes.contains(&ctx.path))
+            && !MenuData::STANDARD_VERBS
+                .iter()
+                .any(|v| v.eq_ignore_ascii_case(cmd))
+            && !MENU_SPECIFIC_VERBS
+                .iter()
+                .any(|v| v.eq_ignore_ascii_case(cmd))
+            && let Some((s, e)) = command_span
+        {
+            diagnostics.push(Diagnostic {
+                range: ll.map_range(s, e),
+                severity: Some(severity::WARNING),
+                code: Some("unknown-command".to_string()),
+                source: Some(DIAGNOSTIC_SOURCE.to_string()),
+                message: format!("Unknown command '{}' for '{}'", cmd, ctx.path),
+            });
+        }
 
         // ---- Rule 4: Duplicate property ----
         // Highlight the SECOND occurrence precisely: the first may be the
@@ -254,11 +293,15 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             }
 
             // ---- Rule 3: Missing required property for Directory menus with add/set ----
+            // `set` targets an existing entry via a selector (`set 0 ...`,
+            // `set *AB12 ...`, `set [find ...] ...`): required-creation args
+            // do not apply there. `add` always creates, so it is unchanged.
             if (menu.menu_type == "Directory" || menu.menu_type == "Settings Directory")
                 && ctx
                     .command
                     .as_deref()
                     .is_some_and(|c| c == "add" || c == "set")
+                && !(ctx.command.as_deref() == Some("set") && line_has_set_selector(&tokens, "set"))
             {
                 for arg in &menu.arguments {
                     if arg.required && !key_counts.contains_key(&arg.name) {
@@ -857,6 +900,46 @@ fn find_substring_range(haystack: &str, needle: &str) -> Option<(usize, usize)> 
         .map(|start| (start, start + needle.len()))
 }
 
+/// True when `tok` looks like a RouterOS entry selector for `set`:
+/// a `*ID` reference (`*0`, `*AB12`) or a numeric index list (`0`, `0,1`).
+fn is_index_selector(tok: &str) -> bool {
+    if tok.is_empty() {
+        return false;
+    }
+    if tok.starts_with('*') {
+        return tok.len() > 1;
+    }
+    !tok.is_empty()
+        && tok.chars().all(|c| c.is_ascii_digit() || c == ',')
+        && tok.chars().any(|c| c.is_ascii_digit())
+}
+
+/// True when the logical line targets `set` at an existing entry via a
+/// selector: any non-path, non-verb, non-property token carrying an unquoted
+/// `[` (e.g. `[find ...]`, detected via [`crate::parser::bracket_counts`]
+/// so quoted brackets stay inert) or a numeric/ID selector (`0`, `*AB12`).
+fn line_has_set_selector(tokens: &[crate::parser::SpanToken], verb: &str) -> bool {
+    for t in tokens {
+        if t.text.starts_with('/') {
+            continue;
+        }
+        if t.text == verb {
+            continue;
+        }
+        if crate::parser::split_key_value(&t.text).is_some() {
+            continue;
+        }
+        let (opens, _) = crate::parser::bracket_counts(&t.text);
+        if opens > 0 {
+            return true;
+        }
+        if is_index_selector(&t.text) {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1363,6 +1446,227 @@ type = "enum (a | b"
                 .iter()
                 .any(|d| d.code.as_deref() == Some("invalid-enum-value")),
             "single invalid value must still hint"
+        );
+    }
+
+    // ── Centralized parser fix (slash-verb, quote-aware =, brackets) ──
+
+    fn slash_verb_data() -> MenuData {
+        MenuData::from_toml_str(
+            r#"
+[[menus]]
+path = "/ipv6/nd/prefix"
+type = "Directory"
+[[menus.arguments]]
+name = "interface"
+type = "iface_enum"
+[[menus.arguments]]
+name = "comment"
+type = "string"
+[[menus]]
+path = "/log"
+type = "Directory"
+[[menus]]
+path = "/system/scheduler"
+type = "Directory"
+[[menus.arguments]]
+name = "name"
+type = "string"
+[[menus]]
+path = "/ip/address"
+type = "Directory"
+[[menus.arguments]]
+name = "address"
+type = "ipPrefix"
+[[menus.arguments]]
+name = "interface"
+type = "iface_enum"
+[[menus.arguments]]
+name = "comment"
+type = "string"
+"#,
+        )
+    }
+
+    #[test]
+    fn test_slash_verb_shorthand_no_unknown_menu() {
+        let data = slash_verb_data();
+        let diags = compute_diagnostics(
+            &data,
+            "/ipv6/nd/prefix/add interface=bridge",
+            "file:///t.rsc",
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("unknown-menu")),
+            "slash-verb shorthand must resolve via Rule 1 parse_line fix, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn test_log_info_quoted_equals_no_bogus_properties() {
+        let data = slash_verb_data();
+        let diags =
+            compute_diagnostics(&data, r#"/log info ("digi prevPd=" . $x)"#, "file:///t.rsc");
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("unknown-property")),
+            "quoted `=` must not spawn unknown-property keys, got {diags:?}"
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("unknown-menu")),
+            "got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn test_bracket_find_inner_keys_ignored() {
+        let data = slash_verb_data();
+        let diags = compute_diagnostics(
+            &data,
+            "/ip/address set [find pool-name=digi-ipv6] address=1.1.1.1 interface=ether1",
+            "file:///t.rsc",
+        );
+        assert!(
+            !diags.iter().any(|d| d
+                .code
+                .as_deref()
+                .is_some_and(|c| c == "unknown-property" && d.message.contains("pool-name"))),
+            "inner bracket key must stay invisible, got {diags:?}"
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("duplicate-property")),
+            "got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn test_quoted_comment_with_equals_still_property_no_warning() {
+        let data = slash_verb_data();
+        let diags = compute_diagnostics(
+            &data,
+            r#"/ip/address add address=1.1.1.1 interface=ether1 comment="a=b c=d""#,
+            "file:///t.rsc",
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("unknown-property")),
+            "comment must stay a known property, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn test_concat_comment_still_property_no_warning() {
+        let data = slash_verb_data();
+        let diags = compute_diagnostics(
+            &data,
+            r#"/ip/address add address=1.1.1.1 interface=ether1 comment=("X old=" . $y)"#,
+            "file:///t.rsc",
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("unknown-property")),
+            "concat comment must stay property comment, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn test_unknown_command_warning() {
+        let data = slash_verb_data();
+        let diags = compute_diagnostics(
+            &data,
+            "/ip/address adn address=1.1.1.1 interface=ether1",
+            "file:///t.rsc",
+        );
+        let unk: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code.as_deref() == Some("unknown-command"))
+            .collect();
+        assert_eq!(unk.len(), 1, "one unknown-command, got {diags:?}");
+        assert!(unk[0].message.contains("adn"));
+        assert_eq!(unk[0].severity, Some(severity::WARNING));
+    }
+
+    #[test]
+    fn test_known_command_no_unknown_command() {
+        let data = slash_verb_data();
+        let diags = compute_diagnostics(
+            &data,
+            "/ip/address add address=1.1.1.1 interface=ether1",
+            "file:///t.rsc",
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("unknown-command")),
+            "known verb must stay clean, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn test_unknown_command_skipped_when_path_unknown() {
+        let data = slash_verb_data();
+        let diags = compute_diagnostics(&data, "/foo/bar adn x=1", "file:///t.rsc");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("unknown-menu")),
+            "Rule 1 must fire, got {diags:?}"
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("unknown-command")),
+            "no cascade on unknown path, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn test_set_with_find_selector_suppresses_missing_required() {
+        let data = synthetic_data();
+        let diags = compute_diagnostics(
+            &data,
+            "/ip/address set [find interface=ether1] interface=ether1",
+            "file:///t.rsc",
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("missing-required")),
+            "set with [find] selector must not require creation args, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn test_set_with_numeric_selector_suppresses_missing_required() {
+        let data = synthetic_data();
+        let diags =
+            compute_diagnostics(&data, "/ip/address set 0 interface=ether1", "file:///t.rsc");
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("missing-required")),
+            "set with numeric selector must not require creation args, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn test_add_without_selector_still_requires() {
+        let data = synthetic_data();
+        let diags = compute_diagnostics(&data, "/ip/address add comment=hi", "file:///t.rsc");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("missing-required")),
+            "add without required args must still warn, got {diags:?}"
         );
     }
 }
