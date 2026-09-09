@@ -1,0 +1,71 @@
+name: Perf
+
+# Release-only perf budgets for rsc-ls (lsp/tests/perf_smoke.rs).
+# The default suite asserts caps/shapes (no timing) and already runs in CI
+# via `make test-rust`. The `#[ignore]`d tests assert wall-clock budgets
+# (5 MiB open < 20 s, 3500-line publish < 10 s) which are meaningless on
+# debug builds and noisy on per-PR runners — so they run here, in release,
+# on a weekly schedule plus on demand. Failure means a real perf regression
+# or a wedged server loop, not CI noise.
+#
+# Cost control: schedule-only + manual dispatch (no per-PR runs), single
+# ubuntu-latest job, 30 min timeout, 7-day artifact retention (logs only).
+
+on:
+  schedule:
+    # Tuesdays 05:17 UTC — deliberately off the Monday 06:1x/06:2x
+    # security-audit slots so the two scheduled workflows never overlap.
+    - cron: "17 5 * * 2"
+  workflow_dispatch:
+
+# Minimal default permissions — job needs nothing else.
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  perf-budgets:
+    name: Release • perf budgets (ignored)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # MSRV — toolchain channel from rust-toolchain.toml (single source of truth).
+      - name: Resolve Rust toolchain
+        id: toolchain
+        run: |
+          CH=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])' 2>/dev/null || python -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])' 2>/dev/null || grep -E 'channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$CH" ]; then echo "::error::failed to resolve toolchain"; exit 1; fi
+          echo "channel=$CH" >> "$GITHUB_OUTPUT"
+          echo "Resolved toolchain: $CH"
+
+      - name: Install Rust ${{ steps.toolchain.outputs.channel }} (MSRV)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 6c977a6
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Main-only saves on purpose (same anti-poisoning policy as ci.yml):
+          # scheduled runs execute on main so they still save; PR/dispatch
+          # runs restore but never publish to the shared cache.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Default (non-ignored) cap/shape asserts, rebuilt in release mode so
+      # the binary under test matches what the budgets below measure.
+      - name: Perf smoke — caps (release, default suite)
+        run: cargo test -p rsc-ls --locked --release --test perf_smoke
+
+      # Release-only timing budgets (the #[ignore]d tests). Explicit
+      # --test perf_smoke target keeps this job off the rest of the suite.
+      - name: Perf budgets — release timing (ignored)
+        run: cargo test -p rsc-ls --locked --release --test perf_smoke -- --ignored --nocapture
