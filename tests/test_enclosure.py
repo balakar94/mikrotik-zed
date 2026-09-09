@@ -20,6 +20,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 LSP_SRC = REPO_ROOT / "lsp" / "src"
 LSP_MAIN = REPO_ROOT / "lsp" / "src" / "main.rs"
 LSP_SERVER = REPO_ROOT / "lsp" / "src" / "server.rs"
+SERVER_PROTO_RS = REPO_ROOT / "lsp" / "src" / "server_proto.rs"
 LSP_CAPS = REPO_ROOT / "lsp" / "src" / "caps.rs"
 LSP_DIAG = REPO_ROOT / "lsp" / "src" / "diagnostics.rs"
 LSP_MENUS = REPO_ROOT / "lsp" / "src" / "menus.rs"
@@ -152,22 +153,30 @@ class TestLspCaps:
 # ----------------------------------------------------------------------
 class TestUriValidation:
     def test_rust_uri_validation_only_file_scheme(self):
-        txt = _read(LSP_SERVER)
+        # Canonical home moved to server_proto.rs (split); server.rs re-exports it.
+        txt = _read(SERVER_PROTO_RS)
+        assert "is_valid_file_uri" in _read(LSP_SERVER), "server.rs must re-export the URI guard"
         # Should contain file:// validation via helper or direct checks
         # Newer code uses is_valid_file_uri; older uses starts_with directly
         has_helper = "is_valid_file_uri" in txt
         direct_count = txt.count('starts_with("file://")')
         if has_helper:
-            # Helper should be used in handlers
+            # Helper should be used in handlers (call sites live in
+            # server.rs dispatch; definition lives here in server_proto.rs)
             assert "fn is_valid_file_uri" in txt, "Helper function missing"
-            assert txt.count("is_valid_file_uri") >= 3, "is_valid_file_uri should be called in didOpen/didChange/diagnostic"
+            srv = _read(LSP_SERVER)
+            assert txt.count("is_valid_file_uri") + srv.count("is_valid_file_uri") >= 4, (
+                "is_valid_file_uri should be defined once + called in "
+                "didOpen/didChange/diagnostic"
+            )
             assert 'starts_with("file://")' in txt, "Helper must check file:// scheme"
             assert "contains('\\0')" in txt or 'contains(\'\\0\')' in txt or "contains('\0')" in txt, "Must reject null byte"
             assert 'contains("..")' in txt, "Must reject path traversal"
         else:
             assert direct_count >= 3, f"Expected at least 3 file:// checks, found {direct_count}"
-        # Ensure diagnostic pull also handles non-file URI
-        assert 'textDocument/diagnostic' in txt
+        # Ensure diagnostic pull also handles non-file URI (handler lives
+        # in server.rs dispatch; guard lives here in server_proto.rs)
+        assert 'textDocument/diagnostic' in txt or 'textDocument/diagnostic' in srv
         # Reject logic should be present (or helper handles it)
         assert (
             'rejecting didOpen with non-file URI' in txt
@@ -177,8 +186,9 @@ class TestUriValidation:
 
     def test_rust_uri_validator_single_source_and_guards(self):
         """Structural pin: exactly ONE canonical validator definition across
-        lsp/src, defined in server.rs (alongside the dispatch loop that calls
-        it), with all three enclosure guards in its body (file:// prefix,
+        lsp/src, defined in server_proto.rs (re-exported from server.rs
+        alongside the dispatch loop that calls it), with all three
+        enclosure guards in its body (file:// prefix,
         null/control-char rejection, ".." rejection).
         Behavioral coverage of the validator lives in the Rust unit tests."""
         matches = []
@@ -186,10 +196,10 @@ class TestUriValidation:
             for lineno, line in enumerate(_read(p).splitlines(), start=1):
                 if "pub(crate) fn is_valid_file_uri" in line:
                     matches.append((p.name, lineno))
-        assert len(matches) == 1 and matches[0][0] == "server.rs", (
-            f"is_valid_file_uri must be defined exactly once, in server.rs; found {matches}"
+        assert len(matches) == 1 and matches[0][0] == "server_proto.rs", (
+            f"is_valid_file_uri must be defined exactly once, in server_proto.rs; found {matches}"
         )
-        txt = _read(LSP_SERVER)
+        txt = _read(SERVER_PROTO_RS)
         assert 'starts_with("file://")' in txt, "Must check file:// scheme prefix"
         assert (
             "contains('\\0')" in txt or "contains('\0')" in txt
