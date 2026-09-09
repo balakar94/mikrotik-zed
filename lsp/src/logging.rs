@@ -97,7 +97,7 @@ pub(crate) fn utc_rfc3339_now() -> String {
     format_utc_rfc3339(secs)
 }
 
-fn format_utc_rfc3339(secs: i64) -> String {
+pub(crate) fn format_utc_rfc3339(secs: i64) -> String {
     let days = secs.div_euclid(86_400);
     let sod = secs.rem_euclid(86_400);
     let (y, m, d) = civil_from_days(days);
@@ -135,6 +135,55 @@ pub(crate) fn uri_hash(uri: &str) -> String {
 pub(crate) fn request_suffix(m: &str, uri: Option<&str>, d: u64, enc: &str) -> String {
     let h = uri.map(uri_hash).unwrap_or_else(|| "none".to_string());
     format!("method={m} uri_hash={h} latency={d}ms encoding={enc}")
+}
+
+/// Sanitize a value before interpolating it into a log line.
+///
+/// Strips `\r` and `\n` (log-injection defense) and truncates to 128
+/// chars. Apply to every host/user/url/path interpolation in
+/// `log_info!`/`log_warn!`/`log_debug!` paths. Never applied to `pass`.
+pub(crate) fn sanitize_for_log(s: &str) -> String {
+    let stripped: String = s.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+    if stripped.chars().count() > 128 {
+        stripped.chars().take(128).collect()
+    } else {
+        stripped
+    }
+}
+
+/// Truncate a command name for log lines (256-char cap, no newline).
+pub(crate) fn truncate_command_for_log(s: &str) -> String {
+    let stripped: String = s.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+    if stripped.chars().count() > 256 {
+        stripped.chars().take(256).collect()
+    } else {
+        stripped
+    }
+}
+
+/// Redact credential material from log/error text (mirrors
+/// `scripts/_mikrotik_shared.py::redact_secrets`).
+///
+/// Replaces the password, the base64 of `user:password` (HTTP Basic), and
+/// the base64 of the password alone with `[REDACTED]`. Never returns
+/// credential material; safe to apply unconditionally before logging or
+/// embedding in `LiveError::Network`.
+pub(crate) fn redact_secrets(text: &str, pass: &str, user: &str) -> String {
+    use base64::Engine;
+    let mut out = text.to_string();
+    if pass.is_empty() {
+        return out;
+    }
+    let mut secrets = vec![pass.to_string()];
+    let creds = format!("{user}:{pass}");
+    secrets.push(base64::engine::general_purpose::STANDARD.encode(creds.as_bytes()));
+    secrets.push(base64::engine::general_purpose::STANDARD.encode(pass.as_bytes()));
+    for secret in secrets {
+        if !secret.is_empty() && out.contains(&secret) {
+            out = out.replace(&secret, "[REDACTED]");
+        }
+    }
+    out
 }
 
 macro_rules! log_error {
@@ -175,40 +224,3 @@ macro_rules! log_debug {
 // trace-level emitter ever appears, re-add the macro here together with its
 // first caller and export it in the list below.
 pub(crate) use {log_debug, log_error, log_info, log_warn};
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn utc_epoch_zero_formats_as_1970() {
-        assert_eq!(format_utc_rfc3339(0), "1970-01-01T00:00:00Z");
-    }
-
-    #[test]
-    fn utc_day_10957_formats_as_y2k() {
-        // 1970-01-01 → 2000-01-01 is 30 years + 7 leap days = 10957 days.
-        assert_eq!(format_utc_rfc3339(10_957 * 86_400), "2000-01-01T00:00:00Z");
-    }
-
-    #[test]
-    fn utc_time_of_day_rolls_over_midnight() {
-        assert_eq!(format_utc_rfc3339(86_400 + 3661), "1970-01-02T01:01:01Z");
-    }
-
-    #[test]
-    fn level_tokens_are_lowercase() {
-        assert_eq!(LogLevel::Error.as_str(), "error");
-        assert_eq!(LogLevel::Warn.as_str(), "warn");
-        assert_eq!(LogLevel::Info.as_str(), "info");
-        assert_eq!(LogLevel::Debug.as_str(), "debug");
-        assert_eq!(LogLevel::Trace.as_str(), "trace");
-    }
-
-    #[test]
-    fn elapsed_tag_shape_is_stable() {
-        let tag = elapsed_tag();
-        assert!(tag.starts_with("[T+"), "got {tag}");
-        assert!(tag.ends_with("s]"), "got {tag}");
-    }
-}

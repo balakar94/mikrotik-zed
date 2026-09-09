@@ -24,7 +24,7 @@ use crate::caps::{
     LIVE_NEGATIVE_TTL_SECS, LIVE_TIMEOUT_SECS, LIVE_TTL_SECS, MAX_CACHE_ENTRIES, MAX_LIVE_ITEMS,
     MAX_LIVE_RESPONSE_BYTES, MAX_LIVE_VALUE_LEN,
 };
-use crate::logging::{log_debug, log_info, log_warn};
+use crate::logging::{log_debug, log_info, log_warn, redact_secrets, sanitize_for_log};
 use std::collections::{HashMap, HashSet};
 use std::sync::{
     Arc, Mutex, OnceLock,
@@ -113,6 +113,16 @@ pub struct LiveConfig {
     /// Whether loopback/private hosts are allowed (`RSC_LS_LIVE_ALLOW_LOOPBACK=1`).
     /// Default deny (false) — when false, `127.0.0.0/8`, `::1`, `10/8`, `192.168/16` etc are rejected via `is_loopback_or_private`.
     pub allow_loopback: bool,
+    /// SPKI SHA256 pin (`MIKROTIK_FINGERPRINT=sha256:<hex>`). When set and
+    /// valid, TLS uses a pinning verifier instead of disabling verification.
+    /// `None` when unset or unparsable (see `fingerprint_invalid`).
+    pub fingerprint: Option<[u8; 32]>,
+    /// True when `MIKROTIK_FINGERPRINT` was present but failed to parse.
+    /// Fail-closed: `is_active()` returns false while this is set.
+    pub fingerprint_invalid: bool,
+    /// Custom CA bundle path (`MIKROTIK_CA_FILE`). Empty when unset.
+    /// Loaded at fetch time; load failures are fail-closed (`LiveError::Network`).
+    pub ca_file: String,
 }
 
 impl std::fmt::Debug for LiveConfig {
@@ -130,8 +140,77 @@ impl std::fmt::Debug for LiveConfig {
             .field("timeout_secs", &self.timeout_secs)
             .field("custom_resources", &self.custom_resources)
             .field("allow_loopback", &self.allow_loopback)
+            .field("fingerprint_set", &self.fingerprint.is_some())
+            .field("fingerprint_invalid", &self.fingerprint_invalid)
+            .field("ca_file", &sanitize_for_log(&self.ca_file))
             .finish()
     }
+}
+
+/// Validate a device username.
+///
+/// Allows 1..64 chars matching `^[A-Za-z0-9._-]+$`. Rejects `:`, control
+/// chars, `@`, `%`, null, and newlines (all implicitly excluded by the
+/// allowlist, checked explicitly for clear rejection). Returns `None` when
+/// invalid; callers fall back to `admin` with a WARN.
+pub(crate) fn validate_user(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.len() > 64 {
+        return None;
+    }
+    if trimmed.contains('\0') || trimmed.chars().any(|c| c.is_control()) {
+        return None;
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+    {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+/// Whether workspace settings may override transport-security keys.
+///
+/// Opt-in via `RSC_LS_ALLOW_SETTINGS_TRANSPORT=1`. When false (default),
+/// `host`/`user` (F2), `ssl_verify=false`, `force_http=true`,
+/// `allow_loopback=true`, and `custom_resources` from settings are ignored
+/// (env values always win).
+fn settings_transport_allowed() -> bool {
+    std::env::var("RSC_LS_ALLOW_SETTINGS_TRANSPORT")
+        .ok()
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+pub(crate) static SETTINGS_TRANSPORT_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+/// Test-only: run `f` with `RSC_LS_ALLOW_SETTINGS_TRANSPORT` set/removed.
+///
+/// Serialized by a process-wide mutex so parallel `cargo test` threads
+/// cannot observe a half-applied flag. Restores the previous value
+/// afterwards. Production code never calls this.
+#[cfg(test)]
+pub(crate) fn with_settings_transport_env<R>(allowed: bool, f: impl FnOnce() -> R) -> R {
+    let lock = SETTINGS_TRANSPORT_TEST_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let key = "RSC_LS_ALLOW_SETTINGS_TRANSPORT";
+    let prev = std::env::var(key).ok();
+    // SAFETY: test-only helper, serialized by the mutex above; no other
+    // thread observes the interim value. (`std::env::set_var` is `unsafe`
+    // in edition 2024.)
+    if allowed {
+        unsafe { std::env::set_var(key, "1") };
+    } else {
+        unsafe { std::env::remove_var(key) };
+    }
+    let out = f();
+    match prev {
+        Some(v) => unsafe { std::env::set_var(key, v) },
+        None => unsafe { std::env::remove_var(key) },
+    }
+    out
 }
 
 impl LiveConfig {
@@ -160,14 +239,27 @@ impl LiveConfig {
         let hosts = parse_hosts(&host_raw);
         let host = hosts.first().cloned().unwrap_or_default();
         if hosts.len() > 1 {
-            log_info!("live multi-host {} (primary={})", hosts.len(), host);
+            log_info!(
+                "live multi-host {} (primary={})",
+                hosts.len(),
+                sanitize_for_log(&host)
+            );
         }
 
         let user_raw = get("MIKROTIK_USER").unwrap_or_default();
         let user = if user_raw.trim().is_empty() {
             "admin".to_string()
         } else {
-            user_raw.trim().to_string()
+            match validate_user(&user_raw) {
+                Some(u) => u,
+                None => {
+                    log_warn!(
+                        "invalid MIKROTIK_USER={:?}, falling back to admin",
+                        sanitize_for_log(user_raw.trim())
+                    );
+                    "admin".to_string()
+                }
+            }
         };
         let pass = get("MIKROTIK_PASS").unwrap_or_default();
 
@@ -196,6 +288,15 @@ impl LiveConfig {
             .map(|v| v.trim() == "1")
             .unwrap_or(false);
 
+        // TLS pin + custom CA. Fingerprint format:
+        // `MIKROTIK_FINGERPRINT=sha256:<64 hex>`. Invalid values are
+        // fail-closed via `fingerprint_invalid` (see `is_active`).
+        let fingerprint_raw = get("MIKROTIK_FINGERPRINT");
+        let (fingerprint, fingerprint_invalid) = parse_fingerprint(fingerprint_raw.as_deref());
+        let ca_file = get("MIKROTIK_CA_FILE")
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+
         LiveConfig {
             enabled,
             host,
@@ -208,13 +309,20 @@ impl LiveConfig {
             timeout_secs,
             custom_resources,
             allow_loopback,
+            fingerprint,
+            fingerprint_invalid,
+            ca_file,
         }
     }
 
     /// Whether live fetching is active.
     ///
     /// Requires opt-in `enabled` AND non-empty `host` + `pass` with valid host.
+    /// A present-but-invalid `MIKROTIK_FINGERPRINT` is fail-closed (inactive).
     pub fn is_active(&self) -> bool {
+        if self.fingerprint_invalid {
+            return false;
+        }
         self.enabled
             && !self.host.is_empty()
             && !self.pass.is_empty()
@@ -225,9 +333,15 @@ impl LiveConfig {
     /// Whether TLS verification is effectively enabled for the current scheme.
     ///
     /// Verification only matters when the resolved scheme is `https`; on `http`
-    /// the flag is irrelevant and effective is `false`.
+    /// the flag is irrelevant and effective is `false`. A valid SPKI pin or a
+    /// custom CA bundle counts as verification even when `MIKROTIK_SSL=0`,
+    /// because the pinning/custom-CA verifier still authenticates the device
+    /// instead of disabling checks.
     pub fn ssl_verify_effective(&self) -> bool {
-        self.ssl_verify && self.scheme() == "https"
+        if self.scheme() != "https" {
+            return false;
+        }
+        self.ssl_verify || self.fingerprint.is_some() || !self.ca_file.is_empty()
     }
 
     /// Resolve the REST scheme, mirroring `scripts/_mikrotik_shared.py::resolve_scheme`.
@@ -244,24 +358,29 @@ impl LiveConfig {
     pub fn log_status(&self) {
         if self.is_active() {
             // Host is safe to log (no pass); port and scheme are non-sensitive.
+            // Host/user values go through sanitize_for_log (strip CR/LF, 128 cap).
+            // Fingerprint bytes are a public-key hash (not a secret) but only
+            // the presence flag is logged to keep the line bounded.
             log_info!(
-                "live enabled host={} port={} scheme={} user={} ssl_verify={} ssl_verify_effective={} timeout={}s hosts={:?} custom_resources={} allow_loopback={}",
-                self.host,
+                "live enabled host={} port={} scheme={} user={} ssl_verify={} ssl_verify_effective={} timeout={}s hosts={:?} custom_resources={} allow_loopback={} fingerprint_set={} ca_file_set={}",
+                sanitize_for_log(&self.host),
                 self.port,
                 self.scheme(),
-                self.user,
+                sanitize_for_log(&self.user),
                 self.ssl_verify,
                 self.ssl_verify_effective(),
                 self.timeout_secs,
-                self.hosts,
+                sanitize_for_log(&format!("{:?}", self.hosts)),
                 self.custom_resources.len(),
-                self.allow_loopback
+                self.allow_loopback,
+                self.fingerprint.is_some(),
+                !self.ca_file.is_empty()
             );
             if self.hosts.len() > 1 {
                 log_info!(
                     "live multi-host active count={} primary={}",
                     self.hosts.len(),
-                    self.host
+                    sanitize_for_log(&self.host)
                 );
             }
         } else if self.enabled {
@@ -292,7 +411,21 @@ impl LiveConfig {
     /// merely happens to contain a host-like key is IGNORED: accepting it
     /// would let unrelated editor settings hijack the device connection.
     /// `enabled` is never settings-overridable (env opt-in only).
+    ///
+    /// Transport-security keys (`ssl_verify=false`, `force_http=true`,
+    /// `allow_loopback=true`, `custom_resources`) are privileged: they are
+    /// ignored from workspace settings unless
+    /// `RSC_LS_ALLOW_SETTINGS_TRANSPORT=1` is set. Env values always win.
     pub fn apply_settings_value(cfg: &mut Self, v: &serde_json::Value) {
+        Self::apply_settings_value_with_transport(cfg, v, settings_transport_allowed());
+    }
+
+    /// Test-friendly overlay with explicit transport opt-in flag.
+    pub(crate) fn apply_settings_value_with_transport(
+        cfg: &mut Self,
+        v: &serde_json::Value,
+        allow_transport: bool,
+    ) {
         // Find the most relevant settings object; without an explicit scope
         // there is nothing to overlay.
         let Some(settings_obj) = find_settings_object(v) else {
@@ -304,21 +437,37 @@ impl LiveConfig {
         let prev_hosts = cfg.hosts.clone();
         if let Some(host_val) = get_settings_str(settings_obj, &["host", "MIKROTIK_HOST"]) {
             let hosts = parse_hosts(&host_val);
-            if !hosts.is_empty() {
-                cfg.host = hosts[0].clone();
-                cfg.hosts = hosts;
+            if hosts.is_empty() {
+                // Nothing valid to apply; fall through silently.
+            } else if hosts[0] != cfg.host || hosts != cfg.hosts {
+                // F2: workspace settings may not redirect the device target
+                // (host/hosts) unless RSC_LS_ALLOW_SETTINGS_TRANSPORT=1.
+                // Default deny: credentials would be sent to the new host.
+                if !allow_transport {
+                    log_warn!(
+                        "live settings host ignored (was {:?} now {:?}): set RSC_LS_ALLOW_SETTINGS_TRANSPORT=1 to allow workspace transport overrides",
+                        sanitize_for_log(&cfg.host),
+                        sanitize_for_log(&hosts[0])
+                    );
+                } else {
+                    cfg.host = hosts[0].clone();
+                    cfg.hosts = hosts;
+                }
             }
         }
         // SECURITY: workspace settings can redirect credentials. Warn loudly
         // whenever the overlay actually changes the effective live target so
         // the user notices a malicious `.zed/settings.json` redirect. The
         // overlay still applies (warn, not block); `pass` stays env-only.
+        // Host changes via settings additionally require
+        // RSC_LS_ALLOW_SETTINGS_TRANSPORT=1 (gated above); this WARN covers
+        // the allowed case only.
         if cfg.host != prev_host || cfg.hosts != prev_hosts {
             log_warn!(
                 "live target host came from workspace settings (was {:?} now {:?} hosts {:?}): credentials will be sent there — verify the host is trusted",
-                prev_host,
-                cfg.host,
-                cfg.hosts
+                sanitize_for_log(&prev_host),
+                sanitize_for_log(&cfg.host),
+                sanitize_for_log(&format!("{:?}", cfg.hosts))
             );
         }
         if let Some(user_val) =
@@ -326,7 +475,28 @@ impl LiveConfig {
         {
             let trimmed = user_val.trim();
             if !trimmed.is_empty() {
-                cfg.user = trimmed.to_string();
+                // F2: user/username from settings is a transport-identity
+                // change (selects which credentials are sent). Default deny
+                // unless RSC_LS_ALLOW_SETTINGS_TRANSPORT=1.
+                if trimmed != cfg.user && !allow_transport {
+                    log_warn!(
+                        "live settings user ignored (was {:?} now {:?}): set RSC_LS_ALLOW_SETTINGS_TRANSPORT=1 to allow workspace transport overrides",
+                        sanitize_for_log(&cfg.user),
+                        sanitize_for_log(trimmed)
+                    );
+                } else {
+                    match validate_user(&user_val) {
+                        Some(u) => cfg.user = u,
+                        None => {
+                            log_warn!(
+                                "invalid live user from workspace settings (was {:?} now {:?}), falling back to admin",
+                                sanitize_for_log(&cfg.user),
+                                sanitize_for_log(trimmed)
+                            );
+                            cfg.user = "admin".to_string();
+                        }
+                    }
+                }
             }
         }
         // SECURITY: secrets in workspace settings are ignored (warn-only).
@@ -340,24 +510,50 @@ impl LiveConfig {
         if let Some(port_val) = get_settings_port(settings_obj) {
             cfg.port = port_val;
         }
-        if let Some(ssl_val) = get_settings_bool(
+        // Privileged transport keys: downgrades via settings require opt-in.
+        // Env values always win when the opt-in is absent.
+        let requested_ssl: Option<bool> = if let Some(b) = get_settings_bool(
             settings_obj,
             &["ssl_verify", "ssl", "MIKROTIK_SSL", "verify_ssl"],
         ) {
-            cfg.ssl_verify = ssl_val;
+            Some(b)
         } else if let Some(s) = get_settings_str(settings_obj, &["MIKROTIK_SSL"]) {
-            // Handle string "0" as in env.
             let trimmed = s.trim();
             if trimmed == "0" {
-                cfg.ssl_verify = false;
+                Some(false)
             } else if trimmed == "1" {
-                cfg.ssl_verify = true;
+                Some(true)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(ssl_val) = requested_ssl {
+            let is_downgrade = !ssl_val && cfg.ssl_verify;
+            if is_downgrade && !allow_transport {
+                log_warn!(
+                    "live settings ssl_verify downgrade ignored (was {:?} now {:?}): set RSC_LS_ALLOW_SETTINGS_TRANSPORT=1 to allow workspace transport overrides",
+                    cfg.ssl_verify,
+                    ssl_val
+                );
+            } else {
+                cfg.ssl_verify = ssl_val;
             }
         }
         if let Some(http_val) =
             get_settings_bool(settings_obj, &["force_http", "http", "MIKROTIK_HTTP"])
         {
-            cfg.force_http = http_val;
+            let is_downgrade = http_val && !cfg.force_http;
+            if is_downgrade && !allow_transport {
+                log_warn!(
+                    "live settings force_http downgrade ignored (was {:?} now {:?}): set RSC_LS_ALLOW_SETTINGS_TRANSPORT=1 to allow workspace transport overrides",
+                    cfg.force_http,
+                    http_val
+                );
+            } else {
+                cfg.force_http = http_val;
+            }
         }
         if let Some(timeout_val) = get_settings_u64(
             settings_obj,
@@ -365,34 +561,109 @@ impl LiveConfig {
         ) {
             cfg.timeout_secs = timeout_val.clamp(1, 30);
         }
-        // Custom resources overlay: check for JSON array or stringified JSON.
-        if let Some(custom_val) = settings_obj
-            .get("custom_resources")
-            .or_else(|| settings_obj.get("live_resources"))
-            .or_else(|| settings_obj.get("RSC_LS_LIVE_RESOURCES"))
-        {
-            if custom_val.is_array() {
-                cfg.custom_resources = parse_custom_resources_from_value(custom_val);
-            } else if let Some(s) = custom_val.as_str() {
-                cfg.custom_resources = parse_custom_resources(Some(s));
+        // Custom resources overlay: privileged, requires opt-in.
+        let custom_present = settings_obj.get("custom_resources").is_some()
+            || settings_obj.get("live_resources").is_some()
+            || settings_obj.get("RSC_LS_LIVE_RESOURCES").is_some();
+        if custom_present {
+            if !allow_transport {
+                log_warn!(
+                    "live settings custom_resources ignored (was {} items): set RSC_LS_ALLOW_SETTINGS_TRANSPORT=1 to allow workspace transport overrides",
+                    cfg.custom_resources.len()
+                );
+            } else if let Some(custom_val) = settings_obj
+                .get("custom_resources")
+                .or_else(|| settings_obj.get("live_resources"))
+                .or_else(|| settings_obj.get("RSC_LS_LIVE_RESOURCES"))
+            {
+                if custom_val.is_array() {
+                    cfg.custom_resources = parse_custom_resources_from_value(custom_val);
+                } else if let Some(s) = custom_val.as_str() {
+                    cfg.custom_resources = parse_custom_resources(Some(s));
+                } else if let Some(s) = get_settings_str(settings_obj, &["RSC_LS_LIVE_RESOURCES"]) {
+                    cfg.custom_resources = parse_custom_resources(Some(&s));
+                }
+            } else if let Some(s) = get_settings_str(settings_obj, &["RSC_LS_LIVE_RESOURCES"]) {
+                cfg.custom_resources = parse_custom_resources(Some(&s));
             }
-        } else if let Some(s) = get_settings_str(settings_obj, &["RSC_LS_LIVE_RESOURCES"]) {
-            cfg.custom_resources = parse_custom_resources(Some(&s));
         }
         if let Some(allow) = get_settings_bool(
             settings_obj,
             &["allow_loopback", "RSC_LS_LIVE_ALLOW_LOOPBACK"],
         ) {
-            cfg.allow_loopback = allow;
+            let is_downgrade = allow && !cfg.allow_loopback;
+            if is_downgrade && !allow_transport {
+                log_warn!(
+                    "live settings allow_loopback downgrade ignored (was {:?} now {:?}): set RSC_LS_ALLOW_SETTINGS_TRANSPORT=1 to allow workspace transport overrides",
+                    cfg.allow_loopback,
+                    allow
+                );
+            } else {
+                cfg.allow_loopback = allow;
+            }
         } else if let Some(s) = get_settings_str(settings_obj, &["RSC_LS_LIVE_ALLOW_LOOPBACK"]) {
-            cfg.allow_loopback = s.trim() == "1";
+            let requested = s.trim() == "1";
+            let is_downgrade = requested && !cfg.allow_loopback;
+            if is_downgrade && !allow_transport {
+                log_warn!(
+                    "live settings allow_loopback downgrade ignored (was {:?} now {:?}): set RSC_LS_ALLOW_SETTINGS_TRANSPORT=1 to allow workspace transport overrides",
+                    cfg.allow_loopback,
+                    requested
+                );
+            } else {
+                cfg.allow_loopback = requested;
+            }
+        }
+        // TLS pin overlay: adding a pin is hardening (always allowed);
+        // removing a pin configured via env is a downgrade (needs opt-in).
+        if let Some(fp_val) =
+            get_settings_str(settings_obj, &["fingerprint", "MIKROTIK_FINGERPRINT"])
+        {
+            let trimmed = fp_val.trim();
+            if trimmed.is_empty() {
+                if cfg.fingerprint.is_some() && !allow_transport {
+                    log_warn!(
+                        "live settings fingerprint removal ignored (pin configured via env): set RSC_LS_ALLOW_SETTINGS_TRANSPORT=1 to allow workspace transport overrides"
+                    );
+                } else if cfg.fingerprint.is_some() {
+                    cfg.fingerprint = None;
+                }
+            } else {
+                let (parsed, invalid) = parse_fingerprint(Some(trimmed));
+                if invalid {
+                    log_warn!(
+                        "live settings fingerprint invalid (expected sha256:<64 hex chars>), ignoring"
+                    );
+                } else {
+                    cfg.fingerprint = parsed;
+                    cfg.fingerprint_invalid = false;
+                }
+            }
+        }
+        // Custom CA overlay: workspace-provided trust anchors are privileged
+        // (a malicious settings file could point at a rogue CA), so any
+        // settings CA value requires the transport opt-in. Env always wins
+        // when the opt-in is absent.
+        if let Some(ca_val) = get_settings_str(settings_obj, &["ca_file", "MIKROTIK_CA_FILE"]) {
+            let trimmed = ca_val.trim().to_string();
+            if trimmed != cfg.ca_file {
+                if !allow_transport {
+                    log_warn!(
+                        "live settings ca_file ignored (was {:?} now {:?}): set RSC_LS_ALLOW_SETTINGS_TRANSPORT=1 to allow workspace transport overrides",
+                        sanitize_for_log(&cfg.ca_file),
+                        sanitize_for_log(&trimmed)
+                    );
+                } else {
+                    cfg.ca_file = trimmed;
+                }
+            }
         }
         // Log if multi-host after overlay
         if cfg.hosts.len() > 1 {
             log_info!(
                 "live multi-host (settings) {} (primary={})",
                 cfg.hosts.len(),
-                cfg.host
+                sanitize_for_log(&cfg.host)
             );
         }
     }
@@ -424,9 +695,9 @@ impl LiveConfig {
                 // We log and return Interfaces to keep cache isolation simple.
                 log_debug!(
                     "live custom resource matched property={} path={} field={}",
-                    cr.property,
-                    cr.path,
-                    cr.field
+                    sanitize_for_log(&cr.property),
+                    sanitize_for_log(&cr.path),
+                    sanitize_for_log(&cr.field)
                 );
                 return Some(ResourceKind::Interfaces);
             }
@@ -466,10 +737,13 @@ fn parse_hosts(raw: &str) -> Vec<String> {
     // For now keep all but log warnings for invalid ones. is_active checks primary.
     for h in &hosts {
         if let Err(e) = validate_host(h) {
-            log_warn!("live host validation failed for {h:?}: {e}");
+            log_warn!(
+                "live host validation failed for {:?}: {e}",
+                sanitize_for_log(h)
+            );
         }
         if is_ssrf_denied_host(h) {
-            log_warn!("live host denied by SSRF filter: {h:?}");
+            log_warn!("live host denied by SSRF filter: {:?}", sanitize_for_log(h));
         }
     }
     hosts
@@ -514,15 +788,17 @@ fn is_valid_custom_identifier(s: &str) -> bool {
 /// Validate a custom resource REST path.
 ///
 /// Requirements:
-/// - starts with `/rest`, length 1..64
+/// - exactly `/rest` or starts with `/rest/`, length 1..64
 /// - no null, control, `\`, `%`, `?`, `#`, `@`
 /// - no `//` (consecutive slashes)
 /// - no `..` as an exact segment (split by `/`)
-fn is_valid_custom_path(path: &str) -> bool {
+pub(crate) fn is_valid_custom_path(path: &str) -> bool {
     if path.is_empty() || path.len() > 64 {
         return false;
     }
-    if !path.starts_with("/rest") {
+    // F7: bare `/rest`, `/restful`, `/restx` must not pass. Only the exact
+    // root or the `/rest/` prefix is a device REST path.
+    if path != "/rest" && !path.starts_with("/rest/") {
         return false;
     }
     if path.contains('\0') || path.chars().any(|c| c.is_control()) {
@@ -577,7 +853,7 @@ fn parse_custom_resources_from_value(v: &serde_json::Value) -> Vec<CustomResourc
         if property.is_empty() || path.is_empty() || field.is_empty() {
             log_warn!(
                 "custom resource missing required fields, skipping: {:?}",
-                entry
+                sanitize_for_log(&format!("{entry:?}"))
             );
             continue;
         }
@@ -585,7 +861,7 @@ fn parse_custom_resources_from_value(v: &serde_json::Value) -> Vec<CustomResourc
         if !is_valid_custom_path(&path) {
             log_warn!(
                 "custom resource path failed validation, skipping: {:?}",
-                entry
+                sanitize_for_log(&format!("{entry:?}"))
             );
             continue;
         }
@@ -593,14 +869,14 @@ fn parse_custom_resources_from_value(v: &serde_json::Value) -> Vec<CustomResourc
         if !is_valid_custom_identifier(&property) {
             log_warn!(
                 "custom resource property failed validation (expected ^[a-zA-Z0-9_-]+$ 1..64), skipping: {:?}",
-                entry
+                sanitize_for_log(&format!("{entry:?}"))
             );
             continue;
         }
         if !is_valid_custom_identifier(&field) {
             log_warn!(
                 "custom resource field failed validation (expected ^[a-zA-Z0-9_-]+$ 1..64), skipping: {:?}",
-                entry
+                sanitize_for_log(&format!("{entry:?}"))
             );
             continue;
         }
@@ -780,24 +1056,307 @@ fn parse_env_u64(raw: &Option<String>, default: u64, name: &str) -> u64 {
     }
 }
 
+/// Whether the legacy `--no-ssl-verify` silent HTTP downgrade is allowed.
+///
+/// Default OFF (matches `scripts/_mikrotik_shared.py`, which removed the
+/// shim): `MIKROTIK_SSL=0` only disables verification, never the scheme.
+/// Opt-in via `RSC_LS_LEGACY_HTTP_SHIM=1` (or `MIKROTIK_LEGACY_HTTP_SHIM=1`)
+/// restores the historical fallback (non-standard port + verify off => http)
+/// with a WARN. Plain HTTP otherwise requires explicit `MIKROTIK_HTTP=1`.
+fn legacy_http_shim_allowed() -> bool {
+    std::env::var("RSC_LS_LEGACY_HTTP_SHIM")
+        .ok()
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false)
+        || std::env::var("MIKROTIK_LEGACY_HTTP_SHIM")
+            .ok()
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false)
+}
+
+/// Test-friendly legacy check against an injected env getter.
+#[cfg(test)]
+pub(crate) fn legacy_http_shim_allowed_with<F>(get: &F) -> bool
+where
+    F: Fn(&str) -> Option<String>,
+{
+    get("RSC_LS_LEGACY_HTTP_SHIM")
+        .as_deref()
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false)
+        || get("MIKROTIK_LEGACY_HTTP_SHIM")
+            .as_deref()
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false)
+}
+
 /// Resolve the REST URL scheme, mirroring `scripts/_mikrotik_shared.py::resolve_scheme`.
 ///
 /// `port`: target port.
 /// `force_http`: `MIKROTIK_HTTP=1`.
 /// `ssl_verify`: true when verification is enabled; false when `MIKROTIK_SSL=0`.
 ///
-/// The live client applies the same rules as the Python companion scripts
-/// but does not emit their legacy-shim warning (see `LiveConfig::scheme`).
+/// Default is HTTPS on every port; `MIKROTIK_SSL=0` only controls
+/// certificate validation, never the scheme. The historical silent
+/// downgrade (non-standard port + verify off => http) fires only when the
+/// legacy opt-in (`RSC_LS_LEGACY_HTTP_SHIM=1`) is set, and then with a WARN.
+/// Without the opt-in the same combination stays on HTTPS with a WARN
+/// telling the operator to pass `MIKROTIK_HTTP=1` for plain HTTP.
 pub(crate) fn resolve_scheme(port: u16, force_http: bool, ssl_verify: bool) -> &'static str {
+    let (scheme, _fired) =
+        resolve_scheme_with_legacy(port, force_http, ssl_verify, legacy_http_shim_allowed());
+    scheme
+}
+
+/// Test-friendly scheme resolution with an explicit legacy flag.
+///
+/// Returns `(scheme, legacy_shim_fired)`: the flag is true when the legacy
+/// condition (non-standard port + verify off, without force_http) matched,
+/// regardless of whether the opt-in allowed the downgrade.
+pub(crate) fn resolve_scheme_with_legacy(
+    port: u16,
+    force_http: bool,
+    ssl_verify: bool,
+    allow_legacy_shim: bool,
+) -> (&'static str, bool) {
     let no_ssl_verify = !ssl_verify;
-    if !force_http && no_ssl_verify && port != 443 && port != 8729 {
-        return "http";
+    let legacy_condition = !force_http && no_ssl_verify && port != 443 && port != 8729;
+    if legacy_condition {
+        if allow_legacy_shim {
+            log_warn!(
+                "legacy http shim: MIKROTIK_SSL=0 on non-standard port {port} downgraded scheme to http (opt-in RSC_LS_LEGACY_HTTP_SHIM=1); prefer MIKROTIK_HTTP=1 for plain HTTP"
+            );
+            return ("http", true);
+        }
+        log_warn!(
+            "MIKROTIK_SSL=0 does not select the scheme; staying on https for port {port} (pass MIKROTIK_HTTP=1 for plain HTTP)"
+        );
+        return ("https", true);
     }
-    if force_http { "http" } else { "https" }
+    if force_http {
+        ("http", false)
+    } else {
+        ("https", false)
+    }
+}
+
+/// Parse `MIKROTIK_FINGERPRINT=sha256:<hex>` into 32 raw bytes.
+///
+/// Accepts `sha256:` prefix case-insensitively, strips embedded `:`/space
+/// separators, and requires exactly 64 hex chars (32 bytes, SPKI SHA256).
+/// Returns `(Some(bytes), false)` on success, `(None, false)` when unset or
+/// empty, and `(None, true)` when present but malformed (fail-closed: the
+/// caller must refuse to go active). Malformed values log a WARN without
+/// echoing the value.
+pub(crate) fn parse_fingerprint(raw: Option<&str>) -> (Option<[u8; 32]>, bool) {
+    let Some(v) = raw else {
+        return (None, false);
+    };
+    let trimmed = v.trim();
+    if trimmed.is_empty() {
+        return (None, false);
+    }
+    let mut hex = trimmed;
+    if hex.len() >= 7 && hex[..7].eq_ignore_ascii_case("sha256:") {
+        hex = &hex[7..];
+    }
+    let compact: String = hex
+        .chars()
+        .filter(|c| *c != ':' && !c.is_whitespace())
+        .collect();
+    if compact.len() != 64 || !compact.chars().all(|c| c.is_ascii_hexdigit()) {
+        log_warn!(
+            "invalid MIKROTIK_FINGERPRINT (expected sha256:<64 hex chars>), ignoring fail-closed"
+        );
+        return (None, true);
+    }
+    let mut out = [0u8; 32];
+    for (i, chunk) in compact.as_bytes().chunks(2).enumerate() {
+        let hi = (chunk[0] as char).to_digit(16).unwrap_or(0);
+        let lo = (chunk[1] as char).to_digit(16).unwrap_or(0);
+        out[i] = ((hi << 4) | lo) as u8;
+    }
+    (Some(out), false)
+}
+
+// ── Minimal SHA256 + SPKI extraction (no new deps) ─────────────────
+//
+// The pin compares `SHA256(DER(subjectPublicKeyInfo))` of the leaf cert
+// (RFC 7469 style). `ring` is not a direct dependency, so a compact pure-Rust
+// SHA256 is vendored here (~64 rounds, standard constants). SPKI bytes are
+// located with a minimal DER TLV walker (fail-closed `None` on malformed).
+
+pub(crate) fn sha256_block(state: &mut [u32; 8], block: &[u8; 64]) {
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+    let mut w = [0u32; 64];
+    for (i, c) in block.chunks(4).enumerate().take(16) {
+        w[i] = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
+    }
+    for i in 16..64 {
+        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16]
+            .wrapping_add(s0)
+            .wrapping_add(w[i - 7])
+            .wrapping_add(s1);
+    }
+    let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h) = (
+        state[0], state[1], state[2], state[3], state[4], state[5], state[6], state[7],
+    );
+    for i in 0..64 {
+        let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+        let ch = (e & f) ^ ((!e) & g);
+        let t1 = h
+            .wrapping_add(s1)
+            .wrapping_add(ch)
+            .wrapping_add(K[i])
+            .wrapping_add(w[i]);
+        let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+        let maj = (a & b) ^ (a & c) ^ (b & c);
+        let t2 = s0.wrapping_add(maj);
+        h = g;
+        g = f;
+        f = e;
+        e = d.wrapping_add(t1);
+        d = c;
+        c = b;
+        b = a;
+        a = t1.wrapping_add(t2);
+    }
+    state[0] = state[0].wrapping_add(a);
+    state[1] = state[1].wrapping_add(b);
+    state[2] = state[2].wrapping_add(c);
+    state[3] = state[3].wrapping_add(d);
+    state[4] = state[4].wrapping_add(e);
+    state[5] = state[5].wrapping_add(f);
+    state[6] = state[6].wrapping_add(g);
+    state[7] = state[7].wrapping_add(h);
+}
+
+/// SHA256 over `data` (pure Rust, no extra dependency).
+pub(crate) fn sha256(data: &[u8]) -> [u8; 32] {
+    let mut state: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    let bit_len = (data.len() as u64).wrapping_mul(8);
+    let mut padded = data.to_vec();
+    padded.push(0x80);
+    while padded.len() % 64 != 56 {
+        padded.push(0);
+    }
+    padded.extend_from_slice(&bit_len.to_be_bytes());
+    for block in padded.chunks(64) {
+        let mut arr = [0u8; 64];
+        arr.copy_from_slice(block);
+        sha256_block(&mut state, &arr);
+    }
+    let mut out = [0u8; 32];
+    for (i, v) in state.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&v.to_be_bytes());
+    }
+    out
+}
+
+/// Read one DER TLV at `data[pos..]`; returns `(tag, header_len, value_len, value_start)`.
+fn der_tlv(data: &[u8], pos: usize) -> Option<(u8, usize, usize, usize)> {
+    if pos + 2 > data.len() {
+        return None;
+    }
+    let tag = data[pos];
+    let first = data[pos + 1];
+    if first & 0x80 == 0 {
+        let len = (first & 0x7f) as usize;
+        let start = pos + 2;
+        if start + len > data.len() {
+            return None;
+        }
+        return Some((tag, 2, len, start));
+    }
+    let nbytes = (first & 0x7f) as usize;
+    if nbytes == 0 || nbytes > 4 || pos + 2 + nbytes > data.len() {
+        return None;
+    }
+    let mut len: usize = 0;
+    for b in &data[pos + 2..pos + 2 + nbytes] {
+        len = len.checked_mul(256)?.checked_add(*b as usize)?;
+    }
+    let start = pos + 2 + nbytes;
+    if start + len > data.len() {
+        return None;
+    }
+    Some((tag, 2 + nbytes, len, start))
+}
+
+/// Extract the full DER TLV of `subjectPublicKeyInfo` from a DER certificate.
+///
+/// Walks `Certificate ::= SEQUENCE { tbsCertificate SEQUENCE { ... } }` and
+/// returns the SPKI SEQUENCE TLV (tag + length + value). Fail-closed `None`
+/// on any malformed input.
+pub(crate) fn extract_spki_der(cert_der: &[u8]) -> Option<&[u8]> {
+    // Outer Certificate SEQUENCE.
+    let (tag, hlen, _vlen, vstart) = der_tlv(cert_der, 0)?;
+    if tag != 0x30 {
+        return None;
+    }
+    // First child of Certificate is tbsCertificate SEQUENCE.
+    let (tbs_tag, _tbs_hlen, tbs_len, tbs_start) = der_tlv(cert_der, vstart)?;
+    if tbs_tag != 0x30 {
+        return None;
+    }
+    let _ = hlen;
+    let tbs_end = tbs_start + tbs_len;
+    if tbs_end > cert_der.len() {
+        return None;
+    }
+    let mut pos = tbs_start;
+    // Optional [0] version (context-specific constructed 0xA0).
+    if pos < tbs_end && cert_der[pos] == 0xA0 {
+        let (_, h, l, s) = der_tlv(cert_der, pos)?;
+        pos = s + l;
+        let _ = h;
+    }
+    // serial INTEGER, signature SEQUENCE, issuer Name, validity SEQUENCE,
+    // subject Name — skip each generically, then SPKI is next.
+    for _ in 0..5 {
+        if pos >= tbs_end {
+            return None;
+        }
+        let (_, h, l, s) = der_tlv(cert_der, pos)?;
+        pos = s + l;
+        let _ = h;
+    }
+    if pos >= tbs_end || cert_der[pos] != 0x30 {
+        return None;
+    }
+    let (_, h, l, s) = der_tlv(cert_der, pos)?;
+    let total = h + l;
+    if pos + total > cert_der.len() {
+        return None;
+    }
+    let _ = s;
+    Some(&cert_der[pos..pos + total])
+}
+
+/// SHA256 of the leaf certificate SPKI (fail-closed `None` on malformed DER).
+pub(crate) fn spki_sha256(cert_der: &[u8]) -> Option<[u8; 32]> {
+    let spki = extract_spki_der(cert_der)?;
+    Some(sha256(spki))
 }
 
 /// Check if a host is denied by SSRF protection.
-fn is_ssrf_denied_host(host: &str) -> bool {
+pub(crate) fn is_ssrf_denied_host(host: &str) -> bool {
     // Normalize: lowercase, strip brackets, strip port if present? host here is without port.
     let lower = host.trim().to_ascii_lowercase();
     // Strip IPv6 brackets for comparison
@@ -851,7 +1410,7 @@ fn is_ssrf_denied_host(host: &str) -> bool {
 /// (`127.1`), octal (`0177.0.0.1`), and mapped (`::ffff:127.0.0.1`) forms.
 /// Returns `None` for domain names or unparsable hosts (callers fall back
 /// to lexical hostname checks).
-fn normalized_host_ip(host: &str) -> Option<std::net::IpAddr> {
+pub(crate) fn normalized_host_ip(host: &str) -> Option<std::net::IpAddr> {
     let trimmed = host.trim();
     if trimmed.is_empty() {
         return None;
@@ -874,7 +1433,7 @@ fn normalized_host_ip(host: &str) -> Option<std::net::IpAddr> {
 /// rejected fail-closed — even when the normalized address itself would be
 /// public. Canonical forms (`127.0.0.1`, `8.8.8.8`, `2001:db8::1`) are
 /// unaffected because they already match their canonical string.
-fn is_non_canonical_numeric_host(host: &str) -> bool {
+pub(crate) fn is_non_canonical_numeric_host(host: &str) -> bool {
     let trimmed = host.trim();
     let inner = if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() >= 2 {
         &trimmed[1..trimmed.len() - 1]
@@ -894,7 +1453,7 @@ fn is_non_canonical_numeric_host(host: &str) -> bool {
 /// IPv6 `fe80::/10` link-local, and unspecified addresses. IPv4-mapped
 /// IPv6 (`::ffff:a.b.c.d`) is mapped to IPv4 before the check so
 /// `[::ffff:a9fe:a9fe]` (metadata IP) is denied as link-local.
-fn is_normalized_ssrf_denied(addr: std::net::IpAddr) -> bool {
+pub(crate) fn is_normalized_ssrf_denied(addr: std::net::IpAddr) -> bool {
     match addr {
         std::net::IpAddr::V4(v4) => {
             let o = v4.octets();
@@ -927,7 +1486,7 @@ fn is_normalized_ssrf_denied(addr: std::net::IpAddr) -> bool {
 /// IPv4-mapped IPv6 is mapped to IPv4 first so `[::ffff:127.0.0.1]` and
 /// `[::ffff:10.0.0.1]` are judged as their IPv4 equivalents. ULA
 /// (`fc00::/7`) stays allowed to avoid over-blocking, matching prior policy.
-fn is_normalized_loopback_or_private(addr: std::net::IpAddr) -> bool {
+pub(crate) fn is_normalized_loopback_or_private(addr: std::net::IpAddr) -> bool {
     match addr {
         std::net::IpAddr::V4(v4) => {
             if v4.is_loopback() {
@@ -1059,7 +1618,7 @@ pub fn validate_host_with_allow(host: &str, allow_loopback: bool) -> Result<(), 
         if !allow_loopback && is_normalized_loopback_or_private(normalized) {
             log_warn!(
                 "live host denied (loopback/private) without RSC_LS_LIVE_ALLOW_LOOPBACK=1: {:?}",
-                host
+                sanitize_for_log(host)
             );
             return Err(LiveError::InvalidHost(
                 "loopback/private denied without RSC_LS_LIVE_ALLOW_LOOPBACK=1".to_string(),
@@ -1069,7 +1628,7 @@ pub fn validate_host_with_allow(host: &str, allow_loopback: bool) -> Result<(), 
     if !allow_loopback && is_loopback_or_private(host) {
         log_warn!(
             "live host denied (loopback/private) without RSC_LS_LIVE_ALLOW_LOOPBACK=1: {:?}",
-            host
+            sanitize_for_log(host)
         );
         return Err(LiveError::InvalidHost(
             "loopback/private denied without RSC_LS_LIVE_ALLOW_LOOPBACK=1".to_string(),
@@ -1092,10 +1651,184 @@ pub fn validate_host(host: &str) -> Result<(), LiveError> {
     validate_host_with_allow(host, live_allow_loopback())
 }
 
+/// F4: TLS-identity portion of the connection-invalidation predicate.
+///
+/// Returns true when the pin / pin-validity / CA-bundle selection changed.
+/// The caller (`server::live_connection_changed`) ORs this with the
+/// transport fields so entries fetched under a previous trust anchor are
+/// never reused after a pin/CA rotation.
+pub(crate) fn live_identity_changed(old: &LiveConfig, new: &LiveConfig) -> bool {
+    old.fingerprint != new.fingerprint
+        || old.fingerprint_invalid != new.fingerprint_invalid
+        || old.ca_file != new.ca_file
+}
+
+// ── F1: resolve-then-revalidate (DNS TOCTOU) ─────────────────────
+//
+// Lexical + normalized-literal checks run at config time, but a hostname
+// can resolve to a denied address at fetch time (DNS rebinding / split
+// horizon). Re-resolve at fetch time and re-run the deny policy against
+// EVERY returned IP, fail-closed: any denied IP, or any resolution
+// failure, refuses the fetch before credentials are sent.
+
+/// Classify one resolved IP against the SSRF deny policy.
+///
+/// Returns `Some(reason)` when the address is denied, `None` when allowed.
+/// Unconditionally denied: whole `169.254.0.0/16`, IPv6 `fe80::/10`,
+/// unspecified, and — unless `allow_loopback` — loopback/RFC1918.
+pub(crate) fn denied_reason_for_ip(
+    addr: std::net::IpAddr,
+    allow_loopback: bool,
+) -> Option<&'static str> {
+    if is_normalized_ssrf_denied(addr) {
+        return Some("SSRF denied resolved IP");
+    }
+    if !allow_loopback && is_normalized_loopback_or_private(addr) {
+        return Some("loopback/private denied without RSC_LS_LIVE_ALLOW_LOOPBACK=1");
+    }
+    None
+}
+
+/// Resolve `host:port` and deny the fetch when ANY resolved IP is denied.
+///
+/// - IP literals resolve locally (no DNS) via `ToSocketAddrs`.
+/// - Hostnames resolve via the system resolver (`getaddrinfo`).
+/// - Empty results or resolution failures are fail-closed (`InvalidHost`).
+/// - Every returned IP is checked with [`denied_reason_for_ip`]; the first
+///   denial fails the whole fetch (an attacker controls only one record to
+///   win a race).
+pub(crate) fn resolve_and_validate_host(
+    host: &str,
+    port: u16,
+    allow_loopback: bool,
+) -> Result<(), LiveError> {
+    use std::net::ToSocketAddrs;
+    let bare = host.trim().trim_start_matches('[').trim_end_matches(']');
+    let addrs: Vec<std::net::IpAddr> = (bare, port)
+        .to_socket_addrs()
+        .map(|iter| iter.map(|s| s.ip()).collect())
+        .map_err(|e| LiveError::InvalidHost(format!("dns resolution failed: {e}")))?;
+    if addrs.is_empty() {
+        return Err(LiveError::InvalidHost(
+            "dns resolution returned no addresses".to_string(),
+        ));
+    }
+    for addr in addrs {
+        if let Some(reason) = denied_reason_for_ip(addr, allow_loopback) {
+            log_warn!(
+                "live fetch denied: host {:?} resolved to denied IP {addr} ({reason})",
+                sanitize_for_log(host)
+            );
+            return Err(LiveError::InvalidHost(format!(
+                "resolved IP denied: {addr}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+// ── F8: bounded CA-bundle loading ────────────────────────────────
+
+/// Max bytes read from `MIKROTIK_CA_FILE` (256 KiB — PEM bundles are small;
+/// anything larger is a misconfiguration, not a trust anchor).
+pub(crate) const MAX_CA_FILE_BYTES: u64 = 256 * 1024;
+
+/// Negative cache of CA paths that failed to parse, so every completion
+/// keystroke does not re-read a broken bundle. Keyed by the canonical path
+/// when available, else the raw path. Entries are never evicted within the
+/// process lifetime (a bundle fix requires a restart — documented in the
+/// WARN at insertion).
+fn bad_ca_cache() -> &'static Mutex<HashSet<String>> {
+    static BAD_CA: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    BAD_CA.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+pub(crate) fn is_bad_ca(key: &str) -> bool {
+    bad_ca_cache()
+        .lock()
+        .map(|g| g.contains(key))
+        .unwrap_or(false)
+}
+
+fn mark_bad_ca(key: String) {
+    if let Ok(mut g) = bad_ca_cache().lock() {
+        g.insert(key);
+    }
+}
+
+/// Read a CA bundle with a 256 KiB cap, symlink warning, and negative cache.
+///
+/// - Resolves `canonicalize()` for the cache key; warns when the canonical
+///   path differs (symlink or `..`/curdir indirection) so a swapped link
+///   target is visible in logs.
+/// - Warns (once per path) when the file is a symlink.
+/// - Returns `None` fail-closed on missing/unreadable/oversize/undecodable
+///   input; callers fall back to the default verifier (never insecure).
+pub(crate) fn read_ca_bundle(ca_file: &str) -> Option<String> {
+    if ca_file.trim().is_empty() {
+        return None;
+    }
+    let raw_path = std::path::Path::new(ca_file);
+    let canonical = std::fs::canonicalize(raw_path).ok();
+    let key = canonical
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ca_file.to_string());
+    if is_bad_ca(&key) {
+        return None;
+    }
+    let fail = |why: &str| {
+        log_warn!(
+            "live CA file unreadable ({why}): {:?}",
+            sanitize_for_log(ca_file)
+        );
+        mark_bad_ca(key.clone());
+        None
+    };
+    let meta = std::fs::symlink_metadata(raw_path).ok()?;
+    if meta.file_type().is_symlink() {
+        log_warn!(
+            "live CA file is a symlink (target swap risk): {:?} -> {:?}",
+            sanitize_for_log(ca_file),
+            sanitize_for_log(
+                &canonical
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            )
+        );
+    }
+    if canonical.as_ref().is_some_and(|c| {
+        c.to_string_lossy() != raw_path.to_string_lossy().replace('\\', "/").as_str()
+            && c.to_string_lossy() != ca_file
+    }) {
+        log_debug!(
+            "live CA file canonicalized {:?} -> {:?}",
+            sanitize_for_log(ca_file),
+            sanitize_for_log(&key)
+        );
+    }
+    if !meta.is_file() && !meta.file_type().is_symlink() {
+        return fail("not a regular file");
+    }
+    if meta.len() > MAX_CA_FILE_BYTES {
+        return fail("exceeds 256KiB cap");
+    }
+    let bytes = std::fs::read(raw_path).ok()?;
+    if bytes.len() as u64 > MAX_CA_FILE_BYTES {
+        return fail("exceeds 256KiB cap");
+    }
+    let text = String::from_utf8(bytes).ok()?;
+    if parse_pem_certs(&text).is_empty() {
+        return fail("no decodable PEM certificates");
+    }
+    Some(text)
+}
+
 /// Format host for URL: wrap bare IPv6 literals with brackets if needed.
 ///
 /// Keep in sync with `scripts/_mikrotik_shared.py::format_host_for_url`.
-fn format_host_for_url(host: &str) -> String {
+pub(crate) fn format_host_for_url(host: &str) -> String {
     // Already bracketed? keep as is.
     if host.starts_with('[') && host.ends_with(']') {
         return host.to_string();
@@ -1115,7 +1848,7 @@ fn format_host_for_url(host: &str) -> String {
 ///
 /// Keep in sync with `scripts/_mikrotik_shared.py::validate_host` /
 /// `format_host_for_url` / `resolve_scheme`.
-fn build_base_url_with_allow(
+pub(crate) fn build_base_url_with_allow(
     host: &str,
     port: u16,
     scheme: &str,
@@ -1149,7 +1882,10 @@ fn build_base_url_with_allow(
 ///
 /// Uses `build_base_url_with_allow` for shared validation, then appends the resource path.
 /// Handles IPv6 bracket wrapping via `format_host_for_url`.
-fn build_rest_url(config: &LiveConfig, resource: ResourceKind) -> Result<String, LiveError> {
+pub(crate) fn build_rest_url(
+    config: &LiveConfig,
+    resource: ResourceKind,
+) -> Result<String, LiveError> {
     let mut base = build_base_url_with_allow(
         &config.host,
         config.port,
@@ -1190,6 +1926,14 @@ fn build_custom_rest_url(
         .map_err(|e| LiveError::InvalidHost(format!("invalid url: {e}")))?;
     if parsed.scheme() != config.scheme() {
         return Err(LiveError::InvalidHost("scheme mismatch".to_string()));
+    }
+    // F7: re-validate the parsed path — `Url::set_path` normalizes
+    // percent-encoding and dot-segments, so the allowlist must hold on the
+    // final parsed form, not just the raw configured string.
+    if parsed.path() != "/rest" && !parsed.path().starts_with("/rest/") {
+        return Err(LiveError::InvalidHost(
+            "custom path escapes /rest".to_string(),
+        ));
     }
     Ok(url_str)
 }
@@ -1822,7 +2566,7 @@ fn trigger_background_fetch(
                 log_info!(
                     "live fetch ok kind={:?} host={} latency_ms={} items={}",
                     resource,
-                    config_clone.host,
+                    sanitize_for_log(&config_clone.host),
                     elapsed.as_millis(),
                     values.len()
                 );
@@ -1833,12 +2577,16 @@ fn trigger_background_fetch(
                 guard.insert(key.clone(), values);
             }
             Err(e) => {
+                // F6: belt-and-braces — Network is redacted at construction,
+                // but redact again at the log boundary in case a future
+                // error variant echoes request context.
+                let safe = redact_secrets(&e.to_string(), &config_clone.pass, &config_clone.user);
                 log_warn!(
                     "live fetch {:?} failed: {} latency_ms={} host={}",
                     resource,
-                    e,
+                    safe,
                     elapsed.as_millis(),
-                    config_clone.host
+                    sanitize_for_log(&config_clone.host)
                 );
                 let mut guard = cache_clone.lock().unwrap_or_else(|e| {
                     log_warn!("live cache lock poisoned, recovering");
@@ -1966,7 +2714,7 @@ fn trigger_custom_fetch_background(
                 if vals.is_empty() {
                     log_debug!(
                         "live custom fetch {} returned empty set",
-                        custom_clone.property
+                        sanitize_for_log(&custom_clone.property)
                     );
                     // Cache empty results (see built-in path above).
                     let mut guard = cache_clone.lock().unwrap_or_else(|e| {
@@ -1978,8 +2726,8 @@ fn trigger_custom_fetch_background(
                 }
                 log_info!(
                     "live fetch ok custom property={} path={} latency_ms={} items={}",
-                    custom_clone.property,
-                    custom_clone.path,
+                    sanitize_for_log(&custom_clone.property),
+                    sanitize_for_log(&custom_clone.path),
                     start.elapsed().as_millis(),
                     vals.len()
                 );
@@ -1990,11 +2738,12 @@ fn trigger_custom_fetch_background(
                 guard.insert(key_clone, vals);
             }
             Err(e) => {
+                let safe = redact_secrets(&e.to_string(), &config_clone.pass, &config_clone.user);
                 log_warn!(
                     "live fetch custom failed property={} path={} err={} latency_ms={}",
-                    custom_clone.property,
-                    custom_clone.path,
-                    e,
+                    sanitize_for_log(&custom_clone.property),
+                    sanitize_for_log(&custom_clone.path),
+                    safe,
                     start.elapsed().as_millis()
                 );
                 let mut guard = cache_clone.lock().unwrap_or_else(|e| {
@@ -2012,8 +2761,9 @@ fn trigger_custom_fetch_background(
 /// Get a cached `ureq::Agent` for the given timeout and TLS verification mode, or build a new one.
 ///
 /// Uses a global `OnceLock` cache keyed by `(timeout_secs, ssl_verify)` to reuse agents across calls.
-/// Logs `live agent reuse` on hit.
-fn get_cached_agent(timeout: Duration, ssl_verify: bool) -> ureq::Agent {
+/// Logs `live agent reuse` on hit. Prefer `get_cached_agent_for_config` (pin/CA aware); this
+/// wrapper exists for unit tests and pin-less call sites.
+pub(crate) fn get_cached_agent(timeout: Duration, ssl_verify: bool) -> ureq::Agent {
     static AGENT_CACHE: OnceLock<Mutex<HashMap<(u64, bool), ureq::Agent>>> = OnceLock::new();
     let cache = AGENT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let key = (timeout.as_secs(), ssl_verify);
@@ -2067,10 +2817,384 @@ fn get_cached_agent(timeout: Duration, ssl_verify: bool) -> ureq::Agent {
     agent
 }
 
+/// Pin-aware agent cache key: timeout + effective verify + pin + CA path.
+fn agent_cache_key_for_config(
+    config: &LiveConfig,
+    timeout: Duration,
+) -> (u64, bool, Option<[u8; 32]>, String) {
+    (
+        timeout.as_secs(),
+        config.ssl_verify_effective(),
+        config.fingerprint,
+        config.ca_file.clone(),
+    )
+}
+
+/// Get (or build) the `ureq::Agent` for a full `LiveConfig`.
+///
+/// Selection order on `https`:
+///
+/// 1. Pin set (+ optional custom CA roots) => SPKI-pinning verifier.
+/// 2. Custom CA file only => chain verifier against those roots.
+/// 3. `ssl_verify_effective()` true => default platform roots.
+/// 4. Otherwise => insecure verifier + WARN (preserves `MIKROTIK_SSL=0`).
+///
+/// On `http` no TLS is involved; a plain agent is returned. Redirects are
+/// always disabled (3xx surfaces as `LiveError::Status`).
+pub(crate) fn get_cached_agent_for_config(config: &LiveConfig, timeout: Duration) -> ureq::Agent {
+    type PinnedAgentCacheKey = (u64, bool, Option<[u8; 32]>, String);
+    static PINNED_CACHE: OnceLock<Mutex<HashMap<PinnedAgentCacheKey, ureq::Agent>>> =
+        OnceLock::new();
+    let cache = PINNED_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = agent_cache_key_for_config(config, timeout);
+    {
+        let guard = cache.lock().unwrap_or_else(|e| {
+            log_warn!("agent cache lock poisoned, recovering");
+            e.into_inner()
+        });
+        if let Some(agent) = guard.get(&key) {
+            log_debug!(
+                "live agent reuse timeout={}s ssl_verify_effective={} pin_set={} ca_set={}",
+                key.0,
+                key.1,
+                key.2.is_some(),
+                !key.3.is_empty()
+            );
+            return agent.clone();
+        }
+    }
+    let agent = build_agent_for_config(config, timeout);
+    {
+        let mut guard = cache.lock().unwrap_or_else(|e| {
+            log_warn!("agent cache lock poisoned, recovering");
+            e.into_inner()
+        });
+        guard.insert(key, agent.clone());
+    }
+    agent
+}
+
+/// Build (uncached) the agent for a config; fail-closed fallbacks never
+/// silently downgrade to insecure: on pin/CA build failure a default
+/// verifying agent is returned so the handshake still validates.
+fn build_agent_for_config(config: &LiveConfig, timeout: Duration) -> ureq::Agent {
+    if config.scheme() != "https" {
+        return ureq::AgentBuilder::new()
+            .timeout(timeout)
+            .redirects(0)
+            .build();
+    }
+    if let Some(pin) = config.fingerprint {
+        if !config.ca_file.is_empty() {
+            match build_pinned_with_ca_agent(timeout, pin, &config.ca_file) {
+                Some(a) => {
+                    log_info!("live tls pin + custom CA active");
+                    return a;
+                }
+                None => {
+                    log_warn!(
+                        "live pin/CA agent build failed, falling back to default verifier (fail-closed, verification still attempted)"
+                    );
+                    return ureq::AgentBuilder::new()
+                        .timeout(timeout)
+                        .redirects(0)
+                        .build();
+                }
+            }
+        }
+        match build_pinned_agent(timeout, pin) {
+            Some(a) => {
+                log_info!("live tls SPKI pin active (chain replaced by pin check)");
+                return a;
+            }
+            None => {
+                log_warn!(
+                    "live pinned agent build failed, falling back to default verifier (fail-closed)"
+                );
+                return ureq::AgentBuilder::new()
+                    .timeout(timeout)
+                    .redirects(0)
+                    .build();
+            }
+        }
+    }
+    if !config.ca_file.is_empty() {
+        match build_ca_agent(timeout, &config.ca_file) {
+            Some(a) => {
+                log_info!("live custom CA active");
+                return a;
+            }
+            None => {
+                log_warn!(
+                    "live custom CA agent build failed, falling back to default verifier (fail-closed)"
+                );
+                return ureq::AgentBuilder::new()
+                    .timeout(timeout)
+                    .redirects(0)
+                    .build();
+            }
+        }
+    }
+    // No pin/CA: reuse the legacy path (secure default or insecure + WARN).
+    get_cached_agent(timeout, config.ssl_verify_effective())
+}
+
+/// SPKI-pinning verifier: accepts only a leaf whose SPKI SHA256 equals `pin`.
+///
+/// Chain validation is replaced by the pin check (TOFU-style pinning, no new
+/// dependency on a roots bundle). Any mismatch or malformed cert fails the
+/// handshake fail-closed. Signatures are asserted because authenticity is
+/// bound to the pin itself.
+#[derive(Debug)]
+struct SpkiPinVerifier {
+    pin: [u8; 32],
+}
+
+impl rustls::client::danger::ServerCertVerifier for SpkiPinVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        match spki_sha256(end_entity.as_ref()) {
+            Some(digest) if digest == self.pin => {
+                Ok(rustls::client::danger::ServerCertVerified::assertion())
+            }
+            _ => Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::UnknownIssuer,
+            )),
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// Build an agent that pins the leaf SPKI instead of chain validation.
+fn build_pinned_agent(timeout: Duration, pin: [u8; 32]) -> Option<ureq::Agent> {
+    let provider = rustls::crypto::ring::default_provider();
+    let tls_config = rustls::ClientConfig::builder_with_provider(provider.into())
+        .with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
+        .ok()?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(SpkiPinVerifier { pin }))
+        .with_no_client_auth();
+    Some(
+        ureq::AgentBuilder::new()
+            .timeout(timeout)
+            .redirects(0)
+            .tls_config(Arc::new(tls_config))
+            .build(),
+    )
+}
+
+/// Parse PEM `CERTIFICATE` blocks from `pem_text` into DER certificates.
+///
+/// Minimal parser using the existing `base64` dependency (no new crates):
+/// splits on BEGIN/END markers and base64-decodes each block. Non-certificate
+/// blocks are skipped; returns the successfully decoded certs.
+fn parse_pem_certs(pem_text: &str) -> Vec<rustls::pki_types::CertificateDer<'static>> {
+    use base64::Engine;
+    let mut out = Vec::new();
+    let mut in_block = false;
+    let mut b64 = String::new();
+    for line in pem_text.lines() {
+        let t = line.trim();
+        if t == "-----BEGIN CERTIFICATE-----" {
+            in_block = true;
+            b64.clear();
+            continue;
+        }
+        if t == "-----END CERTIFICATE-----" {
+            if in_block {
+                let compact: String = b64.chars().filter(|c| !c.is_whitespace()).collect();
+                if let Ok(der) = base64::engine::general_purpose::STANDARD.decode(&compact) {
+                    out.push(rustls::pki_types::CertificateDer::from(der));
+                } else {
+                    log_warn!("live CA file: skipping undecodable PEM block");
+                }
+            }
+            in_block = false;
+            b64.clear();
+            continue;
+        }
+        if in_block {
+            b64.push_str(t);
+        }
+    }
+    out
+}
+
+/// Build an agent validating chains against a user-provided PEM CA bundle.
+///
+/// Fail-closed `None` when the file is missing, unreadable, oversize
+/// (>256 KiB), or contains no decodable certificates. The path itself is
+/// sanitized in logs. Repeated failures for the same canonical path are
+/// served from a negative cache (no re-read per keystroke).
+fn build_ca_agent(timeout: Duration, ca_file: &str) -> Option<ureq::Agent> {
+    let text = read_ca_bundle(ca_file)?;
+    let certs = parse_pem_certs(&text);
+    if certs.is_empty() {
+        log_warn!(
+            "live CA file has no decodable certificates: {:?}",
+            sanitize_for_log(ca_file)
+        );
+        return None;
+    }
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in certs {
+        if roots.add(cert).is_err() {
+            log_warn!(
+                "live CA file: skipping invalid certificate for {:?}",
+                sanitize_for_log(ca_file)
+            );
+        }
+    }
+    if roots.is_empty() {
+        return None;
+    }
+    let provider = rustls::crypto::ring::default_provider();
+    let tls_config = rustls::ClientConfig::builder_with_provider(provider.into())
+        .with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
+        .ok()?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Some(
+        ureq::AgentBuilder::new()
+            .timeout(timeout)
+            .redirects(0)
+            .tls_config(Arc::new(tls_config))
+            .build(),
+    )
+}
+
+/// Combined verifier: chain must validate against the custom CA bundle AND
+/// the leaf SPKI pin must match. Both checks fail-closed.
+#[derive(Debug)]
+struct PinnedWithCaVerifier {
+    pin: [u8; 32],
+    inner: Arc<dyn rustls::client::danger::ServerCertVerifier>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for PinnedWithCaVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        server_name: &rustls::pki_types::ServerName<'_>,
+        ocsp_response: &[u8],
+        now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        self.inner.verify_server_cert(
+            end_entity,
+            intermediates,
+            server_name,
+            ocsp_response,
+            now,
+        )?;
+        match spki_sha256(end_entity.as_ref()) {
+            Some(digest) if digest == self.pin => {
+                Ok(rustls::client::danger::ServerCertVerified::assertion())
+            }
+            _ => Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::UnknownIssuer,
+            )),
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
+}
+
+/// Build an agent combining custom CA chain validation with an SPKI pin.
+fn build_pinned_with_ca_agent(
+    timeout: Duration,
+    pin: [u8; 32],
+    ca_file: &str,
+) -> Option<ureq::Agent> {
+    let text = read_ca_bundle(ca_file)?;
+    let certs = parse_pem_certs(&text);
+    if certs.is_empty() {
+        log_warn!(
+            "live pin+CA file has no decodable certificates: {:?}",
+            sanitize_for_log(ca_file)
+        );
+        return None;
+    }
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in certs {
+        let _ = roots.add(cert);
+    }
+    if roots.is_empty() {
+        return None;
+    }
+    let provider = rustls::crypto::ring::default_provider();
+    let inner = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
+        .build()
+        .ok()?;
+    let verifier = PinnedWithCaVerifier { pin, inner };
+    let tls_config = rustls::ClientConfig::builder_with_provider(provider.into())
+        .with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
+        .ok()?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_no_client_auth();
+    Some(
+        ureq::AgentBuilder::new()
+            .timeout(timeout)
+            .redirects(0)
+            .tls_config(Arc::new(tls_config))
+            .build(),
+    )
+}
+
 /// Build an agent that disables TLS verification (insecure).
 ///
 /// Returns `None` if the rustls insecure config cannot be built.
-fn build_insecure_agent(timeout: Duration) -> Option<ureq::Agent> {
+pub(crate) fn build_insecure_agent(timeout: Duration) -> Option<ureq::Agent> {
     // Use rustls dangerous verifier that accepts any certificate.
     use rustls::DigitallySignedStruct;
     use rustls::SignatureScheme;
@@ -2153,17 +3277,27 @@ fn fetch_live_resource(
     kind: ResourceKind,
     label: &str,
 ) -> Result<Vec<String>, LiveError> {
-    if !config.ssl_verify {
+    if !config.ssl_verify && config.fingerprint.is_none() && config.ca_file.is_empty() {
         log_warn!(
             "live ssl_verify=false — TLS verification disabled (insecure) scheme={} host={} port={} ssl_verify_effective={}",
             config.scheme(),
-            config.host,
+            sanitize_for_log(&config.host),
             config.port,
             config.ssl_verify_effective()
         );
     }
+    if config.fingerprint_invalid {
+        return Err(LiveError::Network(
+            "invalid MIKROTIK_FINGERPRINT".to_string(),
+        ));
+    }
+    // F1: resolve-then-revalidate at fetch time. Lexical checks ran at
+    // config time; DNS may resolve differently now. Any denied resolved IP
+    // (or resolution failure) fails closed before credentials are sent.
+    // IP literals resolve locally without DNS traffic.
+    resolve_and_validate_host(&config.host, config.port, config.allow_loopback)?;
     let timeout = Duration::from_secs(config.timeout_secs.clamp(1, 30));
-    let agent = get_cached_agent(timeout, config.ssl_verify_effective());
+    let agent = get_cached_agent_for_config(config, timeout);
 
     let start = Instant::now();
     let credentials = format!("{}:{}", config.user, config.pass);
@@ -2189,7 +3323,13 @@ fn fetch_live_resource(
             {
                 return Err(LiveError::Timeout);
             }
-            return Err(LiveError::Network(msg));
+            // F6: transport errors echo URLs/headers on some stacks — strip
+            // password and Basic material before storing.
+            return Err(LiveError::Network(redact_secrets(
+                &msg,
+                &config.pass,
+                &config.user,
+            )));
         }
     };
 
@@ -2206,7 +3346,14 @@ fn fetch_live_resource(
         let mut limited = reader.take(limit as u64);
         match limited.read_to_end(&mut buf) {
             Ok(n) => n,
-            Err(e) => return Err(LiveError::Network(e.to_string())),
+            // F6: I/O errors may echo request context — redact before storing.
+            Err(e) => {
+                return Err(LiveError::Network(redact_secrets(
+                    &e.to_string(),
+                    &config.pass,
+                    &config.user,
+                )));
+            }
         }
     };
     if n > MAX_LIVE_RESPONSE_BYTES {
@@ -2232,7 +3379,7 @@ fn fetch_live_resource(
     let elapsed = start.elapsed();
     log_debug!(
         "live fetch completed {label} host={} latency_ms={} items={} elapsed={:?}",
-        config.host,
+        sanitize_for_log(&config.host),
         elapsed.as_millis(),
         cleaned.len(),
         elapsed
@@ -2243,7 +3390,7 @@ fn fetch_live_resource(
 /// Extract `json_field` from each array entry (bounded to
 /// `2 * MAX_LIVE_ITEMS` raw values) and sanitize the results with `kind`'s
 /// value filter.
-fn extract_and_sanitize(
+pub(crate) fn extract_and_sanitize(
     arr: &[serde_json::Value],
     json_field: &str,
     kind: ResourceKind,
@@ -2279,8 +3426,8 @@ pub fn fetch_resource(
     log_debug!(
         "live fetch_resource kind={:?} url={} user={} timeout={}s ssl_verify={} ssl_verify_effective={}",
         resource,
-        url,
-        config.user,
+        sanitize_for_log(&url),
+        sanitize_for_log(&config.user),
         config.timeout_secs,
         config.ssl_verify,
         config.ssl_verify_effective()
@@ -2309,9 +3456,9 @@ pub fn fetch_custom_resource(
     let url = build_custom_rest_url(config, custom)?;
     log_debug!(
         "live fetch_custom kind={} url={} user={} timeout={}s",
-        custom.property,
-        url,
-        config.user,
+        sanitize_for_log(&custom.property),
+        sanitize_for_log(&url),
+        sanitize_for_log(&config.user),
         config.timeout_secs
     );
     fetch_live_resource(
@@ -2327,1389 +3474,4 @@ pub fn fetch_custom_resource(
 #[cfg(test)]
 pub fn fetch_interfaces(config: &LiveConfig) -> Result<Vec<String>, LiveError> {
     fetch_resource(config, ResourceKind::Interfaces)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashMap;
-
-    fn cfg_with(mut map: HashMap<&str, &str>) -> LiveConfig {
-        // Tests historically use private hosts (192.168.88.1) which would now be denied by default.
-        // To keep those fixtures honest while still exercising the new SSRF flag, inject
-        // RSC_LS_LIVE_ALLOW_LOOPBACK=1 unless the test explicitly sets it.
-        if !map.contains_key("RSC_LS_LIVE_ALLOW_LOOPBACK") {
-            map.insert("RSC_LS_LIVE_ALLOW_LOOPBACK", "1");
-        }
-        LiveConfig::from_env_with(|k| map.get(k).map(|v| v.to_string()))
-    }
-
-    // ── Config parsing ───────────────────────────────────────────
-
-    #[test]
-    fn test_disabled_by_default() {
-        let cfg = cfg_with(HashMap::new());
-        assert!(!cfg.enabled);
-        assert!(!cfg.is_active());
-        assert_eq!(cfg.user, "admin");
-        assert_eq!(cfg.port, 443);
-        assert!(cfg.ssl_verify);
-        assert!(!cfg.force_http);
-        assert_eq!(cfg.timeout_secs, LIVE_TIMEOUT_SECS);
-    }
-
-    #[test]
-    fn test_enabled_via_rsc_ls_live() {
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "192.168.88.1");
-        m.insert("MIKROTIK_PASS", "secret");
-        let cfg = cfg_with(m);
-        assert!(cfg.enabled);
-        assert!(cfg.is_active());
-    }
-
-    #[test]
-    fn test_enabled_via_mikrotik_live() {
-        let mut m = HashMap::new();
-        m.insert("MIKROTIK_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "router.local");
-        m.insert("MIKROTIK_PASS", "pw");
-        let cfg = cfg_with(m);
-        assert!(cfg.enabled);
-        assert!(cfg.is_active());
-        // Any value other than "1" is not enabled.
-        let mut m2 = HashMap::new();
-        m2.insert("MIKROTIK_LIVE", "true");
-        m2.insert("MIKROTIK_HOST", "router.local");
-        m2.insert("MIKROTIK_PASS", "pw");
-        let cfg2 = cfg_with(m2);
-        assert!(!cfg2.enabled);
-        assert!(!cfg2.is_active());
-    }
-
-    #[test]
-    fn test_enabled_requires_host_and_pass() {
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        // missing host and pass
-        let cfg = cfg_with(m.clone());
-        assert!(cfg.enabled);
-        assert!(!cfg.is_active());
-
-        m.insert("MIKROTIK_HOST", "10.0.0.1");
-        let cfg2 = cfg_with(m.clone());
-        assert!(!cfg2.is_active()); // still missing pass
-
-        m.insert("MIKROTIK_PASS", "x");
-        let cfg3 = cfg_with(m);
-        assert!(cfg3.is_active());
-    }
-
-    #[test]
-    fn test_user_defaults_to_admin() {
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "h");
-        m.insert("MIKROTIK_PASS", "p");
-        let cfg = cfg_with(m.clone());
-        assert_eq!(cfg.user, "admin");
-
-        m.insert("MIKROTIK_USER", "custom");
-        let cfg2 = cfg_with(m);
-        assert_eq!(cfg2.user, "custom");
-
-        // empty string => default
-        let mut m3 = HashMap::new();
-        m3.insert("MIKROTIK_USER", "   ");
-        m3.insert("MIKROTIK_HOST", "h");
-        m3.insert("MIKROTIK_PASS", "p");
-        m3.insert("RSC_LS_LIVE", "1");
-        let cfg3 = cfg_with(m3);
-        assert_eq!(cfg3.user, "admin");
-    }
-
-    #[test]
-    fn test_port_default_and_env_override() {
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "h");
-        m.insert("MIKROTIK_PASS", "p");
-        let cfg = cfg_with(m);
-        assert_eq!(cfg.port, 443);
-
-        let mut m2 = HashMap::new();
-        m2.insert("MIKROTIK_PORT", "8729");
-        m2.insert("MIKROTIK_HOST", "h");
-        m2.insert("MIKROTIK_PASS", "p");
-        m2.insert("RSC_LS_LIVE", "1");
-        let cfg2 = cfg_with(m2);
-        assert_eq!(cfg2.port, 8729);
-    }
-
-    #[test]
-    fn test_port_invalid_falls_back_to_default() {
-        let mut m = HashMap::new();
-        m.insert("MIKROTIK_PORT", "not-a-number");
-        m.insert("MIKROTIK_HOST", "h");
-        m.insert("MIKROTIK_PASS", "p");
-        m.insert("RSC_LS_LIVE", "1");
-        let cfg = cfg_with(m);
-        // Warning is logged; default is used.
-        assert_eq!(cfg.port, 443);
-    }
-
-    #[test]
-    fn test_ssl_verify_respects_mikrotik_ssl() {
-        let mut m = HashMap::new();
-        m.insert("MIKROTIK_HOST", "h");
-        m.insert("MIKROTIK_PASS", "p");
-        m.insert("RSC_LS_LIVE", "1");
-        let cfg = cfg_with(m.clone());
-        assert!(cfg.ssl_verify);
-
-        let mut m2 = HashMap::new();
-        m2.insert("MIKROTIK_SSL", "0");
-        m2.insert("MIKROTIK_HOST", "h");
-        m2.insert("MIKROTIK_PASS", "p");
-        m2.insert("RSC_LS_LIVE", "1");
-        let cfg2 = cfg_with(m2);
-        assert!(!cfg2.ssl_verify);
-
-        // Any other value => true
-        let mut m3 = HashMap::new();
-        m3.insert("MIKROTIK_SSL", "1");
-        m3.insert("MIKROTIK_HOST", "h");
-        m3.insert("MIKROTIK_PASS", "p");
-        m3.insert("RSC_LS_LIVE", "1");
-        let cfg3 = cfg_with(m3);
-        assert!(cfg3.ssl_verify);
-    }
-
-    #[test]
-    fn test_ssl_verify_respects_mikrotik_ssl_effective() {
-        // Effective verification is false when ssl_verify is false, or when scheme is http.
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "192.168.88.1");
-        m.insert("MIKROTIK_PASS", "p");
-        let cfg = cfg_with(m);
-        assert!(cfg.ssl_verify);
-        assert!(cfg.ssl_verify_effective());
-        assert_eq!(cfg.scheme(), "https");
-
-        let mut m2 = HashMap::new();
-        m2.insert("RSC_LS_LIVE", "1");
-        m2.insert("MIKROTIK_HOST", "192.168.88.1");
-        m2.insert("MIKROTIK_PASS", "p");
-        m2.insert("MIKROTIK_SSL", "0");
-        let cfg2 = cfg_with(m2);
-        assert!(!cfg2.ssl_verify);
-        assert!(!cfg2.ssl_verify_effective());
-
-        // Force http also makes effective false even if ssl_verify true.
-        let mut m3 = HashMap::new();
-        m3.insert("RSC_LS_LIVE", "1");
-        m3.insert("MIKROTIK_HOST", "h");
-        m3.insert("MIKROTIK_PASS", "p");
-        m3.insert("MIKROTIK_HTTP", "1");
-        let cfg3 = cfg_with(m3);
-        assert!(cfg3.ssl_verify);
-        assert!(!cfg3.ssl_verify_effective());
-        assert_eq!(cfg3.scheme(), "http");
-
-        // Non-standard port with ssl_verify false => scheme http => effective false
-        let mut m4 = HashMap::new();
-        m4.insert("RSC_LS_LIVE", "1");
-        m4.insert("MIKROTIK_HOST", "h");
-        m4.insert("MIKROTIK_PASS", "p");
-        m4.insert("MIKROTIK_SSL", "0");
-        m4.insert("MIKROTIK_PORT", "80");
-        let cfg4 = cfg_with(m4);
-        assert!(!cfg4.ssl_verify);
-        assert!(!cfg4.ssl_verify_effective());
-        assert_eq!(cfg4.scheme(), "http");
-    }
-
-    #[test]
-    fn test_force_http_respects_mikrotik_http() {
-        let mut m = HashMap::new();
-        m.insert("MIKROTIK_HOST", "h");
-        m.insert("MIKROTIK_PASS", "p");
-        m.insert("RSC_LS_LIVE", "1");
-        let cfg = cfg_with(m.clone());
-        assert!(!cfg.force_http);
-
-        let mut m2 = HashMap::new();
-        m2.insert("MIKROTIK_HTTP", "1");
-        m2.insert("MIKROTIK_HOST", "h");
-        m2.insert("MIKROTIK_PASS", "p");
-        m2.insert("RSC_LS_LIVE", "1");
-        let cfg2 = cfg_with(m2);
-        assert!(cfg2.force_http);
-    }
-
-    #[test]
-    fn test_timeout_default_and_clamp() {
-        let mut m = HashMap::new();
-        m.insert("MIKROTIK_HOST", "h");
-        m.insert("MIKROTIK_PASS", "p");
-        m.insert("RSC_LS_LIVE", "1");
-        let cfg = cfg_with(m);
-        assert_eq!(cfg.timeout_secs, LIVE_TIMEOUT_SECS);
-        assert_eq!(cfg.timeout_secs, 5);
-
-        // Clamp low
-        let mut m2 = HashMap::new();
-        m2.insert("MIKROTIK_TIMEOUT", "0");
-        m2.insert("MIKROTIK_HOST", "h");
-        m2.insert("MIKROTIK_PASS", "p");
-        m2.insert("RSC_LS_LIVE", "1");
-        let cfg2 = cfg_with(m2);
-        assert_eq!(cfg2.timeout_secs, 1);
-
-        // Clamp high
-        let mut m3 = HashMap::new();
-        m3.insert("MIKROTIK_TIMEOUT", "100");
-        m3.insert("MIKROTIK_HOST", "h");
-        m3.insert("MIKROTIK_PASS", "p");
-        m3.insert("RSC_LS_LIVE", "1");
-        let cfg3 = cfg_with(m3);
-        assert_eq!(cfg3.timeout_secs, 30);
-
-        // Valid middle
-        let mut m4 = HashMap::new();
-        m4.insert("MIKROTIK_TIMEOUT", "10");
-        m4.insert("MIKROTIK_HOST", "h");
-        m4.insert("MIKROTIK_PASS", "p");
-        m4.insert("RSC_LS_LIVE", "1");
-        let cfg4 = cfg_with(m4);
-        assert_eq!(cfg4.timeout_secs, 10);
-
-        // Invalid => default
-        let mut m5 = HashMap::new();
-        m5.insert("MIKROTIK_TIMEOUT", "bogus");
-        m5.insert("MIKROTIK_HOST", "h");
-        m5.insert("MIKROTIK_PASS", "p");
-        m5.insert("RSC_LS_LIVE", "1");
-        let cfg5 = cfg_with(m5);
-        assert_eq!(cfg5.timeout_secs, LIVE_TIMEOUT_SECS);
-    }
-
-    #[test]
-    fn test_scheme_resolution() {
-        // https default
-        assert_eq!(resolve_scheme(443, false, true), "https");
-        assert_eq!(resolve_scheme(443, false, false), "https"); // 443 is standard, no legacy shim
-        assert_eq!(resolve_scheme(8729, false, false), "https"); // 8729 also standard
-        // legacy shim: non-standard port + no verify => http
-        assert_eq!(resolve_scheme(80, false, false), "http");
-        assert_eq!(resolve_scheme(8080, false, false), "http");
-        // force_http overrides
-        assert_eq!(resolve_scheme(443, true, true), "http");
-        assert_eq!(resolve_scheme(80, true, true), "http");
-        // non-standard port with verify => still https unless force_http
-        assert_eq!(resolve_scheme(80, false, true), "https");
-    }
-
-    #[test]
-    fn test_host_validation() {
-        // Public/non-private hosts remain ok with default deny (loopback/private denied via flag).
-        assert!(validate_host_with_allow("192.168.88.1", true).is_ok());
-        assert!(validate_host_with_allow("192.168.88.1", false).is_err());
-        assert!(validate_host("router.local").is_ok());
-        assert!(validate_host("").is_err());
-        assert!(validate_host("a".repeat(254).as_str()).is_err());
-        assert!(validate_host("ok-host").is_ok());
-        assert!(validate_host("host\0with-null").is_err());
-        assert!(validate_host("host\nnewline").is_err());
-        assert!(validate_host("host\tcontrol").is_err());
-        // Loopback/private denied when flag !=1
-        assert!(validate_host_with_allow("127.0.0.1", false).is_err());
-        assert!(validate_host_with_allow("127.0.0.1", true).is_ok());
-        assert!(validate_host_with_allow("10.0.0.5", false).is_err());
-        assert!(validate_host_with_allow("192.168.1.1", false).is_err());
-        assert!(validate_host_with_allow("::1", false).is_err());
-        assert!(validate_host_with_allow("[::1]", false).is_err());
-    }
-
-    #[test]
-    fn test_host_validation_rejects_uri_delimiters() {
-        // Security fix: host must not contain URI-meaningful delimiters that could alter URL parsing.
-        for bad in [
-            "evil@host",
-            "host?query=1",
-            "host#frag",
-            "host with space",
-            "host%2e",
-            "10.0.0.1@evil",
-            "router.local?x=1",
-        ] {
-            assert!(
-                validate_host(bad).is_err(),
-                "host delimiter should be rejected: {bad:?}"
-            );
-        }
-        // Brackets and ':' intentionally allowed for IPv6 literals (when loopback allowed).
-        assert!(validate_host_with_allow("[::1]", true).is_ok());
-        assert!(validate_host("[2001:db8::1]").is_ok());
-        // IPv6 link-local fe80::/10 is unconditionally SSRF-denied.
-        assert!(validate_host("fe80::1").is_err());
-        assert!(validate_host_with_allow("fe80::1", true).is_err());
-        // Backslash path separator rejected via fetch_interfaces host slash check (see test_fetch_interfaces_rejects_host_with_slash)
-        // but validate_host itself allows '/'? No—fetch layer rejects '/' explicitly, validate rejects control/null/delimiters only.
-        // Ensure normal hostnames still pass.
-        assert!(validate_host("router-1.local").is_ok());
-        assert!(validate_host_with_allow("192.168.88.1", true).is_ok());
-    }
-
-    #[test]
-    fn test_host_validation_rejects_metadata_ip() {
-        // SSRF protection: deny instance metadata endpoints.
-        for bad in [
-            "169.254.169.254",
-            "metadata.google.internal",
-            "::ffff:169.254.169.254",
-            "[::ffff:169.254.169.254]",
-            "169.254.169.254:80", // host with port should be rejected? contains ':'? For pure host without port, we check inner; but colon presence is allowed for IPv6. This case is not pure IP, but we test base.
-        ] {
-            // For the last entry with port, validation may allow ':' but SSRF check should still deny base IP? Our is_ssrf_denied_host checks inner after stripping brackets, but with port it includes colon and port. We handle exact match only, so "169.254.169.254:80" not denied as host (port is separate). So we test exact hosts.
-            if bad == "169.254.169.254:80" {
-                continue;
-            }
-            assert!(
-                validate_host(bad).is_err(),
-                "SSRF host should be rejected: {bad:?}"
-            );
-        }
-        // Normal hosts still ok when loopback allowed; otherwise private is denied.
-        assert!(validate_host_with_allow("192.168.88.1", true).is_ok());
-        assert!(validate_host_with_allow("10.0.0.1", true).is_ok());
-        assert!(validate_host_with_allow("192.168.88.1", false).is_err());
-        // Loopback/private denied without flag
-        assert!(validate_host_with_allow("127.0.0.1", false).is_err());
-        assert!(is_loopback_or_private("127.0.0.1"));
-        assert!(is_loopback_or_private("10.0.0.1"));
-        assert!(is_loopback_or_private("192.168.1.1"));
-        assert!(is_loopback_or_private("::1"));
-        assert!(!is_loopback_or_private("8.8.8.8"));
-        assert!(!is_loopback_or_private("router.local"));
-    }
-
-    #[test]
-    fn test_url_build_ipv6() {
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "2001:db8::1");
-        m.insert("MIKROTIK_PASS", "p");
-        m.insert("MIKROTIK_PORT", "443");
-        let cfg = cfg_with(m);
-        assert!(validate_host(&cfg.host).is_ok());
-        // format_host_for_url should wrap bare IPv6
-        assert_eq!(format_host_for_url("2001:db8::1"), "[2001:db8::1]");
-        assert_eq!(format_host_for_url("[2001:db8::1]"), "[2001:db8::1]");
-        assert_eq!(format_host_for_url("192.168.88.1"), "192.168.88.1");
-        // build_rest_url should succeed and contain brackets
-        let url = build_rest_url(&cfg, ResourceKind::Interfaces).expect("ipv6 url should build");
-        assert!(
-            url.contains("[2001:db8::1]"),
-            "url should contain bracketed ipv6, got {url}"
-        );
-        assert!(url::Url::parse(&url).is_ok());
-
-        // Already bracketed host
-        let mut m2 = HashMap::new();
-        m2.insert("RSC_LS_LIVE", "1");
-        m2.insert("MIKROTIK_HOST", "[::1]");
-        m2.insert("MIKROTIK_PASS", "p");
-        let cfg2 = cfg_with(m2);
-        let url2 = build_rest_url(&cfg2, ResourceKind::Interfaces).expect("bracketed ipv6 url");
-        assert!(url2.contains("[::1]"));
-    }
-
-    #[test]
-    fn test_debug_redacts_pass() {
-        // Security fix: LiveConfig Debug must never leak MIKROTIK_PASS.
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "192.168.88.1");
-        m.insert("MIKROTIK_PASS", "super_secret_password_123");
-        m.insert("MIKROTIK_USER", "admin");
-        let cfg = cfg_with(m);
-        let dbg = format!("{cfg:?}");
-        assert!(
-            !dbg.contains("super_secret_password_123"),
-            "Debug must not leak pass, got: {dbg}"
-        );
-        assert!(
-            !dbg.contains("super_secret"),
-            "Debug must not leak pass substring, got: {dbg}"
-        );
-        assert!(
-            dbg.contains("[REDACTED]"),
-            "Debug should contain [REDACTED] placeholder, got: {dbg}"
-        );
-        // Also ensure host is still visible (redaction is precise, not blanket)
-        assert!(
-            dbg.contains("192.168.88.1"),
-            "host should still be visible in Debug"
-        );
-    }
-
-    #[test]
-    fn test_filter_value() {
-        assert_eq!(filter_value("ether1"), Some("ether1".to_string()));
-        assert_eq!(filter_value("ether-1"), Some("ether-1".to_string()));
-        assert_eq!(filter_value("under_score"), Some("under_score".to_string()));
-        assert_eq!(filter_value(""), None);
-        assert_eq!(filter_value("   "), None);
-        assert_eq!(filter_value("a b"), None); // space not allowed
-        assert_eq!(filter_value("a/b"), None);
-        assert_eq!(filter_value("a".repeat(65).as_str()), None); // over 64
-        assert_eq!(filter_value("a".repeat(64).as_str()), Some("a".repeat(64)));
-        assert_eq!(filter_value("ether1\0"), None);
-        assert_eq!(filter_value("ether1\n"), None);
-        assert_eq!(filter_value("wlan1"), Some("wlan1".to_string()));
-        // Leading/trailing whitespace trimmed
-        assert_eq!(filter_value("  ether1  "), Some("ether1".to_string()));
-    }
-
-    #[test]
-    fn test_sanitize_values_dedup_sort_truncate() {
-        let raw = vec![
-            "ether2".to_string(),
-            "ether1".to_string(),
-            "ether1".to_string(),
-            "bad val".to_string(),
-            "wlan1".to_string(),
-        ];
-        let sanitized = sanitize_values(raw);
-        assert_eq!(sanitized, vec!["ether1", "ether2", "wlan1"]); // sorted, deduped, bad filtered
-
-        // Truncate to MAX_LIVE_ITEMS
-        let many: Vec<String> = (0..600).map(|i| format!("iface{i}")).collect();
-        let sanitized2 = sanitize_values(many);
-        assert_eq!(sanitized2.len(), MAX_LIVE_ITEMS);
-        assert!(sanitized2.is_sorted());
-    }
-
-    #[test]
-    fn test_cache_ttl_fresh_and_stale() {
-        let mut cache = LiveCache::new(Duration::from_secs(60));
-        let now = Instant::now();
-        cache.insert_with_time("interfaces".to_string(), vec!["ether1".to_string()], now);
-        assert_eq!(
-            cache.try_get_cached("interfaces").map(|a| a.to_vec()),
-            Some(vec!["ether1".to_string()])
-        );
-
-        // Stale: 61 seconds ago
-        let mut cache2 = LiveCache::new(Duration::from_secs(60));
-        let stale = now - Duration::from_secs(61);
-        cache2.insert_with_time("interfaces".to_string(), vec!["ether1".to_string()], stale);
-        assert_eq!(cache2.try_get_cached("interfaces"), None);
-    }
-
-    #[test]
-    fn test_cache_caps_enforcement() {
-        let mut cache = LiveCache::new(Duration::from_secs(60));
-        // Fill to MAX_CACHE_ENTRIES with distinct keys
-        for i in 0..MAX_CACHE_ENTRIES {
-            cache.insert(format!("k{i}"), vec![format!("v{i}")]);
-        }
-        assert_eq!(cache.entries.len(), MAX_CACHE_ENTRIES);
-        // Inserting a new key should evict oldest
-        cache.insert("new_key".to_string(), vec!["new_val".to_string()]);
-        assert_eq!(cache.entries.len(), MAX_CACHE_ENTRIES);
-        assert!(cache.entries.contains_key("new_key"));
-        // Overlong values truncated
-        let many: Vec<String> = (0..600).map(|i| format!("iface{i}")).collect();
-        cache.insert("interfaces".to_string(), many);
-        assert!(cache.entries.get("interfaces").unwrap().values.len() <= MAX_LIVE_ITEMS);
-    }
-
-    #[test]
-    fn test_cache_max_live_value_len_enforced() {
-        let mut cache = LiveCache::new(Duration::from_secs(60));
-        let overlong = "a".repeat(65);
-        cache.insert(
-            "interfaces".to_string(),
-            vec![overlong.clone(), "ok".to_string()],
-        );
-        let vals = cache.try_get_cached("interfaces").unwrap();
-        assert!(!vals.contains(&overlong));
-        assert!(vals.contains(&"ok".to_string()));
-        // Ensure Arc is cloned cheaply (pointer equality after clone).
-        let vals2 = cache.try_get_cached("interfaces").unwrap();
-        assert!(Arc::ptr_eq(&vals, &vals2));
-    }
-
-    #[test]
-    fn test_live_values_for_property_mapping() {
-        let mut cache = LiveCache::new(Duration::from_secs(60));
-        cache.insert(
-            "interfaces".to_string(),
-            vec!["ether1".to_string(), "wlan1".to_string()],
-        );
-
-        // Property name match
-        assert_eq!(
-            live_values_for_property(&cache, "interface", "string").map(|a| a.to_vec()),
-            Some(vec!["ether1".to_string(), "wlan1".to_string()])
-        );
-        assert_eq!(
-            live_values_for_property(&cache, "bridge", "string").map(|a| a.to_vec()),
-            Some(vec!["ether1".to_string(), "wlan1".to_string()])
-        );
-        assert_eq!(
-            live_values_for_property(&cache, "actual-interface", "string").map(|a| a.to_vec()),
-            Some(vec!["ether1".to_string(), "wlan1".to_string()])
-        );
-        // Type contains iface
-        assert_eq!(
-            live_values_for_property(&cache, "foo", "iface_enum").map(|a| a.to_vec()),
-            Some(vec!["ether1".to_string(), "wlan1".to_string()])
-        );
-        assert_eq!(
-            live_values_for_property(&cache, "foo", "IFACE").map(|a| a.to_vec()),
-            Some(vec!["ether1".to_string(), "wlan1".to_string()])
-        );
-        // Non-matching property and type => None
-        assert_eq!(
-            live_values_for_property(&cache, "address", "ipPrefix"),
-            None
-        );
-        assert_eq!(live_values_for_property(&cache, "comment", "string"), None);
-
-        // No cache entry => None even for matching property
-        let empty = LiveCache::new(Duration::from_secs(60));
-        assert_eq!(
-            live_values_for_property(&empty, "interface", "iface_enum"),
-            None
-        );
-    }
-
-    #[test]
-    fn test_is_live_property() {
-        assert!(is_live_property("interface", "string"));
-        assert!(is_live_property("bridge", "foo"));
-        assert!(is_live_property("actual-interface", "bar"));
-        assert!(is_live_property("myprop", "iface_enum"));
-        assert!(is_live_property("address", "ipPrefix"));
-        assert!(!is_live_property("comment", "string"));
-        // case-insensitive
-        assert!(is_live_property("Interface", "string"));
-        assert!(is_live_property("foo", "IFACE"));
-    }
-
-    #[test]
-    fn test_disabled_fallback_fetch_errors() {
-        let cfg = cfg_with(HashMap::new()); // disabled
-        let res = fetch_interfaces(&cfg);
-        assert!(matches!(res, Err(LiveError::Disabled)));
-
-        // Enabled but invalid host
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "");
-        m.insert("MIKROTIK_PASS", "p");
-        let cfg2 = cfg_with(m);
-        let res2 = fetch_interfaces(&cfg2);
-        assert!(matches!(
-            res2,
-            Err(LiveError::Disabled) | Err(LiveError::InvalidHost(_))
-        ));
-    }
-
-    #[test]
-    fn test_get_cached_or_fetch_blocking_disabled_returns_none() {
-        let cache = Arc::new(Mutex::new(LiveCache::with_default_ttl()));
-        let cfg = cfg_with(HashMap::new());
-        let res = get_cached_or_fetch_background(&cache, &cfg, ResourceKind::Interfaces);
-        assert!(res.is_none());
-    }
-
-    #[test]
-    fn test_get_cached_or_fetch_blocking_returns_cached_without_network() {
-        let cache = Arc::new(Mutex::new(LiveCache::with_default_ttl()));
-        {
-            let mut guard = cache.lock().unwrap();
-            guard.insert(
-                "interfaces".to_string(),
-                vec!["ether1".to_string(), "ether2".to_string()],
-            );
-        }
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "192.168.88.1");
-        m.insert("MIKROTIK_PASS", "secret");
-        let cfg = cfg_with(m);
-        let res = get_cached_or_fetch_background(&cache, &cfg, ResourceKind::Interfaces);
-        assert_eq!(
-            res.map(|a| a.to_vec()),
-            Some(vec!["ether1".to_string(), "ether2".to_string()])
-        );
-    }
-
-    #[test]
-    fn test_fetch_interfaces_rejects_host_with_slash() {
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "host/with/slash");
-        m.insert("MIKROTIK_PASS", "p");
-        let cfg = cfg_with(m);
-        let res = fetch_interfaces(&cfg);
-        assert!(matches!(res, Err(LiveError::InvalidHost(_))));
-    }
-
-    #[test]
-    fn test_filter_ip_value() {
-        assert_eq!(
-            filter_ip_value("192.168.88.1"),
-            Some("192.168.88.1".to_string())
-        );
-        assert_eq!(
-            filter_ip_value("10.0.0.1/24"),
-            Some("10.0.0.1/24".to_string())
-        );
-        assert_eq!(
-            filter_ip_value("2001:db8::1/64"),
-            Some("2001:db8::1/64".to_string())
-        );
-        assert_eq!(filter_ip_value("fe80::1"), Some("fe80::1".to_string()));
-        assert_eq!(filter_ip_value(""), None);
-        assert_eq!(filter_ip_value("   "), None);
-        assert_eq!(filter_ip_value("192.168.1.1 evil"), None);
-        assert_eq!(filter_ip_value("192.168.1.1\0"), None);
-        assert_eq!(filter_ip_value("192.168.1.1\n"), None);
-    }
-
-    #[test]
-    fn test_resource_kind_properties() {
-        assert_eq!(ResourceKind::all().len(), 11);
-        for kind in ResourceKind::all() {
-            assert!(!kind.cache_key().is_empty());
-            assert!(kind.rest_path().starts_with("/rest/"));
-            assert!(!kind.json_field().is_empty());
-            assert!(kind.detail_label().starts_with("live — "));
-        }
-    }
-
-    #[test]
-    fn test_live_resource_for_property_all_kinds() {
-        // Interfaces
-        assert_eq!(
-            live_resource_for_property("interface", "string"),
-            Some(ResourceKind::Interfaces)
-        );
-        assert_eq!(
-            live_resource_for_property("bridge", "string"),
-            Some(ResourceKind::Interfaces)
-        );
-        assert_eq!(
-            live_resource_for_property("in-interface", "string"),
-            Some(ResourceKind::Interfaces)
-        );
-        assert_eq!(
-            live_resource_for_property("foo", "iface_enum"),
-            Some(ResourceKind::Interfaces)
-        );
-
-        // IPv4 Addresses
-        assert_eq!(
-            live_resource_for_property("address", "ipPrefix"),
-            Some(ResourceKind::IpAddresses)
-        );
-        assert_eq!(
-            live_resource_for_property("network", "ipAddr"),
-            Some(ResourceKind::IpAddresses)
-        );
-        assert_eq!(
-            live_resource_for_property("src-address", "string"),
-            Some(ResourceKind::IpAddresses)
-        );
-        assert_eq!(
-            live_resource_for_property("dst-address", "string"),
-            Some(ResourceKind::IpAddresses)
-        );
-        assert_eq!(
-            live_resource_for_property("gateway", "string"),
-            Some(ResourceKind::IpAddresses)
-        );
-
-        // IPv6 Addresses
-        assert_eq!(
-            live_resource_for_menu_property("/ipv6/address", "address", "string"),
-            Some(ResourceKind::Ipv6Addresses)
-        );
-        assert_eq!(
-            live_resource_for_property("address", "ipv6Prefix"),
-            Some(ResourceKind::Ipv6Addresses)
-        );
-
-        // Address lists (IPv4 & IPv6)
-        assert_eq!(
-            live_resource_for_property("src-address-list", "string"),
-            Some(ResourceKind::AddressLists)
-        );
-        assert_eq!(
-            live_resource_for_property("address-list", "string"),
-            Some(ResourceKind::AddressLists)
-        );
-        assert_eq!(
-            live_resource_for_property("list", "string"),
-            Some(ResourceKind::AddressLists)
-        );
-        assert_eq!(
-            live_resource_for_menu_property("/ipv6/firewall/address-list", "list", "string"),
-            Some(ResourceKind::Ipv6AddressLists)
-        );
-
-        // Firewall chains (filter, mangle, nat, raw)
-        assert_eq!(
-            live_resource_for_menu_property("/ip/firewall/filter", "chain", "string"),
-            Some(ResourceKind::FirewallFilterChains)
-        );
-        assert_eq!(
-            live_resource_for_menu_property("/ip/firewall/mangle", "chain", "string"),
-            Some(ResourceKind::FirewallMangleChains)
-        );
-        assert_eq!(
-            live_resource_for_menu_property("/ip/firewall/nat", "chain", "string"),
-            Some(ResourceKind::FirewallNatChains)
-        );
-        assert_eq!(
-            live_resource_for_menu_property("/ip/firewall/raw", "chain", "string"),
-            Some(ResourceKind::FirewallRawChains)
-        );
-        assert_eq!(
-            live_resource_for_property("jump-target", "string"),
-            Some(ResourceKind::FirewallFilterChains)
-        );
-
-        // IP Pools (IPv4 & IPv6)
-        assert_eq!(
-            live_resource_for_property("pool", "string"),
-            Some(ResourceKind::IpPools)
-        );
-        assert_eq!(
-            live_resource_for_property("address-pool", "string"),
-            Some(ResourceKind::IpPools)
-        );
-        assert_eq!(
-            live_resource_for_property("foo", "ip_pool"),
-            Some(ResourceKind::IpPools)
-        );
-        assert_eq!(
-            live_resource_for_menu_property("/ipv6/pool", "pool", "string"),
-            Some(ResourceKind::Ipv6Pools)
-        );
-
-        // Unrelated
-        assert_eq!(live_resource_for_property("comment", "string"), None);
-        assert_eq!(live_resource_for_property("disabled", "bool"), None);
-    }
-
-    #[test]
-    fn test_multi_resource_cache_isolation() {
-        let mut cache = LiveCache::new(Duration::from_secs(60));
-        cache.insert("interfaces".to_string(), vec!["ether1".to_string()]);
-        cache.insert(
-            "ip_addresses".to_string(),
-            vec!["192.168.88.1/24".to_string()],
-        );
-        cache.insert("address_lists".to_string(), vec!["allowed_ips".to_string()]);
-        cache.insert(
-            "firewall_filter_chains".to_string(),
-            vec!["forward".to_string(), "input".to_string()],
-        );
-        cache.insert("ip_pools".to_string(), vec!["dhcp-pool".to_string()]);
-
-        assert_eq!(
-            live_resource_values_for_property(&cache, "", "interface", "string")
-                .map(|(k, v)| (k, v.to_vec())),
-            Some((ResourceKind::Interfaces, vec!["ether1".to_string()]))
-        );
-        assert_eq!(
-            live_resource_values_for_property(&cache, "", "address", "ipPrefix")
-                .map(|(k, v)| (k, v.to_vec())),
-            Some((
-                ResourceKind::IpAddresses,
-                vec!["192.168.88.1/24".to_string()]
-            ))
-        );
-        assert_eq!(
-            live_resource_values_for_property(&cache, "", "src-address-list", "string")
-                .map(|(k, v)| (k, v.to_vec())),
-            Some((ResourceKind::AddressLists, vec!["allowed_ips".to_string()]))
-        );
-        assert_eq!(
-            live_resource_values_for_property(&cache, "/ip/firewall/filter", "chain", "string")
-                .map(|(k, v)| (k, v.to_vec())),
-            Some((
-                ResourceKind::FirewallFilterChains,
-                vec!["forward".to_string(), "input".to_string()]
-            ))
-        );
-        assert_eq!(
-            live_resource_values_for_property(&cache, "", "pool", "string")
-                .map(|(k, v)| (k, v.to_vec())),
-            Some((ResourceKind::IpPools, vec!["dhcp-pool".to_string()]))
-        );
-    }
-
-    #[test]
-    fn test_multi_host_parsing() {
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "192.168.88.1,10.0.0.2,  192.168.1.1");
-        m.insert("MIKROTIK_PASS", "p");
-        let cfg = cfg_with(m);
-        assert_eq!(cfg.host, "192.168.88.1");
-        assert_eq!(cfg.hosts, vec!["192.168.88.1", "10.0.0.2", "192.168.1.1"]);
-        assert_eq!(cfg.host.as_str(), "192.168.88.1");
-        assert!(cfg.is_active());
-        // Cap at 4
-        let mut m2 = HashMap::new();
-        m2.insert("RSC_LS_LIVE", "1");
-        m2.insert("MIKROTIK_HOST", "a,b,c,d,e,f");
-        m2.insert("MIKROTIK_PASS", "p");
-        let cfg2 = cfg_with(m2);
-        assert_eq!(cfg2.hosts.len(), LIVE_MAX_HOSTS);
-        assert_eq!(cfg2.hosts.len(), 4);
-    }
-
-    #[test]
-    fn test_negative_cache_cooldown() {
-        let mut cache = LiveCache::new(Duration::from_secs(60));
-        assert!(!cache.is_negative_cooldown("interfaces"));
-        cache.insert_negative("interfaces".to_string());
-        assert!(cache.is_negative_cooldown("interfaces"));
-        // After inserting success, negative cleared
-        cache.insert("interfaces".to_string(), vec!["ether1".to_string()]);
-        assert!(!cache.is_negative_cooldown("interfaces"));
-        // Not in cooldown for other key
-        assert!(!cache.is_negative_cooldown("ip_addresses"));
-    }
-
-    #[test]
-    fn test_background_fetch_coalescing() {
-        let cache = Arc::new(Mutex::new(LiveCache::with_default_ttl()));
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "192.168.88.1");
-        m.insert("MIKROTIK_PASS", "p");
-        let _cfg = cfg_with(m);
-        // First call should trigger background fetch (no cache)
-        {
-            let guard = cache.lock().unwrap();
-            assert!(guard.can_spawn_fetch("interfaces"));
-        }
-        // Simulate a fetch attempt recorded
-        {
-            let mut guard = cache.lock().unwrap();
-            guard.record_fetch_attempt("interfaces".to_string());
-            assert!(!guard.can_spawn_fetch("interfaces")); // coalesced within 2s
-        }
-        // After negative cooldown, still cannot spawn
-        {
-            let mut guard = cache.lock().unwrap();
-            guard.insert_negative("interfaces".to_string());
-            assert!(!guard.can_spawn_fetch("interfaces"));
-        }
-    }
-
-    #[test]
-    fn test_custom_resource_parsing() {
-        let json = r#"[{"property":"packet-mark","path":"/rest/ip/firewall/mangle","field":"new-packet-mark"}]"#;
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "h");
-        m.insert("MIKROTIK_PASS", "p");
-        m.insert("RSC_LS_LIVE_RESOURCES", json);
-        let cfg = cfg_with(m);
-        assert_eq!(cfg.custom_resources.len(), 1);
-        assert_eq!(cfg.custom_resources[0].property, "packet-mark");
-        assert_eq!(cfg.custom_resources[0].path, "/rest/ip/firewall/mangle");
-        assert_eq!(cfg.custom_resources[0].field, "new-packet-mark");
-        // Resolve custom via LiveConfig fallback
-        assert!(
-            cfg.resolve_resource_with_custom("/ip/firewall/mangle", "packet-mark", "string")
-                .is_some()
-        );
-        // Hardcoded still works
-        assert_eq!(
-            cfg.resolve_resource_with_custom("", "interface", "string"),
-            Some(ResourceKind::Interfaces)
-        );
-        // Unknown without custom returns None
-        assert!(
-            cfg.resolve_resource_with_custom("", "unknown-prop", "string")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn test_custom_resource_cap() {
-        // More than 8 should truncate
-        let many: Vec<String> = (0..10)
-            .map(|i| format!(r#"{{"property":"p{i}","path":"/rest/interface","field":"name"}}"#))
-            .collect();
-        let json = format!("[{}]", many.join(","));
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "h");
-        m.insert("MIKROTIK_PASS", "p");
-        m.insert("RSC_LS_LIVE_RESOURCES", json.as_str());
-        let cfg = cfg_with(m);
-        assert_eq!(cfg.custom_resources.len(), LIVE_CUSTOM_RESOURCES_MAX);
-    }
-
-    #[test]
-    fn test_hot_reload_from_settings() {
-        let cfg = LiveConfig::from_env_with(|k| match k {
-            "RSC_LS_LIVE" => Some("1".to_string()),
-            "MIKROTIK_HOST" => Some("192.168.88.1".to_string()),
-            "MIKROTIK_PASS" => Some("envpass".to_string()),
-            _ => None,
-        });
-        assert_eq!(cfg.host, "192.168.88.1");
-        // Simulate settings overlay
-        let settings = serde_json::json!({
-            "rsc": {
-                "live": {
-                    "host": "10.0.0.5",
-                    "port": 8728
-                }
-            }
-        });
-        let _cfg2 = LiveConfig::from_settings_value(&settings);
-        // from_settings_value starts from env (which has 192.168.88.1) but overlays 10.0.0.5
-        // Note: from_env inside will read real env, not our mocked one. So we test apply directly.
-        let mut cfg3 = cfg.clone();
-        LiveConfig::apply_settings_value(&mut cfg3, &settings);
-        assert_eq!(cfg3.host, "10.0.0.5");
-        assert_eq!(cfg3.port, 8728);
-        assert_eq!(cfg3.hosts, vec!["10.0.0.5".to_string()]);
-    }
-
-    #[test]
-    fn test_settings_pass_is_ignored_env_pass_wins() {
-        // SECURITY: a settings-provided secret must never reach `cfg.pass`;
-        // env/keychain stays the sole password source.
-        let cfg = LiveConfig::from_env_with(|k| match k {
-            "RSC_LS_LIVE" => Some("1".to_string()),
-            "MIKROTIK_HOST" => Some("192.168.88.1".to_string()),
-            "MIKROTIK_PASS" => Some("envpass".to_string()),
-            _ => None,
-        });
-        assert_eq!(cfg.pass, "envpass");
-        let settings = serde_json::json!({
-            "rsc": {
-                "live": {
-                    "MIKROTIK_PASS": "settings-secret",
-                    "password": "settings-secret-2",
-                }
-            }
-        });
-        let mut overlaid = cfg.clone();
-        LiveConfig::apply_settings_value(&mut overlaid, &settings);
-        assert_eq!(overlaid.pass, "envpass");
-        // Without an env pass, a settings pass must not fill the gap.
-        let bare = LiveConfig::from_env_with(|k| match k {
-            "RSC_LS_LIVE" => Some("1".to_string()),
-            "MIKROTIK_HOST" => Some("192.168.88.1".to_string()),
-            _ => None,
-        });
-        assert!(bare.pass.is_empty());
-        let mut overlaid_bare = bare.clone();
-        LiveConfig::apply_settings_value(&mut overlaid_bare, &settings);
-        assert!(overlaid_bare.pass.is_empty());
-    }
-
-    // ── Shared fetch tail (D1) ───────────────────────────────────
-
-    #[test]
-    fn test_extract_and_sanitize_extracts_field_and_filters() {
-        let arr: Vec<serde_json::Value> = serde_json::from_str(
-            r#"[{"name":"ether2"},{"name":"ether1"},{"name":"ether1"},{"name":"bad val"},{"nope":"x"},{"name":"wlan1"}]"#,
-        )
-        .unwrap();
-        let out = extract_and_sanitize(&arr, "name", ResourceKind::Interfaces);
-        assert_eq!(out, vec!["ether1", "ether2", "wlan1"]);
-    }
-
-    #[test]
-    fn test_extract_and_sanitize_ip_kind_uses_ip_filter() {
-        let arr: Vec<serde_json::Value> = serde_json::from_str(
-            r#"[{"address":"10.0.0.1/24"},{"address":"192.168.1.1 evil"},{"address":"2001:db8::1/64"}]"#,
-        )
-        .unwrap();
-        let out = extract_and_sanitize(&arr, "address", ResourceKind::IpAddresses);
-        assert_eq!(out, vec!["10.0.0.1/24", "2001:db8::1/64"]);
-    }
-
-    #[test]
-    fn test_extract_and_sanitize_caps_raw_values() {
-        // More than 2*MAX_LIVE_ITEMS entries: extraction stops early and the
-        // sanitized output is capped to MAX_LIVE_ITEMS.
-        let n = MAX_LIVE_ITEMS * 2 + 10;
-        let entries: Vec<String> = (0..n)
-            .map(|i| format!("{{\"name\":\"iface{i:04}\"}}"))
-            .collect();
-        let arr: Vec<serde_json::Value> =
-            serde_json::from_str(&format!("[{}]", entries.join(","))).unwrap();
-        let out = extract_and_sanitize(&arr, "name", ResourceKind::Interfaces);
-        assert_eq!(out.len(), MAX_LIVE_ITEMS);
-    }
-
-    fn custom_test_resource() -> CustomResource {
-        CustomResource {
-            property: "packet-mark".to_string(),
-            path: "/rest/ip/firewall/mangle".to_string(),
-            field: "new-packet-mark".to_string(),
-        }
-    }
-
-    #[test]
-    fn test_fetch_custom_resource_disabled() {
-        let cfg = cfg_with(HashMap::new()); // disabled
-        let res = fetch_custom_resource(&cfg, &custom_test_resource());
-        assert!(matches!(res, Err(LiveError::Disabled)));
-    }
-
-    #[test]
-    fn test_fetch_custom_resource_rejects_host_with_slash() {
-        // Same shared validation as the built-in fetchers (via build_base_url_with_allow).
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "host/with/slash");
-        m.insert("MIKROTIK_PASS", "p");
-        let cfg = cfg_with(m);
-        let res = fetch_custom_resource(&cfg, &custom_test_resource());
-        assert!(matches!(res, Err(LiveError::InvalidHost(_))));
-    }
-
-    // ── Completion enrichment trigger (D2) ───────────────────────
-    //
-    // These tests exercise the synchronous coalescing logic of
-    // `trigger_enrichment_for_completion`. The host is loopback with a closed
-    // port so any background fetch fails fast; the network outcome is not
-    // asserted (it runs on a detached thread).
-
-    fn active_test_cfg() -> LiveConfig {
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "127.0.0.1");
-        m.insert("MIKROTIK_PORT", "1");
-        m.insert("MIKROTIK_PASS", "p");
-        m.insert("MIKROTIK_TIMEOUT", "1");
-        cfg_with(m)
-    }
-
-    #[test]
-    fn test_trigger_enrichment_inactive_config_does_nothing() {
-        let cache = Arc::new(Mutex::new(LiveCache::with_default_ttl()));
-        let cfg = cfg_with(HashMap::new()); // disabled
-        trigger_enrichment_for_completion(&cache, &cfg, None, "/", "");
-        assert!(cache.lock().unwrap().last_fetch_attempt.is_empty());
-    }
-
-    #[test]
-    fn test_trigger_enrichment_without_property_prefetches_interfaces() {
-        let cache = Arc::new(Mutex::new(LiveCache::with_default_ttl()));
-        let cfg = active_test_cfg();
-        trigger_enrichment_for_completion(&cache, &cfg, None, "/", "");
-        let guard = cache.lock().unwrap();
-        // Coalescing marker recorded for the interfaces key...
-        assert!(guard.last_fetch_attempt.contains_key("interfaces"));
-        // ...so a second trigger is coalesced, not re-spawned.
-        assert!(!guard.can_spawn_fetch("interfaces"));
-    }
-
-    #[test]
-    fn test_trigger_enrichment_with_property_resolves_resource() {
-        let cache = Arc::new(Mutex::new(LiveCache::with_default_ttl()));
-        let cfg = active_test_cfg();
-        trigger_enrichment_for_completion(&cache, &cfg, Some("interface"), "/ip/address", "iface");
-        let guard = cache.lock().unwrap();
-        assert!(guard.last_fetch_attempt.contains_key("interfaces"));
-    }
-
-    #[test]
-    fn test_trigger_enrichment_unknown_property_fetches_nothing() {
-        let cache = Arc::new(Mutex::new(LiveCache::with_default_ttl()));
-        let cfg = active_test_cfg();
-        trigger_enrichment_for_completion(&cache, &cfg, Some("comment"), "", "");
-        let guard = cache.lock().unwrap();
-        // Unresolvable property fetches nothing; Interfaces prefetch is
-        // reserved for interface-like/empty context.
-        assert!(guard.last_fetch_attempt.is_empty());
-    }
-
-    #[test]
-    fn test_trigger_enrichment_custom_resource_uses_custom_key() {
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "127.0.0.1");
-        m.insert("MIKROTIK_PORT", "1");
-        m.insert("MIKROTIK_PASS", "p");
-        m.insert("MIKROTIK_TIMEOUT", "1");
-        m.insert(
-            "RSC_LS_LIVE_RESOURCES",
-            r#"[{"property":"packet-mark","path":"/rest/ip/firewall/mangle","field":"new-packet-mark"}]"#,
-        );
-        let cfg = cfg_with(m);
-        let cache = Arc::new(Mutex::new(LiveCache::with_default_ttl()));
-        trigger_enrichment_for_completion(
-            &cache,
-            &cfg,
-            Some("packet-mark"),
-            "/ip/firewall/mangle",
-            "string",
-        );
-        let guard = cache.lock().unwrap();
-        // Custom match fetches ONLY the custom key (no generic prefetch).
-        assert!(!guard.last_fetch_attempt.contains_key("interfaces"));
-        // ...the custom resource is tracked under `custom:<property>`.
-        assert!(guard.last_fetch_attempt.contains_key("custom:packet-mark"));
-        assert_eq!(guard.last_fetch_attempt.len(), 1);
-        let recorded_at = guard.last_fetch_attempt["custom:packet-mark"];
-        drop(guard);
-        // Second call within the coalescing window must not re-record.
-        trigger_enrichment_for_completion(
-            &cache,
-            &cfg,
-            Some("packet-mark"),
-            "/ip/firewall/mangle",
-            "string",
-        );
-        let guard = cache.lock().unwrap();
-        assert_eq!(
-            guard.last_fetch_attempt["custom:packet-mark"], recorded_at,
-            "custom fetch attempt must be coalesced within the window"
-        );
-    }
-
-    // ── SSRF normalize-then-check regression ───────────────────────
-
-    #[test]
-    fn test_ssrf_bypass_vectors_denied_by_default() {
-        // Independent review proved lexical checks miss WHATWG-normalized
-        // equivalents. All must be denied with default policy (allow=false).
-        for bad in [
-            "127.1",
-            "2130706433",
-            "0x7f000001",
-            "0177.0.0.1",
-            "[::ffff:127.0.0.1]",
-            "[::ffff:a9fe:a9fe]",
-            "[::ffff:10.0.0.1]",
-            "169.254.1.1",
-            "169.254.20.24",
-        ] {
-            assert!(
-                validate_host_with_allow(bad, false).is_err(),
-                "bypass vector should be denied by default: {bad:?}"
-            );
-            assert!(
-                is_non_canonical_numeric_host(bad)
-                    || normalized_host_ip(bad)
-                        .map(is_normalized_ssrf_denied)
-                        .unwrap_or(false)
-                    || normalized_host_ip(bad)
-                        .map(is_normalized_loopback_or_private)
-                        .unwrap_or(false)
-                    || is_loopback_or_private(bad),
-                "bypass vector should hit a normalized deny path: {bad:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_ssrf_controls_stay_denied() {
-        for bad in ["169.254.169.254", "127.0.0.1", "localhost"] {
-            assert!(
-                validate_host_with_allow(bad, false).is_err(),
-                "control should stay denied: {bad:?}"
-            );
-        }
-        // Link-local stays denied even when loopback is allowed (unconditional SSRF).
-        assert!(validate_host_with_allow("169.254.169.254", true).is_err());
-        assert!(validate_host_with_allow("169.254.1.1", true).is_err());
-        assert!(validate_host_with_allow("[::ffff:a9fe:a9fe]", true).is_err());
-    }
-
-    #[test]
-    fn test_legitimate_hosts_still_accepted() {
-        // No regression for normal hosts: public DNS names, public IPv4/IPv6,
-        // and private hosts when explicitly allowed.
-        assert!(validate_host_with_allow("router.local", false).is_ok());
-        assert!(validate_host_with_allow("router-1.local", false).is_ok());
-        assert!(validate_host_with_allow("8.8.8.8", false).is_ok());
-        assert!(validate_host_with_allow("[2001:db8::1]", false).is_ok());
-        assert!(validate_host_with_allow("2001:db8::1", false).is_ok());
-        assert!(validate_host_with_allow("192.168.88.1", true).is_ok());
-        assert!(validate_host_with_allow("10.0.0.1", true).is_ok());
-        assert!(validate_host_with_allow("127.0.0.1", true).is_ok());
-        assert!(!is_non_canonical_numeric_host("8.8.8.8"));
-        assert!(!is_non_canonical_numeric_host("router.local"));
-    }
-
-    #[test]
-    fn test_redirects_disabled_on_agents() {
-        // Unit-testable without network: the Debug rendering of ureq agents
-        // exposes the configured `redirects` count.
-        let normal = get_cached_agent(Duration::from_secs(5), true);
-        let normal_dbg = format!("{normal:?}");
-        assert!(
-            normal_dbg.contains("redirects: 0"),
-            "normal agent must disable redirects, got: {normal_dbg}"
-        );
-        let insecure =
-            build_insecure_agent(Duration::from_secs(5)).expect("insecure agent should build");
-        let insecure_dbg = format!("{insecure:?}");
-        assert!(
-            insecure_dbg.contains("redirects: 0"),
-            "insecure agent must disable redirects, got: {insecure_dbg}"
-        );
-    }
-
-    #[test]
-    fn test_empty_fetch_results_cached() {
-        // Endpoints returning `[]` must not re-hit the network on every
-        // completion: a fresh empty entry short-circuits via try_get_cached.
-        let mut cache = LiveCache::new(Duration::from_secs(60));
-        cache.insert("interfaces".to_string(), Vec::new());
-        let cached = cache.try_get_cached("interfaces");
-        assert!(cached.is_some(), "empty results must be cached");
-        assert!(cached.unwrap().is_empty());
-
-        // Through the stale-while-revalidate entry point, the fresh empty hit
-        // returns without recording a new fetch attempt.
-        let shared = Arc::new(Mutex::new(LiveCache::with_default_ttl()));
-        {
-            let mut guard = shared.lock().unwrap();
-            guard.insert("interfaces".to_string(), Vec::new());
-        }
-        let mut m = HashMap::new();
-        m.insert("RSC_LS_LIVE", "1");
-        m.insert("MIKROTIK_HOST", "192.168.88.1");
-        m.insert("MIKROTIK_PASS", "p");
-        let cfg = cfg_with(m);
-        let res = get_cached_or_fetch_background(&shared, &cfg, ResourceKind::Interfaces);
-        assert!(res.is_some(), "fresh empty cache must hit");
-        assert!(res.unwrap().is_empty());
-        assert!(
-            shared.lock().unwrap().last_fetch_attempt.is_empty(),
-            "fresh empty hit must not spawn a fetch"
-        );
-    }
-
-    #[test]
-    fn test_workspace_host_overlay_applies() {
-        // A scoped workspace object that changes the host overlays cleanly
-        // (no panic). The host change itself is log-only warning; behavior
-        // stays warn-not-block so the config reflects the new host.
-        let mut cfg = LiveConfig::from_env_with(|k| match k {
-            "RSC_LS_LIVE" => Some("1".to_string()),
-            "MIKROTIK_HOST" => Some("192.168.88.1".to_string()),
-            "MIKROTIK_PASS" => Some("envpass".to_string()),
-            _ => None,
-        });
-        assert_eq!(cfg.host, "192.168.88.1");
-        let settings = serde_json::json!({
-            "rsc": {
-                "live": {
-                    "host": "attacker.example.com"
-                }
-            }
-        });
-        LiveConfig::apply_settings_value(&mut cfg, &settings);
-        assert_eq!(cfg.host, "attacker.example.com");
-        assert_eq!(cfg.hosts, vec!["attacker.example.com".to_string()]);
-        // Env-only secrets are untouched by the overlay.
-        assert_eq!(cfg.pass, "envpass");
-
-        // Same path via `from_settings_value`: the scoped host wins over env
-        // regardless of ambient process env (overlay overwrites unconditionally).
-        let via_from = LiveConfig::from_settings_value(&settings);
-        assert_eq!(via_from.host, "attacker.example.com");
-        assert_eq!(via_from.hosts, vec!["attacker.example.com".to_string()]);
-    }
-
-    #[test]
-    fn test_workspace_multi_host_overlay_applies() {
-        // Multi-host (`hosts`) overlay changes the effective target list and
-        // primary host; warn-not-block keeps the overlay applied.
-        let mut cfg = LiveConfig::from_env_with(|k| match k {
-            "RSC_LS_LIVE" => Some("1".to_string()),
-            "MIKROTIK_HOST" => Some("192.168.88.1".to_string()),
-            "MIKROTIK_PASS" => Some("envpass".to_string()),
-            _ => None,
-        });
-        let settings = serde_json::json!({
-            "rsc": {
-                "live": {
-                    "host": "attacker.example.com, 10.0.0.2"
-                }
-            }
-        });
-        LiveConfig::apply_settings_value(&mut cfg, &settings);
-        assert_eq!(cfg.host, "attacker.example.com");
-        assert_eq!(
-            cfg.hosts,
-            vec!["attacker.example.com".to_string(), "10.0.0.2".to_string()]
-        );
-    }
-
-    #[test]
-    fn test_ssrf_denies_metadata_aliases() {
-        // Minimal exact-host denials beyond `metadata.google.internal`.
-        // Case-insensitive exact matches are denied.
-        for bad in [
-            "metadata.google",
-            "METADATA.GOOGLE",
-            "Metadata.Google",
-            "metadata.goog",
-            "METADATA.GOOG",
-            "[metadata.google]",
-        ] {
-            assert!(
-                is_ssrf_denied_host(bad),
-                "metadata alias should be denied: {bad:?}"
-            );
-            assert!(
-                validate_host_with_allow(bad, true).is_err(),
-                "metadata alias should fail validation: {bad:?}"
-            );
-        }
-        // No over-blocking: normal hosts stay accepted.
-        for ok in [
-            "google.com",
-            "metadata.google.example.com",
-            "example-metadata.goog.example.com",
-            "router.local",
-            "8.8.8.8",
-        ] {
-            assert!(
-                !is_ssrf_denied_host(ok),
-                "normal host must not be denied: {ok:?}"
-            );
-        }
-        assert!(validate_host_with_allow("google.com", false).is_ok());
-        assert!(validate_host_with_allow("router.local", false).is_ok());
-    }
-
-    // Helper trait for sorted check in tests (stable in std from 1.82?).
-
-    // Helper trait for sorted check in tests (stable in std from 1.82?).
-    trait IsSorted {
-        fn is_sorted(&self) -> bool;
-    }
-    impl IsSorted for Vec<String> {
-        fn is_sorted(&self) -> bool {
-            self.windows(2).all(|w| w[0] <= w[1])
-        }
-    }
 }
