@@ -21,7 +21,7 @@ pub struct CommandsFile {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct RawMenuEntry {
-    path: String,
+    pub(crate) path: String,
     #[serde(rename = "type", default)]
     menu_type: String,
     #[serde(default)]
@@ -67,10 +67,9 @@ pub struct ArgEntry {
     pub description: String,
     pub required: bool,
     /// Upstream docs mark whether the property can be removed again with
-    /// `unset` (1007 entries in the generated table carry it). No rule
-    /// consumes it yet; it is kept so the embedded dataset round-trips the
-    /// generated schema without silent field loss.
-    #[allow(dead_code)]
+    /// `unset` (991 entries in the generated table carry it). Consumed by
+    /// the diagnostics `non-unsettable-property` Hint, which warns when
+    /// `unset` targets a property whose entry carries `unset=false`.
     pub unset: bool,
 }
 
@@ -87,6 +86,16 @@ impl ArgEntry {
         }
         parse_enum_values(&self.arg_type)
     }
+
+    /// Ubit members usable for Hint-only validation.
+    ///
+    /// Ubit entries carry no embedded member array (the generator only
+    /// embeds `enum_values` for `enum` types), so this always parses the
+    /// display type string via [`parse_ubit_values`]. Truncated or
+    /// member-less types yield an empty list and callers stay silent.
+    pub fn ubit_members(&self) -> Vec<String> {
+        parse_ubit_values(&self.arg_type)
+    }
 }
 
 /// Parse enum members out of a display type string such as
@@ -102,6 +111,35 @@ pub(crate) fn parse_enum_values(type_str: &str) -> Vec<String> {
         .and_then(|s| s.strip_suffix(')'));
     match inner {
         Some(body) => body.split('|').map(|s| s.trim().to_string()).collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Parse ubit members out of a display type string such as
+/// `ubit (pap, chap, mschap1, mschap2)`.
+///
+/// Ubit lists are comma-separated (unlike `enum`, which uses `|`); a
+/// trailing `{ ... }` bitmask legend is cut before splitting. Truncated
+/// display strings (containing `...` from the generator's display cap) or a
+/// missing member list (bare `ubit`, unclosed paren) yield an empty list so
+/// callers stay silent rather than guessing.
+pub(crate) fn parse_ubit_values(type_str: &str) -> Vec<String> {
+    // Cut any `{ ... }` legend the generator may append, then refuse
+    // truncated input outright.
+    let without_legend = type_str.split('{').next().unwrap_or(type_str);
+    if without_legend.contains("...") {
+        return Vec::new();
+    }
+    let inner = without_legend
+        .strip_prefix("ubit")
+        .and_then(|s| s.trim().strip_prefix('('))
+        .and_then(|s| s.strip_suffix(')'));
+    match inner {
+        Some(body) => body
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
         None => Vec::new(),
     }
 }
@@ -154,7 +192,7 @@ pub fn dataset_provenance() -> DatasetProvenance {
     parse_provenance(COMMANDS_TOML)
 }
 
-fn parse_provenance(text: &str) -> DatasetProvenance {
+pub(crate) fn parse_provenance(text: &str) -> DatasetProvenance {
     let mut version = "unknown".to_string();
     let mut src_hash = "unknown".to_string();
     for line in text.lines().take(12) {
@@ -341,490 +379,5 @@ impl From<RawArgEntry> for ArgEntry {
             required: raw.required,
             unset: raw.unset,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn provenance_parses_generated_header() {
-        let text = "# MikroTik RouterOS CLI Command Table\n\
-            # RouterOS version: 7.23.2\n\
-            # Source hash (sha256[:16]): c043cd8fd9e2215c\n\
-            \n\
-            [[menus]]\n";
-        let prov = parse_provenance(text);
-        assert_eq!(prov.version, "7.23.2");
-        assert_eq!(prov.src_hash, "c043cd8fd9e2215c");
-    }
-
-    #[test]
-    fn provenance_degrades_to_unknown_on_missing_header() {
-        let prov = parse_provenance("[[menus]]\n");
-        assert_eq!(prov.version, "unknown");
-        assert_eq!(prov.src_hash, "unknown");
-    }
-
-    #[test]
-    fn embedded_dataset_provenance_matches_committed_header() {
-        // Guards the banner against header renames in extract_commands.py.
-        // Value-agnostic on purpose: the version/hash rotate on every
-        // `make sync`, so only assert they parsed (not "unknown").
-        let prov = dataset_provenance();
-        assert!(!prov.version.contains("unknown") && !prov.version.is_empty());
-        assert!(!prov.src_hash.contains("unknown"));
-        assert_eq!(prov.src_hash.len(), 16);
-    }
-
-    fn test_commands_toml() -> &'static str {
-        r#"
-[[menus]]
-path = "/ip/address"
-type = "Directory"
-
-[[menus.arguments]]
-name = "address"
-type = "ipPrefix"
-description = "The IP address and network mask"
-
-[[menus.arguments]]
-name = "interface"
-type = "iface_enum"
-
-[[menus.flags]]
-name = "X"
-description = "disabled"
-
-[[menus.flags]]
-name = "D"
-description = "dynamic"
-
-[[menus.read_only]]
-name = "actual-interface"
-type = "iface_enum"
-description = "The actual interface"
-
-[[menus]]
-path = "/ip/route"
-type = "Directory"
-
-[[menus.arguments]]
-name = "gateway"
-type = "address (flags=46ivL)"
-
-[[menus]]
-path = "/ip/route/check"
-type = "Command"
-
-[[menus]]
-path = "/ip/firewall/filter"
-type = "Directory"
-
-[[menus.arguments]]
-name = "chain"
-type = "enum (input | forward | output)"
-
-[[menus.arguments]]
-name = "action"
-type = "enum (accept | drop | reject)"
-
-[[menus]]
-path = "/interface/bridge/port"
-type = "Directory"
-
-[[menus]]
-path = "/routing/bgp/connection"
-type = "Directory"
-
-[[menus]]
-path = "/system/identity"
-type = "Directory"
-"#
-    }
-
-    #[test]
-    fn test_parse_commands_toml() {
-        let commands: CommandsFile =
-            toml::from_str(test_commands_toml()).expect("should parse TOML");
-        assert!(!commands.menus.is_empty(), "should have menus");
-        assert!(commands.menus.len() >= 4, "should have at least 4 menus");
-    }
-
-    #[test]
-    fn test_empty_commands_toml() {
-        let toml_str = "\n[[menus]]\npath = \"/empty\"\ntype = \"Directory\"\n";
-        let commands: CommandsFile = toml::from_str(toml_str).unwrap();
-        assert_eq!(commands.menus.len(), 1);
-        assert_eq!(commands.menus[0].path, "/empty");
-    }
-
-    #[test]
-    fn test_menus_are_not_empty() {
-        let data = MenuData::load();
-        assert!(
-            !data.menus.is_empty(),
-            "embedded commands.toml should have menus"
-        );
-        assert!(data.menus.len() >= 50, "should have at least 50 menus");
-        assert!(
-            !data.menu_by_path.is_empty(),
-            "menu_by_path should be populated"
-        );
-    }
-
-    #[test]
-    fn test_all_menus_have_path() {
-        let data = MenuData::load();
-        for menu in &data.menus {
-            assert!(!menu.path.is_empty(), "every menu should have a path");
-            assert!(
-                menu.path.starts_with('/'),
-                "paths should start with /: {}",
-                menu.path
-            );
-        }
-    }
-
-    #[test]
-    fn test_target_root_menus_present() {
-        let data = MenuData::load();
-        let paths: Vec<&str> = data.menus.iter().map(|m| m.path.as_str()).collect();
-
-        assert!(
-            paths.iter().any(|p| p.starts_with("/ip/")),
-            "missing /ip entries"
-        );
-        assert!(
-            paths.iter().any(|p| p.starts_with("/ipv6/")),
-            "missing /ipv6 entries"
-        );
-        assert!(
-            paths.iter().any(|p| p.starts_with("/interface/")),
-            "missing /interface entries"
-        );
-        assert!(
-            paths.iter().any(|p| p.starts_with("/routing/")),
-            "missing /routing entries"
-        );
-    }
-
-    #[test]
-    fn test_no_unwanted_root_menus() {
-        // Under complete coverage, /certificate and other previously excluded
-        // roots are now included. Verify that.
-        let data = MenuData::load();
-        assert!(
-            data.menus
-                .iter()
-                .any(|m| m.path.starts_with("/certificate")),
-            "should contain /certificate under complete coverage, got {} menus",
-            data.menus.len()
-        );
-    }
-
-    #[test]
-    fn test_specific_menus_exist() {
-        let data = MenuData::load();
-
-        assert!(
-            data.menu_by_path.contains_key("/ip/address"),
-            "missing /ip/address"
-        );
-        assert!(
-            data.menu_by_path.contains_key("/ip/route"),
-            "missing /ip/route"
-        );
-        assert!(
-            data.menu_by_path.contains_key("/ip/firewall/filter"),
-            "missing /ip/firewall/filter"
-        );
-        assert!(data.menu_by_path.contains_key("/ip/dns"), "missing /ip/dns");
-        assert!(
-            data.menu_by_path.contains_key("/ip/service"),
-            "missing /ip/service"
-        );
-        assert!(
-            data.menu_by_path.contains_key("/ipv6/address"),
-            "missing /ipv6/address"
-        );
-        assert!(
-            data.menu_by_path.contains_key("/ipv6/route"),
-            "missing /ipv6/route"
-        );
-        assert!(
-            data.menu_by_path.contains_key("/interface/bridge"),
-            "missing /interface/bridge"
-        );
-        assert!(
-            data.menu_by_path.contains_key("/interface/ethernet"),
-            "missing /interface/ethernet"
-        );
-        assert!(
-            data.menu_by_path.contains_key("/routing/ospf"),
-            "missing /routing/ospf"
-        );
-        assert!(
-            data.menu_by_path.contains_key("/routing/bgp"),
-            "missing /routing/bgp"
-        );
-
-        assert!(
-            data.menu_by_path.contains_key("/system/clock"),
-            "missing /system/clock"
-        );
-        assert!(
-            data.menu_by_path.contains_key("/tool/ping"),
-            "missing /tool/ping"
-        );
-        assert!(
-            data.menu_by_path.contains_key("/queue/simple"),
-            "missing /queue/simple"
-        );
-        assert!(
-            data.menu_by_path.contains_key("/user/aaa"),
-            "missing /user/aaa"
-        );
-    }
-
-    // ── Manual-audit pins over the EMBEDDED dataset ───────────────
-    //
-    // The tests below guard what actually SHIPS to users (the table baked in
-    // via include_str!), end to end through the extraction pipeline. They
-    // mirror the audit that motivated gating bare-root CLI pages behind a
-    // **Type:** line in scripts/extract_commands.py.
-
-    #[test]
-    fn test_root_user_page_documents_mandatory_credentials() {
-        // The regenerated table must capture the bare-root `/user` page with
-        // its mandatory credential properties intact; losing them would
-        // degrade completions for basic user management.
-        let data = MenuData::load();
-        let user = data.menu_by_path.get("/user").expect("/user menu embedded");
-        for name in ["name", "group", "password"] {
-            let arg = user
-                .arguments
-                .iter()
-                .find(|a| a.name == name)
-                .unwrap_or_else(|| panic!("/user argument `{name}` missing"));
-            assert!(arg.required, "/user.{name} must stay required=true");
-        }
-    }
-
-    #[test]
-    fn test_log_read_only_columns_present() {
-        // /log documents only read-only output columns; they power hover on
-        // the most common print workflow, so losing any of them is a silent
-        // feature regression.
-        let data = MenuData::load();
-        let log = data.menu_by_path.get("/log").expect("/log menu embedded");
-        for name in ["buffer", "time", "topics", "message"] {
-            assert!(
-                log.read_only.iter().any(|r| r.name == name),
-                "/log read_only column `{name}` missing"
-            );
-        }
-    }
-
-    #[test]
-    fn test_root_level_cli_commands_embedded() {
-        // Root CLI commands were entirely absent before the bare-root fix;
-        // if any goes missing again the LSP silently loses real CLI surface.
-        let data = MenuData::load();
-        for path in [
-            "/import",
-            "/password",
-            "/quit",
-            "/redo",
-            "/undo",
-            "/beep",
-            "/blink",
-        ] {
-            let menu = data
-                .menu_by_path
-                .get(path)
-                .unwrap_or_else(|| panic!("root command {path} missing from embedded table"));
-            assert_eq!(menu.menu_type, "Command", "{path} must stay typed Command");
-        }
-        // /environment ships alongside the same fix but its upstream page
-        // types it as a Directory — pinned verbatim.
-        let environment = data
-            .menu_by_path
-            .get("/environment")
-            .expect("/environment embedded");
-        assert_eq!(environment.menu_type, "Directory");
-
-        let safe_mode = data
-            .menu_by_path
-            .get("/safe-mode")
-            .expect("/safe-mode embedded");
-        assert_eq!(safe_mode.menu_type, "Settings Directory");
-    }
-
-    #[test]
-    fn test_radius_root_owns_service_secrets_not_monitor() {
-        // Child pages ordered BEFORE their parent root upstream used to leak
-        // ArgTable rows into the previous entry. service/secret belong to the
-        // /radius root; /radius/monitor is stats-only and must stay clean.
-        let data = MenuData::load();
-        let radius = data
-            .menu_by_path
-            .get("/radius")
-            .expect("/radius menu embedded");
-        for name in ["service", "secret"] {
-            assert!(
-                radius.arguments.iter().any(|a| a.name == name),
-                "/radius argument `{name}` missing"
-            );
-        }
-        if let Some(monitor) = data.menu_by_path.get("/radius/monitor") {
-            for name in ["service", "secret"] {
-                assert!(
-                    !monitor.arguments.iter().any(|a| a.name == name),
-                    "/radius/monitor must not inherit /radius `{name}`"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_children_index_built() {
-        let data = MenuData::load();
-        let roots = data.child_names_by_parent.get("").expect("root children");
-        assert!(!roots.is_empty(), "should have root menus");
-        assert!(roots.iter().any(|c| c.path == "/ip"), "missing /ip root");
-    }
-
-    // ── Ancestor prefix set ───────────────────────────────────────
-
-    #[test]
-    fn test_ancestor_prefixes_built_synthetic() {
-        let data = MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/ip/address"
-type = "Directory"
-[[menus]]
-path = "/ip/firewall/filter"
-type = "Directory"
-"#,
-        );
-        // Root sentinel, root segments, and implicit intermediates.
-        assert!(data.ancestor_prefixes.contains("/"));
-        assert!(data.ancestor_prefixes.contains("/ip"));
-        assert!(data.ancestor_prefixes.contains("/ip/firewall"));
-        // Full menu paths themselves are NOT ancestors (they are covered by
-        // menu_by_path lookups instead).
-        assert!(!data.ancestor_prefixes.contains("/ip/address"));
-        // Unknown prefixes stay unknown.
-        assert!(!data.ancestor_prefixes.contains("/foo"));
-        assert!(!data.ancestor_prefixes.contains("/foo/bar"));
-    }
-
-    #[test]
-    fn test_ancestor_prefixes_real_data() {
-        let data = MenuData::load();
-        assert!(data.ancestor_prefixes.contains("/"), "root sentinel");
-        assert!(
-            data.ancestor_prefixes.contains("/ip"),
-            "root segment of real menus"
-        );
-        assert!(
-            data.ancestor_prefixes.contains("/ip/firewall"),
-            "implicit intermediate"
-        );
-        // Empty dataset keeps only the root sentinel (fail-safe path parity).
-        let empty = MenuData::from_toml_str("");
-        assert!(empty.ancestor_prefixes.contains("/"));
-        assert_eq!(empty.ancestor_prefixes.len(), 1);
-    }
-
-    // ── enum_values field & member resolution ─────────────────────
-
-    #[test]
-    fn test_enum_values_deserialized_and_defaulted() {
-        let data = MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/m"
-type = "Directory"
-[[menus.arguments]]
-name = "with-values"
-type = "enum (truncated | display)"
-enum_values = ["full", "complete", "list"]
-[[menus.arguments]]
-name = "without-values"
-type = "enum (a | b)"
-[[menus.arguments]]
-name = "plain"
-type = "ipPrefix"
-"#,
-        );
-        let menu = data.menu_by_path.get("/m").unwrap();
-
-        let with = menu
-            .arguments
-            .iter()
-            .find(|a| a.name == "with-values")
-            .unwrap();
-        assert_eq!(with.enum_values, vec!["full", "complete", "list"]);
-        // Embedded array wins over whatever the display string parses to.
-        assert_eq!(with.enum_members(), vec!["full", "complete", "list"]);
-
-        let without = menu
-            .arguments
-            .iter()
-            .find(|a| a.name == "without-values")
-            .unwrap();
-        assert!(without.enum_values.is_empty());
-        // Fallback: parse members out of the type string.
-        assert_eq!(without.enum_members(), vec!["a", "b"]);
-
-        let plain = menu.arguments.iter().find(|a| a.name == "plain").unwrap();
-        assert!(plain.enum_values.is_empty());
-        assert!(plain.enum_members().is_empty());
-    }
-
-    #[test]
-    fn test_enum_members_fallback_empty_on_truncated_type() {
-        // Mirrors real generated data BEFORE enum_values existed: truncated
-        // display string has no closing paren, so the fallback yields nothing
-        // rather than garbage.
-        let arg = ArgEntry {
-            name: "band".to_string(),
-            arg_type: "enum (2ghz-b | 2ghz-onlyg | 2ghz-b/g |...".to_string(),
-            enum_values: Vec::new(),
-            description: String::new(),
-            required: false,
-            unset: false,
-        };
-        assert!(arg.enum_members().is_empty());
-
-        // With the embedded array present, members are complete despite the
-        // truncated display string.
-        let mut fixed = arg.clone();
-        fixed.enum_values = vec!["2ghz-b".to_string(), "5ghz-a".to_string()];
-        assert_eq!(fixed.enum_members(), vec!["2ghz-b", "5ghz-a"]);
-    }
-
-    #[test]
-    fn test_real_data_action_has_complete_enum_values() {
-        // Root fix verification: the regenerated command table carries a
-        // complete member list for /ip/firewall/filter action, whose display
-        // string is truncated by the generator's 100-char cap.
-        let data = MenuData::load();
-        let filter = data.menu_by_path.get("/ip/firewall/filter").expect("menu");
-        let action = filter
-            .arguments
-            .iter()
-            .find(|a| a.name == "action")
-            .expect("action argument");
-        assert!(
-            !action.enum_values.is_empty(),
-            "action must embed enum_values after regeneration"
-        );
-        assert!(action.enum_values.iter().any(|v| v == "accept"));
-        assert_eq!(action.enum_members(), action.enum_values);
     }
 }
