@@ -252,7 +252,7 @@ fn test_real_data_ip_address_signature() {
     );
 }
 
-// ── Stream B: label hardening ────────────────────────────────────────────
+// ── Label hardening ──────────────────────────────────────────────────────
 
 #[test]
 fn test_sanitize_label_segment_controls_and_type_cap() {

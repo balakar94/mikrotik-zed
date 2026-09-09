@@ -140,10 +140,9 @@ fn severity_caps_max_diagnostics_is_2000() {
 }
 
 // ── Former SPEC-ONLY proposals (pointers, not asserts) ───────────────────
-// The behavior-changing streams below have landed; the contract lives with
-// the owning module's tests. This file keeps no duplicate asserts (stream
-// ownership: live.rs / server.rs), only pointers so the history stays
-// greppable.
+// The behavior changes below have landed; the contract lives with
+// the owning module's tests. This file keeps no duplicate asserts (owner:
+// live.rs / server.rs), only pointers so the history stays greppable.
 //
 // (a) TRANSPORT DOWNGRADE GATE — IMPLEMENTED in `live.rs`:
 //     `apply_settings_value` ignores transport-security keys from workspace

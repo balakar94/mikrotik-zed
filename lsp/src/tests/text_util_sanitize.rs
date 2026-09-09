@@ -186,7 +186,7 @@ fn validator_invalid_params_shape_pins_32602_with_id_echo() {
 // malformed bodies answer `{"jsonrpc": "2.0", "id": <best-effort>,
 // "error": {"code": -32700, …}}`), pinned by
 // `server.rs::test_parse_error_response_shape`. No duplicate assert here
-// (stream ownership: server.rs).
+// (owner: server.rs).
 
 // ── Completion common-hint tier ──────────────────────────────────────────
 

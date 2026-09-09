@@ -42,11 +42,11 @@ fn initialize(encodings: Option<serde_json::Value>) -> (Server, serde_json::Valu
     (server, resp)
 }
 
-// ── documentSymbol / foldingRange (Stage B) ──────────────────────────────
+// ── documentSymbol / foldingRange ────────────────────────────────────────
 
 /// Open `doc` in a fresh utf-16-negotiated server and return the raw
 /// response for `method` (documentSymbol / foldingRange).
-fn stage_b_request(method: &str, doc: &str, id: i64) -> serde_json::Value {
+fn lsp_request(method: &str, doc: &str, id: i64) -> serde_json::Value {
     let mut s = Server::new(synth_min());
     s.handle_message(
         "initialize",
@@ -72,7 +72,7 @@ fn test_document_symbols_menu_global_local_mix() {
         ":put done\n",
         "print\n", // bare fragment — skipped
     );
-    let resp = stage_b_request("textDocument/documentSymbol", doc, 21);
+    let resp = lsp_request("textDocument/documentSymbol", doc, 21);
     assert_eq!(resp["id"], 21);
     let syms = resp["result"].as_array().expect("flat symbol array");
     let names: Vec<&str> = syms.iter().map(|s| s["name"].as_str().unwrap()).collect();
@@ -89,7 +89,7 @@ fn test_document_symbols_menu_global_local_mix() {
 #[test]
 fn test_document_symbol_continuation_spans_physical_lines() {
     let doc = "/ip/address add \\\naddress=1.2.3.4\n";
-    let resp = stage_b_request("textDocument/documentSymbol", doc, 22);
+    let resp = lsp_request("textDocument/documentSymbol", doc, 22);
     let syms = resp["result"].as_array().unwrap();
     assert_eq!(syms.len(), 1, "continuation joins into one logical command");
     assert_eq!(syms[0]["range"]["start"]["line"], 0);
@@ -99,7 +99,7 @@ fn test_document_symbol_continuation_spans_physical_lines() {
 
 #[test]
 fn test_document_symbols_empty_doc_is_empty_array() {
-    let resp = stage_b_request("textDocument/documentSymbol", "", 23);
+    let resp = lsp_request("textDocument/documentSymbol", "", 23);
     assert!(resp["result"].as_array().unwrap().is_empty());
 }
 
@@ -151,7 +151,7 @@ fn test_folding_ranges_block_and_continuation_sorted() {
         "/ip/address add \\\n", // 3 continues
         "address=1.2.3.4\n",    // 4 → continuation fold (3,4)
     );
-    let resp = stage_b_request("textDocument/foldingRange", doc, 27);
+    let resp = lsp_request("textDocument/foldingRange", doc, 27);
     let ranges = resp["result"].as_array().unwrap();
     let rows: Vec<(i64, i64, Option<&str>)> = ranges
         .iter()
@@ -173,7 +173,7 @@ fn test_folding_ranges_block_and_continuation_sorted() {
 #[test]
 fn test_folding_ranges_single_line_braces_not_emitted() {
     let doc = ":if (a) do={ :put x } else={ :put y }\n";
-    let resp = stage_b_request("textDocument/foldingRange", doc, 28);
+    let resp = lsp_request("textDocument/foldingRange", doc, 28);
     assert!(resp["result"].as_array().unwrap().is_empty());
 }
 
@@ -228,7 +228,7 @@ fn test_document_symbol_characters_honor_utf16_negotiation() {
     // multibyte char BEFORE the end position:
     //   comment="ç"  → 11 UTF-16 units but 12 bytes.
     let doc = "/ip/address add \\\ncomment=\"ç\"\n";
-    let resp = stage_b_request("textDocument/documentSymbol", doc, 32);
+    let resp = lsp_request("textDocument/documentSymbol", doc, 32);
     let sym = &resp["result"].as_array().unwrap()[0];
     assert_eq!(sym["range"]["end"]["line"], 1);
     assert_eq!(

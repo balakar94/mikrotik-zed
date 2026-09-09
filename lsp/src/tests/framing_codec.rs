@@ -121,7 +121,7 @@ fn test_discard_bytes_zero() {
     assert_eq!(remaining, b"hello");
 }
 
-// ── read_message (golden streams) ────────────────────────────────────────
+// ── read_message (golden inputs) ─────────────────────────────────────────
 
 /// Build one length-prefixed frame around `body`.
 
