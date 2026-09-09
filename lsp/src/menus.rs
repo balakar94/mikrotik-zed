@@ -1,4 +1,4 @@
-// ── Data structures and indices for the RSC language server ────────
+// ── Data structures and indices for the RSC language server ──────────────
 //
 // Loads commands.toml at compile time via include_str!() and builds
 // all necessary lookup structures (path index, parent→children index,
@@ -7,11 +7,11 @@
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 
-// ── Embedded command table ────────────────────────────────────────
+// ── Embedded command table ───────────────────────────────────────────────
 
 const COMMANDS_TOML: &str = include_str!("../../data/commands.toml");
 
-// ── TOML data structures ──────────────────────────────────────────
+// ── TOML data structures ─────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct CommandsFile {
@@ -144,7 +144,7 @@ pub(crate) fn parse_ubit_values(type_str: &str) -> Vec<String> {
     }
 }
 
-// ── Child entry (for populating implicit children) ────────────────
+// ── Child entry (for populating implicit children) ───────────────────────
 
 #[derive(Debug, Clone)]
 pub struct ChildEntry {
@@ -153,7 +153,7 @@ pub struct ChildEntry {
     pub menu_type: String,
 }
 
-// ── Context (output of parse_line) ────────────────────────────────
+// ── Context (output of parse_line) ───────────────────────────────────────
 
 #[derive(Debug, Clone, Default)]
 pub struct LineContext {
@@ -163,7 +163,7 @@ pub struct LineContext {
     pub properties: HashMap<String, String>,
 }
 
-// ── Global state ──────────────────────────────────────────────────
+// ── Global state ─────────────────────────────────────────────────────────
 
 pub struct MenuData {
     pub menus: Vec<MenuEntry>,
@@ -367,7 +367,7 @@ impl MenuData {
     ];
 }
 
-// ── Conversions from raw (Deserialize) to clean types ────────────
+// ── Conversions from raw (Deserialize) to clean types ────────────────────
 
 impl From<RawArgEntry> for ArgEntry {
     fn from(raw: RawArgEntry) -> Self {

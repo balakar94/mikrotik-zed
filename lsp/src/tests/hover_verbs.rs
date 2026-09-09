@@ -1,4 +1,4 @@
-//! Hover — verbs.
+// Hover — verbs.
 use super::hover_fixtures::*;
 
 #[test]

@@ -1,4 +1,4 @@
-//! White-box: parser.
+// White-box: parser.
 use crate::parser::*;
 
 use crate::menus::MenuData;
@@ -40,7 +40,7 @@ type = "Directory"
     )
 }
 
-// ── tokenize ──────────────────────────────────────────────────
+// ── tokenize ─────────────────────────────────────────────────────────────
 
 #[test]
 fn test_quote_state_parity_tokenize_vs_effective_content() {
@@ -144,7 +144,7 @@ fn test_quote_state_escape_inside_quotes_inert() {
     );
 }
 
-// ── ParseCache ────────────────────────────────────────────────
+// ── ParseCache ───────────────────────────────────────────────────────────
 
 fn cache_texts(cache: &ParseCache, uri: &str, doc: &str) -> Option<Vec<String>> {
     cache

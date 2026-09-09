@@ -1,4 +1,4 @@
-//! White-box: text_util (textutil).
+// White-box: text_util (textutil).
 use crate::text_util::*;
 
 #[test]

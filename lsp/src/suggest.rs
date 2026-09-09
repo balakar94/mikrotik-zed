@@ -1,4 +1,4 @@
-// ── "Did you mean" suggestion engine ──────────────────────────────
+// ── "Did you mean" suggestion engine ─────────────────────────────────────
 //
 // Pure string-distance helpers backing textDocument/codeAction
 // quick-fixes for typo'd properties and menu paths. No I/O, no server

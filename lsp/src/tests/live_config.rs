@@ -1,5 +1,5 @@
 // Live config parsing (env gate, user, port).
-// Copied (not moved) from `lsp/src/live.rs` (`mod tests` L3481-3489, L3491-3696); the original block is
+// Copied (not moved) from `lsp/src/live.rs`; the original block is
 // left untouched. `use super::*` is adapted to `use crate::live::*;` for the new location.
 use crate::caps::*;
 use crate::live::*;
@@ -14,7 +14,7 @@ fn cfg_with(mut map: HashMap<&str, &str>) -> LiveConfig {
     }
     LiveConfig::from_env_with(|k| map.get(k).map(|v| v.to_string()))
 }
-// ── Config parsing ───────────────────────────────────────────
+// ── Config parsing ───────────────────────────────────────────────────────
 
 #[test]
 fn test_disabled_by_default() {

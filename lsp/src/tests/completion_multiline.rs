@@ -1,4 +1,4 @@
-//! White-box: completion multiline.
+// White-box: completion multiline.
 
 use crate::menus::MenuData;
 use crate::server::Server;
@@ -41,7 +41,7 @@ type = "Directory"
     ))
 }
 
-// ── Server handle_message integration ─────────────────────────
+// ── Server handle_message integration ────────────────────────────────────
 
 fn make_server() -> Server {
     Server::new(synthetic_data())
@@ -69,6 +69,7 @@ fn test_server_completion_multiline_before_cursor() {
         .unwrap();
     // For "address=" value completions should trigger (ipPrefix)
     let items = resp["result"]["items"].as_array().unwrap();
-    // Might be value completions (0.0.0.0/0) or empty if not correctly resolved, but should be Some array
+    // Might be value completions (0.0.0.0/0) or empty if not correctly resolved, but should be Some
+    // array
     assert!(items.is_empty() || items.iter().any(|i| i["label"] == "0.0.0.0/0"));
 }

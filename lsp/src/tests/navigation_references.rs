@@ -1,4 +1,4 @@
-//! Variable navigation — references.
+// Variable navigation — references.
 use crate::menus::MenuData;
 use crate::navigation::*;
 use crate::parser::tokenize_with_spans;
@@ -41,13 +41,13 @@ type = "Directory"
     ))
 }
 
-// ── Server handle_message integration ─────────────────────────
+// ── Server handle_message integration ────────────────────────────────────
 
 fn make_server() -> Server {
     Server::new(synthetic_data())
 }
 
-// ── Variable navigation (textDocument/definition + references) ──
+// ── Variable navigation (textDocument/definition + references) ───────────
 //
 // Wire-contract coverage for the navigation handlers: -32602 /
 // null / [] shapes per sibling-handler strictness, exact declaration
@@ -90,7 +90,7 @@ fn summary(hits: &[VariableHit]) -> Vec<String> {
         .collect()
 }
 
-// ── Declaration extraction ────────────────────────────────────
+// ── Declaration extraction ───────────────────────────────────────────────
 
 #[test]
 fn test_server_references_untracked_uri_returns_empty_list() {
@@ -280,4 +280,4 @@ fn test_lone_dollar_is_not_a_usage() {
     assert!(hits.is_empty(), "got {hits:?}");
 }
 
-// ── Word extraction consistency with hover ───────────────────
+// ── Word extraction consistency with hover ───────────────────────────────

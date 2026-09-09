@@ -1,6 +1,7 @@
 // Publish consistency and live cache preservation.
-// Copied (not moved) from `lsp/src/server.rs` (`mod tests` L2331-2357, L3177-3414); the original block is
-// left untouched. `use super::*` is adapted to `use crate::server::{Server, is_valid_file_uri};` for the new location.
+// Copied (not moved) from `lsp/src/server.rs`; the original block is
+// left untouched. `use super::*` is adapted to `use crate::server::{Server, is_valid_file_uri};`
+// for the new location.
 use crate::caps::{MAX_DIAG_BYTES, MAX_DIAG_LINES, MAX_DOC_SIZE, MAX_DOCS};
 use crate::diagnostics;
 use crate::menus::MenuData;
@@ -126,7 +127,7 @@ fn completion_textEdit_with_continuation() {
     assert_eq!(edit2["range"]["end"]["character"], line0_len as u64);
 }
 
-// ── didChange preserves the live cache ───────────────────────────
+// ── didChange preserves the live cache ───────────────────────────────────
 
 #[test]
 fn test_did_change_preserves_live_cache_coalescing_and_negative_cooldown() {

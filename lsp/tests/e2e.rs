@@ -1,23 +1,23 @@
-//! End-to-end wire tests for the `rsc-ls` language server.
-//!
-//! Unlike the unit suites (which call `compute_*` directly), these tests
-//! spawn the REAL binary via `CARGO_BIN_EXE_rsc-ls` and speak actual LSP:
-//! Content-Length framed JSON-RPC over stdio, exactly what Zed exchanges.
-//! They lock down the wire truths no in-process test can see:
-//!
-//! - framing/encoding negotiation and the full advertised capability surface
-//! - push diagnostics over `textDocument/publishDiagnostics` (incl. the
-//!   RouterOS split-URL continuation pattern producing NO false positives)
-//! - incremental (`change = 2`) sync applied through a range-based didChange
-//! - UTF-16 as the default position encoding when the client offers nothing
-//! - JSON-RPC error contract (-32601 with echoed id) and the LSP 3.17
-//!   shutdown→exit lifecycle (process exit code 0)
-//!
-//! The client is deliberately tiny and built on std only (threads +
-//! `mpsc` + `serde_json`, already a crate dependency). A reader thread
-//! parses frames from the child's stdout; every wait is bounded by
-//! [`RECV_TIMEOUT`] so a wedged server fails a test instead of hanging CI.
-//!
+// End-to-end wire tests for the `rsc-ls` language server.
+//
+// Unlike the unit suites (which call `compute_*` directly), these tests
+// spawn the REAL binary via `CARGO_BIN_EXE_rsc-ls` and speak actual LSP:
+// Content-Length framed JSON-RPC over stdio, exactly what Zed exchanges.
+// They lock down the wire truths no in-process test can see:
+//
+// - framing/encoding negotiation and the full advertised capability surface
+// - push diagnostics over `textDocument/publishDiagnostics` (incl. the
+//   RouterOS split-URL continuation pattern producing NO false positives)
+// - incremental (`change = 2`) sync applied through a range-based didChange
+// - UTF-16 as the default position encoding when the client offers nothing
+// - JSON-RPC error contract (-32601 with echoed id) and the LSP 3.17
+//   shutdown→exit lifecycle (process exit code 0)
+//
+// The client is deliberately tiny and built on std only (threads +
+// `mpsc` + `serde_json`, already a crate dependency). A reader thread
+// parses frames from the child's stdout; every wait is bounded by
+// [`RECV_TIMEOUT`] so a wedged server fails a test instead of hanging CI.
+//
 //! Runs on Linux, macOS and Windows via plain `cargo test -p rsc-ls` —
 //! same pattern as `cli.rs`, no workflow wiring. Docs use `\n` only;
 //! paths come exclusively from the exe env var. Set
@@ -49,7 +49,7 @@ const MAX_HEADER_BYTES: usize = 32 * 1024;
 /// Content-Length cannot trigger an unbounded allocation in the test.
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
-// ── Fixtures ────────────────────────────────────────────────────────
+// ── Fixtures ─────────────────────────────────────────────────────────────
 
 /// Real-world hagezi-style fetch: the quoted URL continues onto the next
 /// physical line behind a trailing backslash, followed by a line carrying
@@ -110,7 +110,7 @@ const QUOTED_EQUALS_COMPLETION_DOC: &str = "/ip/address add comment=\"a=b\" ";
 /// keeps it silent — a leak would surface as `unknown-property`.
 const BRACKET_INERT_DOC: &str = "/ip/address set [find pool-name=digi-ipv6] address=1.1.1.1";
 
-// ── Small fixture helpers ───────────────────────────────────────────
+// ── Small fixture helpers ────────────────────────────────────────────────
 
 /// UTF-16 code units of `s` — how LSP clients must count `character`
 /// values under the spec-default encoding.
@@ -141,7 +141,7 @@ fn open_text_document(client: &mut LspClient, uri: &str, text: &str) {
     );
 }
 
-// ── Framed JSON-RPC client ──────────────────────────────────────────
+// ── Framed JSON-RPC client ───────────────────────────────────────────────
 
 /// Classification of a matched JSON-RPC response.
 enum Response {
@@ -442,7 +442,7 @@ fn read_frame<R: BufRead>(reader: &mut R) -> std::io::Result<Option<Value>> {
     Ok(Some(serde_json::from_slice(&body)?))
 }
 
-// ── Scenarios ───────────────────────────────────────────────────────
+// ── Scenarios ────────────────────────────────────────────────────────────
 
 #[test]
 fn initialize_advertises_full_capability_surface_and_version() {

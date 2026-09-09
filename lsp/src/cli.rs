@@ -1,4 +1,4 @@
-// ── Binary observability: CLI flags and version identity ─────────
+// ── Binary observability: CLI flags and version identity ─────────────────
 //
 // The Zed extension resolves `rsc-ls` at runtime (PATH → cached extension
 // dir → GitHub download), so several builds can coexist on one machine and

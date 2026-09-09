@@ -1,5 +1,5 @@
 // Workspace host overlays and empty-result caching.
-// Copied (not moved) from `lsp/src/live.rs` (`mod tests` L3481-3489, L4835-4989, L4992-5000); the original block is
+// Copied (not moved) from `lsp/src/live.rs`; the original block is
 // left untouched. `use super::*` is adapted to `use crate::live::*;` for the new location.
 use crate::live::*;
 use std::collections::HashMap;

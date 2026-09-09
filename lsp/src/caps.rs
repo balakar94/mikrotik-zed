@@ -1,4 +1,4 @@
-// ── Resource limits — single source of truth ─────────────────────
+// ── Resource limits — single source of truth ─────────────────────────────
 //
 // Every shared resource cap of the language server is declared here
 // exactly once and re-exported through the crate root (`main.rs`), so
@@ -100,7 +100,7 @@ pub(crate) const MAX_DIAGNOSTICS: usize = 2000;
 /// below the typical client limits for a single completion response.
 pub(crate) const MAX_COMPLETION_ITEMS: usize = 200;
 
-// ── Live device data caps ─────────────────────────────────────────
+// ── Live device data caps ────────────────────────────────────────────────
 // These bound the in-memory, TTL-scoped cache for RouterOS live data
 // (never persisted, never overwrites `data/commands.toml`). They keep
 // completion enrichment safe against hostile or oversized device responses.

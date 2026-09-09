@@ -1,5 +1,6 @@
 // Continuation edge cases and logical line maps.
-// Copied (not moved) from `lsp/src/diagnostics.rs` (`mod extra_coverage` L2359-2410, L2908-3026); the original block is
+// Copied (not moved) from `lsp/src/diagnostics.rs` (`mod extra_coverage` L2359-2410, L2908-3026);
+// the original block is
 // left untouched. `use super::*` is adapted to `use crate::diagnostics::*;` for the new location.
 use crate::diagnostics::*;
 use crate::menus::MenuData;
@@ -151,7 +152,7 @@ fn test_logical_line_map_spans_join() {
     assert_eq!(clamped.character, 4);
 }
 
-// ── Token-position ranges ──────────────────────────────────────
+// ── Token-position ranges ────────────────────────────────────────────────
 
 fn demo_menu_data() -> MenuData {
     MenuData::from_toml_str(

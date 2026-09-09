@@ -1,5 +1,5 @@
 // Completion helper pins and real-data sanity.
-// Copied (not moved) from `lsp/src/completion.rs` (`mod tests` L1077-1164, L1516-1686); the original block is
+// Copied (not moved) from `lsp/src/completion.rs`; the original block is
 // left untouched. Adapted imports for the new location.
 use crate::completion::*;
 use crate::menus::MenuData;
@@ -95,7 +95,7 @@ type = "Directory"
 "#;
     MenuData::from_toml_str(toml_str)
 }
-// ── Helpers ───────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────
 
 use crate::menus::parse_enum_values;
 
@@ -181,7 +181,7 @@ fn test_get_detail_with_type() {
     assert_eq!(get_detail(&arg), "type: bool");
 }
 
-// ── Real data sanity checks ───────────────────────────────────
+// ── Real data sanity checks ──────────────────────────────────────────────
 
 #[test]
 fn test_real_data_arg_completions_ip_address() {
@@ -226,7 +226,7 @@ fn test_real_data_value_completions_chain_and_action() {
     assert!(labels.contains(&"drop"));
 }
 
-// ── Stream B: sanitize reuse ────────────────────────────────────
+// ── Stream B: sanitize reuse ─────────────────────────────────────────────
 
 #[test]
 fn test_documentation_from_sanitizes_markdown() {

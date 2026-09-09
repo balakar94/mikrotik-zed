@@ -1,4 +1,4 @@
-//! White-box: parser.
+// White-box: parser.
 use crate::parser::*;
 
 use crate::menus::MenuData;
@@ -40,7 +40,7 @@ type = "Directory"
     )
 }
 
-// ── tokenize ──────────────────────────────────────────────────
+// ── tokenize ─────────────────────────────────────────────────────────────
 
 #[test]
 fn test_build_before_cursor_comment_ending_in_backslash_is_inert() {
@@ -78,7 +78,7 @@ fn test_build_before_cursor_lone_backslash_line_is_inert() {
     assert_eq!(s, "/ip/address add address=1.1.1.1/24");
 }
 
-// ── effective_content_end ─────────────────────────────────────
+// ── effective_content_end ────────────────────────────────────────────────
 
 #[test]
 fn test_effective_content_end_units() {
@@ -92,7 +92,7 @@ fn test_effective_content_end_units() {
     assert_eq!(effective_content_end("print"), 5);
 }
 
-// ── parse_line ────────────────────────────────────────────────
+// ── parse_line ───────────────────────────────────────────────────────────
 
 #[test]
 fn test_parse_line_path_only() {
@@ -246,4 +246,4 @@ fn test_parse_line_with_inline_comment() {
     assert_eq!(ctx.properties.get("extra"), None);
 }
 
-// ── QuoteState parity ───────────────────────────────────────────
+// ── QuoteState parity ────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-//! Signature — labels and budgets.
+// Signature — labels and budgets.
 use crate::menus::MenuData;
 use crate::menus::MenuEntry;
 use crate::parser::tokenize_with_spans;
@@ -121,7 +121,7 @@ fn active(help: &SignatureHelp) -> Option<usize> {
     help.active_parameter.map(|v| v as usize)
 }
 
-// ── Label construction ────────────────────────────────────────
+// ── Label construction ───────────────────────────────────────────────────
 
 #[test]
 fn test_completed_pair_before_cursor_advances_to_next_required() {
@@ -252,7 +252,7 @@ fn test_real_data_ip_address_signature() {
     );
 }
 
-// ── Stream B: label hardening ───────────────────────────────────
+// ── Stream B: label hardening ────────────────────────────────────────────
 
 #[test]
 fn test_sanitize_label_segment_controls_and_type_cap() {

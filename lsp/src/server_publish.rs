@@ -1,4 +1,4 @@
-// ── Publish + code-action methods ───────────────────────────
+// ── Publish + code-action methods ────────────────────────────────────────
 //
 // `impl Server` diagnosis publication and quick-fix computation,
 // extracted verbatim from `server.rs`. Field access needs no changes:

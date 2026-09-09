@@ -1,5 +1,5 @@
 // Host validation, URL building and value filters.
-// Copied (not moved) from `lsp/src/live.rs` (`mod tests` L3481-3489, L3871-4051); the original block is
+// Copied (not moved) from `lsp/src/live.rs`; the original block is
 // left untouched. `use super::*` is adapted to `use crate::live::*;` for the new location.
 use crate::caps::*;
 use crate::live::*;
@@ -58,8 +58,10 @@ fn test_host_validation_rejects_uri_delimiters() {
     // IPv6 link-local fe80::/10 is unconditionally SSRF-denied.
     assert!(validate_host("fe80::1").is_err());
     assert!(validate_host_with_allow("fe80::1", true).is_err());
-    // Backslash path separator rejected via fetch_interfaces host slash check (see test_fetch_interfaces_rejects_host_with_slash)
-    // but validate_host itself allows '/'? No—fetch layer rejects '/' explicitly, validate rejects control/null/delimiters only.
+    // Backslash path separator rejected via fetch_interfaces host slash check (see
+    // test_fetch_interfaces_rejects_host_with_slash)
+    // but validate_host itself allows '/'? No—fetch layer rejects '/' explicitly, validate rejects
+    // control/null/delimiters only.
     // Ensure normal hostnames still pass.
     assert!(validate_host("router-1.local").is_ok());
     assert!(validate_host_with_allow("192.168.88.1", true).is_ok());
@@ -75,7 +77,10 @@ fn test_host_validation_rejects_metadata_ip() {
         "[::ffff:169.254.169.254]",
         "169.254.169.254:80", // host with port should be rejected? contains ':'? For pure host without port, we check inner; but colon presence is allowed for IPv6. This case is not pure IP, but we test base.
     ] {
-        // For the last entry with port, validation may allow ':' but SSRF check should still deny base IP? Our is_ssrf_denied_host checks inner after stripping brackets, but with port it includes colon and port. We handle exact match only, so "169.254.169.254:80" not denied as host (port is separate). So we test exact hosts.
+        // For the last entry with port, validation may allow ':' but SSRF check should still deny
+        // base IP? Our is_ssrf_denied_host checks inner after stripping brackets, but with port it
+        // includes colon and port. We handle exact match only, so "169.254.169.254:80" not denied
+        // as host (port is separate). So we test exact hosts.
         if bad == "169.254.169.254:80" {
             continue;
         }

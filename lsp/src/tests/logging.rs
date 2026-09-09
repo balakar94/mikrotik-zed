@@ -1,4 +1,4 @@
-//! White-box: logging (logging).
+// White-box: logging (logging).
 use crate::logging::*;
 
 #[test]

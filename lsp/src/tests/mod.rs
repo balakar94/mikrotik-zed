@@ -1,11 +1,11 @@
-//! White-box unit tests (same crate, may use `pub(crate)`).
-//! One file per area/aspect, max ~300 lines soft / 400 hard.
-//! Black-box E2E stays in `lsp/tests/` and must not import from here.
-//!
-//! Blanket allow is intentional for now: the suite normalization copied
-//! small helpers per file and many are unused in their host file (128
-//! dead-code/unused-import hits without it). Scoping allows per file is
-//! future cleanup — do not remove this line without fixing all of them.
+// White-box unit tests (same crate, may use `pub(crate)`).
+// One file per area/aspect, max ~300 lines soft / 400 hard.
+// Black-box E2E stays in `lsp/tests/` and must not import from here.
+//
+// Blanket allow is intentional for now: the suite normalization copied
+// small helpers per file and many are unused in their host file (128
+// dead-code/unused-import hits without it). Scoping allows per file is
+// future cleanup — do not remove this line without fixing all of them.
 #![allow(dead_code, unused_imports)]
 
 #[cfg(test)]

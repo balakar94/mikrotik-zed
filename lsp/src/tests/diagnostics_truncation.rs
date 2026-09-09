@@ -1,5 +1,6 @@
 // Empty docs, truncation caps and incremental fixes.
-// Copied (not moved) from `lsp/src/diagnostics.rs` (`mod extra_coverage` L2359-2410, L2616-2792); the original block is
+// Copied (not moved) from `lsp/src/diagnostics.rs` (`mod extra_coverage` L2359-2410, L2616-2792);
+// the original block is
 // left untouched. `use super::*` is adapted to `use crate::diagnostics::*;` for the new location.
 use crate::caps::*;
 use crate::diagnostics::*;
@@ -57,7 +58,7 @@ type = "bool"
 "#,
     )
 }
-// ── Empty and comment-only docs ────────────────────────────────────
+// ── Empty and comment-only docs ──────────────────────────────────────────
 
 #[test]
 fn test_empty_doc_no_diags() {
@@ -106,7 +107,7 @@ fn test_mixed_valid_and_comments() {
     );
 }
 
-// ── Large doc caps ─────────────────────────────────────────────────
+// ── Large doc caps ───────────────────────────────────────────────────────
 
 #[test]
 fn test_large_doc_capped_at_max_diag_lines() {
@@ -128,7 +129,8 @@ fn test_large_doc_capped_at_max_diag_lines() {
 #[test]
 fn test_large_doc_capped_at_max_diag_bytes() {
     let data = synth();
-    // Each line ~30 bytes, need >500KB => ~17000 lines, but MAX_DIAG_LINES is 3000 so lines cap hits first
+    // Each line ~30 bytes, need >500KB => ~17000 lines, but MAX_DIAG_LINES is 3000 so lines cap
+    // hits first
     // To test bytes cap, use long lines
     let long_line = format!("/unknown/menu add x={}\n", "a".repeat(500));
     let doc = long_line.repeat(2000); // ~1M bytes
@@ -174,7 +176,7 @@ fn test_large_doc_bytes_truncation_preserves_first() {
     assert!(diags.iter().any(|d| d.message.contains("/unknown/first")));
 }
 
-// ── Incremental edits simulation ───────────────────────────────────
+// ── Incremental edits simulation ─────────────────────────────────────────
 
 #[test]
 fn test_incremental_fix_removes_diag() {

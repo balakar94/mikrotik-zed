@@ -1,6 +1,7 @@
 // Truncation, incremental edits and pull diagnostics.
-// Copied (not moved) from `lsp/src/server.rs` (`mod tests` L2331-2357, L3055-3176); the original block is
-// left untouched. `use super::*` is adapted to `use crate::server::{Server, is_valid_file_uri};` for the new location.
+// Copied (not moved) from `lsp/src/server.rs`; the original block is
+// left untouched. `use super::*` is adapted to `use crate::server::{Server, is_valid_file_uri};`
+// for the new location.
 use crate::caps::{MAX_DIAG_BYTES, MAX_DIAG_LINES, MAX_DOC_SIZE, MAX_DOCS};
 use crate::diagnostics;
 use crate::menus::MenuData;
@@ -34,7 +35,7 @@ type = "enum (accept | drop | reject)"
 "#,
     ))
 }
-// ── Large doc truncation preserves first N diags ──────────────────
+// ── Large doc truncation preserves first N diags ─────────────────────────
 
 #[test]
 fn test_large_doc_truncation_preserves_first_diags() {
@@ -52,7 +53,8 @@ fn test_large_doc_truncation_preserves_first_diags() {
     // First diagnostics should be for /unknown/menu (preserved)
     assert!(diags.iter().any(|d| d.message.contains("/unknown/menu")));
     // Diagnostics beyond 3000 lines should not appear
-    // Count of diags should be exactly 3000 (one per line) plus truncation hint, or less if bytes cap hits first
+    // Count of diags should be exactly 3000 (one per line) plus truncation hint, or less if bytes
+    // cap hits first
     assert!(!diags.is_empty());
 }
 
@@ -78,7 +80,7 @@ fn test_large_doc_bytes_truncation_preserves_first_diags() {
     assert_eq!(first_diag_line, 0);
 }
 
-// ── Incremental edits with diagnostics ────────────────────────────
+// ── Incremental edits with diagnostics ───────────────────────────────────
 
 #[test]
 fn test_incremental_edit_then_diagnostics_updated() {

@@ -1,4 +1,4 @@
-//! White-box: prop loops.
+// White-box: prop loops.
 
 #[test]
 fn validator_prop_logical_lines_map_range_never_panics() {

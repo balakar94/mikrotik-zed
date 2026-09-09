@@ -1,4 +1,4 @@
-//! White-box: folding (folding).
+// White-box: folding (folding).
 use crate::folding::*;
 
 fn tuples(ranges: &[FoldingRange]) -> Vec<(u32, u32, Option<&'static str>)> {
@@ -151,7 +151,7 @@ fn test_wire_shape_omits_absent_kind() {
     assert_eq!(v[0]["kind"], "region");
 }
 
-// ── Folding caps: cap, order, unterminated safety ───────────────
+// ── Folding caps: cap, order, unterminated safety ────────────────────────
 
 #[test]
 fn test_cap_preserves_first_ranges_in_sorted_order() {

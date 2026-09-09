@@ -1,4 +1,4 @@
-//! Diagnostics — unset and read-only.
+// Diagnostics — unset and read-only.
 use crate::diagnostics::severity;
 use crate::diagnostics::*;
 use crate::menus::MenuData;
@@ -69,7 +69,7 @@ type = "enum (accept | drop)"
     ))
 }
 
-// ── Unset guard: Hint-only ─────────────────────────────────────────
+// ── Unset guard: Hint-only ───────────────────────────────────────────────
 
 fn assert_validator_severity_contract(diags: &[crate::diagnostics::Diagnostic]) {
     const WARNING_CODES: &[&str] = &[
@@ -163,7 +163,7 @@ fn codes_for(data: &MenuData, doc: &str) -> Vec<Diagnostic> {
 fn has_code(diags: &[Diagnostic], code: &str) -> bool {
     diags.iter().any(|d| d.code.as_deref() == Some(code))
 }
-// ── ubit ────────────────────────────────────────────────────
+// ── ubit ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn validator_unset_flag_round_trips_and_guard_is_hint_only() {
@@ -234,7 +234,7 @@ fn validator_unset_flag_round_trips_and_guard_is_hint_only() {
     );
 }
 
-// ── Read-only-write: Information-only ──────────────────────────────
+// ── Read-only-write: Information-only ────────────────────────────────────
 
 #[test]
 fn validator_readonly_write_is_information_only() {

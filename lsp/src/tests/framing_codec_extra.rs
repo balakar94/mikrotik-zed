@@ -1,4 +1,4 @@
-//! Framing — codec and limits.
+// Framing — codec and limits.
 use crate::caps::MAX_DOC_SIZE;
 use crate::caps::{MAX_HEADER_SIZE, MAX_MESSAGE_SIZE};
 use crate::folding;
@@ -147,7 +147,7 @@ fn wire_didchange_good_malformed_no_text_good_still_publishes() {
     );
 }
 
-// ── Folding / perf smoke ─────────────────────────────────────────
+// ── Folding / perf smoke ─────────────────────────────────────────────────
 
 #[test]
 fn wire_folding_6000_continuations_capped_and_sorted() {

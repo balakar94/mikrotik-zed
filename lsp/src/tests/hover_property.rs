@@ -1,4 +1,4 @@
-//! Hover — property.
+// Hover — property.
 use super::hover_fixtures::*;
 
 #[test]
@@ -137,7 +137,8 @@ fn test_hover_property_for_each_arg_type() {
     ];
     for (line, prop, typ_substr) in cases {
         let pos = line.find(prop).unwrap() + 1;
-        // Need to ensure we hover over property name, not path: use second occurrence if line contains "/ip/address"
+        // Need to ensure we hover over property name, not path: use second occurrence if line
+        // contains "/ip/address"
         let doc = line;
         let prop_pos = if doc.matches(prop).count() > 1 {
             doc.rfind(&format!("{}=", prop)).unwrap() + 1
@@ -158,10 +159,12 @@ fn test_hover_on_equals_sign_returns_none_or_property() {
     let data = synth();
     let line = "/ip/address add address=1.1.1.1";
     let eq_pos = line.find('=').unwrap();
-    // Word extraction at '=': find_word_start looks backwards, includes "address", word_end stops at "="
+    // Word extraction at '=': find_word_start looks backwards, includes "address", word_end stops
+    // at "="
     // So hovering at "=" will extract "address" -> should hover property
     let h = hover_at(&data, line, eq_pos);
-    // Could be property hover or None depending on word extraction; either is acceptable if not panicking
+    // Could be property hover or None depending on word extraction; either is acceptable if not
+    // panicking
     let _ = h;
     // Ensure no panic and deterministic
     assert!(

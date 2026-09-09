@@ -1,4 +1,4 @@
-//! Server — document sync (extra).
+// Server — document sync (extra).
 use crate::caps::{MAX_DOC_SIZE, MAX_DOCS, MAX_HEADER_SIZE, MAX_MESSAGE_SIZE};
 use crate::menus::MenuData;
 use crate::server::{Server, is_valid_file_uri};
@@ -82,7 +82,7 @@ fn test_caps_constants_values() {
     assert_eq!(MAX_HEADER_SIZE, 32 * 1024);
 }
 
-// ── URI validation ────────────────────────────────────────────────
+// ── URI validation ───────────────────────────────────────────────────────
 
 #[test]
 fn test_is_valid_file_uri_accepts_file() {
@@ -110,7 +110,7 @@ fn test_is_valid_file_uri_rejects_traversal_and_null() {
     assert!(!is_valid_file_uri(&uri));
 }
 
-// ── didOpen / didChange / didClose ────────────────────────────────
+// ── didOpen / didChange / didClose ───────────────────────────────────────
 
 #[test]
 fn test_did_open_stores_and_overwrites() {
@@ -180,8 +180,10 @@ fn test_did_change_multiple_changes_last_wins_for_full() {
         &serde_json::json!({"params": {"textDocument": {"uri": "file:///a.rsc", "text": "x"}}}),
     );
     s.handle_message("textDocument/didChange", &serde_json::json!({"params": {"textDocument": {"uri": "file:///a.rsc"}, "contentChanges": [{"text": "first"}, {"text": "second"}]}}));
-    // Full sync last change wins is documented, but implementation processes each change sequentially
-    // For non-range, it inserts each in order, so last is "second" (but note second change was buggy? In handle_message it inserts for each change without range)
+    // Full sync last change wins is documented, but implementation processes each change
+    // sequentially
+    // For non-range, it inserts each in order, so last is "second" (but note second change was
+    // buggy? In handle_message it inserts for each change without range)
     // Check final is one of them and not panic
     let doc = s.docs.get("file:///a.rsc").unwrap();
     assert!(doc == "second" || doc == "first");

@@ -1,4 +1,4 @@
-//! Hover — edge.
+// Hover — edge.
 use super::hover_fixtures::*;
 
 #[test]

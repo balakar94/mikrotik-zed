@@ -1,4 +1,4 @@
-//! White-box: server sync.
+// White-box: server sync.
 
 use crate::menus::MenuData;
 use crate::server::Server;
@@ -41,7 +41,7 @@ type = "Directory"
     ))
 }
 
-// ── Server handle_message integration ─────────────────────────
+// ── Server handle_message integration ────────────────────────────────────
 
 fn make_server() -> Server {
     Server::new(synthetic_data())

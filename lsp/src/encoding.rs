@@ -1,4 +1,4 @@
-// ── Position-encoding conversion & document patching ────────────
+// ── Position-encoding conversion & document patching ─────────────────────
 //
 // Single boundary between the negotiated LSP wire encoding and the
 // server's internal byte-based position math. Everything here is pure

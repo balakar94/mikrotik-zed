@@ -1,5 +1,6 @@
 // Completion documentation, sort text and root trigger.
-// Copied (not moved) from `lsp/src/completion.rs` (`mod extra_coverage` L1694-1747, L2156-2300); the original block is
+// Copied (not moved) from `lsp/src/completion.rs` (`mod extra_coverage` L1694-1747, L2156-2300);
+// the original block is
 // left untouched. `use super::*` is adapted to `use crate::completion::*;` for the new location.
 use crate::completion::*;
 use crate::menus::MenuData;
@@ -58,7 +59,7 @@ type = "string"
 "#,
     )
 }
-// ── documentation on completion items ─────────────────────────────
+// ── documentation on completion items ────────────────────────────────────
 
 #[test]
 fn test_arg_item_documentation_markdown_from_description() {
@@ -122,7 +123,7 @@ fn test_items_without_description_have_no_documentation_field() {
     assert!(tzn.documentation.is_none());
 }
 
-// ── sortText: required before optional ────────────────────────────
+// ── sortText: required before optional ───────────────────────────────────
 
 #[test]
 fn test_sorttext_required_before_optional() {
@@ -180,7 +181,7 @@ fn test_sorttext_tiers_for_verbs_submenus_flags() {
     );
 }
 
-// ── Root trigger variants ─────────────────────────────────────────
+// ── Root trigger variants ────────────────────────────────────────────────
 
 #[test]
 fn test_slash_alone_returns_root_menus_not_verbs() {
@@ -199,6 +200,6 @@ fn test_slash_alone_returns_root_menus_not_verbs() {
     }
 }
 
-// ── Statement-start snippets (B3) ─────────────────────────────
+// ── Statement-start snippets (B3) ────────────────────────────────────────
 
 const SNIPPET_LABELS: [&str; 4] = [":if", ":foreach", ":for", ":do"];

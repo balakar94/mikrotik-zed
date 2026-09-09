@@ -1,5 +1,6 @@
 // Statement-start snippet gating.
-// Copied (not moved) from `lsp/src/completion.rs` (`mod extra_coverage` L1694-1747, L2297-2430); the original block is
+// Copied (not moved) from `lsp/src/completion.rs` (`mod extra_coverage` L1694-1747, L2297-2430);
+// the original block is
 // left untouched. `use super::*` is adapted to `use crate::completion::*;` for the new location.
 use crate::completion::*;
 use crate::menus::MenuData;
@@ -58,7 +59,7 @@ type = "string"
 "#,
     )
 }
-// ── Statement-start snippets (B3) ─────────────────────────────
+// ── Statement-start snippets (B3) ────────────────────────────────────────
 
 const SNIPPET_LABELS: [&str; 4] = [":if", ":foreach", ":for", ":do"];
 

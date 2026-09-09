@@ -1,4 +1,4 @@
-// ── MikroTik RouterOS Script Language Server ─────────────────────
+// ── MikroTik RouterOS Script Language Server ─────────────────────────────
 //
 // LSP over stdio, implemented in pure Rust.  Commands.toml is
 // embedded at compile time — no external files needed.
@@ -139,7 +139,7 @@ fn main() {
     log_info!("language server exiting");
 }
 
-// ── Server core lives in server.rs ─────────────────────────────
+// ── Server core lives in server.rs ───────────────────────────────────────
 //
 // Server, dispatch loop, document store and URI validation live in
 // server.rs; re-exported above next to the other shared-module paths

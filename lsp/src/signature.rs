@@ -1,4 +1,4 @@
-// ── Signature help for the RSC language server ──────────────────
+// ── Signature help for the RSC language server ───────────────────────────
 //
 // textDocument/signatureHelp adapted to RouterOS's named-parameter CLI:
 // commands carry no positional parentheses (`/tool fetch url="…"`

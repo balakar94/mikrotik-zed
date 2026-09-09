@@ -1,4 +1,4 @@
-//! Diagnostics — severity pins.
+// Diagnostics — severity pins.
 use crate::diagnostics;
 use crate::diagnostics::severity;
 use crate::diagnostics::*;
@@ -49,7 +49,7 @@ where
         .collect()
 }
 
-// ── (d) diagnostics severity matrix ──────────────────────────────────
+// ── (d) diagnostics severity matrix ──────────────────────────────────────
 
 fn synth() -> MenuData {
     MenuData::from_toml_str(
@@ -103,7 +103,7 @@ type = "bool"
 "#,
     )
 }
-// ── Explicit 5 rules with severity ─────────────────────────────────
+// ── Explicit 5 rules with severity ───────────────────────────────────────
 
 #[test]
 fn severity_severity_unknown_menu_is_warning() {
@@ -205,7 +205,7 @@ fn severity_truncation_hint_is_information_with_truncated_code() {
     );
 }
 
-// ── (d) quick-fix title suffix contract ──────────────────────────────
+// ── (d) quick-fix title suffix contract ──────────────────────────────────
 
 #[test]
 fn severity_quickfix_title_ends_with_question_mark_suffix() {

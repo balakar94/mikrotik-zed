@@ -1,5 +1,6 @@
 // Colon trigger completion contexts.
-// Copied (not moved) from `lsp/src/completion.rs` (`mod extra_coverage` L1694-1747, L2299-2306, L2431-2543); the original block is
+// Copied (not moved) from `lsp/src/completion.rs` (`mod extra_coverage` L1694-1747, L2299-2306,
+// L2431-2543); the original block is
 // left untouched. `use super::*` is adapted to `use crate::completion::*;` for the new location.
 use crate::completion::*;
 use crate::menus::MenuData;
@@ -66,7 +67,7 @@ fn snippet_items(items: &[CompletionItem]) -> Vec<&CompletionItem> {
         .filter(|i| SNIPPET_LABELS.contains(&i.label.as_str()))
         .collect()
 }
-// ── ':' trigger character ──────────────────────────────────────
+// ── ':' trigger character ────────────────────────────────────────────────
 
 #[test]
 fn test_colon_bare_at_statement_start_returns_only_colon_items() {

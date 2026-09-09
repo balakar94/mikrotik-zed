@@ -1,4 +1,4 @@
-//! White-box: symbols (symbols).
+// White-box: symbols (symbols).
 use crate::symbols::*;
 
 use crate::menus::MenuData;
@@ -146,7 +146,7 @@ fn test_symbols_serialize_to_lsp_wire_shape() {
     assert!(s.get("detail").is_none());
 }
 
-// ── Run collapsing + detail ───────────────────────────────────
+// ── Run collapsing + detail ──────────────────────────────────────────────
 
 #[test]
 fn test_consecutive_identical_menu_lines_collapse_with_count() {
@@ -258,7 +258,7 @@ fn test_collapsed_run_detail_serializes_on_wire() {
     assert_eq!(v[0]["detail"], "address=1.1.1.1");
 }
 
-// ── F9: detail sanitization ──────────────────────────────────
+// ── F9: detail sanitization ──────────────────────────────────────────────
 
 #[test]
 fn test_detail_strips_newlines_and_caps_length() {

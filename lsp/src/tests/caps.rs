@@ -1,4 +1,4 @@
-//! Caps registry pins.
+// Caps registry pins.
 use crate::caps::*;
 use crate::menus::MenuData;
 use crate::server::Server;
@@ -48,7 +48,7 @@ where
         .collect()
 }
 
-// ── Folding cap (safe additive pin) ──────────────────────────────────
+// ── Folding cap (safe additive pin) ──────────────────────────────────────
 
 #[test]
 fn severity_folding_ranges_capped_at_5000() {
@@ -74,7 +74,7 @@ fn severity_folding_continuation_carries_no_kind() {
     assert!(wire[0].get("kind").is_none());
 }
 
-// ── didChange batch complement (distinct URIs, no overlap) ───────────
+// ── didChange batch complement (distinct URIs, no overlap) ───────────────
 
 #[test]
 fn severity_didchange_batch_applies_edits_after_malformed_element_and_publishes_once() {
@@ -108,7 +108,7 @@ fn severity_didchange_batch_applies_edits_after_malformed_element_and_publishes_
     assert_eq!(server.published[0].0, "file:///severity-batch.rsc");
 }
 
-// ── Shared caps pins ─────────────────────────────────────────────────
+// ── Shared caps pins ─────────────────────────────────────────────────────
 
 #[test]
 fn severity_caps_max_docs_is_100_and_enforced() {
@@ -139,7 +139,7 @@ fn severity_caps_max_diagnostics_is_2000() {
     assert_eq!(crate::MAX_DIAGNOSTICS, 2000);
 }
 
-// ── Former SPEC-ONLY proposals (now implemented; pointers, not asserts) ─
+// ── Former SPEC-ONLY proposals (pointers, not asserts) ───────────────────
 // The behavior-changing streams below have landed; the contract lives with
 // the owning module's tests. This file keeps no duplicate asserts (stream
 // ownership: live.rs / server.rs), only pointers so the history stays

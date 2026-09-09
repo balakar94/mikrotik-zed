@@ -1,7 +1,8 @@
-// ── Live configuration ─────────────────────────────────────────────
+// ── Live configuration ───────────────────────────────────────────────────
 //
-// `LiveConfig` + env/settings/scheme/shim parsing and custom resources. Extracted verbatim from `live.rs`; re-exported there
-// so `crate::live::…` paths keep resolving unchanged.
+// `LiveConfig` + env/settings/scheme/shim parsing and custom resources.
+//
+// Split from `live.rs`; re-exported there, `crate::live::…` paths unchanged.
 
 use crate::caps::{
     LIVE_CUSTOM_RESOURCES_MAX, LIVE_MAX_HOSTS, LIVE_TIMEOUT_SECS, MAX_LIVE_VALUE_LEN,
@@ -12,11 +13,12 @@ use crate::logging::{log_debug, log_info, log_warn, sanitize_for_log};
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
 
-// ── CustomResource ───────────────────────────────────────────────
+// ── CustomResource ───────────────────────────────────────────────────────
 
 /// User-defined live resource mapping via `RSC_LS_LIVE_RESOURCES`.
 ///
-/// JSON shape: `{ "property": "packet-mark", "path": "/rest/ip/firewall/mangle", "field": "new-packet-mark" }`
+/// JSON shape: `{ "property": "packet-mark", "path": "/rest/ip/firewall/mangle", "field":
+/// "new-packet-mark" }`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CustomResource {
     /// Property name that triggers this resource (e.g. "packet-mark").
@@ -27,7 +29,7 @@ pub struct CustomResource {
     pub field: String,
 }
 
-// ── LiveConfig ───────────────────────────────────────────────────
+// ── LiveConfig ───────────────────────────────────────────────────────────
 
 /// Live device connection configuration, parsed from the environment.
 ///
@@ -39,8 +41,10 @@ pub struct LiveConfig {
     pub enabled: bool,
     /// Device host/IP (`MIKROTIK_HOST`). Empty when not set. Primary host for backward compat.
     pub host: String,
-    /// All hosts when `MIKROTIK_HOST` is comma-separated (first is primary). Capped to `LIVE_MAX_HOSTS`.
-    /// Multi-host is validated but only the primary host is currently fetched; additional hosts retained for future use.
+    /// All hosts when `MIKROTIK_HOST` is comma-separated (first is primary). Capped to
+    /// `LIVE_MAX_HOSTS`.
+    /// Multi-host is validated but only the primary host is currently fetched; additional hosts
+    /// retained for future use.
     pub hosts: Vec<String>,
     /// Username (`MIKROTIK_USER`, default `admin`).
     pub user: String,
@@ -57,7 +61,8 @@ pub struct LiveConfig {
     /// User-defined custom live resources (capped to `LIVE_CUSTOM_RESOURCES_MAX`).
     pub custom_resources: Vec<CustomResource>,
     /// Whether loopback/private hosts are allowed (`RSC_LS_LIVE_ALLOW_LOOPBACK=1`).
-    /// Default deny (false) — when false, `127.0.0.0/8`, `::1`, `10/8`, `192.168/16` etc are rejected via `is_loopback_or_private`.
+    /// Default deny (false) — when false, `127.0.0.0/8`, `::1`, `10/8`, `192.168/16` etc are
+    /// rejected via `is_loopback_or_private`.
     pub allow_loopback: bool,
     /// SPKI SHA256 pin (`MIKROTIK_FINGERPRINT=sha256:<hex>`). When set and
     /// valid, TLS uses a pinning verifier instead of disabling verification.
@@ -628,7 +633,8 @@ impl LiveConfig {
         if let Some(kind) = live_resource_for_menu_property(menu_path, property, type_str) {
             return Some(kind);
         }
-        // Fallback to custom resources: if property matches a custom mapping, treat as interface-like.
+        // Fallback to custom resources: if property matches a custom mapping, treat as
+        // interface-like.
         // We map custom to the closest built-in kind for now, or return Interfaces as generic.
         let prop_low = property.to_ascii_lowercase();
         for cr in &self.custom_resources {
@@ -636,8 +642,10 @@ impl LiveConfig {
                 || cr.property.eq_ignore_ascii_case(property)
             {
                 // Custom resource matched — we still need a ResourceKind to drive cache key.
-                // For now, return Interfaces as a generic live kind; future: use custom path/field directly.
-                // Better: return a dedicated handling via custom fetch; but for completion we can treat as live.
+                // For now, return Interfaces as a generic live kind; future: use custom path/field
+                // directly.
+                // Better: return a dedicated handling via custom fetch; but for completion we can
+                // treat as live.
                 // We log and return Interfaces to keep cache isolation simple.
                 log_debug!(
                     "live custom resource matched property={} path={} field={}",

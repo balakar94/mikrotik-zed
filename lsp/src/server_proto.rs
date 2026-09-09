@@ -1,4 +1,4 @@
-// ── Protocol-boundary helpers (no Server state) ─────────────────
+// ── Protocol-boundary helpers (no Server state) ──────────────────────────
 //
 // Pure/protocol items shared by the dispatch loop, rename support, and
 // tests: the quick-fix payload type, the canonical `file://` URI guard,
@@ -269,7 +269,7 @@ pub(crate) fn wire_position(v: Option<&serde_json::Value>) -> Option<(usize, usi
     Some((line as usize, character as usize))
 }
 
-// ── Variable navigation adapters ────────────────────────────────────
+// ── Variable navigation adapters ─────────────────────────────────────────
 //
 // Thin protocol-boundary wrappers around the pure `navigation` module.
 // Free functions over plain data so they are testable without a Server;
@@ -398,7 +398,7 @@ pub(crate) fn references_result(
         .collect()
 }
 
-// ── Server state ────────────────────────────────────────────────
+// ── Server state ─────────────────────────────────────────────────────────
 /// Whether a `LiveConfig` reload changed the effective device connection.
 ///
 /// Live-cache invalidation predicate: document edits (`textDocument/didChange`)

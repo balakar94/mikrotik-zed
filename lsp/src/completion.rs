@@ -1,8 +1,10 @@
-// ── Completion logic for the RSC language server ─────────────────
+// ── Completion logic for the RSC language server ─────────────────────────
 //
-// Port of the ls.mjs completion engine.  Strategy:
-// - Always return ALL possible candidates (sub-menus, verbs, arguments)
-//   and let the client's fuzzy filter narrow them down.
+// Relevance-ranked completion with `textEdit` shadows. Strategy:
+// - Rank every candidate by deterministic tier (`0!live_` device truth
+//   first, then required/optional/verb/sub-menu/enum/hint/placeholder/
+//   flag/typo/snippet) and match quality (exact, prefix, substring),
+//   and truncate at `MAX_COMPLETION_ITEMS` AFTER sorting.
 // - Exception: when the cursor sits inside a "property=value" token,
 //   switch to value suggestions (enum values, booleans, curated common
 //   values, type hints) ranked by a pure relevance function
@@ -137,7 +139,7 @@ impl CompletionItem {
     }
 }
 
-// ── Relevance ranking (pure, deterministic) ──────────────────────
+// ── Relevance ranking (pure, deterministic) ──────────────────────────────
 
 // Shared text helpers live in `crate::text_util` (single owner).
 use crate::text_util::{
@@ -609,7 +611,7 @@ fn filter_by_typed_prefix(items: Vec<CompletionItem>, typed_suffix: &str) -> Vec
     }
 }
 
-// ── Single-line textEdit shadows (unit level) ────────────────────
+// ── Single-line textEdit shadows (unit level) ────────────────────────────
 //
 // The builders below know only `before_cursor`, never the cursor's line
 // number, so the ranges here assume line 0. That is exact for pure
@@ -729,7 +731,7 @@ fn attach_token_text_edit(items: &mut [CompletionItem], span: Option<(usize, usi
     }
 }
 
-// ── Root menus ──────────────────────────────────────────────────
+// ── Root menus ───────────────────────────────────────────────────────────
 
 fn get_root_completion_items(data: &MenuData) -> Vec<CompletionItem> {
     let mut items = Vec::new();
@@ -791,7 +793,7 @@ fn get_root_completion_items(data: &MenuData) -> Vec<CompletionItem> {
     items
 }
 
-// ── Sub-menus ───────────────────────────────────────────────────
+// ── Sub-menus ────────────────────────────────────────────────────────────
 
 fn get_sub_menu_completion_items(
     data: &MenuData,
@@ -815,7 +817,7 @@ fn get_sub_menu_completion_items(
     }
 }
 
-// ── Verbs ───────────────────────────────────────────────────────
+// ── Verbs ────────────────────────────────────────────────────────────────
 
 fn get_verb_completion_items(
     data: &MenuData,
@@ -864,7 +866,7 @@ fn get_verb_completion_items(
     items
 }
 
-// ── Arguments ───────────────────────────────────────────────────
+// ── Arguments ────────────────────────────────────────────────────────────
 
 fn get_arg_completion_items(
     data: &MenuData,
@@ -917,7 +919,7 @@ fn get_arg_completion_items(
     items
 }
 
-// ── Value completions (inside "property=value" tokens) ───────────
+// ── Value completions (inside "property=value" tokens) ───────────────────
 
 fn get_value_completions_with_live(
     data: &MenuData,
@@ -1003,7 +1005,8 @@ fn get_value_completions_with_live(
         && !live_vals.is_empty()
     {
         let live_set: std::collections::HashSet<&String> = live_vals.iter().collect();
-        // Prefer live: remove static duplicates. Arc clone is cheap (no 500-item Vec clone per keystroke).
+        // Prefer live: remove static duplicates. Arc clone is cheap (no 500-item Vec clone per
+        // keystroke).
         items.retain(|it| !live_set.contains(&it.label));
         for val in live_vals.iter() {
             let mut item = CompletionItem::new(val.clone(), kind::ENUM_MEMBER);
@@ -1027,7 +1030,7 @@ fn ip_placeholder(arg: &ArgEntry, value: &str, typed_prefix: &str) -> Completion
     item
 }
 
-// ── Helpers ─────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────
 
 pub(crate) fn documentation_from(description: String) -> Option<Documentation> {
     if description.is_empty() {

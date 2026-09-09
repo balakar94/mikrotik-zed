@@ -1,4 +1,4 @@
-//! Encoding — boundaries and ranges.
+// Encoding — boundaries and ranges.
 use crate::diagnostics;
 use crate::encoding::*;
 use crate::menus::MenuData;
@@ -44,7 +44,7 @@ fn initialize(encodings: Option<serde_json::Value>) -> (Server, serde_json::Valu
     (server, resp)
 }
 
-// ── Regression: incremental edits must not corrupt documents ──
+// ── Regression: incremental edits must not corrupt documents ─────────────
 
 #[test]
 fn test_did_change_incremental_utf16_no_corruption_on_non_ascii_line() {
@@ -149,7 +149,7 @@ fn test_did_change_incremental_utf16_crlf_insert_before_cr() {
     assert_eq!(s.docs.get("file:///crlf.rsc").unwrap(), "hélloX\r\nworld");
 }
 
-// ── Hover / completion context under Utf16 ────────────────────
+// ── Hover / completion context under Utf16 ───────────────────────────────
 
 #[test]
 fn test_hover_utf16_with_multibyte_prefix_on_same_line() {
@@ -217,7 +217,7 @@ fn test_completion_utf16_value_completions_after_multibyte_prefix() {
     );
 }
 
-// ── Diagnostics ranges honor the negotiated encoding ──────────
+// ── Diagnostics ranges honor the negotiated encoding ─────────────────────
 
 #[test]
 fn test_pull_diagnostics_utf16_character_units_with_emoji_prefix() {

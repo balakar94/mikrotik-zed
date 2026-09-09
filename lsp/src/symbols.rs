@@ -1,4 +1,4 @@
-// ── Document symbols (run collapsing + detail) ──────────────────
+// ── Document symbols (run collapsing + detail) ───────────────────────────
 //
 // textDocument/documentSymbol support. Emits a FLAT list of document
 // symbols (no `children`) — flat sidesteps the LSP rule that a parent's

@@ -1,5 +1,6 @@
 // Diagnostic range precision and prefix parity.
-// Copied (not moved) from `lsp/src/diagnostics.rs` (`mod extra_coverage` L2359-2410, L3027-3127); the original block is
+// Copied (not moved) from `lsp/src/diagnostics.rs` (`mod extra_coverage` L2359-2410, L3027-3127);
+// the original block is
 // left untouched. `use super::*` is adapted to `use crate::diagnostics::*;` for the new location.
 use crate::diagnostics::*;
 use crate::menus::MenuData;
@@ -146,7 +147,7 @@ fn test_enum_value_range_points_at_value_part_only() {
     assert_eq!(hint.range.end.character, 25);
 }
 
-// ── Known-prefix O(1) parity ──────────────────────────────────
+// ── Known-prefix O(1) parity ─────────────────────────────────────────────
 
 #[test]
 fn test_known_prefix_parity_root_deep_implicit_unknown() {

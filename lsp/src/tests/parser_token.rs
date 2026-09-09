@@ -1,4 +1,4 @@
-//! White-box: parser.
+// White-box: parser.
 use crate::parser::*;
 
 use crate::menus::MenuData;
@@ -40,7 +40,7 @@ type = "Directory"
     )
 }
 
-// ── tokenize ──────────────────────────────────────────────────
+// ── tokenize ─────────────────────────────────────────────────────────────
 
 #[test]
 fn test_tokenize_simple() {
@@ -147,7 +147,7 @@ fn test_tokenize_spans_record_exact_offsets() {
     assert_eq!(&text[spans[2].start..spans[2].end], "chain=input");
 }
 
-// ── walk_structure ────────────────────────────────────────────
+// ── walk_structure ───────────────────────────────────────────────────────
 
 fn events(doc: &str) -> Vec<(StructureEvent, usize, usize)> {
     let mut out = Vec::new();

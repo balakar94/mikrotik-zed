@@ -1,4 +1,4 @@
-//! Diagnostics — typed validators.
+// Diagnostics — typed validators.
 use crate::diagnostics::severity;
 use crate::diagnostics::*;
 use crate::menus::MenuData;
@@ -109,7 +109,7 @@ fn assert_validator_severity_contract(diags: &[crate::diagnostics::Diagnostic]) 
     }
 }
 
-// ── Typed validators: Hint-only ────────────────────────────────────
+// ── Typed validators: Hint-only ──────────────────────────────────────────
 
 fn typed_data() -> MenuData {
     MenuData::from_toml_str(
@@ -171,7 +171,7 @@ fn codes_for(data: &MenuData, doc: &str) -> Vec<Diagnostic> {
 fn has_code(diags: &[Diagnostic], code: &str) -> bool {
     diags.iter().any(|d| d.code.as_deref() == Some(code))
 }
-// ── bool ────────────────────────────────────────────────────
+// ── bool ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn test_bool_invalid_is_hint() {
@@ -187,7 +187,7 @@ fn test_bool_invalid_is_hint() {
     assert!(d.message.contains("flag"));
 }
 
-// ── num ─────────────────────────────────────────────────────
+// ── num ──────────────────────────────────────────────────────────────────
 
 #[test]
 fn test_num_allowlist_stays_silent() {
@@ -216,7 +216,7 @@ fn test_num_invalid_is_hint() {
     assert_eq!(d.source.as_deref(), Some("rsc-ls"));
 }
 
-// ── time ────────────────────────────────────────────────────
+// ── time ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn test_time_allowlist_stays_silent() {
@@ -249,7 +249,7 @@ fn test_time_invalid_is_hint() {
     );
 }
 
-// ── macAddr ─────────────────────────────────────────────────
+// ── macAddr ──────────────────────────────────────────────────────────────
 
 #[test]
 fn test_mac_allowlist_stays_silent() {
@@ -279,4 +279,4 @@ fn test_mac_invalid_is_hint() {
     assert_eq!(d.severity, Some(severity::HINT));
 }
 
-// ── ipAddr / ipPrefix family ────────────────────────────────
+// ── ipAddr / ipPrefix family ─────────────────────────────────────────────

@@ -1,4 +1,4 @@
-//! Encoding — symbols.
+// Encoding — symbols.
 use crate::menus::MenuData;
 use crate::server::Server;
 use std::sync::Arc;
@@ -42,7 +42,7 @@ fn initialize(encodings: Option<serde_json::Value>) -> (Server, serde_json::Valu
     (server, resp)
 }
 
-// ── documentSymbol / foldingRange (Stage B) ───────────────────
+// ── documentSymbol / foldingRange (Stage B) ──────────────────────────────
 
 /// Open `doc` in a fresh utf-16-negotiated server and return the raw
 /// response for `method` (documentSymbol / foldingRange).

@@ -1,4 +1,4 @@
-//! Suggestion engine.
+// Suggestion engine.
 use crate::menus::MenuData;
 use crate::suggest::*;
 use crate::suggest::{MAX_SUGGESTIONS_PER_PUBLISH, SuggestBudget};
@@ -63,7 +63,7 @@ fn test_dl_multibyte_counts_characters_not_bytes() {
     assert_eq!(damerau_levenshtein("çç", "cc"), 2);
 }
 
-// ── suggestion_threshold ──────────────────────────────────────
+// ── suggestion_threshold ─────────────────────────────────────────────────
 
 #[test]
 fn test_threshold_short_inputs_allow_one_edit_only() {
@@ -78,7 +78,7 @@ fn test_threshold_longer_inputs_allow_two_edits() {
     assert_eq!(suggestion_threshold(12), 2);
 }
 
-// ── best_candidate ────────────────────────────────────────────
+// ── best_candidate ───────────────────────────────────────────────────────
 
 #[test]
 fn test_best_candidate_empty_input_returns_none() {

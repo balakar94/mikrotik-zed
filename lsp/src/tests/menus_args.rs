@@ -1,4 +1,4 @@
-//! Menus — arguments.
+// Menus — arguments.
 use crate::menus::*;
 
 #[test]
@@ -70,7 +70,7 @@ fn test_children_index_built() {
     assert!(roots.iter().any(|c| c.path == "/ip"), "missing /ip root");
 }
 
-// ── Ancestor prefix set ───────────────────────────────────────
+// ── Ancestor prefix set ──────────────────────────────────────────────────
 
 #[test]
 fn test_ancestor_prefixes_built_synthetic() {
@@ -114,7 +114,7 @@ fn test_ancestor_prefixes_real_data() {
     assert_eq!(empty.ancestor_prefixes.len(), 1);
 }
 
-// ── enum_values field & member resolution ─────────────────────
+// ── enum_values field & member resolution ────────────────────────────────
 
 #[test]
 fn test_enum_values_deserialized_and_defaulted() {
@@ -202,7 +202,7 @@ fn test_real_data_action_has_complete_enum_values() {
     assert_eq!(action.enum_members(), action.enum_values);
 }
 
-// ── ubit member parsing ─────────────────────────────────────
+// ── ubit member parsing ──────────────────────────────────────────────────
 
 #[test]
 fn test_parse_ubit_values_comma_separated() {

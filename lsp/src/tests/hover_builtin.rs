@@ -1,4 +1,4 @@
-//! Hover — builtin.
+// Hover — builtin.
 use super::hover_fixtures::*;
 
 #[test]

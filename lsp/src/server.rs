@@ -1,4 +1,4 @@
-// ── LSP server core (protocol boundary) ───────────────────────────
+// ── LSP server core (protocol boundary) ──────────────────────────────────
 //
 // Owns the wire-facing half of rsc-ls: the `Server` state machine
 // (stdio read/write loop, `handle_message` method dispatch, tracked-
@@ -658,7 +658,7 @@ impl Server {
                     )
                 };
 
-                // ── textEdit injection (C-02 logical vs physical) ─────────────
+                // ── textEdit injection (C-02 logical vs physical) ────────
                 // Populate `textEdit` so accepting a completion replaces the
                 // already-typed prefix instead of inserting beside it
                 // (`in` + `input` → `input`, not `ininput`). `insertText` is
@@ -704,7 +704,8 @@ impl Server {
                         .cloned()
                         .unwrap_or_default();
                     let mut value_range_phys: Option<(usize, usize, usize, usize)> = None;
-                    // (phys_start_line, phys_start_char_byte, phys_end_line, phys_end_char_byte) in byte offsets
+                    // (phys_start_line, phys_start_char_byte, phys_end_line, phys_end_char_byte) in
+                    // byte offsets
                     // Helper: try logical path first, fallback to physical.
                     // Cached join: single-hash lookup-or-insert (cold cache or
                     // changed text reparses once; warm hits reuse the slice).
@@ -1461,8 +1462,10 @@ impl Server {
                                     if let Some(s) = v.as_str() {
                                         // Support both raw keys and cache keys; clear exact.
                                         guard.clear_key(s);
-                                        // Also try to map property-like args to cache keys if needed.
-                                        // No extra mapping; caller should pass cache keys like "interfaces".
+                                        // Also try to map property-like args to cache keys if
+                                        // needed.
+                                        // No extra mapping; caller should pass cache keys like
+                                        // "interfaces".
                                     }
                                 }
                             }
@@ -1579,7 +1582,8 @@ impl Server {
                 }
                 self.live_config.log_status();
                 log_info!("live config reloaded via didChangeConfiguration");
-                // Notifications have no id; if this was unexpectedly sent as a request, answer with null.
+                // Notifications have no id; if this was unexpectedly sent as a request, answer with
+                // null.
                 if id.is_null() {
                     None
                 } else {

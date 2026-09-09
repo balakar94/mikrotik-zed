@@ -1,5 +1,5 @@
 // Unknown menu and property diagnostics.
-// Copied (not moved) from `lsp/src/diagnostics.rs` (`mod tests` L1564-1614, L1616-1760); the original block is
+// Copied (not moved) from `lsp/src/diagnostics.rs`; the original block is
 // left untouched. `use super::*` is adapted to `use crate::diagnostics::*;` for the new location.
 use crate::diagnostics::*;
 use crate::menus::MenuData;

@@ -1,5 +1,5 @@
 // Custom resources, extract-sanitize and fetch errors.
-// Copied (not moved) from `lsp/src/live.rs` (`mod tests` L3481-3489, L4438-4649); the original block is
+// Copied (not moved) from `lsp/src/live.rs`; the original block is
 // left untouched. `use super::*` is adapted to `use crate::live::*;` for the new location.
 use crate::caps::*;
 use crate::live::*;
@@ -166,7 +166,7 @@ fn test_settings_pass_is_ignored_env_pass_wins() {
     assert!(overlaid_bare.pass.is_empty());
 }
 
-// ── Shared fetch tail (D1) ───────────────────────────────────
+// ── Shared fetch tail (D1) ───────────────────────────────────────────────
 
 #[test]
 fn test_extract_and_sanitize_extracts_field_and_filters() {

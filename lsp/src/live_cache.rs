@@ -1,7 +1,8 @@
-// ── Live cache ─────────────────────────────────────────────
+// ── Live cache ───────────────────────────────────────────────────────────
 //
-// `ResourceKind` + value filtering and the TTL `LiveCache`. Extracted verbatim from `live.rs`; re-exported there
-// so `crate::live::…` paths keep resolving unchanged.
+// `ResourceKind` + value filtering and the TTL `LiveCache`.
+//
+// Split from `live.rs`; re-exported there, `crate::live::…` paths unchanged.
 
 use crate::caps::{
     LIVE_FETCH_BLOCKING_TIMEOUT_SECS, LIVE_NEGATIVE_TTL_SECS, LIVE_TTL_SECS, MAX_CACHE_ENTRIES,
@@ -17,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-// ── ResourceKind & Value filtering ────────────────────────────────
+// ── ResourceKind & Value filtering ───────────────────────────────────────
 
 /// Kinds of live RouterOS resources enrichable over REST.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -214,7 +215,7 @@ pub(crate) fn sanitize_values(raw: Vec<String>) -> Vec<String> {
     sanitize_resource_values(raw, ResourceKind::Interfaces)
 }
 
-// ── Cache ────────────────────────────────────────────────────────
+// ── Cache ────────────────────────────────────────────────────────────────
 
 /// One cached live collection.
 #[derive(Clone, Debug)]
@@ -257,7 +258,8 @@ impl LiveCache {
         fetched_at.elapsed() < self.ttl
     }
 
-    /// Non-blocking read: return a cloned Arc if the entry is fresh (cheap, no 500-item Vec clone per keystroke).
+    /// Non-blocking read: return a cloned Arc if the entry is fresh (cheap, no 500-item Vec clone
+    /// per keystroke).
     pub fn try_get_cached(&self, key: &str) -> Option<Arc<[String]>> {
         let entry = self.entries.get(key)?;
         if self.is_fresh(entry.fetched_at) {

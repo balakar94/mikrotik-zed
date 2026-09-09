@@ -1,4 +1,4 @@
-//! Signature help.
+// Signature help.
 use crate::menus::MenuData;
 use crate::menus::MenuEntry;
 use crate::parser::tokenize_with_spans;
@@ -65,7 +65,7 @@ fn sig_request(id: i64, uri: &str, line: usize, character: usize) -> serde_json:
 const FETCH_LABEL: &str = "/tool/fetch add http-method=enum (get | post) url=string \
                                check-certificate=bool check-expired=bool";
 
-// ── Capability advertisement ─────────────────────────────────
+// ── Capability advertisement ─────────────────────────────────────────────
 
 fn fetch_data() -> MenuData {
     MenuData::from_toml_str(
@@ -122,7 +122,7 @@ fn active(help: &SignatureHelp) -> Option<usize> {
     help.active_parameter.map(|v| v as usize)
 }
 
-// ── Label construction ────────────────────────────────────────
+// ── Label construction ───────────────────────────────────────────────────
 
 #[test]
 fn test_documentation_marks_required_and_mentions_ordering() {
@@ -210,7 +210,7 @@ type = ""
     assert_eq!(help.signatures[0].label, "/m add blank=any");
 }
 
-// ── Gating / caps ─────────────────────────────────────────────
+// ── Gating / caps ────────────────────────────────────────────────────────
 
 #[test]
 fn test_menu_without_arguments_returns_none() {
@@ -266,7 +266,7 @@ fn test_truncation_note_reports_hidden_count() {
     );
 }
 
-// ── activeParameter detection ─────────────────────────────────
+// ── activeParameter detection ────────────────────────────────────────────
 
 #[test]
 fn test_exact_key_match_after_equals() {

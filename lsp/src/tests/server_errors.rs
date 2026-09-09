@@ -1,5 +1,5 @@
 // Parse error shape and property text edits.
-// Copied (not moved) from `lsp/src/server.rs` (`mod tests` L2331-2357, L3416-3476); the original block is
+// Copied (not moved) from `lsp/src/server.rs`; the original block is
 // left untouched. `use super::*` is adapted to `use crate::Server;` for the new location.
 use crate::Server;
 use crate::caps::{MAX_DIAG_BYTES, MAX_DIAG_LINES, MAX_DOC_SIZE, MAX_DOCS};
@@ -34,7 +34,7 @@ type = "enum (accept | drop | reject)"
 "#,
     ))
 }
-// ── Parse error + property textEdit ─────────────────────────────
+// ── Parse error + property textEdit ──────────────────────────────────────
 
 #[test]
 fn test_parse_error_response_shape() {

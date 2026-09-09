@@ -1,4 +1,4 @@
-//! Hover — shared fixtures (both TOML variants + hover_at).
+// Hover — shared fixtures (both TOML variants + hover_at).
 pub(crate) use crate::hover::*;
 pub(crate) use crate::menus::MenuData;
 pub(crate) fn synthetic_data() -> MenuData {
@@ -55,14 +55,14 @@ type = "Directory"
     MenuData::from_toml_str(toml_str)
 }
 
-// ── Helpers for hover tests ───────────────────────────────────
+// ── Helpers for hover tests ──────────────────────────────────────────────
 
 pub(crate) fn hover_at(data: &MenuData, line: &str, character: usize) -> Option<Hover> {
     // Single-line doc helper
     compute_hover(data, line, character, line, 0)
 }
 
-// ── find_word_start / find_word_end ───────────────────────────
+// ── find_word_start / find_word_end ──────────────────────────────────────
 
 pub(crate) fn synth() -> MenuData {
     MenuData::from_toml_str(
@@ -96,7 +96,7 @@ type = "enum (accept | drop | reject)"
     )
 }
 
-// ── Menu path with type+args+flags ─────────────────────────────────
+// ── Menu path with type+args+flags ───────────────────────────────────────
 
 fn test_find_word_start_mid_word() {
     let line = "/ip/address";
@@ -146,7 +146,7 @@ fn test_find_word_empty_line() {
     assert_eq!(find_word_end(line, 0), 0);
 }
 
-// ── Menu hover ────────────────────────────────────────────────
+// ── Menu hover ───────────────────────────────────────────────────────────
 
 fn test_hover_menu_path_full() {
     let data = synthetic_data();
@@ -210,7 +210,7 @@ type = ""
     );
 }
 
-// ── Property hover ────────────────────────────────────────────
+// ── Property hover ───────────────────────────────────────────────────────
 
 fn test_hover_property_name() {
     let data = synthetic_data();
@@ -310,4 +310,4 @@ enum_values = ["on", "off", "auto"]
     );
 }
 
-// ── Flag hover ────────────────────────────────────────────────
+// ── Flag hover ───────────────────────────────────────────────────────────

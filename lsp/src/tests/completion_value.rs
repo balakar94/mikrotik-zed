@@ -1,5 +1,6 @@
 // Value completion and typed-prefix filtering.
-// Copied (not moved) from `lsp/src/completion.rs` (`mod extra_coverage` L1694-1747, L1941-2155); the original block is
+// Copied (not moved) from `lsp/src/completion.rs` (`mod extra_coverage` L1694-1747, L1941-2155);
+// the original block is
 // left untouched. `use super::*` is adapted to `use crate::completion::*;` for the new location.
 use crate::completion::*;
 use crate::menus::MenuData;
@@ -58,7 +59,7 @@ type = "string"
 "#,
     )
 }
-// ── Values after = ────────────────────────────────────────────────
+// ── Values after = ───────────────────────────────────────────────────────
 
 #[test]
 fn test_values_after_equals_enum() {
@@ -189,7 +190,7 @@ fn test_completion_with_real_data_smoke() {
     }
 }
 
-// ── Partial value completion ("token contains =") ─────────────────
+// ── Partial value completion ("token contains =") ────────────────────────
 
 #[test]
 fn test_partial_value_prefix_filters_enum() {

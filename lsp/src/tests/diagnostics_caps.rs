@@ -1,5 +1,5 @@
 // Diagnostic caps, incremental edits and enum edge cases.
-// Copied (not moved) from `lsp/src/diagnostics.rs` (`mod tests` L1564-1614, L1909-2118); the original block is
+// Copied (not moved) from `lsp/src/diagnostics.rs`; the original block is
 // left untouched. `use super::*` is adapted to `use crate::diagnostics::*;` for the new location.
 use crate::caps::*;
 use crate::diagnostics::*;
@@ -119,7 +119,8 @@ fn test_incremental_edit_simulation() {
 fn test_implicit_parent_not_unknown() {
     let data = synthetic_data();
     // /ip/firewall is implicit parent (no direct entry but has children), should not be unknown
-    // synthetic data has /ip/firewall/filter, so /ip/firewall should be considered known via child_names
+    // synthetic data has /ip/firewall/filter, so /ip/firewall should be considered known via
+    // child_names
     let doc = "/ip/firewall print";
     let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
     assert!(
@@ -131,7 +132,7 @@ fn test_implicit_parent_not_unknown() {
     );
 }
 
-// ── Rule 5 via embedded enum_values ───────────────────────────
+// ── Rule 5 via embedded enum_values ──────────────────────────────────────
 
 fn truncated_display_data() -> MenuData {
     // Mirrors real generated data: display type truncated by the

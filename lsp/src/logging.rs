@@ -1,4 +1,4 @@
-// ── Structured logging (RSC_LS_LOG) ─────────────────────────────
+// ── Structured logging (RSC_LS_LOG) ──────────────────────────────────────
 //
 // Visible via `zed --foreground` or `zed: open log`.
 // Levels: error < warn < info < debug < trace
@@ -65,7 +65,7 @@ impl LogLevel {
     }
 }
 
-// ── Session clock ──────────────────────────────────────────────
+// ── Session clock ────────────────────────────────────────────────────────
 //
 // Every log line carries a monotonic `[T+0.042s]` tag (elapsed since
 // process start): compact, timezone-free, and complementary to the

@@ -1,4 +1,4 @@
-//! Diagnostics — unset and read-only.
+// Diagnostics — unset and read-only.
 use crate::diagnostics::severity;
 use crate::diagnostics::*;
 use crate::menus::MenuData;
@@ -69,7 +69,7 @@ type = "enum (accept | drop)"
     ))
 }
 
-// ── Unset guard: Hint-only ─────────────────────────────────────────
+// ── Unset guard: Hint-only ───────────────────────────────────────────────
 
 fn assert_validator_severity_contract(diags: &[crate::diagnostics::Diagnostic]) {
     const WARNING_CODES: &[&str] = &[
@@ -163,7 +163,7 @@ fn codes_for(data: &MenuData, doc: &str) -> Vec<Diagnostic> {
 fn has_code(diags: &[Diagnostic], code: &str) -> bool {
     diags.iter().any(|d| d.code.as_deref() == Some(code))
 }
-// ── ubit ────────────────────────────────────────────────────
+// ── ubit ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn test_ubit_invalid_is_hint() {
@@ -194,7 +194,7 @@ fn test_ubit_truncated_and_untyped_stay_silent() {
     );
 }
 
-// ── dynamic values stay silent across families ──────────────
+// ── dynamic values stay silent across families ───────────────────────────
 
 #[test]
 fn test_dynamic_values_stay_silent() {
@@ -216,7 +216,7 @@ fn test_dynamic_values_stay_silent() {
     }
 }
 
-// ── Rule 10: unset adoption ─────────────────────────────────
+// ── Rule 10: unset adoption ──────────────────────────────────────────────
 
 #[test]
 fn test_unset_verb_is_known() {
@@ -277,4 +277,4 @@ fn test_unset_unknown_names_stay_silent() {
     );
 }
 
-// ── Rule 11: read-only write ────────────────────────────────
+// ── Rule 11: read-only write ─────────────────────────────────────────────
