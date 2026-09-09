@@ -28,9 +28,12 @@ use crate::folding;
 use crate::framing::{Frame, FrameError, read_message};
 use crate::hover;
 use crate::live::{
-    LiveCache, LiveConfig, get_cached_or_fetch_background, trigger_enrichment_for_completion,
+    LiveCache, LiveConfig, get_cached_or_fetch_background, live_identity_changed,
+    trigger_enrichment_for_completion,
 };
-use crate::logging::{log_debug, log_error, log_info, log_warn};
+use crate::logging::{
+    log_debug, log_error, log_info, log_warn, sanitize_for_log, truncate_command_for_log,
+};
 use crate::menus::MenuData;
 use crate::navigation;
 use crate::parser::{ParseCache, build_before_cursor, parse_line, tokenize_with_spans};
@@ -159,6 +162,134 @@ pub(crate) fn invalid_params_response(id: &serde_json::Value, message: &str) -> 
             "message": message,
         },
     })
+}
+
+/// Build a JSON-RPC `-32700 Parse error` response.
+///
+/// Used when the framed body is not valid JSON. Per JSON-RPC 2.0 the `id`
+/// is the best-effort id recovered from the body, or null when no id can
+/// be determined (see [`extract_id_for_parse_error`]).
+pub(crate) fn parse_error_response(id: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32700,
+            "message": "Parse error",
+        },
+    })
+}
+
+/// Best-effort `id` recovery from a body that failed `serde_json::from_slice`.
+///
+/// The full document is unusable by definition here, so this scans the raw
+/// text for the first `"id"` key followed by a JSON scalar (string, number
+/// per `-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`, or null) and returns
+/// it. Anything else (missing key, truncated value,
+/// non-UTF-8 body) yields null, which is the spec-mandated fallback when
+/// the id cannot be detected. Never panics, never allocates beyond the id.
+pub(crate) fn extract_id_for_parse_error(body: &[u8]) -> serde_json::Value {
+    let Ok(text) = std::str::from_utf8(body) else {
+        return serde_json::Value::Null;
+    };
+    let bytes = text.as_bytes();
+    let mut search_from = 0;
+    while let Some(rel) = text[search_from..].find("\"id\"") {
+        let key_start = search_from + rel;
+        let mut pos = key_start + 4;
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        if pos >= bytes.len() || bytes[pos] != b':' {
+            search_from = key_start + 4;
+            continue;
+        }
+        pos += 1;
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        if pos >= bytes.len() {
+            break;
+        }
+        match bytes[pos] {
+            b'"' => {
+                // JSON string id: collect until the closing unescaped quote.
+                let mut end = pos + 1;
+                let mut escaped = false;
+                while end < bytes.len() {
+                    let b = bytes[end];
+                    if escaped {
+                        escaped = false;
+                    } else if b == b'\\' {
+                        escaped = true;
+                    } else if b == b'"' {
+                        break;
+                    }
+                    end += 1;
+                }
+                if end < bytes.len() {
+                    let raw = &text[pos..=end];
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
+                        return v;
+                    }
+                }
+                return serde_json::Value::Null;
+            }
+            b'n' => {
+                if text[pos..].starts_with("null") {
+                    return serde_json::Value::Null;
+                }
+                search_from = pos + 1;
+                continue;
+            }
+            b'-' | b'0'..=b'9' => {
+                // Full JSON number grammar `-?(0|[1-9][0-9]*)(\.[0-9]+)?
+                // ([eE][+-]?[0-9]+)?`: the old digit-only scan truncated
+                // `3.14` to `3`. All consumed bytes are ASCII, so the
+                // `text[pos..end]` slice below is always a char boundary.
+                // An unparsable slice (e.g. lone `-`, `3.`) yields null.
+                let mut end = pos;
+                if bytes[end] == b'-' {
+                    end += 1;
+                    if end >= bytes.len() {
+                        return serde_json::Value::Null;
+                    }
+                }
+                let int_start = end;
+                while end < bytes.len() && bytes[end].is_ascii_digit() {
+                    end += 1;
+                }
+                if int_start == end {
+                    return serde_json::Value::Null;
+                }
+                if end < bytes.len() && bytes[end] == b'.' {
+                    end += 1;
+                    while end < bytes.len() && bytes[end].is_ascii_digit() {
+                        end += 1;
+                    }
+                }
+                if end < bytes.len() && (bytes[end] == b'e' || bytes[end] == b'E') {
+                    end += 1;
+                    if end < bytes.len() && (bytes[end] == b'+' || bytes[end] == b'-') {
+                        end += 1;
+                    }
+                    while end < bytes.len() && bytes[end].is_ascii_digit() {
+                        end += 1;
+                    }
+                }
+                let raw = &text[pos..end];
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
+                    return v;
+                }
+                return serde_json::Value::Null;
+            }
+            _ => {
+                search_from = pos + 1;
+                continue;
+            }
+        }
+    }
+    serde_json::Value::Null
 }
 
 /// Extract a `(line, character)` pair from a JSON LSP Position object,
@@ -302,6 +433,32 @@ pub(crate) fn references_result(
 }
 
 // ── Server state ────────────────────────────────────────────────
+/// Whether a `LiveConfig` reload changed the effective device connection.
+///
+/// Live-cache invalidation predicate: document edits (`textDocument/didChange`)
+/// never clear the live cache, but a connection-identity change must —
+/// entries fetched under the previous target are stale by definition.
+/// Compares every field that selects what is fetched or where credentials
+/// are sent (host/hosts, user, port, TLS/scheme flags, timeout, custom
+/// resources, loopback policy, opt-in flag). `pass` is compared silently
+/// and never logged by this function or its callers.
+pub(crate) fn live_connection_changed(old: &LiveConfig, new: &LiveConfig) -> bool {
+    old.enabled != new.enabled
+        || old.host != new.host
+        || old.hosts != new.hosts
+        || old.user != new.user
+        || old.pass != new.pass
+        || old.port != new.port
+        || old.ssl_verify != new.ssl_verify
+        || old.force_http != new.force_http
+        || old.timeout_secs != new.timeout_secs
+        || old.custom_resources != new.custom_resources
+        || old.allow_loopback != new.allow_loopback
+        // F4: TLS-identity rotation (pin / pin-validity / CA bundle) must
+        // invalidate entries fetched under the previous trust anchor.
+        || live_identity_changed(old, new)
+}
+
 pub(crate) struct Server {
     pub(crate) data: Arc<MenuData>,
     pub(crate) docs: HashMap<String, String>, // URI → document text
@@ -415,7 +572,36 @@ impl Server {
             let msg: serde_json::Value = match serde_json::from_slice(&body) {
                 Ok(v) => v,
                 Err(e) => {
+                    // JSON-RPC -32700: the frame was well-formed but the body
+                    // is not valid JSON. Unlike framing Protocol errors (which
+                    // are terminal — the stream cannot be resynchronized), the
+                    // stream IS still aligned here, so answer with a Parse
+                    // error and keep serving. The id is best-effort (body id
+                    // or null per spec).
                     log_warn!("JSON parse error: {e}");
+                    let id = extract_id_for_parse_error(&body);
+                    let resp = parse_error_response(&id);
+                    let json = match serde_json::to_string(&resp) {
+                        Ok(j) => j,
+                        Err(e) => {
+                            log_error!("failed to serialize parse error response: {e}");
+                            continue;
+                        }
+                    };
+                    let header = format!("Content-Length: {}\r\n\r\n", json.len());
+                    let mut stdout = std::io::stdout().lock();
+                    if let Err(e) = stdout.write_all(header.as_bytes()) {
+                        log_error!("write header error: {e}");
+                        return;
+                    }
+                    if let Err(e) = stdout.write_all(json.as_bytes()) {
+                        log_error!("write body error: {e}");
+                        return;
+                    }
+                    if let Err(e) = stdout.flush() {
+                        log_error!("flush error: {e}");
+                        return;
+                    }
                     continue;
                 }
             };
@@ -486,7 +672,7 @@ impl Server {
                     "live status on initialize: enabled={} active={} host={} scheme={} ssl_verify_effective={}",
                     self.live_config.enabled,
                     self.live_config.is_active(),
-                    self.live_config.host,
+                    sanitize_for_log(&self.live_config.host),
                     self.live_config.scheme(),
                     self.live_config.ssl_verify_effective()
                 );
@@ -745,18 +931,16 @@ impl Server {
                 // Borrow the stored text instead of cloning it (up to
                 // MAX_DOC_SIZE per keystroke).
                 let uri_owned = uri.to_string();
-                // Live enrichment invalidation: live entries are device
-                // snapshots keyed by resource kind, not by document, so no
-                // per-key mapping exists — clear everything (smallest correct
-                // scope) and let the next completion re-hydrate. Never logs
-                // the pass (clear carries no credentials at all).
-                {
-                    let mut guard = self.live_cache.lock().unwrap_or_else(|e| {
-                        log_warn!("live cache lock poisoned, recovering");
-                        e.into_inner()
-                    });
-                    guard.clear_all();
-                }
+                // Live-cache rule: document edits never invalidate the live cache.
+                // Live entries are device snapshots keyed by resource kind
+                // (not by document), so TTL (`LIVE_TTL_SECS`), negative TTL
+                // (`LIVE_NEGATIVE_TTL_SECS`), and the 2 s fetch-coalescing
+                // window govern freshness. Clearing here per keystroke
+                // discarded fresh entries and defeated coalescing/negative
+                // cooldown, causing a fetch storm. Invalidation happens
+                // only on didClose, on LiveConfig change
+                // (workspace/didChangeConfiguration), or on explicit
+                // `rsc.live.refresh`.
                 // The stored text changed: drop any cached parse for this URI.
                 // (Hash-based lookup would miss anyway; explicit invalidation
                 // keeps the lifecycle obvious and the entry count truthful.)
@@ -775,6 +959,17 @@ impl Server {
                     // Cache entries die with the document — a later re-open
                     // must reparse, never resurrect pre-close logical lines.
                     self.parse_cache.invalidate(uri);
+                    // Live-cache rule: didClose is an invalidation point for the live
+                    // cache (device snapshots may be stale for the next
+                    // session). Never logs the pass (clear carries no
+                    // credentials at all).
+                    {
+                        let mut guard = self.live_cache.lock().unwrap_or_else(|e| {
+                            log_warn!("live cache lock poisoned, recovering");
+                            e.into_inner()
+                        });
+                        guard.clear_all();
+                    }
                     // Clear diagnostics for closed file
                     self.publish_diagnostics(uri, Vec::new());
                 }
@@ -849,15 +1044,24 @@ impl Server {
                         arg_type,
                     );
                 }
-                let live_guard = self.live_cache.lock().unwrap_or_else(|e| {
-                    log_warn!("live cache lock poisoned, recovering");
-                    e.into_inner()
-                });
-                let mut items = completion::compute_completions_with_live(
-                    &self.data,
-                    &before_cursor,
-                    Some(&*live_guard as &LiveCache),
-                );
+                let mut items = {
+                    // Narrow live-lock: held only for the synchronous cache
+                    // read inside `compute_completions_with_live` (fresh-entry
+                    // `Arc` clones). A full snapshot clone under lock would
+                    // also work but `LiveCache` is not `Clone` and the
+                    // completion layer only needs `&LiveCache`, so scoping the
+                    // guard to this block is the smallest safe narrowing — the
+                    // long textEdit injection below runs lock-free.
+                    let live_guard = self.live_cache.lock().unwrap_or_else(|e| {
+                        log_warn!("live cache lock poisoned, recovering");
+                        e.into_inner()
+                    });
+                    completion::compute_completions_with_live(
+                        &self.data,
+                        &before_cursor,
+                        Some(&*live_guard as &LiveCache),
+                    )
+                };
 
                 // ── textEdit injection (C-02 logical vs physical) ─────────────
                 // Populate `textEdit` so accepting a completion replaces the
@@ -867,13 +1071,18 @@ impl Server {
                 // supports it). If computing the range fails we leave `textEdit`
                 // as `None` and the client falls back to insertion at cursor.
                 //
-                // Two cases are handled (per spec, at least these):
+                // Three cases are handled (per spec, at least these):
                 // - value completions after `=`: range covers the typed suffix
                 //   after `=` (excluding a leading opening quote so `"in` → `input`
                 //   preserves the quote as `"input`);
                 // - sub-menu / verb completions before a verb: when the cursor
                 //   sits inside a partial token that prefixes a child name, range
                 //   covers that token so `addr` → `address`.
+                // - property / flag completions after a verb (kinds 5/14): the
+                //   same partial-name span as the sub-menu case, so `inter` →
+                //   `interface=…` replaces instead of appending. Span guards
+                //   duplicate `completion::partial_name_token` locally (no `=`,
+                //   excluded `/ : " ' ( [ $` leaders, mid-token cursor).
                 // For all other cases (e.g., already-finished token + space) the
                 // edit is zero-length at the cursor (pure insertion).
                 //
@@ -1067,7 +1276,14 @@ impl Server {
                             }
                         }
                     } else {
-                        // Sub-menu / verb prefix case (logical-aware with physical fallback).
+                        // Sub-menu / verb (kinds 9/3) and property / flag
+                        // (kinds 5/14) prefix case (logical-aware with physical
+                        // fallback). Both share the same partial-name token span
+                        // (mirrors `completion::partial_name_token` guards); the
+                        // kind filter below only selects which items receive the
+                        // shared range. Ranges always land on the cursor line
+                        // via logical mapping or the physical cursor line —
+                        // never a line-0 guess.
                         let mut submenu_range_phys: Option<(usize, usize, usize, usize)> = None;
                         let mut typed_lower: Option<String> = None;
                         // Try logical first when covering exists.
@@ -1097,7 +1313,10 @@ impl Server {
                                     let typed = tok.text.as_str();
                                     let lower = typed.to_ascii_lowercase();
                                     let needs_edit = items.iter().any(|it| {
-                                        (it.kind == Some(9) || it.kind == Some(3))
+                                        (it.kind == Some(9)
+                                            || it.kind == Some(3)
+                                            || it.kind == Some(5)
+                                            || it.kind == Some(14))
                                             && it.label.to_ascii_lowercase().starts_with(&lower)
                                     });
                                     if needs_edit && !typed.is_empty() {
@@ -1136,7 +1355,10 @@ impl Server {
                                     let typed = tok.text.as_str();
                                     let lower = typed.to_ascii_lowercase();
                                     let needs_edit = items.iter().any(|it| {
-                                        (it.kind == Some(9) || it.kind == Some(3))
+                                        (it.kind == Some(9)
+                                            || it.kind == Some(3)
+                                            || it.kind == Some(5)
+                                            || it.kind == Some(14))
                                             && it.label.to_ascii_lowercase().starts_with(&lower)
                                     });
                                     if needs_edit && !typed.is_empty() {
@@ -1168,7 +1390,10 @@ impl Server {
                                 }
                             };
                             for item in &mut items {
-                                if (item.kind == Some(9) || item.kind == Some(3))
+                                if (item.kind == Some(9)
+                                    || item.kind == Some(3)
+                                    || item.kind == Some(5)
+                                    || item.kind == Some(14))
                                     && item.label.to_ascii_lowercase().starts_with(&lower)
                                 {
                                     let new_text = item
@@ -1620,7 +1845,11 @@ impl Server {
 
             "workspace/executeCommand" => {
                 let command = params["params"]["command"].as_str().unwrap_or("");
-                log_info!("workspace/executeCommand received: {}", command);
+                // F5: sanitize + truncate the client-supplied command before logging.
+                log_info!(
+                    "workspace/executeCommand received: {}",
+                    truncate_command_for_log(command)
+                );
                 match command {
                     "rsc.live.refresh" => {
                         let mut guard = self.live_cache.lock().unwrap_or_else(|e| {
@@ -1667,7 +1896,7 @@ impl Server {
                             "live refresh executed before={} after={} command={}",
                             before,
                             after,
-                            command
+                            truncate_command_for_log(command)
                         );
                         Some(serde_json::json!({
                             "jsonrpc": "2.0",
@@ -1725,18 +1954,33 @@ impl Server {
                 // settings: the device connection target is security-relevant
                 // (SSRF surface), so the change must be visible in logs. The
                 // pass is NEVER logged (only old/new hosts, which are safe).
-                let old_host = self.live_config.host.clone();
+                let old_config = self.live_config.clone();
                 if settings.is_null() || !settings.is_object() {
                     // No settings: re-read from env.
                     self.live_config = crate::live::LiveConfig::from_env();
                 } else {
                     self.live_config = crate::live::LiveConfig::from_settings_value(settings);
                 }
-                if self.live_config.host != old_host {
+                if self.live_config.host != old_config.host {
+                    // F5: hosts are sanitized (no raw newlines into the log).
                     log_warn!(
-                        "live host changed via didChangeConfiguration (old={old_host:?} new={:?})",
-                        self.live_config.host
+                        "live host changed via didChangeConfiguration (old={:?} new={:?})",
+                        sanitize_for_log(&old_config.host),
+                        sanitize_for_log(&self.live_config.host)
                     );
+                }
+                // Live-cache rule: a LiveConfig change invalidates the live cache —
+                // entries fetched under the previous target/credentials are
+                // stale by definition. Document edits (didChange) never
+                // invalidate; only connection-identity changes do (plus
+                // didClose and explicit `rsc.live.refresh`).
+                if live_connection_changed(&old_config, &self.live_config) {
+                    let mut guard = self.live_cache.lock().unwrap_or_else(|e| {
+                        log_warn!("live cache lock poisoned, recovering");
+                        e.into_inner()
+                    });
+                    guard.clear_all();
+                    log_info!("live cache cleared after LiveConfig change");
                 }
                 self.live_config.log_status();
                 log_info!("live config reloaded via didChangeConfiguration");
@@ -2073,919 +2317,5 @@ impl Server {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::caps::{MAX_DIAG_BYTES, MAX_DIAG_LINES, MAX_DOC_SIZE, MAX_DOCS};
-    use crate::diagnostics;
-    use crate::menus::MenuData;
-    use crate::{Server, is_valid_file_uri};
-    use std::sync::Arc;
-
-    fn synthetic_data() -> Arc<MenuData> {
-        Arc::new(MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/ip/address"
-type = "Directory"
-[[menus.arguments]]
-name = "address"
-type = "ipPrefix"
-required = true
-[[menus.arguments]]
-name = "interface"
-type = "iface_enum"
-required = true
-[[menus]]
-path = "/ip/firewall/filter"
-type = "Directory"
-[[menus.arguments]]
-name = "chain"
-type = "enum (input | forward | output)"
-required = true
-[[menus.arguments]]
-name = "action"
-type = "enum (accept | drop | reject)"
-"#,
-        ))
-    }
-
-    // ── Caps constants ────────────────────────────────────────────────
-    //
-    // The shared caps themselves are pinned by exact value in `caps.rs`
-    // (and cross-checked by tests/test_enclosure.py). The tests below are
-    // behavioral companions: they prove each cap is actually enforced.
-
-    #[test]
-    fn test_caps_max_diag_bytes_is_500kb() {
-        assert_eq!(MAX_DIAG_BYTES, 500_000);
-        // Behavioral companion: a doc larger than 500KB is truncated before
-        // diagnosis instead of blowing up.
-        let data = synthetic_data();
-        let line = "/ip/address add address=1.1.1.1 interface=ether1\n";
-        // ~50 bytes per line -> 20k lines = ~1M bytes
-        let doc = line.repeat(20_000);
-        assert!(doc.len() > 500_000);
-        let diags = diagnostics::compute_diagnostics(&data, &doc, "file:///test.rsc");
-        // Diagnostics are capped; should not blow up (plus truncation hint)
-        assert!(diags.len() <= 3001);
-    }
-
-    #[test]
-    fn test_caps_max_diag_lines_is_3000() {
-        assert_eq!(MAX_DIAG_LINES, 3000);
-        let data = synthetic_data();
-        let doc = "/unknown/menu add foo=bar\n".repeat(5000);
-        let diags = diagnostics::compute_diagnostics(&data, &doc, "file:///test.rsc");
-        assert!(
-            diags.len() <= 3001,
-            "diag lines capped at 3000 plus truncation hint, got {}",
-            diags.len()
-        );
-    }
-
-    // ── URI validation ────────────────────────────────────────────────
-
-    #[test]
-    fn test_uri_valid_file_uris() {
-        assert!(is_valid_file_uri("file:///home/user/test.rsc"));
-        assert!(is_valid_file_uri("file:///test.rsc"));
-        assert!(is_valid_file_uri("file:///a/b/c/d.rsc"));
-    }
-
-    #[test]
-    fn test_uri_rejects_untitled() {
-        assert!(!is_valid_file_uri("untitled://test.rsc"));
-        assert!(!is_valid_file_uri("untitled:Untitled-1"));
-    }
-
-    #[test]
-    fn test_uri_rejects_http_and_https() {
-        assert!(!is_valid_file_uri("http://example.com/test.rsc"));
-        assert!(!is_valid_file_uri("https://example.com/test.rsc"));
-    }
-
-    #[test]
-    fn test_uri_rejects_other_schemes() {
-        assert!(!is_valid_file_uri("ftp://example.com/file.rsc"));
-        assert!(!is_valid_file_uri("vscode://file/test.rsc"));
-        assert!(!is_valid_file_uri("file:/test.rsc")); // only one slash
-        assert!(!is_valid_file_uri("/test.rsc"));
-        assert!(!is_valid_file_uri(""));
-    }
-
-    #[test]
-    fn test_uri_rejects_path_traversal() {
-        assert!(!is_valid_file_uri("file:///home/../etc/passwd"));
-        assert!(!is_valid_file_uri("file:///test/../secret.rsc"));
-        assert!(!is_valid_file_uri("file:///a/b/../../c.rsc"));
-    }
-
-    #[test]
-    fn test_uri_rejects_null_byte() {
-        assert!(!is_valid_file_uri("file:///test\0.rsc"));
-        assert!(!is_valid_file_uri("file://\0/test.rsc"));
-        let uri_with_null = format!("file:///test{}.rsc", '\0');
-        assert!(!is_valid_file_uri(&uri_with_null));
-    }
-
-    #[test]
-    fn test_uri_allows_valid_with_dots_in_name() {
-        // Single dot is fine; only an exact ".." segment is traversal.
-        // "my..file" and "..hidden" are valid filenames per segment check;
-        // only a segment exactly equal to ".." is rejected.
-        assert!(is_valid_file_uri("file:///home/user/file.test.rsc"));
-        assert!(is_valid_file_uri("file:///home/user/.hidden.rsc"));
-        assert!(is_valid_file_uri("file:///home/user/my..file.rsc"));
-        assert!(is_valid_file_uri("file:///home/user/..hidden.rsc"));
-        assert!(!is_valid_file_uri("file:///home/user/../other.rsc"));
-        assert!(!is_valid_file_uri("file:///home/user/.."));
-    }
-
-    // ── didOpen / didChange / didClose handling ───────────────────────
-
-    #[test]
-    fn test_server_did_open_valid_file_uri_stores_doc() {
-        let mut server = Server::new(synthetic_data());
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///test.rsc", "text": "/ip/address add address=1.1.1.1"}}
-        });
-        let resp = server.handle_message("textDocument/didOpen", &open);
-        assert!(resp.is_none());
-        assert_eq!(
-            server.docs.get("file:///test.rsc").unwrap(),
-            "/ip/address add address=1.1.1.1"
-        );
-    }
-
-    #[test]
-    fn test_server_did_open_rejects_untitled_uri() {
-        let mut server = Server::new(synthetic_data());
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "untitled://test.rsc", "text": "hello"}}
-        });
-        let resp = server.handle_message("textDocument/didOpen", &open);
-        assert!(resp.is_none());
-        assert!(!server.docs.contains_key("untitled://test.rsc"));
-    }
-
-    #[test]
-    fn test_server_did_open_rejects_http_uri() {
-        let mut server = Server::new(synthetic_data());
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "http://example.com/test.rsc", "text": "hello"}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        assert!(!server.docs.contains_key("http://example.com/test.rsc"));
-    }
-
-    #[test]
-    fn test_server_did_open_rejects_traversal_uri() {
-        let mut server = Server::new(synthetic_data());
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///home/../etc/passwd", "text": "hello"}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        assert!(!server.docs.contains_key("file:///home/../etc/passwd"));
-    }
-
-    #[test]
-    fn test_server_did_open_rejects_null_byte_uri() {
-        let mut server = Server::new(synthetic_data());
-        let uri = format!("file:///test{}.rsc", '\0');
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": uri, "text": "hello"}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        // Should not store doc with null byte
-        assert!(server.docs.is_empty());
-    }
-
-    #[test]
-    fn test_server_did_change_rejects_invalid_uri() {
-        let mut server = Server::new(synthetic_data());
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///valid.rsc", "text": "old"}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        let change = serde_json::json!({
-            "params": {"textDocument": {"uri": "untitled://valid.rsc"}, "contentChanges": [{"text": "new"}]}
-        });
-        server.handle_message("textDocument/didChange", &change);
-        // Original doc should remain unchanged
-        assert_eq!(server.docs.get("file:///valid.rsc").unwrap(), "old");
-        assert!(!server.docs.contains_key("untitled://valid.rsc"));
-    }
-
-    #[test]
-    fn test_server_did_change_malformed_element_does_not_abort_batch_or_publish() {
-        // Regression: a contentChanges element without a "text" field must
-        // be skipped, not abort the whole didChange. The former `?` returned
-        // None out of handle_message mid-batch — abandoning already-applied
-        // edits and skipping the trailing diagnostics publish.
-        let mut server = Server::new(synthetic_data());
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///batch.rsc", "text": "hello world"}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        server.published.clear(); // drop the didOpen publish
-
-        let change = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///batch.rsc"}, "contentChanges": [
-                {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}}, "text": "hi"},
-                {"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 4}}},
-                {"range": {"start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 8}}, "text": "Rust"}
-            ]}
-        });
-        let resp = server.handle_message("textDocument/didChange", &change);
-        assert!(resp.is_none());
-
-        // Both valid edits applied — including the one AFTER the malformed
-        // element ("hello world" → "hi world" → "hi Rust").
-        assert_eq!(
-            server.docs.get("file:///batch.rsc").unwrap(),
-            "hi Rust",
-            "the batch must survive a malformed element"
-        );
-
-        // The trailing diagnostics publish still fired, exactly once.
-        assert_eq!(
-            server.published.len(),
-            1,
-            "publish must run after the batch despite the malformed element"
-        );
-        let (published_uri, notif) = &server.published[0];
-        assert_eq!(published_uri, "file:///batch.rsc");
-        assert_eq!(notif["method"], "textDocument/publishDiagnostics");
-        assert_eq!(notif["params"]["uri"], "file:///batch.rsc");
-    }
-
-    #[test]
-    fn test_server_did_close_removes_doc_and_clears() {
-        let mut server = Server::new(synthetic_data());
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///close.rsc", "text": "hello"}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        assert!(server.docs.contains_key("file:///close.rsc"));
-        let close = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///close.rsc"}}
-        });
-        let resp = server.handle_message("textDocument/didClose", &close);
-        assert!(resp.is_none());
-        assert!(!server.docs.contains_key("file:///close.rsc"));
-    }
-
-    #[test]
-    fn test_server_did_close_nonexistent_is_noop() {
-        let mut server = Server::new(synthetic_data());
-        let close = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///notopen.rsc"}}
-        });
-        let resp = server.handle_message("textDocument/didClose", &close);
-        assert!(resp.is_none());
-    }
-
-    // ── MAX_DOC_SIZE enforcement ──────────────────────────────────────
-
-    #[test]
-    fn test_server_did_open_truncates_large_doc_at_5mib() {
-        let mut server = Server::new(synthetic_data());
-        let large_text = "a".repeat(MAX_DOC_SIZE + 1000);
-        assert!(large_text.len() > MAX_DOC_SIZE);
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///large.rsc", "text": large_text}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        let stored = server
-            .docs
-            .get("file:///large.rsc")
-            .expect("should store truncated doc");
-        assert_eq!(stored.len(), MAX_DOC_SIZE);
-    }
-
-    #[test]
-    fn test_server_did_open_exact_max_size_not_truncated() {
-        let mut server = Server::new(synthetic_data());
-        let exact = "a".repeat(5 * 1024 * 1024);
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///exact.rsc", "text": exact.clone()}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        assert_eq!(
-            server.docs.get("file:///exact.rsc").unwrap().len(),
-            exact.len()
-        );
-    }
-
-    #[test]
-    fn test_server_did_change_full_sync_truncation() {
-        let mut server = Server::new(synthetic_data());
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///a.rsc", "text": "small"}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        let large = "b".repeat(5 * 1024 * 1024 + 500);
-        let change = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///a.rsc"}, "contentChanges": [{"text": large}]}
-        });
-        server.handle_message("textDocument/didChange", &change);
-        // Full sync with an oversize payload takes the early truncation
-        // branch (text.len() > MAX_DOC_SIZE → truncate at a char boundary
-        // and store): the stored text is capped at EXACTLY MAX_DOC_SIZE.
-        // 'b' is ASCII, so the char boundary is byte-exact here.
-        let stored = server.docs.get("file:///a.rsc").unwrap();
-        assert_eq!(
-            stored.len(),
-            MAX_DOC_SIZE,
-            "full sync must truncate to exactly MAX_DOC_SIZE"
-        );
-    }
-
-    // ── MAX_DOCS enforcement ──────────────────────────────────────────
-
-    #[test]
-    fn test_server_max_docs_enforced_at_100() {
-        let mut server = Server::new(synthetic_data());
-        for i in 0..MAX_DOCS {
-            let uri = format!("file:///test{i}.rsc");
-            let open = serde_json::json!({
-                "params": {"textDocument": {"uri": uri, "text": "hello"}}
-            });
-            server.handle_message("textDocument/didOpen", &open);
-        }
-        assert_eq!(server.docs.len(), MAX_DOCS);
-        // 101st should be rejected
-        let open101 = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///test101.rsc", "text": "hello"}}
-        });
-        server.handle_message("textDocument/didOpen", &open101);
-        assert_eq!(server.docs.len(), MAX_DOCS);
-        assert!(!server.docs.contains_key("file:///test101.rsc"));
-    }
-
-    #[test]
-    fn test_server_max_docs_allows_update_existing_when_full() {
-        let mut server = Server::new(synthetic_data());
-        for i in 0..MAX_DOCS {
-            let uri = format!("file:///test{i}.rsc");
-            let open = serde_json::json!({
-                "params": {"textDocument": {"uri": uri, "text": "hello"}}
-            });
-            server.handle_message("textDocument/didOpen", &open);
-        }
-        // Update existing doc should succeed even at cap
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///test0.rsc", "text": "updated"}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        assert_eq!(server.docs.len(), MAX_DOCS);
-        assert_eq!(server.docs.get("file:///test0.rsc").unwrap(), "updated");
-    }
-
-    #[test]
-    fn test_server_did_change_max_docs_enforced() {
-        let mut server = Server::new(synthetic_data());
-        for i in 0..MAX_DOCS {
-            let uri = format!("file:///doc{i}.rsc");
-            let open = serde_json::json!({
-                "params": {"textDocument": {"uri": uri, "text": "hi"}}
-            });
-            server.handle_message("textDocument/didOpen", &open);
-        }
-        // didChange to a new URI should be rejected when at cap
-        let change = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///new.rsc"}, "contentChanges": [{"text": "hello"}]}
-        });
-        server.handle_message("textDocument/didChange", &change);
-        assert!(!server.docs.contains_key("file:///new.rsc"));
-        assert_eq!(server.docs.len(), MAX_DOCS);
-    }
-
-    #[test]
-    fn test_server_did_open_oversized_at_cap_is_rejected_not_inserted() {
-        // didOpen MAX_DOCS ordering: the oversized branch must enforce the
-        // count cap exactly like the normal branch (previously it inserted
-        // unconditionally, growing past MAX_DOCS).
-        let mut server = Server::new(synthetic_data());
-        for i in 0..MAX_DOCS {
-            let uri = format!("file:///doc{i}.rsc");
-            let open = serde_json::json!({
-                "params": {"textDocument": {"uri": uri, "text": "hi"}}
-            });
-            server.handle_message("textDocument/didOpen", &open);
-        }
-        assert_eq!(server.docs.len(), MAX_DOCS);
-        let oversized = "a".repeat(MAX_DOC_SIZE + 1000);
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///oversized.rsc", "text": oversized}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        assert!(
-            !server.docs.contains_key("file:///oversized.rsc"),
-            "oversized doc at cap must be rejected, not truncated+inserted"
-        );
-        assert_eq!(server.docs.len(), MAX_DOCS);
-    }
-
-    // ── BOM handling ────────────────────────────────────────────────
-
-    #[test]
-    fn test_server_did_open_strips_leading_bom_before_store() {
-        let mut server = Server::new(synthetic_data());
-        let bom_text = format!("{}/ip/address add address=1.1.1.1", '\u{FEFF}');
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///bom.rsc", "text": bom_text}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        assert_eq!(
-            server.docs.get("file:///bom.rsc").unwrap(),
-            "/ip/address add address=1.1.1.1",
-            "leading U+FEFF must be stripped before parse/store"
-        );
-    }
-
-    #[test]
-    fn test_server_bom_doc_diagnoses_identical_to_plain_doc() {
-        // Positions must be identical with and without the BOM: the stripped
-        // document is what every downstream consumer sees.
-        let mut server = Server::new(synthetic_data());
-        let plain = "/ip/address add address=1.1.1.1 interface=ether1\n";
-        let bom = format!("{}{plain}", '\u{FEFF}');
-        let open_plain = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///plain.rsc", "text": plain}}
-        });
-        let open_bom = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///bom2.rsc", "text": bom}}
-        });
-        server.handle_message("textDocument/didOpen", &open_plain);
-        server.handle_message("textDocument/didOpen", &open_bom);
-        let diags_plain = server.encoded_diagnostics(
-            server.docs.get("file:///plain.rsc").unwrap(),
-            "file:///plain.rsc",
-        );
-        let diags_bom = server.encoded_diagnostics(
-            server.docs.get("file:///bom2.rsc").unwrap(),
-            "file:///bom2.rsc",
-        );
-        assert_eq!(
-            serde_json::to_value(&diags_plain).unwrap(),
-            serde_json::to_value(&diags_bom).unwrap(),
-            "BOM must not shift diagnostics"
-        );
-    }
-
-    // ── Live settings scope tightening ────────────────────────────
-
-    #[test]
-    fn test_server_did_change_configuration_unscoped_host_ignored() {
-        let mut server = Server::new(synthetic_data());
-        let before_host = server.live_config.host.clone();
-        let before_enabled = server.live_config.enabled;
-        // A bare object that merely contains host-like keys carries no
-        // explicit scope and must be ignored (never hijack the connection).
-        let settings = serde_json::json!({
-            "params": {"settings": {"host": "10.9.9.9", "MIKROTIK_PASS": "s3cret"}}
-        });
-        server.handle_message("workspace/didChangeConfiguration", &settings);
-        assert_eq!(
-            server.live_config.host, before_host,
-            "unscoped host key must not change the effective host"
-        );
-        assert_eq!(
-            server.live_config.enabled, before_enabled,
-            "env opt-in (enabled) is never settings-overridable"
-        );
-    }
-
-    #[test]
-    fn test_server_did_change_configuration_scoped_host_applies() {
-        let mut server = Server::new(synthetic_data());
-        let before_enabled = server.live_config.enabled;
-        let settings = serde_json::json!({
-            "params": {"settings": {"rsc": {"live": {"host": "10.9.9.9"}}}}
-        });
-        server.handle_message("workspace/didChangeConfiguration", &settings);
-        assert_eq!(server.live_config.host, "10.9.9.9");
-        assert_eq!(server.live_config.hosts, vec!["10.9.9.9".to_string()]);
-        assert_eq!(
-            server.live_config.enabled, before_enabled,
-            "env opt-in (enabled) is never settings-overridable"
-        );
-        // The `mikrotik` scope applies the same way.
-        let settings = serde_json::json!({
-            "params": {"settings": {"mikrotik": {"host": "10.9.9.10"}}}
-        });
-        server.handle_message("workspace/didChangeConfiguration", &settings);
-        assert_eq!(server.live_config.host, "10.9.9.10");
-    }
-
-    // ── Rename handler ────────────────────────────────────────────
-
-    #[test]
-    fn test_server_rename_happy_path_returns_single_document_edit() {
-        let mut server = Server::new(synthetic_data());
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///rename.rsc", "text": ":local wan 1\n:put $wan\n"}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        let req = serde_json::json!({
-            "id": 1,
-            "params": {
-                "textDocument": {"uri": "file:///rename.rsc"},
-                "position": {"line": 0, "character": 8},
-                "newName": "uplink"
-            }
-        });
-        let resp = server
-            .handle_message("textDocument/rename", &req)
-            .expect("rename request must be answered");
-        assert_eq!(resp["id"], 1);
-        let edits = resp["result"]["changes"]["file:///rename.rsc"]
-            .as_array()
-            .expect("single-document changes map");
-        assert_eq!(edits.len(), 2, "declaration + usage, got {resp}");
-        assert!(edits.iter().all(|e| e["newText"] == "uplink"));
-    }
-
-    #[test]
-    fn test_server_rename_untracked_uri_returns_null() {
-        let mut server = Server::new(synthetic_data());
-        let req = serde_json::json!({
-            "id": 2,
-            "params": {
-                "textDocument": {"uri": "file:///never-opened.rsc"},
-                "position": {"line": 0, "character": 0},
-                "newName": "x"
-            }
-        });
-        let resp = server
-            .handle_message("textDocument/rename", &req)
-            .expect("rename request must be answered");
-        assert_eq!(resp["result"], serde_json::Value::Null);
-    }
-
-    #[test]
-    fn test_server_rename_missing_new_name_is_invalid_params() {
-        let mut server = Server::new(synthetic_data());
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///rename2.rsc", "text": ":local x\n"}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        let req = serde_json::json!({
-            "id": 3,
-            "params": {
-                "textDocument": {"uri": "file:///rename2.rsc"},
-                "position": {"line": 0, "character": 7}
-            }
-        });
-        let resp = server
-            .handle_message("textDocument/rename", &req)
-            .expect("rename request must be answered");
-        assert_eq!(resp["error"]["code"], -32602);
-        assert_eq!(resp["id"], 3);
-    }
-
-    #[test]
-    fn test_server_rename_non_variable_cursor_returns_null() {
-        let mut server = Server::new(synthetic_data());
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///rename3.rsc", "text": "/ip/address add address=1.1.1.1\n"}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        let req = serde_json::json!({
-            "id": 4,
-            "params": {
-                "textDocument": {"uri": "file:///rename3.rsc"},
-                "position": {"line": 0, "character": 20},
-                "newName": "other"
-            }
-        });
-        let resp = server
-            .handle_message("textDocument/rename", &req)
-            .expect("rename request must be answered");
-        assert_eq!(resp["result"], serde_json::Value::Null);
-    }
-
-    // ── Parse cache lifecycle ─────────────────────────────────────
-
-    #[test]
-    fn test_server_completion_identical_cold_and_warm() {
-        // No behavior change from caching: the first request (cold cache,
-        // parses) and the second (warm cache, reuses) return byte-identical
-        // responses.
-        let mut server = Server::new(synthetic_data());
-        let text = "/ip/address add \\\naddress=1.1.1.1 interface=ether1\n";
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///cached.rsc", "text": text}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        let req = serde_json::json!({
-            "id": 1,
-            "params": {
-                "textDocument": {"uri": "file:///cached.rsc"},
-                "position": {"line": 1, "character": 5}
-            }
-        });
-        let cold = server
-            .handle_message("textDocument/completion", &req)
-            .expect("completion must be answered");
-        assert!(
-            server
-                .parse_cache
-                .lookup("file:///cached.rsc", text)
-                .is_some(),
-            "first completion must populate the parse cache"
-        );
-        let warm = server
-            .handle_message("textDocument/completion", &req)
-            .expect("completion must be answered");
-        assert_eq!(cold, warm, "warm-cache completion must equal cold-cache");
-    }
-
-    #[test]
-    fn test_server_did_change_invalidates_parse_cache() {
-        let mut server = Server::new(synthetic_data());
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///evict.rsc", "text": ":put $a\n"}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        let req = serde_json::json!({
-            "id": 1,
-            "params": {
-                "textDocument": {"uri": "file:///evict.rsc"},
-                "position": {"line": 0, "character": 0}
-            }
-        });
-        server.handle_message("textDocument/completion", &req);
-        assert!(
-            server
-                .parse_cache
-                .lookup("file:///evict.rsc", ":put $a\n")
-                .is_some()
-        );
-        let change = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///evict.rsc"}, "contentChanges": [{"text": ":put $b\n"}]}
-        });
-        server.handle_message("textDocument/didChange", &change);
-        let stored = server.docs.get("file:///evict.rsc").unwrap().clone();
-        assert_eq!(stored, ":put $b\n");
-        assert!(
-            server
-                .parse_cache
-                .lookup("file:///evict.rsc", &stored)
-                .is_none(),
-            "edits must invalidate the cached parse"
-        );
-    }
-
-    #[test]
-    fn test_server_did_close_drops_parse_cache_entry() {
-        let mut server = Server::new(synthetic_data());
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///close.rsc", "text": ":put hi\n"}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        let req = serde_json::json!({
-            "id": 1,
-            "params": {
-                "textDocument": {"uri": "file:///close.rsc"},
-                "position": {"line": 0, "character": 0}
-            }
-        });
-        server.handle_message("textDocument/completion", &req);
-        assert!(
-            server
-                .parse_cache
-                .lookup("file:///close.rsc", ":put hi\n")
-                .is_some()
-        );
-        let close = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///close.rsc"}}
-        });
-        server.handle_message("textDocument/didClose", &close);
-        assert!(
-            server
-                .parse_cache
-                .lookup("file:///close.rsc", ":put hi\n")
-                .is_none(),
-            "cache entries die with didClose"
-        );
-    }
-
-    // ── Large doc truncation preserves first N diags ──────────────────
-
-    #[test]
-    fn test_large_doc_truncation_preserves_first_diags() {
-        let data = synthetic_data();
-        // First 10 lines are errors, next 5000 lines are also errors but beyond cap
-        let mut doc = String::new();
-        for _ in 0..10 {
-            doc.push_str("/unknown/menu add foo=bar\n");
-        }
-        for _ in 0..5000 {
-            doc.push_str("/another/unknown add x=1\n");
-        }
-        let diags = diagnostics::compute_diagnostics(&data, &doc, "file:///test.rsc");
-        assert!(diags.len() <= 3001);
-        // First diagnostics should be for /unknown/menu (preserved)
-        assert!(diags.iter().any(|d| d.message.contains("/unknown/menu")));
-        // Diagnostics beyond 3000 lines should not appear
-        // Count of diags should be exactly 3000 (one per line) plus truncation hint, or less if bytes cap hits first
-        assert!(!diags.is_empty());
-    }
-
-    #[test]
-    fn test_large_doc_bytes_truncation_preserves_first_diags() {
-        let data = synthetic_data();
-        // Create a doc >500KB where first lines have errors and truncated tail is beyond bytes cap
-        let error_line = "/unknown/menu add foo=bar\n"; // ~25 bytes
-        // Need >500KB: 25 * 25000 = 625K
-        let doc = error_line.repeat(25_000);
-        assert!(doc.len() > 500_000);
-        let diags = diagnostics::compute_diagnostics(&data, &doc, "file:///test.rsc");
-        // Should be capped but preserve first (ignore truncation hint)
-        assert!(!diags.is_empty());
-        assert!(
-            diags
-                .iter()
-                .filter(|d| d.code.as_deref() != Some("truncated"))
-                .all(|d| d.message.contains("/unknown/menu") || d.message.contains("/another"))
-        );
-        // Ensure truncation at char boundary didn't cause panic and preserved first diags
-        let first_diag_line = diags.first().unwrap().range.start.line;
-        assert_eq!(first_diag_line, 0);
-    }
-
-    // ── Incremental edits with diagnostics ────────────────────────────
-
-    #[test]
-    fn test_incremental_edit_then_diagnostics_updated() {
-        let mut server = Server::new(synthetic_data());
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///inc.rsc", "text": "/ip/address add address=1.1.1.1 interface=ether1"}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        // Valid doc should have no unknown-menu diags
-        let diags_before = diagnostics::compute_diagnostics(
-            &synthetic_data(),
-            server.docs.get("file:///inc.rsc").unwrap(),
-            "file:///inc.rsc",
-        );
-        assert!(
-            !diags_before
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-menu"))
-        );
-
-        // Incremental edit: change to unknown menu
-        let change = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///inc.rsc"}, "contentChanges": [{
-                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 11}},
-                "text": "/unknown/menu"
-            }]}
-        });
-        server.handle_message("textDocument/didChange", &change);
-        let doc_after = server.docs.get("file:///inc.rsc").unwrap();
-        assert!(doc_after.starts_with("/unknown/menu"));
-        let diags_after =
-            diagnostics::compute_diagnostics(&synthetic_data(), doc_after, "file:///inc.rsc");
-        assert!(
-            diags_after
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-menu"))
-        );
-    }
-
-    #[test]
-    fn test_incremental_edit_multiple_changes() {
-        let mut server = Server::new(synthetic_data());
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///multi.rsc", "text": "hello world"}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        let change = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///multi.rsc"}, "contentChanges": [
-                {"range": {"start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 11}}, "text": "Rust"},
-                {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}}, "text": "hi"}
-            ]}
-        });
-        server.handle_message("textDocument/didChange", &change);
-        assert_eq!(server.docs.get("file:///multi.rsc").unwrap(), "hi Rust");
-    }
-
-    #[test]
-    fn test_diagnostic_pull_rejects_invalid_uri() {
-        let mut server = Server::new(synthetic_data());
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///valid.rsc", "text": "/ip/address add address=1.1.1.1"}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        let pull = serde_json::json!({
-            "id": 1,
-            "params": {"textDocument": {"uri": "untitled://valid.rsc"}}
-        });
-        let resp = server
-            .handle_message("textDocument/diagnostic", &pull)
-            .unwrap();
-        let items = resp["result"]["items"].as_array().unwrap();
-        assert!(
-            items.is_empty(),
-            "invalid URI should return empty diagnostics"
-        );
-    }
-
-    #[test]
-    fn test_server_publish_diagnostics_push_and_pull_consistency() {
-        let mut server = Server::new(synthetic_data());
-        let doc = "/unknown/menu add foo=bar";
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///consistency.rsc", "text": doc}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        // Pull diagnostics should match compute_diagnostics
-        let pull = serde_json::json!({
-            "id": 2,
-            "params": {"textDocument": {"uri": "file:///consistency.rsc"}}
-        });
-        let resp = server
-            .handle_message("textDocument/diagnostic", &pull)
-            .unwrap();
-        let pull_items = resp["result"]["items"].as_array().unwrap();
-        let direct =
-            diagnostics::compute_diagnostics(&synthetic_data(), doc, "file:///consistency.rsc");
-        assert_eq!(pull_items.len(), direct.len());
-    }
-
-    #[test]
-    #[allow(non_snake_case)]
-    fn completion_textEdit_with_continuation() {
-        // Logical vs physical: gateway + comment split across a RouterOS
-        // `\` continuation. Cursor on continuation line 2's value suffix
-        // must map back to physical line 1, not logical offset 0.
-        let mut server = Server::new(synthetic_data());
-        // Line 0 ends with a continuation backslash; line 1 holds the
-        // dependent property. The value for `action` is on line 1.
-        let doc = "/ip/firewall/filter add chain=input \\\naction=acc";
-        let open = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///cont.rsc", "text": doc}}
-        });
-        server.handle_message("textDocument/didOpen", &open);
-        // line 1 is "action=acc" (10 chars: "action=" 7 + "acc" 3)
-        // cursor after "acc" (character 10)
-        let comp = serde_json::json!({
-            "id": 99,
-            "params": {"textDocument": {"uri": "file:///cont.rsc"}, "position": {"line": 1, "character": 10}}
-        });
-        let resp = server
-            .handle_message("textDocument/completion", &comp)
-            .unwrap();
-        let items = resp["result"]["items"].as_array().unwrap();
-        // `action` is enum (accept|drop|reject); typed prefix "acc" should
-        // filter to "accept" with a textEdit covering exactly "acc" on line 1
-        let accept = items
-            .iter()
-            .find(|i| i["label"] == "accept")
-            .expect("accept should be suggested for prefix acc");
-        let edit = accept["textEdit"]
-            .as_object()
-            .expect("textEdit must be set via logical mapping");
-        assert_eq!(
-            edit["range"]["start"]["line"], 1,
-            "logical start maps to physical line 1"
-        );
-        assert_eq!(edit["range"]["end"]["line"], 1);
-        // "action=" is 7 bytes, so "acc" starts at character 7
-        assert_eq!(edit["range"]["start"]["character"], 7);
-        assert_eq!(edit["range"]["end"]["character"], 10);
-        assert_eq!(edit["newText"], "accept");
-
-        // Also verify single-line fallback still works: no continuation
-        let mut server2 = Server::new(synthetic_data());
-        let doc2 = "/ip/firewall/filter add action=acc";
-        let open2 = serde_json::json!({
-            "params": {"textDocument": {"uri": "file:///single.rsc", "text": doc2}}
-        });
-        server2.handle_message("textDocument/didOpen", &open2);
-        // line 0 "action=acc" starts at offset of chain value? Actually doc2:
-        // "/ip/firewall/filter add " is 24? Let's just request after "acc"
-        let line0_len = doc2.len();
-        let comp2 = serde_json::json!({
-            "id": 100,
-            "params": {"textDocument": {"uri": "file:///single.rsc"}, "position": {"line": 0, "character": line0_len}}
-        });
-        let resp2 = server2
-            .handle_message("textDocument/completion", &comp2)
-            .unwrap();
-        let items2 = resp2["result"]["items"].as_array().unwrap();
-        let accept2 = items2.iter().find(|i| i["label"] == "accept").unwrap();
-        let edit2 = accept2["textEdit"].as_object().unwrap();
-        assert_eq!(edit2["range"]["start"]["line"], 0);
-        // suffix "acc" after "action=" (7 chars) at end
-        let expected_start = doc2.rfind("acc").unwrap() as u64;
-        assert_eq!(edit2["range"]["start"]["character"], expected_start);
-        assert_eq!(edit2["range"]["end"]["character"], line0_len as u64);
     }
 }
