@@ -91,7 +91,8 @@ class TestValidateHost:
         assert validate_host("192.168.88.1") is None
         assert validate_host("router.local") is None
         assert validate_host("[::1]") is None
-        assert validate_host("fe80::1") is None
+        # Link-local is fail-closed (SSRF deny fe80::/10)
+        assert validate_host("fe80::1") is not None
 
     def test_empty_and_overlong(self):
         assert validate_host("") == "empty"
@@ -220,14 +221,25 @@ class TestCliSmoke:
         assert "https://192.168.88.1:443/rest/interface" in result.stdout
 
     def test_live_check_dry_run_ipv6_bracketed(self):
+        # Global IPv6 still dry-runs with bracketing …
+        result = subprocess.run(
+            [sys.executable, str(LIVE_CHECK_PY), "--dry-run", "--host", "2001:db8::1"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "https://[2001:db8::1]:443/rest/interface" in result.stdout
+
+    def test_live_check_dry_run_link_local_denied(self):
+        # … while link-local is fail-closed even for dry-run (SSRF deny).
         result = subprocess.run(
             [sys.executable, str(LIVE_CHECK_PY), "--dry-run", "--host", "fe80::1"],
             capture_output=True,
             text=True,
             timeout=30,
         )
-        assert result.returncode == 0, result.stderr
-        assert "https://[fe80::1]:443/rest/interface" in result.stdout
+        assert result.returncode != 0, result.stdout
 
     def test_live_check_missing_host_still_usage_error(self):
         # Exit code contract unchanged: 2 = usage error (missing host).

@@ -450,9 +450,13 @@ class TestDeployScript:
             os.unlink(tmp_path)
 
     def test_rest_error_path_redacts_password(self):
-        assert 'replace(password, "[REDACTED]")' in self.text, (
+        # Central helper (covers cleartext + base64 user:pass), stronger
+        # than the old inline replace it replaced.
+        assert "redact_secrets(" in self.text, (
             "deploy REST error path must redact password like live-check"
         )
+        shared = (self.path.parent / "_mikrotik_shared.py").read_text(encoding="utf-8")
+        assert "def redact_secrets" in shared
 
 
 # ── Tasks JSON ───────────────────────────────────────────────────────

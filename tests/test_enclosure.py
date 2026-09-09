@@ -340,6 +340,10 @@ class TestDeployScript:
                     continue
                 if "MIKROTIK_PASS" in line and "example" in low:
                     continue
+                # Wrapped in redact_secrets(...) is safe (fail-closed redaction,
+                # covers cleartext + base64); only unwrapped interpolation leaks.
+                if "redact_secrets(" in line:
+                    continue
                 # If line is `log(f"...{password` -> leak
                 if "{password" in line or "password" in line and "f\"" in line:
                     log_lines_with_password.append(line.strip())

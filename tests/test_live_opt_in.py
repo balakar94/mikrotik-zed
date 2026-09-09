@@ -139,7 +139,7 @@ class TestLiveModuleExists:
         assert "compute_completions_with_live" in txt
         assert "live_resource_values_for_property" in txt
         assert "detail_label()" in txt
-        assert "0live_" in txt
+        assert "0!live_" in txt
         assert "live — interface on device" in _read(LIVE_RS)
 
 
@@ -272,19 +272,19 @@ class TestLiveDefaultOffAndOptIn:
     def test_completion_honest_zero_items_without_live(self):
         txt = _read(COMPLETION_RS)
         assert "compute_completions_with_live" in txt
-        # The production code path: iface_enum without live must be empty, not fabricated
-        assert "iface_enum" in txt
+        # The production code path: device-dependent types without live must be
+        # empty, not fabricated (structural honest-empty, pinned by Rust goldens)
         assert "honest" in txt.lower()
 
     def test_completion_with_live_returns_mocked_interfaces(self):
         prod = _read(COMPLETION_RS)
         assert "compute_completions_with_live" in prod
         assert "live_resource_values_for_property" in prod
-        # Live merge wiring: ENUM_MEMBER kind, live detail label, 0live_ sort prefix
+        # Live merge wiring: ENUM_MEMBER kind, live detail label, 0!live_ sort prefix
         assert "ENUM_MEMBER" in prod
         assert "detail_label()" in prod
         assert "sort_text" in prod
-        assert "0live_" in prod
+        assert "0!live_" in prod
         live_txt = _read(LIVE_RS)
         assert "live — interface on device" in live_txt
 
@@ -492,10 +492,10 @@ class TestHonestCompletions:
 
     def test_enum_kind_and_sort(self):
         txt = _read(COMPLETION_RS)
-        # Live merge must set ENUM_MEMBER, detail, sortText 0live_
+        # Live merge must set ENUM_MEMBER, detail, sortText 0!live_
         assert "ENUM_MEMBER" in txt
         assert "live — interface on device" in txt or "live — interface on device" in _read(LIVE_RS)
-        assert "0live_" in txt
+        assert "0!live_" in txt
 
     def test_value_length_filter(self):
         txt = _read(LIVE_RS)
@@ -584,7 +584,7 @@ class TestLiveCheckUnexpectedShapeFails:
                     self.verify = True
                     self.headers = {}
 
-                def get(self, url, timeout=None, stream=False):
+                def get(self, url, timeout=None, stream=False, **kwargs):
                     return FakeResp()
 
             monkeypatch.setattr(mod.requests, "Session", FakeSession)
@@ -608,7 +608,15 @@ class TestLiveCheckUnexpectedShapeFails:
             def _fake_urlopen(req, timeout=None, context=None):
                 return FakeUrlopenResp()
 
+            class _FakeOpener:
+                def open(self, req, timeout=None):
+                    return FakeUrlopenResp()
+
+            def _fake_build_opener(*handlers):
+                return _FakeOpener()
+
             monkeypatch.setattr(_urlreq, "urlopen", _fake_urlopen)
+            monkeypatch.setattr(_urlreq, "build_opener", _fake_build_opener)
 
     def test_unexpected_json_shape_exits_4(self, monkeypatch, capsys):
         """HTTP-200 with a non-list, non-error JSON payload must exit 4 (mocks only)."""
