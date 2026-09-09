@@ -220,3 +220,49 @@ fn test_server_bom_doc_diagnoses_identical_to_plain_doc() {
         "BOM must not shift diagnostics"
     );
 }
+
+#[test]
+fn test_server_did_change_101st_rejected_first_100_still_diagnose() {
+    // MAX_DOCS=101 rejection via the didChange path (server.rs:822): the
+    // 101st URI is refused while the first 100 keep their content and
+    // keep producing identical diagnostics.
+    let mut server = Server::new(synthetic_data());
+    for i in 0..MAX_DOCS {
+        let uri = format!("file:///doc{i}.rsc");
+        let open = serde_json::json!({
+            "params": {"textDocument": {"uri": uri, "text": "/ip/address add address=10.0.0.1/24 interface=ether1\n"}}
+        });
+        server.handle_message("textDocument/didOpen", &open);
+    }
+    assert_eq!(server.docs.len(), MAX_DOCS);
+    let before = server.encoded_diagnostics(
+        server.docs.get("file:///doc0.rsc").unwrap(),
+        "file:///doc0.rsc",
+    );
+    let change = serde_json::json!({
+        "params": {"textDocument": {"uri": "file:///doc101.rsc"}, "contentChanges": [{"text": "hello"}]}
+    });
+    server.handle_message("textDocument/didChange", &change);
+    assert!(
+        !server.docs.contains_key("file:///doc101.rsc"),
+        "101st doc via didChange must be rejected"
+    );
+    assert_eq!(server.docs.len(), MAX_DOCS);
+    for i in 0..MAX_DOCS {
+        assert!(
+            server
+                .docs
+                .contains_key(format!("file:///doc{i}.rsc").as_str()),
+            "survivor doc{i} must remain tracked after rejection"
+        );
+    }
+    let after = server.encoded_diagnostics(
+        server.docs.get("file:///doc0.rsc").unwrap(),
+        "file:///doc0.rsc",
+    );
+    assert_eq!(
+        serde_json::to_value(&before).unwrap(),
+        serde_json::to_value(&after).unwrap(),
+        "first 100 docs must still diagnose identically after 101st rejection"
+    );
+}

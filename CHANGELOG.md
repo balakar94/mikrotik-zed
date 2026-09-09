@@ -15,9 +15,6 @@
 ### Changed
 
 - **LSP diagnostics (`lsp/src/diagnostics.rs`, `lsp/src/caps.rs`)**: `MAX_DIAGNOSTICS=2000` bound on total semantic diagnostics per publish — `compute_diagnostics` now truncates before the syntax extend, and the `truncated` hint covers the count-only case. Previously a single logical line carrying tens of thousands of distinct unknown keys yielded one heap `Diagnostic` per key.
-
-### Changed
-
 - **Data (`data/commands.toml`, `data/upstream-docs.toml`)**: `upstream c77198 → c043cd8f` — `nd-ping` description enrichment for `/tool/ping` ("Use IPv6 Neighbor Discovery (NS/NA) instead of ICMP echo to discover hosts"), `1077 menus` stable `7.23.2`.
 - **Toolchain (`rust-toolchain.toml`)**: fixed stale comment — workflows resolve `toolchain.channel` dynamically from this file (single source of truth); they never pinned `1.90` explicitly.
 - **Caps registry (`lsp/src/caps.rs`)**: indexed `MAX_CONCURRENT_FETCHES=2` and `MAX_DIAGNOSTICS=2000` in the central table, per the "every limit discoverable from ONE place" policy.

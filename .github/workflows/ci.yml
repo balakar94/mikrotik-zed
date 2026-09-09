@@ -241,6 +241,9 @@ jobs:
       - name: Manifest schema check (make check-manifest)
         run: make check-manifest
 
+      - name: Docs lint (make docs-check)
+        run: make docs-check
+
       # llms.txt / llms-full.txt are gitignored and fetched from manual.mikrotik.com.
       # Fetch BEFORE tests so the staleness test (test_docs_staleness.py) can
       # recompute hashes against local bytes instead of skipping on clean checkout.

@@ -179,3 +179,33 @@ fn secure_base_cfg() -> LiveConfig {
         _ => None,
     })
 }
+
+#[test]
+fn test_multi_host_only_primary_hydrated() {
+    // LIVE_MAX_HOSTS=4: all four hosts are parsed and retained, but URL
+    // construction — the only fetch path (`build_rest_url`, used by every
+    // fetcher via `config.host`) — targets the primary alone, so hosts
+    // 2-4 are validated-but-never-fetched.
+    let mut m = HashMap::new();
+    m.insert("RSC_LS_LIVE", "1");
+    m.insert(
+        "MIKROTIK_HOST",
+        "router1.local, router2.local, router3.local, router4.local",
+    );
+    m.insert("MIKROTIK_PASS", "p");
+    let cfg = cfg_with(m);
+    assert_eq!(cfg.hosts.len(), 4);
+    assert_eq!(cfg.host, "router1.local");
+    assert_eq!(cfg.hosts[0], cfg.host);
+    let url = build_rest_url(&cfg, ResourceKind::Interfaces).expect("primary URL should build");
+    assert!(
+        url.contains("router1.local"),
+        "fetch URL must target the primary host, got {url}"
+    );
+    for secondary in cfg.hosts.iter().skip(1) {
+        assert!(
+            !url.contains(secondary.as_str()),
+            "secondary host must never appear in a fetch URL: {secondary}"
+        );
+    }
+}

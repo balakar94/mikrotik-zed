@@ -13,7 +13,7 @@ SKIP_SYSTEM ?=
 FILE        ?=
 VERSION     ?=
 
-.PHONY: help generate generate-check test-grammar test-rust test-python test-all grammar-clone parse highlight extract sync sync-check check-manifest build build-lsp check check-wasm check-lsp fmt fmt-fix clippy audit install install-deps install-tools install-lsp install-dev bump clean clean-generated validate validate-fast _check-tools _clean-artifacts
+.PHONY: help generate generate-check test-grammar test-rust test-python test-all grammar-clone parse highlight extract sync sync-check check-manifest docs docs-check build build-lsp check check-wasm check-lsp fmt fmt-fix clippy audit install install-deps install-tools install-lsp install-dev bump clean clean-generated validate validate-fast _check-tools _clean-artifacts
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -75,6 +75,12 @@ sync-check: ## Check if llms files are stale vs upstream (CI gate)
 check-manifest: ## Check extension against Zed requirements (manifest + registry policy)
 	@command -v $(PYTHON) >/dev/null || (echo "error: $(PYTHON) not found" && false)
 	$(PYTHON) scripts/check_zed_requirements.py
+docs: ## Preview docs locally (no build — plain Markdown, open docs/index.md)
+	@echo "Docs are plain Markdown (no generator). Open docs/index.md"
+	@echo "or: python3 -m http.server --directory docs 8000"
+docs-check: ## Lint docs (hygiene, links/anchors, index reachability, volatile ban)
+	@command -v $(PYTHON) >/dev/null || (echo "error: $(PYTHON) not found" && false)
+	$(PYTHON) scripts/check_docs.py
 # ── Build ────────────────────────────────────────────────────────
 build: ## Build WASM extension (wasm32-wasip2 component) and stage extension.wasm
 	cargo build --target $(WASM_TARGET) --release
@@ -192,7 +198,7 @@ install-dev: ## Point Zed to this directory (manual: Install Dev Extension)
 	@echo "Open Zed → Command Palette → 'Install Dev Extension' → select this directory"
 	@echo "Make sure rsc-ls binary is in PATH: make build-lsp && make install-lsp"
 
-validate: check-manifest generate-check fmt clippy test-all extract ## Offline gate (manifest, generate-check, fmt, clippy, tests, extract); run make sync-check separately for upstream drift
+validate: check-manifest docs-check generate-check fmt clippy test-all extract ## Offline gate (manifest, docs, generate-check, fmt, clippy, tests, extract); run make sync-check separately for upstream drift
 	@git diff --exit-code data/commands.toml || (echo "data/commands.toml stale — run 'make extract' and commit" && false)
 	@echo "All checks passed. Ready to commit."
 
