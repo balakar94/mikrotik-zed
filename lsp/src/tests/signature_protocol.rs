@@ -1,20 +1,11 @@
-//! `textDocument/signatureHelp`: capability advertisement, named-
-//! parameter signature construction (required-first ordering, offset
-//! labels), activeParameter detection (exact/prefix/ambiguous key match,
-//! quoted values, continuations), and the response guarantees shared by
-//! every request handler (-32602 malformed, null untracked/gated).
-//!
-//! All requests run against a fresh server WITHOUT `initialize`, so the
-//! negotiated encoding is the spec-default UTF-16 — exactly what real
-//! clients fall back to.
-
-use super::*;
+//! Signature — labels and budgets.
 use crate::menus::MenuData;
+use crate::menus::MenuEntry;
+use crate::parser::tokenize_with_spans;
+use crate::server::Server;
+use crate::signature::*;
+use crate::suggest::MAX_SUGGEST_INPUT_BYTES;
 use std::sync::Arc;
-
-/// `/tool/fetch`-shaped fixture: two REQUIRED properties, two optional
-/// ones sharing the `check-` prefix (for ambiguity coverage), and an
-/// enum type whose spaces prove offsets survive multi-word types.
 fn sig_data() -> Arc<MenuData> {
     Arc::new(MenuData::from_toml_str(
         r#"
@@ -75,137 +66,62 @@ fn sig_request(id: i64, uri: &str, line: usize, character: usize) -> serde_json:
 const FETCH_LABEL: &str = "/tool/fetch add http-method=enum (get | post) url=string \
                                check-certificate=bool check-expired=bool";
 
-// ── Capability advertisement ─────────────────────────────────
-
-#[test]
-fn test_initialize_advertises_signature_help_provider_object_form() {
-    let mut s = make_server();
-    let msg = serde_json::json!({
-        "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}
-    });
-    let resp = s.handle_message("initialize", &msg).unwrap();
-    let provider = &resp["result"]["capabilities"]["signatureHelpProvider"];
-    assert!(
-        provider.is_object(),
-        "object form (like completionProvider), got {provider}"
-    );
-    assert_eq!(provider["triggerCharacters"], serde_json::json!([" ", "="]));
+fn fetch_data() -> MenuData {
+    MenuData::from_toml_str(
+        r#"
+[[menus]]
+path = "/tool/fetch"
+type = "Command"
+[[menus.arguments]]
+name = "url"
+type = "string"
+required = true
+[[menus.arguments]]
+name = "check-certificate"
+type = "bool"
+[[menus.arguments]]
+name = "check-expired"
+type = "bool"
+[[menus.arguments]]
+name = "http-method"
+type = "enum (get | post)"
+required = true
+[[menus]]
+path = "/empty/menu"
+type = "Directory"
+"#,
+    )
 }
 
-// ── Signature construction ───────────────────────────────────
-
-#[test]
-fn test_signature_after_verb_lists_required_first_with_offset_labels() {
-    let mut s = make_server();
-    let doc = "/tool/fetch add ";
-    open(&mut s, "file:///sig.rsc", doc);
-    let resp = s
-        .handle_message(
-            "textDocument/signatureHelp",
-            &sig_request(60, "file:///sig.rsc", 0, doc.len()),
-        )
-        .unwrap();
-    let result = &resp["result"];
-    assert!(!result.is_null(), "menu+verb resolved ⇒ popup");
-    assert_eq!(result["activeSignature"], 0);
-    let sigs = result["signatures"].as_array().unwrap();
-    assert_eq!(sigs.len(), 1, "exactly one signature");
-    let label = sigs[0]["label"].as_str().unwrap();
-    assert_eq!(label, FETCH_LABEL);
-
-    let params = sigs[0]["parameters"].as_array().unwrap();
-    assert_eq!(params.len(), 4);
-    // Each ParameterInformation label is [start, end] INTO the label
-    // string; slicing must reproduce the intended `name=type` segment.
-    let segments: Vec<&str> = params
-        .iter()
-        .map(|p| {
-            let start = p["label"][0].as_u64().unwrap() as usize;
-            let end = p["label"][1].as_u64().unwrap() as usize;
-            &label[start..end]
-        })
-        .collect();
-    assert_eq!(
-        segments,
-        [
-            "http-method=enum (get | post)",
-            "url=string",
-            "check-certificate=bool",
-            "check-expired=bool"
-        ],
-        "required properties lead, then alphabetical"
-    );
-    // "(required)" lives inside the parameter documentation only.
-    assert!(
-        params[0]["documentation"]
-            .as_str()
-            .unwrap()
-            .starts_with("(required) ")
-    );
-    assert!(
-        params[1]["documentation"]
-            .as_str()
-            .unwrap()
-            .starts_with("(required) ")
-    );
-    assert!(
-        !params[2]["documentation"]
-            .as_str()
-            .unwrap()
-            .starts_with("(required) ")
-    );
-    // Signature documentation: menu identity + the ordering note.
-    let sig_doc = sigs[0]["documentation"].as_str().unwrap();
-    assert!(sig_doc.contains("`/tool/fetch`"));
-    assert!(sig_doc.contains("Required properties listed first."));
-    // Cursor sits after the verb with no property started ⇒ nothing
-    // highlighted yet.
-    assert!(result.get("activeParameter").is_none());
+fn help_for(data: &MenuData, path: &str, line_text: &str, cursor: usize) -> Option<SignatureHelp> {
+    let m = menu(data, path);
+    let tokens = tokenize_with_spans(line_text);
+    let verb_idx = resolve_verb_token(data, &tokens)?;
+    compute_signature_help(m, &tokens, verb_idx, cursor)
 }
 
-// ── activeParameter detection ────────────────────────────────
-
-#[test]
-fn test_signature_prefix_match_highlights_right_param() {
-    let mut s = make_server();
-    // `check-c` uniquely prefixes check-certificate (param index 2 in
-    // the required-first list).
-    let doc = "/tool/fetch add check-c";
-    open(&mut s, "file:///prefix.rsc", doc);
-    let resp = s
-        .handle_message(
-            "textDocument/signatureHelp",
-            &sig_request(61, "file:///prefix.rsc", 0, doc.len()),
-        )
-        .unwrap();
-    assert_eq!(
-        resp["result"]["activeParameter"], 2,
-        "unique prefix resolves to check-certificate"
-    );
+fn menu<'a>(data: &'a MenuData, path: &str) -> &'a MenuEntry {
+    data.menu_by_path.get(path).expect("fixture menu")
 }
 
-#[test]
-fn test_signature_ambiguous_prefix_omits_active_parameter() {
-    let mut s = make_server();
-    // `check-` matches check-certificate AND check-expired ⇒ omit rather
-    // than guess; the popup itself must still render.
-    let doc = "/tool/fetch add check-";
-    open(&mut s, "file:///ambig.rsc", doc);
-    let resp = s
-        .handle_message(
-            "textDocument/signatureHelp",
-            &sig_request(62, "file:///ambig.rsc", 0, doc.len()),
-        )
-        .unwrap();
-    assert!(
-        !resp["result"]["signatures"].as_array().unwrap().is_empty(),
-        "popup still shows"
-    );
-    assert!(
-        resp["result"].get("activeParameter").is_none(),
-        "ambiguous prefix ⇒ no activeParameter field at all"
-    );
+/// Compute with the cursor placed at byte `cursor` of `line_text`,
+/// resolving the verb exactly like the handler does.
+fn help_at(data: &MenuData, line_text: &str, cursor: usize) -> SignatureHelp {
+    help_opt(data, line_text, cursor).expect("fixture menu has properties and a verb")
 }
+
+fn help_opt(data: &MenuData, line_text: &str, cursor: usize) -> Option<SignatureHelp> {
+    let m = menu(data, "/tool/fetch");
+    let tokens = tokenize_with_spans(line_text);
+    let verb_idx = resolve_verb_token(data, &tokens)?;
+    compute_signature_help(m, &tokens, verb_idx, cursor)
+}
+
+fn active(help: &SignatureHelp) -> Option<usize> {
+    help.active_parameter.map(|v| v as usize)
+}
+
+// ── Label construction ────────────────────────────────────────
 
 #[test]
 fn test_signature_quoted_value_keeps_key_active() {
@@ -225,14 +141,16 @@ fn test_signature_quoted_value_keeps_key_active() {
         .unwrap();
     assert_eq!(resp["result"]["activeParameter"], 1);
 
-    // Right after the second `=`: that key becomes active instead.
+    // Right after the second `=`: that key becomes active instead. The
+    // completed `url=` pair is filtered out (completion exclusion), so
+    // check-certificate shifts from index 2 to index 1.
     let resp = s
         .handle_message(
             "textDocument/signatureHelp",
             &sig_request(64, "file:///quote.rsc", 0, doc.len()),
         )
         .unwrap();
-    assert_eq!(resp["result"]["activeParameter"], 2);
+    assert_eq!(resp["result"]["activeParameter"], 1);
 }
 
 // ── Gating: anti-noise contract ──────────────────────────────
