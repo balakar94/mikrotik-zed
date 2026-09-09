@@ -2,24 +2,37 @@
 
 Single source for the connection-setup logic that ``mikrotik-deploy.py`` and
 ``mikrotik-live-check.py`` share: REST scheme resolution, integer env-var
-parsing, host validation, IPv6 bracket formatting, username validation,
-TLS fingerprint parsing, SPKI pin helpers, and password redaction.
+parsing and clamping, host validation, IPv6 bracket formatting, username
+validation, TLS fingerprint parsing, SPKI pin helpers, pre-credential target
+checks, and password redaction.
 
-Mirrors the Rust counterparts in ``lsp/src/live.rs`` (``validate_host``,
-``format_host_for_url``, ``resolve_scheme``, ``validate_user``,
-``parse_fingerprint``, ``resolve_and_validate_host``, and the
+Mirrors the Rust counterparts in ``lsp/src/live_net.rs`` (``validate_host``,
+``format_host_for_url``, ``normalized_host_ip``,
+``is_non_canonical_numeric_host``, ``resolve_and_validate_host``,
+``extract_spki_der``, ``spki_sha256``) and ``lsp/src/live_config.rs``
+(``validate_user``, ``parse_fingerprint``, ``resolve_scheme``, and the
 ``parse_env_u16`` / ``parse_env_u64`` semantics): keep both sides in sync
-when the rules change.
+when the rules change (``tests/test_mikrotik_shared.py::TestRustParity``
+pins the shared denylist constants on both sides).
 
 Usage notes:
 - ``mikrotik-deploy.py`` and ``mikrotik-live-check.py`` both run
   ``validate_host`` / ``format_host_for_url`` on their REST/SSH targets
   before any network access (lexical + normalized SSRF checks, no DNS).
-- ``resolve_scheme`` returns a ``(scheme, legacy_shim_fired)`` tuple for
-  caller compatibility; the legacy ``--no-ssl-verify`` http fallback is
-  removed (always ``False``) so ``MIKROTIK_SSL=0`` only disables
-  verification and never changes the scheme. Plain HTTP requires explicit
-  ``--http`` / ``MIKROTIK_HTTP=1``.
+- ``resolve_scheme`` returns the scheme as a plain string. Default is HTTPS
+  on every port; plain HTTP requires an explicit opt-in via ``--http`` (or
+  ``MIKROTIK_HTTP=1``). SSL verification (``--no-ssl-verify`` /
+  ``MIKROTIK_SSL=0``) only controls certificate validation, never the
+  scheme. The legacy ``--no-ssl-verify`` http fallback is removed (the
+  Rust side keeps an opt-in ``RSC_LS_LEGACY_HTTP_SHIM=1`` fallback via
+  ``resolve_scheme_with_legacy``; the scripts have no such fallback by
+  design).
+- ``check_target`` composes the lexical check (``validate_host``) with the
+  DNS-time re-check (``resolve_and_check_host``) for the pre-credential
+  phase. Dry-run paths must keep calling only the lexical ``validate_host``
+  so previews never touch the network.
+- ``clamp_int`` is the single timeout clamp: callers pass their own bounds
+  (deploy 1..300, live-check 1..30).
 - Host range checks run against the normalized IP (see
   ``normalized_host_ip``): decimal (``2130706433``), hex (``0x7f000001``),
   octal (``0177.0.0.1``), short (``127.1``), IPv4-mapped IPv6
@@ -28,6 +41,8 @@ Usage notes:
   even when the normalized address would otherwise be allowed.
 - ``MIKROTIK_PASS`` never appears in logs: use ``redact_secrets`` on any
   error text that could echo credentials (including base64 ``user:pass``).
+  Matching is by substring and over-redacts by design (fail-safe:
+  redaction can only hide too much, never leak).
 """
 
 from __future__ import annotations
@@ -46,9 +61,10 @@ import urllib.parse
 def env_int(name: str, default: int) -> int:
     """Read an integer env var, falling back to ``default`` with a warning on bad input.
 
-    Mirrors ``lsp/src/live.rs`` ``parse_env_u16`` / ``parse_env_u64``: the
-    value is trimmed before parsing; a missing, empty, or unparseable value
-    falls back to ``default`` (range checks are the caller's responsibility).
+    Mirrors ``lsp/src/live_config.rs`` ``parse_env_u16`` / ``parse_env_u64``:
+    the value is trimmed before parsing; a missing, empty, or unparseable
+    value falls back to ``default`` (range checks are the caller's
+    responsibility — see :func:`clamp_int`).
     """
     raw = os.getenv(name)
     if raw is None or not raw.strip():
@@ -60,7 +76,23 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
-def resolve_scheme(port: int, force_http: bool, no_ssl_verify: bool) -> tuple[str, bool]:
+def clamp_int(value: object, lo: int, hi: int, default: int, name: str = "timeout") -> int:
+    """Parse ``value`` as int and clamp it into ``[lo, hi]`` (never raises).
+
+    Single timeout clamp for both companions: deploy passes ``(…, 1, 300,
+    …)``, live-check passes ``(…, 1, 30, …)``. Anything unparseable
+    (including None) falls back to ``default`` with a stderr warning;
+    out-of-range values clamp to the nearest bound.
+    """
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (ValueError, TypeError):
+        print(f"warning: invalid {name} {value!r}, using default {default}", file=sys.stderr)
+        parsed = default
+    return min(max(parsed, lo), hi)
+
+
+def resolve_scheme(port: int, force_http: bool) -> str:
     """Resolve the REST URL scheme.
 
     Default is HTTPS on every port; plain HTTP requires an explicit opt-in
@@ -72,19 +104,21 @@ def resolve_scheme(port: int, force_http: bool, no_ssl_verify: bool) -> tuple[st
     plain HTTP. Plain-HTTP-on-port-80 setups must pass ``--http``
     (or ``MIKROTIK_HTTP=1``) explicitly.
 
-    Returns (scheme, legacy_shim_fired) where the flag is always False
-    (kept for caller compatibility; the warning branch never fires).
+    ``port`` is accepted for symmetry with
+    ``lsp/src/live_config.rs::resolve_scheme`` but does not affect the
+    result: the scheme depends only on the explicit ``force_http`` opt-in.
 
-    Intentional divergence from ``lsp/src/live.rs::resolve_scheme``, which
-    keeps the same default but additionally supports an opt-in
-    ``RSC_LS_LEGACY_HTTP_SHIM=1`` fallback with a WARN.
+    Intentional divergence from ``lsp/src/live_config.rs::resolve_scheme``,
+    which keeps a third ``ssl_verify`` parameter and an opt-in
+    ``RSC_LS_LEGACY_HTTP_SHIM=1`` fallback (``resolve_scheme_with_legacy``)
+    with a WARN. The scripts have no legacy fallback by design.
     """
-    _ = (port, no_ssl_verify)
-    return ("http" if force_http else "https"), False
+    _ = port
+    return "http" if force_http else "https"
 
 
 def validate_user(raw: str) -> str | None:
-    """Validate a device username per ``lsp/src/live.rs::validate_user``.
+    """Validate a device username per ``lsp/src/live_config.rs::validate_user``.
 
     Allows 1..64 chars matching ``^[A-Za-z0-9._-]+$``. Returns the trimmed
     value on success, None on failure (callers fall back to ``admin``).
@@ -179,7 +213,7 @@ def parse_ipv4_numeric(literal: str) -> ipaddress.IPv4Address | None:
 def normalized_host_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     """Return the normalized IP for ``host`` when it is numeric, else None.
 
-    Mirrors ``lsp/src/live.rs::normalized_host_ip``: the HTTP client connects
+    Mirrors ``lsp/src/live_net.rs::normalized_host_ip``: the HTTP client connects
     to the normalized host, so range checks must run against this value, not
     the raw string. Handles canonical literals via stdlib ``ipaddress``,
     non-canonical IPv4 numerics via :func:`parse_ipv4_numeric`, and bare IPv6
@@ -221,7 +255,7 @@ def normalized_host_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Addre
 def is_non_canonical_numeric_host(host: str) -> bool:
     """Whether ``host`` is a non-canonical numeric literal (fail-closed).
 
-    Mirrors ``lsp/src/live.rs::is_non_canonical_numeric_host``: when
+    Mirrors ``lsp/src/live_net.rs::is_non_canonical_numeric_host``: when
     normalization yields an IP whose canonical string differs from the raw
     literal (modulo brackets and ASCII case), the input used a decimal, hex,
     octal, short, or otherwise non-canonical encoding and is rejected — even
@@ -274,7 +308,7 @@ def is_normalized_ssrf_denied(addr: ipaddress.IPv4Address | ipaddress.IPv6Addres
 
 
 def validate_host(host: str) -> str | None:
-    """Validate a device host per ``lsp/src/live.rs::validate_host``.
+    """Validate a device host per ``lsp/src/live_net.rs::validate_host``.
 
     Returns None on success, an error string on failure.
     Checks: non-empty, <=253 chars, no null/control chars, no URI delimiters
@@ -336,7 +370,7 @@ def validate_host(host: str) -> str | None:
 def format_host_for_url(host: str) -> str:
     """Wrap bare IPv6 literals with brackets for URL.
 
-    Mirrors ``lsp/src/live.rs::format_host_for_url``.
+    Mirrors ``lsp/src/live_net.rs::format_host_for_url``.
     """
     if host.startswith("[") and host.endswith("]"):
         return host
@@ -485,6 +519,26 @@ def resolve_and_check_host(host: str, port: int) -> str | None:
     return None
 
 
+def check_target(host: str, port: int) -> str | None:
+    """Lexical + DNS-time target check for the pre-credential phase.
+
+    Composes :func:`validate_host` (lexical + normalized-literal SSRF
+    checks, no DNS) with :func:`resolve_and_check_host` (re-resolves via
+    ``getaddrinfo`` and denies when ANY returned IP is unconditionally
+    SSRF-denied). Returns None when the target passes both, else an error
+    string (fail-closed before credentials are used).
+
+    Callers keep a lexical-only ``validate_host`` gate at startup (exit-code
+    semantics differ per script); this runs at the pre-credential point
+    where DNS must be re-checked. Dry-run paths must NOT call this —
+    previews stay network-free.
+    """
+    err = validate_host(host)
+    if err:
+        return err
+    return resolve_and_check_host(host, port)
+
+
 def verify_tls_pin(
     host: str,
     port: int,
@@ -502,6 +556,11 @@ def verify_tls_pin(
     (fail-closed: any network, validation, or pin mismatch is an error).
     Never performs HTTP or follows redirects.
 
+    ``timeout`` must be a positive, already-clamped value (deploy 1..300,
+    live-check 1..30 via :func:`clamp_int`); values below 1 are floored to
+    1 defensively — a 0 timeout would flip the socket into non-blocking
+    mode and fail in confusing ways.
+
     F1: DNS is re-resolved here and every returned IP is re-checked against
     the SSRF deny policy fail-closed before connecting (``host`` passed only
     lexical checks at startup; DNS may resolve differently now).
@@ -509,6 +568,8 @@ def verify_tls_pin(
     bare = host.strip()
     if bare.startswith("[") and bare.endswith("]") and len(bare) >= 2:
         bare = bare[1:-1]
+    if timeout < 1:
+        timeout = 1
     # F1: resolve-then-revalidate before any socket: a hostname that passed
     # lexical checks may still resolve to a denied address right now.
     dns_err = resolve_and_check_host(host, port)

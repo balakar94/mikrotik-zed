@@ -1,4 +1,4 @@
-"""QA gate for scripts/_mikrotik_shared.py (STREAM D cohesion).
+"""QA gate for scripts/_mikrotik_shared.py (dedup cohesion).
 
 The shared module must be the single source for REST scheme resolution,
 integer env-var parsing, host validation, and IPv6 bracket formatting used
@@ -22,10 +22,18 @@ LIVE_CHECK_PY = SCRIPTS / "mikrotik-live-check.py"
 sys.path.insert(0, str(SCRIPTS))
 
 from _mikrotik_shared import (  # noqa: E402
+    check_target,
+    clamp_int,
     env_int,
+    extract_spki_der,
     format_host_for_url,
+    parse_fingerprint,
+    redact_secrets,
+    resolve_and_check_host,
     resolve_scheme,
+    spki_sha256,
     validate_host,
+    validate_user,
 )
 
 
@@ -37,26 +45,25 @@ def _read(p: Path) -> str:
 
 class TestResolveScheme:
     def test_https_default_on_standard_ports(self):
-        assert resolve_scheme(443, False, False) == ("https", False)
-        assert resolve_scheme(8729, False, True) == ("https", False)
+        assert resolve_scheme(443, False) == "https"
+        assert resolve_scheme(8729, False) == "https"
 
-    def test_nonstandard_port_with_verify_stays_https(self):
-        # ssl_verify ON (no_ssl_verify=False): scheme is https on any port.
-        assert resolve_scheme(80, False, False) == ("https", False)
-        assert resolve_scheme(8080, False, False) == ("https", False)
+    def test_nonstandard_port_stays_https(self):
+        # Scheme never depends on the port — only on the explicit opt-in.
+        assert resolve_scheme(80, False) == "https"
+        assert resolve_scheme(8080, False) == "https"
 
     def test_no_tls_downgrade_without_explicit_http(self):
-        # MIKROTIK_SSL=0 (no_ssl_verify=True) only disables verification,
-        # never changes the scheme — plain HTTP needs explicit --http.
-        assert resolve_scheme(80, False, True) == ("https", False)
-        assert resolve_scheme(8080, False, True) == ("https", False)
-        # Standard ports never downgrade either, even with verify off.
-        assert resolve_scheme(443, False, True) == ("https", False)
-        assert resolve_scheme(8729, False, True) == ("https", False)
+        # Disabling verification must never change the scheme (the verify
+        # flag is not even a parameter anymore); plain HTTP needs --http.
+        assert resolve_scheme(80, False) == "https"
+        assert resolve_scheme(8080, False) == "https"
+        assert resolve_scheme(443, False) == "https"
+        assert resolve_scheme(8729, False) == "https"
 
     def test_force_http_wins(self):
-        assert resolve_scheme(443, True, True) == ("http", False)
-        assert resolve_scheme(80, True, False) == ("http", False)
+        assert resolve_scheme(443, True) == "http"
+        assert resolve_scheme(80, True) == "http"
 
 
 # ── env_int ───────────────────────────────────────────────────────
@@ -198,6 +205,11 @@ class TestDedupCohesion:
     def test_both_scripts_import_shared(self):
         assert "from _mikrotik_shared import" in _read(DEPLOY_PY)
         assert "from _mikrotik_shared import" in _read(LIVE_CHECK_PY)
+        for script in (DEPLOY_PY, LIVE_CHECK_PY):
+            text = _read(script)
+            assert "check_target" in text
+            assert "clamp_int" in text
+            assert "resolve_scheme" in text
 
     def test_scripts_bootstrap_sys_path(self):
         # The scripts/ dir must be added to sys.path before the local import
@@ -215,10 +227,22 @@ class TestDedupCohesion:
         check = _read(LIVE_CHECK_PY)
         assert "def resolve_scheme" not in deploy
         assert "def _env_int" not in deploy
+        assert "def _clamp_deploy_timeout" not in deploy
+        assert "def clamp_int" not in deploy
+        assert "def check_target" not in deploy
         assert "def resolve_scheme" not in check
         assert "def _env_int" not in check
+        assert "def clamp_int" not in check
+        assert "def check_target" not in check
         assert "def validate_host" not in check
         assert "def format_host_for_url" not in check
+
+    def test_no_dead_legacy_shim(self):
+        # The (scheme, legacy_shim_fired) tuple is gone: no caller may
+        # unpack or branch on a shim flag that was always False.
+        for script in (DEPLOY_PY, LIVE_CHECK_PY):
+            text = _read(script)
+            assert "legacy_shim" not in text
 
 
 # ── CLI smoke: import bootstrap works when run as a script ───────
@@ -341,16 +365,6 @@ class TestDeploySsrfGate:
 # ── Deploy scheme + timeout separation ───────────────────────────
 
 class TestDeploySchemeAndTimeout:
-    def _load_deploy(self):
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("mikrotik_deploy_timeout", str(DEPLOY_PY))
-        assert spec is not None and spec.loader is not None
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules["mikrotik_deploy_timeout"] = mod
-        spec.loader.exec_module(mod)
-        return mod
-
     def test_ssl_zero_alone_stays_https(self):
         import tempfile
 
@@ -375,12 +389,194 @@ class TestDeploySchemeAndTimeout:
             os.unlink(rsc)
 
     def test_clamp_helper_bounds_and_guards(self):
-        mod = self._load_deploy()
-        assert mod._clamp_deploy_timeout(0) == 1
-        assert mod._clamp_deploy_timeout(-5) == 1
-        assert mod._clamp_deploy_timeout(9999) == 300
-        assert mod._clamp_deploy_timeout(60) == 60
-        assert mod._clamp_deploy_timeout("42", default=60) == 42
+        # Deploy bounds 1..300 (was _clamp_deploy_timeout, now shared).
+        assert clamp_int(0, 1, 300, 60) == 1
+        assert clamp_int(-5, 1, 300, 60) == 1
+        assert clamp_int(9999, 1, 300, 60) == 300
+        assert clamp_int(60, 1, 300, 60) == 60
+        assert clamp_int("42", 1, 300, 60) == 42
         # Non-numeric falls back to default with a warning, never raises.
-        assert mod._clamp_deploy_timeout("bogus", default=60) == 60
-        assert mod._clamp_deploy_timeout(None, default=60) == 60
+        assert clamp_int("bogus", 1, 300, 60) == 60
+        assert clamp_int(None, 1, 300, 60) == 60
+
+    def test_live_check_bounds(self, capsys):
+        # Live-check bounds 1..30 with default 5.
+        assert clamp_int(0, 1, 30, 5) == 1
+        assert clamp_int(31, 1, 30, 5) == 30
+        assert clamp_int(5, 1, 30, 5) == 5
+        assert clamp_int(None, 1, 30, 5) == 5
+        assert clamp_int("bogus", 1, 30, 5) == 5
+        assert "warning: invalid timeout 'bogus', using default 5" in capsys.readouterr().err
+
+
+# ── validate_user ─────────────────────────────────────────────────
+
+class TestValidateUser:
+    def test_valid_names(self):
+        assert validate_user("admin") == "admin"
+        assert validate_user("  admin  ") == "admin"
+        assert validate_user("user.name-01_x") == "user.name-01_x"
+
+    def test_empty_and_overlong(self):
+        assert validate_user("") is None
+        assert validate_user("   ") is None
+        assert validate_user("a" * 65) is None
+        assert validate_user("a" * 64) == "a" * 64
+
+    def test_control_chars_and_bad_charset(self):
+        assert validate_user("ad\0min") is None
+        assert validate_user("ad\nmin") is None
+        assert validate_user("ad min") is None
+        assert validate_user("ad@min") is None
+        assert validate_user("admín") is None
+
+
+# ── parse_fingerprint ─────────────────────────────────────────────
+
+class TestParseFingerprint:
+    HEX64 = "ab" * 32
+
+    def test_valid_pin(self):
+        pin = parse_fingerprint(f"sha256:{self.HEX64}")
+        assert pin is not None and len(pin) == 32
+
+    def test_prefix_case_insensitive_and_separators_stripped(self):
+        pin = parse_fingerprint(f"SHA256:{self.HEX64[:32]}:{self.HEX64[32:]}")
+        assert pin is not None and len(pin) == 32
+        spaced = parse_fingerprint("sha256: " + " ".join(self.HEX64[i : i + 8] for i in range(0, 64, 8)))
+        assert spaced is not None and spaced == pin
+
+    def test_malformed_returns_none(self):
+        assert parse_fingerprint(None) is None
+        assert parse_fingerprint("") is None
+        assert parse_fingerprint("   ") is None
+        assert parse_fingerprint("sha256:abc") is None  # too short
+        assert parse_fingerprint("sha256:" + "ab" * 33) is None  # too long
+        assert parse_fingerprint("sha256:" + "zz" * 32) is None  # non-hex
+        assert parse_fingerprint("md5:" + self.HEX64) is None  # wrong scheme
+
+
+# ── redact_secrets ────────────────────────────────────────────────
+
+class TestRedactSecrets:
+    def test_password_and_basic_variants_redacted(self):
+        import base64
+
+        text = "login admin:secret failed secret"
+        out = redact_secrets(text, "secret", "admin")
+        assert "secret" not in out
+        basic = base64.b64encode(b"admin:secret").decode("ascii")
+        assert basic not in redact_secrets(f"header {basic}", "secret", "admin")
+        lone = base64.b64encode(b"secret").decode("ascii")
+        assert lone not in redact_secrets(f"token {lone}", "secret", "admin")
+        assert "[REDACTED]" in out
+
+    def test_no_password_leaves_text_untouched(self):
+        assert redact_secrets("nothing secret here", None, "admin") == "nothing secret here"
+        assert redact_secrets("", "secret", "admin") == ""
+
+
+# ── resolve_and_check_host (numeric literals only: no DNS traffic) ─
+
+class TestResolveAndCheckHost:
+    def test_allowed_literals_pass(self):
+        assert resolve_and_check_host("192.168.88.1", 443) is None
+        assert resolve_and_check_host("127.0.0.1", 443) is None  # allowed by design
+        assert resolve_and_check_host("2001:db8::1", 443) is None
+
+    def test_denied_addresses_fail_closed(self):
+        assert resolve_and_check_host("169.254.169.254", 443) is not None
+        assert resolve_and_check_host("169.254.10.20", 443) is not None
+        assert resolve_and_check_host("0.0.0.0", 443) is not None
+        assert resolve_and_check_host("::", 443) is not None
+        assert resolve_and_check_host("fe80::1", 443) is not None
+        assert resolve_and_check_host("[::ffff:a9fe:a9fe]", 443) is not None
+
+    def test_empty_host(self):
+        assert resolve_and_check_host("", 443) == "empty host"
+
+
+# ── check_target (lexical + DNS composition) ──────────────────────
+
+class TestCheckTarget:
+    def test_allowed_literal_passes_both_phases(self):
+        assert check_target("192.168.88.1", 443) is None
+
+    def test_lexical_denial_short_circuits(self):
+        assert check_target("", 443) is not None
+        assert check_target("169.254.169.254", 443) is not None
+        assert check_target("127.1", 443) is not None  # non-canonical numeric
+
+    def test_dns_phase_denial(self):
+        assert check_target("0.0.0.0", 443) is not None
+        assert check_target("fe80::1", 443) is not None
+
+
+# ── DER / SPKI walker ─────────────────────────────────────────────
+
+def _tlv(tag: int, value: bytes) -> bytes:
+    assert len(value) < 128
+    return bytes([tag, len(value)]) + value
+
+
+def _synthetic_cert(spki: bytes, fields: int = 5) -> bytes:
+    """Minimal DER shaped like a certificate for the walker.
+
+    outer SEQ { tbs SEQ { [0] EXPLICIT, ``fields`` INTEGERs, spki }, sig }.
+    """
+    tbs_inner = _tlv(0xA0, _tlv(0x02, b"\x02"))
+    tbs_inner += b"".join(_tlv(0x02, bytes([i])) for i in range(fields))
+    tbs_inner += spki
+    return _tlv(0x30, _tlv(0x30, tbs_inner) + _tlv(0x30, b"\x00"))
+
+
+class TestDerSpkiWalker:
+    SPKI = _tlv(0x30, _tlv(0x06, b"\x2a\x03") + _tlv(0x03, b"\x00\xde\xad\xbe\xef"))
+
+    def test_extract_spki_from_well_formed_cert(self):
+        import hashlib
+
+        cert = _synthetic_cert(self.SPKI)
+        assert extract_spki_der(cert) == self.SPKI
+        assert spki_sha256(cert) == hashlib.sha256(self.SPKI).digest()
+
+    def test_wrong_field_count_fails_closed(self):
+        assert extract_spki_der(_synthetic_cert(self.SPKI, fields=4)) is None
+        assert extract_spki_der(_synthetic_cert(self.SPKI, fields=6)) is None
+
+    def test_malformed_input_fails_closed(self):
+        assert extract_spki_der(b"") is None
+        assert extract_spki_der(b"\x30") is None
+        assert extract_spki_der(b"\x31\x03\x01\x02\x03") is None  # not a SEQUENCE
+        cert = _synthetic_cert(self.SPKI)
+        assert extract_spki_der(cert[:-3]) is None  # truncated
+        assert spki_sha256(b"") is None
+        assert spki_sha256(b"not-der") is None
+
+
+# ── Rust parity tripwire ──────────────────────────────────────────
+
+class TestRustParity:
+    """Pin the shared SSRF constants on both sides of the language boundary.
+
+    The Python helpers mirror ``lsp/src/live_net.rs`` by hand; if either
+    side edits its denylist without the other, this fails. (Behavioral
+    parity lives in the shared SSRF vector tables above + live_ssrf.rs.)
+    """
+
+    LITERALS = (
+        "169.254.169.254",
+        "metadata.google.internal",
+        "metadata.google",
+        "metadata.goog",
+        "0.0.0.0",
+        "169.254.0.0/16",
+        "fe80::/10",
+    )
+
+    def test_denylist_literals_match_rust(self):
+        rust = (ROOT / "lsp" / "src" / "live_net.rs").read_text(encoding="utf-8")
+        assert "validate_host" in rust, "expected Rust validate_host to live in live_net.rs"
+        for literal in self.LITERALS:
+            assert literal in SHARED_PY.read_text(encoding="utf-8"), f"shared lost {literal!r}"
+            assert literal in rust, f"Rust live_net.rs lost {literal!r}"

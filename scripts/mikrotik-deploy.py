@@ -6,7 +6,7 @@ Supports two transports:
   1) REST API via `requests` (preferred, RouterOS 7.20+ has /rest)
   2) SSH via `paramiko` (fallback, or explicit --method ssh)
 
-Env vars (all can be overridden by CLI flags, mirrored in lsp/src/live.rs LiveConfig::from_env):
+Env vars (all can be overridden by CLI flags, mirrored in lsp/src/live_config.rs LiveConfig::from_env):
   MIKROTIK_HOST   - device host/IP (required)
   MIKROTIK_USER   - username (default: admin)
   MIKROTIK_PASS   - password (required)
@@ -59,11 +59,12 @@ import urllib.parse
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from _mikrotik_shared import (  # noqa: E402
+    check_target,
+    clamp_int,
     env_int,
     format_host_for_url,
     parse_fingerprint,
     redact_secrets,
-    resolve_and_check_host,
     resolve_scheme,
     validate_host,
     validate_user,
@@ -117,7 +118,7 @@ def _match_import_failure_marker(output: str) -> str | None:
     return None
 
 
-# Filename validation — mirrors lsp/src/live.rs::validate_host but adapted for filenames.
+# Filename validation — mirrors lsp/src/live_net.rs::validate_host but adapted for filenames.
 # Policy: safe filename for RouterOS file storage and REST URL path segment.
 _FILENAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
 
@@ -128,7 +129,7 @@ def validate_filename(filename: str) -> str | None:
     Returns None on success, error string on failure.
     Checks: non-empty, 1..64 chars, no null/control, no path separators,
     no URI delimiters (%?#@), no parent segment '..', and strict charset
-    ^[a-zA-Z0-9._-]+$ (same allowlist style as live.rs validate_host).
+    ^[a-zA-Z0-9._-]+$ (same allowlist style as live_net.rs validate_host).
     """
     if not filename:
         return "empty"
@@ -168,21 +169,6 @@ def _sanitize_and_validate_filename(raw: str) -> str:
     return raw
 
 
-def _clamp_deploy_timeout(timeout: object, default: int = 60) -> int:
-    """Clamp a deploy timeout to 1..300s, guarding non-numeric input.
-
-    Callers pass the already-parsed ``env_int`` / argparse value through;
-    anything unparseable falls back to ``default`` with a warning (never
-    raises, never returns 0/negative/unbounded).
-    """
-    try:
-        value = int(timeout)  # type: ignore[arg-type]
-    except (ValueError, TypeError):
-        print(f"warning: invalid timeout {timeout!r}, using default {default}", file=sys.stderr)
-        value = default
-    return min(max(value, 1), 300)
-
-
 def _deny_ssrf_host_or_exit(host: str) -> None:
     """Validate ``host`` against the shared SSRF denylist; exit 2 on denial."""
     err = validate_host(host)
@@ -196,20 +182,13 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
     # enforced even on --dry-run.
     _deny_ssrf_host_or_exit(host)
     host_for_url = format_host_for_url(host)
-    no_ssl_verify = not ssl_verify
-    scheme, legacy_shim = resolve_scheme(port, force_http, no_ssl_verify)
-    if legacy_shim:
-        print(
-            "warning: --no-ssl-verify no longer selects the scheme;"
-            " use --http (or MIKROTIK_HTTP=1) explicitly",
-            file=sys.stderr,
-        )
+    scheme = resolve_scheme(port, force_http)
     # Sanitize filename before any URL construction — same gate for both transports.
     filename = _sanitize_and_validate_filename(filename)
     # URL-encode validated filename for REST path segment (safe after allowlist).
     encoded_filename = urllib.parse.quote(filename, safe="")
     # Clamp per-request timeout to 1..300s (mirrors live 1..30 clamp, wider for file upload).
-    effective_timeout = _clamp_deploy_timeout(timeout, default=30)
+    effective_timeout = clamp_int(timeout, 1, 300, 30)
     if dry_run:
         log(f"DRY-RUN REST: would POST {len(content)} bytes to {scheme}://{host_for_url}:{port}/rest/execute as {user} (primary: direct execute)")
         log(f"DRY-RUN REST: fallback would PUT {len(content)} bytes to {scheme}://{host_for_url}:{port}/rest/file/{encoded_filename} as {user}")
@@ -219,12 +198,13 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
         print("error: REST method requires 'requests' (pip install requests)", file=sys.stderr)
         sys.exit(3)
     base = f"{scheme}://{host_for_url}:{port}"
-    # F1: resolve-then-revalidate before Authorization is sent: lexical
-    # checks ran at startup, DNS may resolve differently now. Fail closed.
-    # (verify_tls_pin re-checks again on its own handshake when a pin is set.)
-    dns_err = resolve_and_check_host(host, port)
-    if dns_err:
-        print(f"error: {dns_err}", file=sys.stderr)
+    # F1: lexical + resolve-then-revalidate before Authorization is sent:
+    # lexical checks ran at startup, DNS may resolve differently now. Fail
+    # closed. (verify_tls_pin re-checks again on its own handshake when a
+    # pin is set.)
+    target_err = check_target(host, port)
+    if target_err:
+        print(f"error: {target_err}", file=sys.stderr)
         sys.exit(4)
 
     session = requests.Session()
@@ -341,7 +321,7 @@ def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str,
         # Clamp to 1..300s like REST so --timeout 0 / negative values cannot
         # spin-loop and huge values cannot hang the session; non-numeric
         # input falls back to the deploy default with a warning.
-        effective_timeout = _clamp_deploy_timeout(timeout, default=60)
+        effective_timeout = clamp_int(timeout, 1, 300, 60)
         deadline = time.monotonic() + effective_timeout
         while not stdout.channel.exit_status_ready():
             if time.monotonic() >= deadline:
