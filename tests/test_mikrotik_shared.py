@@ -148,6 +148,33 @@ class TestValidateHostSsrfDenylist:
         assert validate_host("not169.254.169.254.example.com") is None
 
 
+class TestSharedSsrfVectors:
+    """Shared table with lsp/src/tests/live_ssrf.rs: every encoding of a
+    denied address fails closed. Intentional divergence: loopback forms are
+    allowed here by design (routers live on LAN; no ALLOW_LOOPBACK gate on
+    this path), so only the unconditionally-denied subset is asserted."""
+
+    def test_shared_vectors_denied(self):
+        for bad in [
+            "2130706433",  # decimal 127.0.0.1
+            "0x7f000001",  # hex 127.0.0.1
+            "0177.0.0.1",  # octal 127.0.0.1
+            "127.1",  # short 127.0.0.1
+            "169.254.0.0",
+            "169.254.0.1",
+            "169.254.255.254",
+            "fe80::1",
+            "FE80::abcd",
+        ]:
+            assert validate_host(bad) is not None, f"should deny {bad!r}"
+
+    def test_mapped_loopback_allowed_by_design(self):
+        # Intentional divergence from Rust: this path has no loopback gate,
+        # so loopback forms that are not non-canonical stay allowed here.
+        assert validate_host("127.0.0.1") is None
+        assert validate_host("[::ffff:127.0.0.1]") is None
+
+
 # ── format_host_for_url ───────────────────────────────────────────
 
 class TestFormatHostForUrl:

@@ -200,3 +200,54 @@ fn test_redirects_disabled_on_agents() {
         "insecure agent must disable redirects, got: {insecure_dbg}"
     );
 }
+
+#[test]
+fn test_ssrf_shared_vector_table_denied() {
+    // Shared table with scripts/_mikrotik_shared.py: every encoding of a
+    // denied address fails closed under the default policy. Loopback-mapped
+    // vectors use allow=false (loopback is gated, not unconditional);
+    // link-local/non-canonical vectors are unconditional (see second loop).
+    for bad in [
+        "2130706433",       // decimal 127.0.0.1
+        "0x7f000001",       // hex 127.0.0.1
+        "0177.0.0.1",       // octal 127.0.0.1
+        "127.1",            // short 127.0.0.1
+        "::ffff:127.0.0.1", // unbracketed IPv4-mapped loopback
+        "169.254.0.0",      // link-local range floor
+        "169.254.0.1",
+        "169.254.255.254", // range ceiling edge
+        "fe80::1",         // IPv6 link-local
+        "FE80::abcd",      // case-insensitive link-local
+    ] {
+        assert!(
+            validate_host_with_allow(bad, false).is_err(),
+            "shared vector must be denied by default: {bad:?}"
+        );
+        assert!(
+            is_non_canonical_numeric_host(bad)
+                || normalized_host_ip(bad)
+                    .map(is_normalized_ssrf_denied)
+                    .unwrap_or(false)
+                || normalized_host_ip(bad)
+                    .map(is_normalized_loopback_or_private)
+                    .unwrap_or(false)
+                || is_loopback_or_private(bad),
+            "shared vector must hit a normalized deny path: {bad:?}"
+        );
+    }
+    // Unconditional denials stay denied even when loopback is allowed.
+    for bad in [
+        "2130706433",
+        "0x7f000001",
+        "0177.0.0.1",
+        "127.1",
+        "169.254.0.0",
+        "169.254.255.254",
+        "fe80::1",
+    ] {
+        assert!(
+            validate_host_with_allow(bad, true).is_err(),
+            "unconditional vector must stay denied with loopback allowed: {bad:?}"
+        );
+    }
+}

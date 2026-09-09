@@ -14,53 +14,44 @@
   <a href="https://github.com/balakar94/tree-sitter-rsc"><img src="https://img.shields.io/badge/tree--sitter-rsc-orange" alt="grammar"></a>
 </p>
 
-<p align="center">
-  <sub>RouterOS 7.20+ · Snapshot 7.23.2 · Awaiting 7.24</sub>
-</p>
-
 ---
 
-**Contents:** [Features](#-features) · [Install](#-install) · [Quick start](#-quick-start) · [Dependencies](#-dependencies) · [Deploy](#-deploy) · [Live Enrichment](#-live-device-enrichment-opt-in) · [Language Server](#-language-server) · [Grammar](#-grammar) · [Sync & Extraction](#-sync--extraction) · [Development](#️-development) · [Release](#-release) · [Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) · [Reference](#-reference) · [License](#-license)
+**Contents:** [Features](#-features) · [Install](#-install) · [Quick start](#-quick-start) · [Deploy](#-deploy) · [Live](#-live-device-enrichment-opt-in) · [Language server](#-language-server) · [Grammar](#-grammar) · [Sync](#-sync--extraction) · [Development](#️-development) · [Release](#-release) · [Reference](#-reference) · [License](#-license)
+
+Start here: [docs/index.md](docs/index.md) · [docs/quickstart.md](docs/quickstart.md) · Full history: [CHANGELOG.md](CHANGELOG.md) · [ROADMAP.md](ROADMAP.md)
 
 ---
 
 ## ✨ Features
 
-| Area             | What you get                                                                                              |
-| ---------------- | --------------------------------------------------------------------------------------------------------- |
-| **Highlighting** | Full RouterOS syntax highlighting powered by a dedicated tree-sitter grammar                              |
-| **Completion**   | Context-aware suggestions for menus, verbs, properties and values, with snippets and inline documentation |
-| **Live Data**    | Opt-in real-time autocomplete from your router (interfaces, IPs, firewall lists/chains, pools)            |
-| **Hover**        | Reference documentation for menus, properties and verbs, shown right where you type                       |
-| **Diagnostics**  | Live semantic and syntax validation of your script while you write it                                     |
-| **Outlining**    | Document outline of menus and script variables, plus code folding                                         |
-| **Signature**    | Parameter hints when calling menu verbs                                                                   |
-| **Navigation**   | Go-to-definition and find-references across script variables                                              |
-| **Quick fixes**  | "Did you mean …?" corrections for typos in properties, menus and values                                   |
-| **Deploy**       | Send a validated script to a real router over REST or SSH without leaving the editor                      |
-| **Sync**         | Keeps the built-in command database aligned with MikroTik's published CLI reference                       |
-| **Grammar**      | A dedicated tree-sitter grammar, developed in its own repository and pinned by revision                   |
+| Area | What you get |
+| ---- | ------------ |
+| **Highlighting** | Full RouterOS syntax via a dedicated tree-sitter grammar |
+| **Completion** | Menus, verbs, properties, values + snippets and docs |
+| **Live data** | Opt-in real-time values from your router (see Live) |
+| **Hover** | Reference docs for menus, properties, verbs |
+| **Diagnostics** | Semantic + syntax validation as you type |
+| **Outline** | Menu/variable symbols, folding |
+| **Signature** | Required-first parameter hints for menu verbs |
+| **Navigation** | Go-to-definition / references for `:local` / `:global` vars |
+| **Quick fixes** | "Did you mean …?" for typos (edit distance) |
+| **Deploy** | Push a validated script to a router over REST or SSH |
+| **Sync** | Command database regenerated from MikroTik's CLI reference |
+| **Grammar** | Own repo, pinned by revision in `extension.toml` |
 
-**Coverage:** the command database models the complete RouterOS v7.23.2 CLI — **1077 menus**, directories and executable commands alike, spanning every context of the hierarchy from interfaces and networking to queues, users and system tools — compatible back to 7.20+ and broadly usable on 7.0+ for common menus. It is extracted automatically from MikroTik's official machine-readable documentation (`data/commands.toml` and `data/upstream-docs.toml`, source `https://manual.mikrotik.com/llms-full.txt`), so completion, hover and diagnostics work anywhere in the tree rather than on a hand-picked subset.
+**Coverage:** the command database models the complete RouterOS CLI snapshot (see the header of `data/commands.toml` for version, menu count, timestamp, and source hash) — directories and executable commands across the whole tree, compatible with 7.20+ and broadly usable on 7.0+ for common menus. Details: [docs/index.md](docs/index.md).
 
 <details>
 <summary>Example <code>.rsc</code> — hover, completion, diagnostics</summary>
 
 ```rsc
-# /ip/address — hover shows Type + Arguments
 /ip address add address=10.0.0.1/24 interface=ether1
-
-# completion after `chain=` → input | forward | output
 /ip firewall filter add chain=input action=accept comment="allow"
 
-# diagnostics: missing required `address` → Info
-/ip address add interface=ether1
+/ip address add interface=ether1   # diagnostics: missing required `address` → Warning
 
-# multi-line with backslash continuation
-/tool fetch url="https://example.com/very/long/url/that/needs/continuation" \
+/tool fetch url="https://example.com/long/url" \
     mode=https
-
-# control flow
 :if ($var > 10) do={ :put "ok" } else={ :error "fail" }
 ```
 
@@ -70,58 +61,32 @@
 
 ## 📦 Install
 
-### From Zed Extensions (once published)
+**Registry (once published):** Zed → `zed: extensions` → search **MikroTik** → **Install**.
 
-Zed → `zed: extensions` → search **MikroTik** → **Install**.
-
-### Dev install (local)
+**Dev install:**
 
 ```bash
-# 1. Optional: build LSP locally (otherwise extension auto-downloads from Releases)
-cargo build -p rsc-ls --release
-export PATH="$PWD/target/release:$PATH"
-
-# For GUI Zed (Dock), also copy to a GUI-visible PATH (or just run: make install-lsp):
-cp target/release/rsc-ls ~/.cargo/bin/rsc-ls
-cp target/release/rsc-ls /opt/homebrew/bin/rsc-ls  # macOS
-
-# 2. Zed → Command Palette → Install Dev Extension → select this directory
-# 3. Open a .rsc file; check logs via zed --foreground or zed: open log
+cargo build -p rsc-ls --release && export PATH="$PWD/target/release:$PATH"
+# Zed → Command Palette → Install Dev Extension → select this directory
+# Logs: zed: open log
 ```
 
-### Binary auto-download
+Full bootstrap (toolchains, grammar, LSP): see [docs/quickstart.md](docs/quickstart.md).
 
-Using the extension requires no manual builds. When you open a `.rsc` file, the extension locates its language server by trying three sources in order, stopping at the first success:
+**Binary auto-download:** opening a `.rsc` file resolves `rsc-ls` via PATH → cache → GitHub Releases (SHA-256 verified before execution). Assets are named by Rust target triple:
 
-1. **Your PATH** — an `rsc-ls` you installed yourself takes precedence (the development override; Windows probes `rsc-ls.exe` too). PATH wins over auto-download by design for fast dev iteration, but a PATH binary bypasses the checksum/`.verified` gate used by the download path — only keep trusted builds on PATH (the extension logs a warning when this fast path is used).
-2. **The cache** — the copy downloaded by a previous session, reused as-is.
-3. **GitHub Releases** — otherwise it downloads the build that matches your platform from the table below, verifies it against the published SHA-256 companion _before_ making it executable or running it, and surfaces progress through Zed's installation-status UI. Any failure — missing asset, checksum mismatch — aborts cleanly and shows manual instructions: an unverified binary is never executed.
-
-Every asset is named after a Rust **target triple**: the conventional `<architecture>-<vendor>-<os>-<abi>` string that compilers and toolchains use to identify one exact platform.
-
-<table align="center">
-  <thead>
-    <tr><th>Target triple</th><th>Platform</th></tr>
-  </thead>
-  <tbody>
-    <tr><td><code>aarch64-apple-darwin</code></td><td>macOS Apple Silicon</td></tr>
-    <tr><td><code>x86_64-apple-darwin</code></td><td>macOS Intel</td></tr>
-    <tr><td><code>aarch64-unknown-linux-gnu</code></td><td>Linux ARM64</td></tr>
-    <tr><td><code>x86_64-unknown-linux-gnu</code></td><td>Linux x64</td></tr>
-    <tr><td><code>x86_64-pc-windows-msvc</code></td><td>Windows x64</td></tr>
-    <tr><td><code>aarch64-pc-windows-msvc</code></td><td>Windows ARM64</td></tr>
-  </tbody>
-</table>
-
-> **Windows detail:** the downloaded binary is cached and spawned with an `.exe` suffix, because Windows refuses to execute images whose file name lacks one. Release assets themselves stay extension-less byte blobs, so a single naming scheme serves every platform.
->
-> **Fresh-release 404s:** GitHub's CDN can take a minute or two to propagate new release assets; the API path works immediately, and a PATH-installed binary always bypasses the download entirely.
+| Triple | Platform |
+| ------ | -------- |
+| `aarch64-apple-darwin` | macOS Apple Silicon |
+| `x86_64-apple-darwin` | macOS Intel |
+| `aarch64-unknown-linux-gnu` | Linux ARM64 |
+| `x86_64-unknown-linux-gnu` | Linux x64 |
+| `x86_64-pc-windows-msvc` | Windows x64 |
+| `aarch64-pc-windows-msvc` | Windows ARM64 |
 
 ---
 
 ## 🚀 Quick start
-
-Create a script in a folder where you actually keep your RouterOS work — any `.rsc` file will do, they are plain text:
 
 ```bash
 cat > demo.rsc <<'RSC'
@@ -130,191 +95,46 @@ cat > demo.rsc <<'RSC'
 RSC
 ```
 
-Open `demo.rsc` in Zed and try three things, one per core feature:
-
-- **Completion:** type `/ip ` and pause — the popup lists the sub-menus that exist under `/ip` according to the command database.
-- **Hover:** rest the cursor on `/ip address` — a card explains what the menu is for and what its commands accept.
-- **Diagnostics:** remove `address=` from the first line — the editor flags that `add` under `/ip address` cannot run without it, because validation knows the real command signature rather than guessing from syntax alone.
-
----
-
-## 🔧 Dependencies
-
-Nothing exotic is required, and `make install` sets up all of it for you (see Bootstrap below). This is the complete list, and why each piece exists:
-
-| Dependency                 | Required    | Why                                                                                                                                                                                                                       |
-| -------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Rust 1.90                  | ✅ required | Builds the language server and the extension glue. The repo pins the compiler version _and_ the WebAssembly target in `rust-toolchain.toml`, so rustup installs both automatically on first use — nothing to add by hand. |
-| Python 3.11+               | ✅ required | Runs the extraction, sync and deploy tooling (it relies on the standard-library `tomllib`).                                                                                                                               |
-| pytest, requests, paramiko | ✅ auto     | The Python test suite and the deploy transports. They live inside a project-local `.venv`, never the system interpreter — which sidesteps PEP 668 on Fedora, Debian and Arch.                                             |
-| C compiler + linker        | ✅ required | Compiles the native language server (Xcode CLT, `build-essential`, or `base-devel` depending on platform).                                                                                                                |
-| git                        | ✅ required | Clones the grammar working copy at the revision pinned in `extension.toml`.                                                                                                                                               |
-| curl                       | ✅ required | Downloads toolchains and release binaries during setup.                                                                                                                                                                   |
-| cargo-audit                | ⚪ optional | Scans dependencies against the RustSec advisory database. It runs weekly in CI; `make audit` does the same locally.                                                                                                       |
-| wasm-tools                 | ⚪ optional | Inspects the compiled WebAssembly component when hacking on the extension glue (rustc already emits a valid component).                                                                                                   |
-
-### Bootstrap
-
-`make install` performs the entire setup and is idempotent — re-running it never breaks anything. It detects your operating system and package manager, installs the system packages, provisions rustup with a minimal profile if it is missing (the pinned toolchain and WASI target then arrive on their own through `rust-toolchain.toml`), creates the `.venv` with the Python dependencies, installs a local tree-sitter CLI, and finally builds the language server and puts it on your PATH — including the GUI-visible location on macOS, so the Zed app finds it too.
-
-- Containers and CI usually want `SKIP_SYSTEM=1 make install` to skip distro packages.
-- Every stage is also a standalone target: `make install-deps` (system packages), `make install-tools` (toolchains and `.venv`), `make install-lsp` (build + install the server).
-
-Supported platforms:
-
-- **macOS** — Homebrew and Xcode Command Line Tools
-- **Fedora / RHEL**
-- **Arch**
-- **Debian / Ubuntu**
-
-Any other system works too: skip the distro step with `SKIP_SYSTEM=1` and provide the equivalent packages yourself.
-
-<details>
-<summary>Per-platform notes</summary>
-
-macOS (Homebrew):
-
-```bash
-xcode-select --install
-brew install python node
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-```
-
-Fedora/RHEL:
-
-```bash
-sudo dnf install -y gcc gcc-c++ make curl git openssl-devel pkgconf-pkg-config python3 python3-pip nodejs npm
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-```
-
-Debian/Ubuntu:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y build-essential curl git pkg-config libssl-dev python3 python3-venv python3-pip nodejs npm
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-```
-
-Arch:
-
-```bash
-sudo pacman -Sy --needed --noconfirm base-devel curl git python python-pip nodejs npm
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-```
-
-Then, on any platform:
-
-```bash
-make install-tools   # .venv + tree-sitter-cli; toolchain and WASI target come pinned via rust-toolchain.toml
-make grammar-clone   # fetch the grammars/rsc working copy
-```
-
-</details>
+Open `demo.rsc` in Zed and try the 3-step loop: **completion** (type `/ip `, pause) → **hover** (rest on `/ip address`) → **diagnostics** (delete `address=`, watch the Warning). Full walkthrough: [docs/quickstart.md](docs/quickstart.md).
 
 ---
 
 ## 🛫 Deploy
 
-Local validation only proves the script is well-formed; sooner or later you want it running on a router. Doing that by hand means copying text into a terminal session and hoping the paste survived quoting intact. The deploy tooling closes that gap: it pushes the file to the device and imports it, either from a Zed task or from the companion script, with a dry-run mode that exercises the whole path without ever touching a device.
-
-Two transports are available, selected per task:
-
-- **REST** — talks to the RouterOS v7.20+ REST API, posting the script for execution (with a file-upload + `/import` fallback for longer scripts).
-- **SSH** — uploads via SFTP and runs `/import` over an interactive session.
-
-Both report more than a transport-level success code: RouterOS routinely answers HTTP 200 or exits SSH with status 0 even when an import failed, so the output is scanned for high-confidence failure markers (`syntax error`, `bad command name`, `failure:` …) and surfaces them as real failures.
-
-The connection is configured through environment variables (`MIKROTIK_HOST`, `MIKROTIK_USER`, `MIKROTIK_PASS`, plus optional overrides for port, method, TLS verification and timeout — see `python scripts/mikrotik-deploy.py --help`). Env var semantics are mirrored between the deploy companion (`scripts/mikrotik-deploy.py`) and live enrichment (`lsp/src/live.rs` `LiveConfig::from_env`), so the same `MIKROTIK_*` settings work for both — deploy defaults to `MIKROTIK_TIMEOUT=60` and auto-selects port 443 for REST / 22 for SSH, while live (REST only) defaults to `MIKROTIK_TIMEOUT=5` (clamped 1..30) and port 443. One safe first run needs nothing else:
+Push the open script to a real router over REST or SSH (REST default, SSH via SFTP + `/import`); output is scanned for RouterOS failure markers since the device often answers 200 / exit 0 on failed imports. Configure via `MIKROTIK_HOST` / `MIKROTIK_USER` / `MIKROTIK_PASS` (`scripts/mikrotik-deploy.py --help`). Always dry-run first:
 
 ```bash
 python scripts/mikrotik-deploy.py demo.rsc --dry-run
 ```
 
-Zed tasks live per-worktree: copy `languages/rsc/tasks.json` to `.zed/tasks.json` and you get **REST / SSH / Dry-run / Validate** entries that operate on `$ZED_FILE`. The companion health check for live uses `scripts/mikrotik-live-check.py` (see Live section).
+Zed tasks (`languages/rsc/tasks.json` → copy to `.zed/tasks.json`): REST / SSH / dry-run / validate. Details: [docs/device-deploy.md](docs/device-deploy.md).
 
 ---
 
-## ⚡ Live Device Enrichment (Opt-in)
+## ⚡ Live Device Enrichment (opt-in)
 
 <details>
-<summary><b>Click to expand Live Device Enrichment documentation</b> (disabled by default)</summary>
+<summary><b>Expand Live configuration</b> (disabled by default)</summary>
 <br>
 
-When enabled, `rsc-ls` connects directly to your MikroTik router over the RouterOS REST API and enriches completion suggestions with **real-time device data** as you type, without ever leaving Zed or opening WinBox.
-
-### Enriched Modules
-
-When connected to a router, the hydrator automatically extracts and autocompletes live configuration entities across:
-
-- **Interfaces & Bridges:** Physical ports, VLANs, bridges, wireguard peers, tunnels (`interface`, `bridge`, `in-interface`, `out-interface`, `parent`)
-- **IP Addresses & Networks:** Assigned IPv4 and IPv6 addresses, subnets, gateways (`address`, `network`, `src-address`, `dst-address`, `gateway`)
-- **Firewall & Lists:** Defined address lists and rules across Filter, NAT, Mangle, and Raw (`src-address-list`, `dst-address-list`, `address-list`, `chain`, `jump-target`)
-- **IP Pools:** Configured IPv4 and IPv6 address pools (`pool`, `address-pool`, `remote-pool`)
-
-Live suggestions appear in the autocomplete dropdown with the `live — ...` label and highest sorting priority (`0live_...`).
-
-### How to Configure
-
-Live enrichment is **strictly opt-in** and disabled by default. 
-
-#### Recommended: Environment Variables / Keychain
-
-Pass credentials via the process environment (shell profile or keychain-backed env), not via files in the repo:
+`rsc-ls` enriches completion with live router data (interfaces, addresses, firewall lists/chains, pools). Live items sort first with the `0!live_...` key.
 
 ```bash
 export RSC_LS_LIVE=1                  # or MIKROTIK_LIVE=1
-export MIKROTIK_HOST="192.168.88.1"   # Router IP or hostname
-export MIKROTIK_USER="admin"          # Router username (default: admin)
-export MIKROTIK_PASS="your_password"  # Router password (never logged or persisted)
-export MIKROTIK_HTTP=1                # 1 to use plain HTTP (recommended for port 80)
-export MIKROTIK_PORT=80               # REST port (default: 443)
-export MIKROTIK_SSL=0                 # 0 to disable TLS verification (self-signed certs)
-export MIKROTIK_TIMEOUT=5             # Per-request timeout in seconds (1..30, default: 5)
+export MIKROTIK_HOST="192.168.88.1"
+export MIKROTIK_USER="admin"          # default: admin
+export MIKROTIK_PASS="secret"         # env/keychain only — never logged
+export MIKROTIK_PORT=443              # default 443
+export MIKROTIK_TIMEOUT=5             # seconds, clamped 1..30
+export MIKROTIK_SSL=0                 # 0 = skip TLS verify (self-signed)
+export MIKROTIK_HTTP=1                # 1 = plain HTTP (port 80 routers)
+export RSC_LS_LEGACY_HTTP_SHIM=1      # opt-in: allow port-80 + SSL=0 → http fallback (OFF by default)
+export RSC_LS_ALLOW_SETTINGS_TRANSPORT=1  # opt-in: honor host/user/TLS keys from workspace settings
 ```
 
-#### Alternative: Zed `settings.json` (non-secret fields only)
+**Settings gate:** transport keys (`host`/`user`/TLS) in Zed workspace settings are **ignored** unless `RSC_LS_ALLOW_SETTINGS_TRANSPORT=1`. A password in workspace settings is **always ignored with a warning** — env/keychain is the sole password source. Commit `.zed/settings.json` only if secret-free.
 
-Non-secret settings can live in Zed's settings (global settings, or per-project `.zed/settings.json`):
-
-- **Per-project:** Create or edit `.zed/settings.json` in your workspace repository root.
-- **Global:** Edit your global Zed settings (`~/.config/zed/settings.json` or `Cmd + ,` in Zed).
-
-> [!WARNING]
-> Per-project `.zed/settings.json` files are committed to shared repos. Never store `MIKROTIK_PASS` (or any secret) in them — keep passwords in the environment/keychain only. If a `pass`/`password`/`MIKROTIK_PASS` key is present in workspace settings, the LSP ignores it with a warning (env/keychain is the sole password source). If your project uses per-project Zed settings, add `.zed/settings.json` to `.gitignore` unless it is guaranteed secret-free.
-
-```json
-{
-  "lsp": {
-    "rsc-ls": {
-      "binary": {
-        "env": {
-          "RSC_LS_LIVE": "1",
-          "MIKROTIK_HOST": "192.168.88.1",
-          "MIKROTIK_USER": "admin",
-          "MIKROTIK_HTTP": "1",
-          "MIKROTIK_PORT": "80"
-        }
-      }
-    }
-  }
-}
-```
-Set `MIKROTIK_PASS` via the environment (see above) — a pass in `settings.json` is ignored with a warning, never applied.
-
-> [!TIP]
-> **HTTP vs HTTPS in RouterOS:**
-> - Most local routers use plain **HTTP on port 80** (`"MIKROTIK_HTTP": "1"`, `"MIKROTIK_PORT": "80"`).
-> - If your router uses **HTTPS on port 443** with a self-signed certificate, set `"MIKROTIK_PORT": "443"` and `"MIKROTIK_SSL": "0"`.
-> - You can add `"RSC_LS_LOG": "debug"` to view real-time fetch logs in Zed via `Cmd + Shift + P` → `zed: open language server logs` → `rsc-ls`.
-
-Connectivity check: the **"MikroTik: Live — Check connectivity"** task in `.zed/tasks.json` performs a real authenticated `GET /rest/interface` via `scripts/mikrotik-live-check.py` (not a dry-run deploy). It prompts for `MIKROTIK_HOST`/`MIKROTIK_USER` and reads `MIKROTIK_PASS` from env/keychain (never stored in `tasks.json`), sharing the same `MIKROTIK_*` semantics as `live.rs`/`deploy.py` — `MIKROTIK_PORT` (443), `MIKROTIK_SSL=0` (no verify), `MIKROTIK_HTTP=1` (force http, with legacy shim for `SSL=0` on non-standard ports), and `MIKROTIK_TIMEOUT` (5s live default). On success it prints `Live OK: N interfaces`; on failure `Live FAIL: …` with exit 4. Dry-run preview is also available: `python scripts/mikrotik-live-check.py --dry-run` or `--json` for machine output. See `python scripts/mikrotik-live-check.py --help`.
-
-### Safety & Defensive Invariants
-
-- **Zero Disk Modifications:** Live data is stored strictly in an in-memory TTL cache (60 seconds, max 16 collections, 512 KiB cap) and never touches `data/commands.toml` or any files on disk.
-- **Never Blocks Typing:** Completion never blocks the LSP loop — background hydrator is coalesced (2s) and negative-cached (15s); if the router is offline, the editor falls back instantly to static placeholders without hammering the device.
-- **Credential Protection:** `MIKROTIK_PASS` is strictly redacted from all logs and error messages; a pass in workspace settings is ignored with a warning (env/keychain is the sole password source); host validation and SSRF denial (`169.254.169.254`) are enforced before any request.
-- **Strict Caps:** Responses capped at 512 KiB / 500 items / 64 chars per value; custom resources capped at 8, hosts at 4.
+**Health check:** `python scripts/mikrotik-live-check.py --dry-run`, then without flags for a real `GET /rest/interface` (`Live OK: N interfaces`, else `Live FAIL` / exit 4). Live cache is in-memory only (60s TTL), completion never blocks (2s coalesce, 15s negative cache, 512 KiB / 500-item caps, max 4 hosts / 8 custom resources, SSRF deny `169.254.169.254`). Full reference: [docs/live-enrichment.md](docs/live-enrichment.md).
 
 </details>
 
@@ -322,109 +142,41 @@ Connectivity check: the **"MikroTik: Live — Check connectivity"** task in `.ze
 
 ## 🧠 Language Server
 
-The heart of the extension is **rsc-ls**, a self-contained language server written in pure Rust — no Node runtime, no external processes: one binary speaking the Language Server Protocol over stdio. Its entire knowledge of RouterOS, the 1077-menu database, is compiled into the executable itself, which means instant startup and zero data files to lose track of.
-
-That database drives everything contextual the editor experiences:
-
-- **Completions** understand where the cursor is: root menus after a leading `/`, sub-menus within the current context, the verbs a specific menu accepts, and per-verb properties and values — including enumerations, booleans and their documentation. After a `:` it switches to RouterOS scripting words. Triggers are `/`, space, `=` and `:`.
-- **Hover** resolves menu paths, properties and verbs against the same database, so the documentation shown is the documentation MikroTik publishes, not paraphrasing.
-- **Diagnostics** work in two layers. Semantic rules check each statement against the real command signatures — unknown menus, unknown properties, missing required arguments, duplicated properties, invalid enum values. Syntax rules catch structural breakage such as brace and quote mismatches, correctly handling backslash line continuations by reasoning about logical lines while reporting positions on physical ones. Generous caps on file size keep the editor responsive on huge export scripts.
-- **Structure** features derive from the same parse: document symbols for menus and script variables, plus folding ranges.
-- **Signature** help shows required-first parameter hints when calling menu verbs.
-- **Navigation** links variable declarations (`:local` / `:global`) to their `$name` usages in both directions.
-- **Quick fixes** offer "did you mean …?" candidates computed by edit distance when something is mistyped.
-
-The protocol side is hardened deliberately: message-size and document-size caps, a bounded document store, and strict URI validation — so a hostile or corrupt workspace cannot exhaust the server's memory.
+`rsc-ls` is a pure-Rust LSP over stdio with the command table compiled in (`include_str!()`): context-aware completion (triggers `/`, space, `=`, `:`), hover from upstream docs, two-layer diagnostics (semantic signatures + syntax incl. backslash continuations), symbols/folding, signature help, variable navigation, typo quick-fixes — behind message/document size caps and strict `file://` validation. Deep dive: `lsp/src/` and [docs/language-features.md](docs/language-features.md). Caps: [docs/lsp-config.md](docs/lsp-config.md).
 
 ---
 
 ## 🌳 Grammar
 
-RouterOS has no standard tree-sitter grammar, so this project maintains one — but in its own repository, [`balakar94/tree-sitter-rsc`](https://github.com/balakar94/tree-sitter-rsc), rather than in-tree. Two reasons drive the split: the grammar iterates independently of the extension, and the Zed marketplace rejects packages containing nested git repositories. Instead of vendoring history, this repo keeps an **untracked working copy** at `grammars/rsc/` and pins the exact grammar revision in `extension.toml` — builds stay reproducible while the packaging stays clean. After cloning, `make grammar-clone` fetches the working copy at that revision.
-
-Query files exist twice by design: `languages/rsc/*.scm` here is canonical (it is what Zed loads), while the copy inside the grammar repository exists only so `tree-sitter test` can run against it.
-
-Grammar development is the **only** place Node.js enters this project — it provides `tree-sitter-cli` through npx:
-
-```bash
-cd grammars/rsc
-npx tree-sitter generate       # grammar.js → src/parser.c
-npx tree-sitter test           # run the corpus suite
-npx tree-sitter parse FILE     # inspect how a file parses
-npx tree-sitter highlight FILE # preview highlighting
-```
-
-Publishing a grammar change is scripted: `python scripts/publish_grammar.py` pushes the grammar repository and updates the revision pin in `extension.toml` in one step.
+Highlighting comes from [`balakar94/tree-sitter-rsc`](https://github.com/balakar94/tree-sitter-rsc), kept as an untracked working copy in `grammars/rsc/` and pinned by `rev` in `extension.toml` (`make grammar-clone` fetches it). `languages/rsc/*.scm` is canonical for Zed; only `highlights.scm` is mirrored into the grammar repo. Publish via `python scripts/publish_grammar.py` (never hand-edit `rev`). Details: [docs/grammar.md](docs/grammar.md).
 
 ---
 
 ## 🔄 Sync & Extraction
 
-RouterOS evolves, and a hardcoded command table would rot silently. MikroTik mitigates this by publishing its CLI reference in machine-readable form (`llms-full.txt`), and this project builds directly on that source of truth.
-
-The pipeline has two steps. `scripts/sync_llms.py` fetches the upstream files and compares them against what the database was built from — with `--check` it writes nothing and exits non-zero when upstream moved, which is exactly how CI notices drift. `scripts/extract_commands.py` then distills the fetched documentation into `data/commands.toml`: currently 1077 menus from the RouterOS 7.23.2 snapshot, regenerated idempotently. Each generation records the RouterOS version, the UTC timestamp and the hash of the source document in its header, so any database snapshot can be traced back to the exact documentation it came from. Current snapshot: RouterOS 7.23.2 (see `data/commands.toml` header and `data/upstream-docs.toml`); the pipeline will re-sync on the 7.24 release via the weekly docs-drift workflow.
-
-Updating the language server's knowledge therefore reduces to: sync, extract, commit — the TOML is embedded into the binary at compile time, and the next build carries the fresh data everywhere.
+`scripts/sync_llms.py` fetches `llms-full.txt` → `scripts/extract_commands.py` distills `data/commands.toml` (header carries version, timestamp, source hash; provenance in `data/upstream-docs.toml`). Refresh with `make sync && make extract`; CI gates drift separately (`make sync-check`) and a weekly workflow files the `upstream-docs` issue. Details: [docs/data-pipeline.md](docs/data-pipeline.md).
 
 ---
 
 ## 🛠️ Development
 
-Everything runs through `make`, so contributor workflows mirror CI one-to-one: `make validate` replays offline gate (manifest, fmt, clippy, tests, extract); run `make sync-check` separately for upstream drift. (Upstream-docs staleness is gated separately by `make sync-check`, which CI runs; run `make sync && make extract` when MikroTik publishes updates.)
-
-```bash
-make generate      # regenerate parser.c from grammar.js
-make test-all      # grammar + Rust + Python suites
-make check         # fast compile verification (WASM + LSP targets)
-make fmt clippy    # format check + lints (-D warnings)
-make audit         # dependency scan against RustSec advisories
-make validate      # everything CI runs, in one target
-```
-
-**Observability:** the server logs to stderr (stdout belongs to the protocol):
-
-```bash
-RSC_LS_LOG=debug zed --foreground      # or: RUST_LOG
-# levels: error < warn < info < debug < trace (default info)
-# prefixes: [rsc-ls][LEVEL] and [mikrotik-zed]
-```
+Everything runs through `make` — run `make help` for the canonical list (never duplicated here). Daily loop: `make check` (fast gate), `make validate` (offline gate: manifest, docs, fmt, clippy, tests, extract). Logs: `RSC_LS_LOG=debug zed --foreground`. QA/CI details: [docs/qa-ci-release.md](docs/qa-ci-release.md).
 
 ---
 
 ## 📤 Release
 
-Two independent tracks: an automated GitHub Release, then a human-reviewed marketplace listing.
-
-**1 · GitHub Release — automated**
-
-```bash
-make bump VERSION=x.y.z                     # updates Cargo.toml + extension.toml
-git tag vX.Y.Z && git push origin vX.Y.Z    # this is the whole trigger
-```
-
-The tag fires `release.yml`, which:
-
-1. Cross-compiles `rsc-ls` for all six platform triples
-2. Builds the WebAssembly component
-3. Publishes a GitHub Release with every binary plus its SHA-256 companion
-
-Those digests are exactly what the extension's auto-download verifies at install time.
-
-**2 · Zed Marketplace — human reviewed**
-
-A pull request to [`zed-industries/extensions`](https://github.com/zed-industries/extensions) carrying the extension metadata and the pinned grammar revision. `extension.toml` stays marketplace-ready at all times; preparing this PR never blocks on track 1, but merging makes sense only once the release exists. [`docs/publishing-runbook.md`](docs/publishing-runbook.md) is the authoritative checklist for both submission and update PRs; locally, `make check-manifest` checks the extension against Zed's published requirements (manifest schema + registry policy).
+Two tracks: **1 · GitHub Release (automated)** — `make bump VERSION=x.y.z`, then `git tag vX.Y.Z && git push` fires `release.yml` (six triples + WASM + SHA-256). **2 · Marketplace (human-reviewed)** — PR to `zed-industries/extensions`; checklist: [docs/publishing-runbook.md](docs/publishing-runbook.md), local check `make check-manifest`.
 
 ---
 
 ## 📚 Reference
 
-- RouterOS CLI: https://manual.mikrotik.com/docs/cli-reference/
-- Truth source: https://manual.mikrotik.com/llms-full.txt
-- Zed extensions: https://zed.dev/docs/extensions/developing-extensions
-- Publishing runbook: [docs/publishing-runbook.md](docs/publishing-runbook.md)
-- Grammar repo: https://github.com/balakar94/tree-sitter-rsc
-- Changelog: [CHANGELOG.md](CHANGELOG.md)
-- Roadmap: [ROADMAP.md](ROADMAP.md)
+- RouterOS CLI: <https://manual.mikrotik.com/docs/cli-reference/>
+- Truth source: <https://manual.mikrotik.com/llms-full.txt>
+- Docs: [index](docs/index.md) · [quickstart](docs/quickstart.md) · [live](docs/live-enrichment.md) · [deploy](docs/device-deploy.md) · [qa/release](docs/qa-ci-release.md) · [publishing](docs/publishing-runbook.md)
+- Grammar: <https://github.com/balakar94/tree-sitter-rsc>
+- [CHANGELOG.md](CHANGELOG.md) · [ROADMAP.md](ROADMAP.md)
 
 ---
 

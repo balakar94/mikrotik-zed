@@ -198,3 +198,28 @@ fn test_server_rename_non_variable_cursor_returns_null() {
         .expect("rename request must be answered");
     assert_eq!(resp["result"], serde_json::Value::Null);
 }
+
+#[test]
+fn test_server_did_change_configuration_transport_override_applies_with_opt_in() {
+    // Positive mirror of the default-deny tests: with
+    // RSC_LS_ALLOW_SETTINGS_TRANSPORT=1, one allowlisted transport
+    // override (force_http) applies end-to-end through
+    // workspace/didChangeConfiguration, while env-only state is untouched.
+    crate::live::with_settings_transport_env(true, || {
+        let mut server = Server::new(synthetic_data());
+        assert!(!server.live_config.force_http);
+        let before_enabled = server.live_config.enabled;
+        let settings = serde_json::json!({
+            "params": {"settings": {"rsc": {"live": {"force_http": true}}}}
+        });
+        server.handle_message("workspace/didChangeConfiguration", &settings);
+        assert!(
+            server.live_config.force_http,
+            "force_http must apply with RSC_LS_ALLOW_SETTINGS_TRANSPORT=1"
+        );
+        assert_eq!(
+            server.live_config.enabled, before_enabled,
+            "env opt-in (enabled) is never settings-overridable"
+        );
+    });
+}

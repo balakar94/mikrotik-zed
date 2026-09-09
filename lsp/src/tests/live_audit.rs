@@ -136,3 +136,23 @@ fn test_network_error_redaction_at_live_boundary() {
     assert!(!safe.contains(&basic));
     assert!(safe.contains("[REDACTED]"));
 }
+
+#[test]
+fn test_dns_revalidation_blocks_rebound_loopback() {
+    // F1 TOCTOU: a name that looks benign at config time must still be
+    // refused when revalidation resolves it to loopback at fetch time.
+    // `resolve_and_validate_host` has no injectable resolver (it calls the
+    // system resolver directly), so the revalidation half is pinned through
+    // its pure classifier plus IP literals that resolve locally with no
+    // DNS traffic.
+    assert!(resolve_and_validate_host("8.8.8.8", 443, false).is_ok());
+    let rebound: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+    assert!(
+        denied_reason_for_ip(rebound, false).is_some(),
+        "re-resolved loopback must be denied without the loopback opt-in"
+    );
+    assert!(
+        resolve_and_validate_host("127.0.0.1", 443, false).is_err(),
+        "fetch gate must fail closed when revalidation yields loopback"
+    );
+}

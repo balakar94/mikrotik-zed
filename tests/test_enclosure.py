@@ -30,6 +30,7 @@ DEPLOY_PY = REPO_ROOT / "scripts" / "mikrotik-deploy.py"
 INJECTIONS_SCM = REPO_ROOT / "languages" / "rsc" / "injections.scm"
 INDENTS_SCM = REPO_ROOT / "languages" / "rsc" / "indents.scm"
 OUTLINE_SCM = REPO_ROOT / "languages" / "rsc" / "outline.scm"
+LSP_SYMBOLS = REPO_ROOT / "lsp" / "src" / "symbols.rs"
 TASKS_JSON = REPO_ROOT / "languages" / "rsc" / "tasks.json"
 HIGHLIGHTS_A = REPO_ROOT / "languages" / "rsc" / "highlights.scm"
 HIGHLIGHTS_B = REPO_ROOT / "grammars" / "rsc" / "queries" / "highlights.scm"
@@ -550,6 +551,54 @@ class TestGrammar:
         assert "@context" in ocode, "outline.scm must keep the root-menu @context"
         for legacy in ("@indent.begin", "@indent.end", "@indent.continue"):
             assert legacy not in ocode, f"legacy capture {legacy} in outline.scm"
+
+    def test_outline_server_kind_alignment(self):
+        """Pin server↔query outline alignment (fallback contract).
+
+        outline.scm is the fallback provider; symbols.rs wins when rsc-ls
+        runs. Both document the same kinds (menu→Object 19,
+        :local/:global/:set→Variable 13, other :verbs→Function 12) and
+        agree on one row per command (no menu_continuation rows). If either
+        side changes kinds or row shape, update BOTH files plus this test —
+        never one alone. Pipelines stay separate (no codegen either way).
+        """
+        outline = _read(OUTLINE_SCM)
+        symbols = _read(LSP_SYMBOLS)
+        # 1. Query header documents all three kinds; code carries the rows.
+        for kind in ("Object (19)", "Variable (13)", "Function (12)"):
+            assert kind in outline, f"outline.scm header must document {kind}"
+        ocode = "\n".join(
+            line for line in outline.splitlines() if not line.strip().startswith(";")
+        )
+        assert "menu_continuation" not in ocode, (
+            "outline must not list per-property rows"
+        )
+        assert ocode.count("(menu_command") == 2, (
+            "two menu_command row shapes expected (with/without sub-menu)"
+        )
+        assert "(global_command" in ocode, "outline must list script commands"
+        assert "#match?" in ocode and "local|global|set" in ocode, (
+            "declaration rows must be guarded by local|global|set"
+        )
+        assert "#not-match?" in ocode and "local|global|set" in ocode, (
+            "verb rows must exclude declarations (exactly-once listing)"
+        )
+        # 2. Server constants match the documented kinds.
+        kinds = dict(re.findall(r"pub const (\w+): i32 = (\d+);", symbols))
+        assert kinds.get("FUNCTION") == "12", (
+            f"symbols.rs FUNCTION kind drift: {kinds}"
+        )
+        assert kinds.get("VARIABLE") == "13", (
+            f"symbols.rs VARIABLE kind drift: {kinds}"
+        )
+        assert kinds.get("OBJECT") == "19", f"symbols.rs OBJECT kind drift: {kinds}"
+        # 3. Server classifies the same rows, never per-property fragments.
+        scode = "\n".join(
+            line for line in symbols.splitlines() if not line.strip().startswith("//")
+        )
+        assert "menu_continuation" not in scode, (
+            "symbols.rs must not emit per-property rows"
+        )
 
     def test_tasks_shell_consistent_and_validate_surfaces_errors(self):
         """All 6 tasks run through the same shell so $ZED_FILE/$ZED_WORKTREE_ROOT
