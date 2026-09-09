@@ -33,6 +33,7 @@ mod server;
 mod signature;
 mod suggest;
 mod symbols;
+mod text_util;
 
 pub(crate) use caps::{
     MAX_DIAG_BYTES, MAX_DIAG_LINES, MAX_DIAGNOSTICS, MAX_DOC_SIZE, MAX_DOCS, MAX_HEADER_SIZE,
@@ -45,17 +46,6 @@ pub(crate) use parser::{
     walk_structure,
 };
 pub(crate) use server::Server;
-
-// The re-exports below exist only so the child-of-root test modules keep
-// resolving moved/shared items through `use super::*`; their production
-// consumers import from the defining modules directly, so compiling them
-// into the non-test build would trip `unused_imports`.
-#[cfg(test)]
-pub(crate) use caps::MAX_CODE_ACTIONS;
-#[cfg(test)]
-pub(crate) use encoding::PositionEncoding;
-#[cfg(test)]
-pub(crate) use server::{exit_code, is_valid_file_uri};
 
 use menus::MenuData;
 
@@ -149,22 +139,8 @@ fn main() {
 // server.rs; re-exported above next to the other shared-module paths
 // so every existing crate-root reference keeps resolving unchanged.
 
-// Unit/integration-surface tests extracted verbatim from this file (pure move).
-// They remain child-of-root modules: `use super::*` reaches everything still
-// declared here directly, and the moved Server machinery through the root
-// re-exports above.
+// White-box unit tests live in `src/tests/` (one file per area/aspect).
+// Black-box E2E stays in `lsp/tests/` (real binary over stdio).
 #[cfg(test)]
-#[path = "main_tests/tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "main_tests/extra_main_coverage.rs"]
-mod extra_main_coverage;
-
-#[cfg(test)]
-#[path = "main_tests/position_encoding.rs"]
-mod position_encoding;
-
-#[cfg(test)]
-#[path = "main_tests/signature_help.rs"]
-mod signature_help;
+#[path = "tests/mod.rs"]
+mod unit_tests;
