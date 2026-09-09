@@ -2,28 +2,45 @@
 
 Single source for the connection-setup logic that ``mikrotik-deploy.py`` and
 ``mikrotik-live-check.py`` share: REST scheme resolution, integer env-var
-parsing, host validation, and IPv6 bracket formatting for URLs.
+parsing, host validation, IPv6 bracket formatting, username validation,
+TLS fingerprint parsing, SPKI pin helpers, and password redaction.
 
 Mirrors the Rust counterparts in ``lsp/src/live.rs`` (``validate_host``,
-``format_host_for_url``, ``resolve_scheme``, and the ``parse_env_u16`` /
-``parse_env_u64`` semantics): keep both sides in sync when the rules change.
+``format_host_for_url``, ``resolve_scheme``, ``validate_user``,
+``parse_fingerprint``, ``resolve_and_validate_host``, and the
+``parse_env_u16`` / ``parse_env_u64`` semantics): keep both sides in sync
+when the rules change.
 
 Usage notes:
 - ``mikrotik-deploy.py`` and ``mikrotik-live-check.py`` both run
   ``validate_host`` / ``format_host_for_url`` on their REST/SSH targets
-  before any network access (lexical SSRF denylist, no DNS).
+  before any network access (lexical + normalized SSRF checks, no DNS).
 - ``resolve_scheme`` returns a ``(scheme, legacy_shim_fired)`` tuple for
   caller compatibility; the legacy ``--no-ssl-verify`` http fallback is
   removed (always ``False``) so ``MIKROTIK_SSL=0`` only disables
   verification and never changes the scheme. Plain HTTP requires explicit
   ``--http`` / ``MIKROTIK_HTTP=1``.
+- Host range checks run against the normalized IP (see
+  ``normalized_host_ip``): decimal (``2130706433``), hex (``0x7f000001``),
+  octal (``0177.0.0.1``), short (``127.1``), IPv4-mapped IPv6
+  (``::ffff:127.0.0.1``), whole ``169.254.0.0/16``, and IPv6 ``fe80::/10``
+  are all denied fail-closed. Non-canonical numeric literals are rejected
+  even when the normalized address would otherwise be allowed.
+- ``MIKROTIK_PASS`` never appears in logs: use ``redact_secrets`` on any
+  error text that could echo credentials (including base64 ``user:pass``).
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import ipaddress
 import os
+import socket
+import ssl
 import sys
+import urllib.parse
 
 
 def env_int(name: str, default: int) -> int:
@@ -59,10 +76,201 @@ def resolve_scheme(port: int, force_http: bool, no_ssl_verify: bool) -> tuple[st
     (kept for caller compatibility; the warning branch never fires).
 
     Intentional divergence from ``lsp/src/live.rs::resolve_scheme``, which
-    still preserves the legacy fallback.
+    keeps the same default but additionally supports an opt-in
+    ``RSC_LS_LEGACY_HTTP_SHIM=1`` fallback with a WARN.
     """
     _ = (port, no_ssl_verify)
     return ("http" if force_http else "https"), False
+
+
+def validate_user(raw: str) -> str | None:
+    """Validate a device username per ``lsp/src/live.rs::validate_user``.
+
+    Allows 1..64 chars matching ``^[A-Za-z0-9._-]+$``. Returns the trimmed
+    value on success, None on failure (callers fall back to ``admin``).
+    """
+    trimmed = (raw or "").strip()
+    if not trimmed or len(trimmed) > 64:
+        return None
+    if "\0" in trimmed or any(ord(c) < 32 or ord(c) == 127 for c in trimmed):
+        return None
+    if not all(c.isascii() and (c.isalnum() or c in "._-") for c in trimmed):
+        return None
+    return trimmed
+
+
+def _parse_numeric_part(part: str) -> int | None:
+    """Parse one IPv4 numeric part (decimal, 0x hex, or 0-prefixed octal)."""
+    if not part:
+        return None
+    if part[:2].lower() == "0x":
+        digits = part[2:]
+        if not digits or any(c not in "0123456789abcdefABCDEF" for c in digits):
+            return None
+        try:
+            return int(digits, 16)
+        except ValueError:
+            return None
+    if len(part) > 1 and part[0] == "0" and part.isdigit():
+        # Octal: digits must be 0-7 (a "0" prefix with 8/9 is malformed).
+        if any(c not in "01234567" for c in part):
+            return None
+        try:
+            return int(part, 8)
+        except ValueError:
+            return None
+    if not part.isdigit():
+        return None
+    try:
+        return int(part, 10)
+    except ValueError:
+        return None
+
+
+def parse_ipv4_numeric(literal: str) -> ipaddress.IPv4Address | None:
+    """Parse canonical and non-canonical IPv4 numeric literals (inet_aton).
+
+    Handles decimal (``2130706433``), hex (``0x7f000001``, ``0x7f.0x0.0x0.0x1``),
+    octal (``0177.0.0.1``), and short forms (``127.1``, ``10.1``) with
+    classic inet_aton semantics: 1 part = 32-bit value, 2 parts = a.24bits,
+    3 parts = a.b.16bits, 4 parts = a.b.c.d. Returns None for hostnames,
+    IPv6 literals, or malformed input (fail-closed by the caller).
+    """
+    s = (literal or "").strip()
+    if not s or ":" in s:
+        return None
+    # Only numeric/dot/hex characters can be an IPv4 numeric literal.
+    if any(c not in "0123456789abcdefABCDEFxX." for c in s):
+        return None
+    parts = s.split(".")
+    if not 1 <= len(parts) <= 4 or any(p == "" for p in parts):
+        return None
+    try:
+        nums = [_parse_numeric_part(p) for p in parts]
+    except Exception:
+        return None
+    if any(n is None for n in nums):
+        return None
+    vals = [int(n) for n in nums]  # type: ignore[arg-type]
+    try:
+        if len(vals) == 1:
+            v = vals[0]
+            if not 0 <= v <= 0xFFFFFFFF:
+                return None
+            return ipaddress.IPv4Address(v)
+        if len(vals) == 2:
+            a, b = vals
+            if not 0 <= a <= 0xFF or not 0 <= b <= 0xFFFFFF:
+                return None
+            return ipaddress.IPv4Address((a << 24) | b)
+        if len(vals) == 3:
+            a, b, c = vals
+            if not 0 <= a <= 0xFF or not 0 <= b <= 0xFF or not 0 <= c <= 0xFFFF:
+                return None
+            return ipaddress.IPv4Address((a << 24) | (b << 16) | c)
+        a, b, c, d = vals
+        if any(not 0 <= v <= 0xFF for v in (a, b, c, d)):
+            return None
+        return ipaddress.IPv4Address(bytes([a, b, c, d]))
+    except (ipaddress.AddressValueError, ValueError):
+        return None
+
+
+def normalized_host_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Return the normalized IP for ``host`` when it is numeric, else None.
+
+    Mirrors ``lsp/src/live.rs::normalized_host_ip``: the HTTP client connects
+    to the normalized host, so range checks must run against this value, not
+    the raw string. Handles canonical literals via stdlib ``ipaddress``,
+    non-canonical IPv4 numerics via :func:`parse_ipv4_numeric`, and bare IPv6
+    via :func:`format_host_for_url` + ``urllib.parse`` hostname extraction.
+    Returns None for domain names or unparsable hosts (callers fall back to
+    lexical hostname checks). Never performs DNS.
+    """
+    stripped = (host or "").strip()
+    if not stripped:
+        return None
+    inner = stripped
+    if inner.startswith("[") and inner.endswith("]") and len(inner) >= 2:
+        inner = inner[1:-1]
+    # Strip any zone id (defense in depth; '%' is rejected earlier anyway).
+    inner = inner.split("%")[0]
+    try:
+        return ipaddress.ip_address(inner)
+    except ValueError:
+        pass
+    numeric = parse_ipv4_numeric(inner)
+    if numeric is not None:
+        return numeric
+    # URL-level normalization for bracketed/edge forms (no DNS).
+    try:
+        parsed = urllib.parse.urlsplit(f"http://{format_host_for_url(stripped)}/")
+        hostname = parsed.hostname
+        if hostname:
+            try:
+                return ipaddress.ip_address(hostname)
+            except ValueError:
+                numeric2 = parse_ipv4_numeric(hostname)
+                if numeric2 is not None:
+                    return numeric2
+    except Exception:
+        pass
+    return None
+
+
+def is_non_canonical_numeric_host(host: str) -> bool:
+    """Whether ``host`` is a non-canonical numeric literal (fail-closed).
+
+    Mirrors ``lsp/src/live.rs::is_non_canonical_numeric_host``: when
+    normalization yields an IP whose canonical string differs from the raw
+    literal (modulo brackets and ASCII case), the input used a decimal, hex,
+    octal, short, or otherwise non-canonical encoding and is rejected — even
+    when the normalized address itself would be allowed.
+    """
+    stripped = (host or "").strip()
+    if not stripped:
+        return False
+    inner = stripped
+    if inner.startswith("[") and inner.endswith("]") and len(inner) >= 2:
+        inner = inner[1:-1]
+    norm = normalized_host_ip(stripped)
+    if norm is None:
+        return False
+    if isinstance(norm, ipaddress.IPv4Address):
+        return inner != str(norm)
+    # IPv6: compare case-insensitively against compressed form.
+    return inner.lower() != norm.compressed.lower()
+
+
+def is_normalized_ssrf_denied(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Whether a normalized IP is unconditionally SSRF-denied.
+
+    Covers whole ``169.254.0.0/16`` link-local (not just ``.169.254``),
+    IPv6 ``fe80::/10`` link-local, and unspecified addresses. IPv4-mapped
+    IPv6 (``::ffff:a.b.c.d``) is unmapped to IPv4 first so
+    ``[::ffff:a9fe:a9fe]`` (metadata IP) is denied as link-local.
+    """
+    if isinstance(addr, ipaddress.IPv6Address):
+        mapped = addr.ipv4_mapped
+        if mapped is not None:
+            return is_normalized_ssrf_denied(mapped)
+        if addr.is_unspecified:
+            return True
+        try:
+            if addr in ipaddress.IPv6Network("fe80::/10"):
+                return True
+        except Exception:
+            pass
+        return bool(addr.is_link_local)
+    # IPv4.
+    if addr.is_unspecified:
+        return True
+    try:
+        if addr in ipaddress.IPv4Network("169.254.0.0/16"):
+            return True
+    except Exception:
+        pass
+    return bool(addr.is_link_local)
 
 
 def validate_host(host: str) -> str | None:
@@ -70,16 +278,19 @@ def validate_host(host: str) -> str | None:
 
     Returns None on success, an error string on failure.
     Checks: non-empty, <=253 chars, no null/control chars, no URI delimiters
-    (@ ? # % space), no path separators (/ \\), plus a lexical SSRF denylist
-    (no DNS): exact ``169.254.169.254``, ``metadata.google.internal``,
+    (@ ? # % space), no path separators (/ \\), plus SSRF denials with no
+    DNS: exact ``169.254.169.254``, ``metadata.google.internal``,
     ``metadata.google``, ``metadata.goog``, ``0.0.0.0``, ``::``
-    (case-insensitive, bracket-tolerant) and whole ``169.254.0.0/16`` for
-    IPv4 literals via stdlib ``ipaddress``.
+    (case-insensitive, bracket-tolerant), whole ``169.254.0.0/16`` for IPv4
+    literals, IPv6 ``fe80::/10`` link-local, IPv4-mapped IPv6 unmapping, and
+    non-canonical numeric literals (decimal/hex/octal/short) rejected
+    fail-closed via normalization (see ``normalized_host_ip``).
 
-    Intentional divergence from the Rust side: private/loopback ranges and
-    IPv6 link-local stay ALLOWED here (routers live on LAN, and this path has
-    no ALLOW_LOOPBACK-style escape hatch), while the cloud-metadata and IPv4
-    link-local ranges — the exfiltration-relevant ones — are denied.
+    Intentional divergence from the Rust side: private/loopback ranges stay
+    ALLOWED here (routers live on LAN, and this path has no
+    ALLOW_LOOPBACK-style escape hatch), while the cloud-metadata, link-local,
+    and obfuscated-numeric ranges — the exfiltration-relevant ones — are
+    denied.
     """
     if not host:
         return "empty"
@@ -87,10 +298,8 @@ def validate_host(host: str) -> str | None:
         return "exceeds 253 chars"
     if "\0" in host:
         return "contains null byte"
-    if any(ord(c) < 32 for c in host):
+    if any(ord(c) < 32 or ord(c) == 127 for c in host):
         return "contains control characters"
-    # Rust also checks is_control (which covers \t \n etc), but we already cover <32
-    # Also check for URI delimiters
     if "@" in host or "?" in host or "#" in host or "%" in host or " " in host:
         return "contains URI delimiter (@?#% or space)"
     if "/" in host or "\\" in host:
@@ -110,12 +319,16 @@ def validate_host(host: str) -> str | None:
         "::",
     ):
         return "SSRF denied host"
-    # Whole 169.254.0.0/16 for IPv4 literals (lexical, no DNS).
-    try:
-        addr = ipaddress.ip_address(inner)
-    except ValueError:
-        addr = None
-    if addr is not None and addr.version == 4 and addr.is_link_local:
+    # Normalize-then-check (fail-closed): non-canonical numerics first, then
+    # range checks against the normalized IP with IPv4-mapped unmapping.
+    if is_non_canonical_numeric_host(host):
+        # Canonical loopback/private literals are allowed here, so only
+        # report non-canonical when the normalized address is NOT an
+        # otherwise-allowed plain literal... Simpler and safer: reject all
+        # non-canonical numerics fail-closed (matches Rust).
+        return "non-canonical numeric host"
+    norm = normalized_host_ip(host)
+    if norm is not None and is_normalized_ssrf_denied(norm):
         return "SSRF denied host"
     return None
 
@@ -130,3 +343,239 @@ def format_host_for_url(host: str) -> str:
     if ":" in host:
         return f"[{host}]"
     return host
+
+
+def parse_fingerprint(raw: str | None) -> bytes | None:
+    """Parse ``MIKROTIK_FINGERPRINT=sha256:<hex>`` into 32 raw bytes.
+
+    Accepts the ``sha256:`` prefix case-insensitively, strips embedded
+    ``:``/whitespace separators, and requires exactly 64 hex chars (SPKI
+    SHA256). Returns None when unset, empty, or malformed (callers warn and
+    fail closed when a value was supplied but unparsable).
+    """
+    if raw is None:
+        return None
+    trimmed = raw.strip()
+    if not trimmed:
+        return None
+    hex_part = trimmed
+    if len(hex_part) >= 7 and hex_part[:7].lower() == "sha256:":
+        hex_part = hex_part[7:]
+    compact = "".join(c for c in hex_part if c != ":" and not c.isspace())
+    if len(compact) != 64 or any(c not in "0123456789abcdefABCDEF" for c in compact):
+        return None
+    try:
+        return binascii.unhexlify(compact)
+    except (binascii.Error, ValueError):
+        return None
+
+
+def _der_read_tlv(data: bytes, pos: int) -> tuple[int, int, int, int] | None:
+    """Read one DER TLV; returns (tag, header_len, value_len, value_start)."""
+    if pos + 2 > len(data):
+        return None
+    tag = data[pos]
+    first = data[pos + 1]
+    if first & 0x80 == 0:
+        length = first & 0x7F
+        start = pos + 2
+        if start + length > len(data):
+            return None
+        return (tag, 2, length, start)
+    nbytes = first & 0x7F
+    if nbytes == 0 or nbytes > 4 or pos + 2 + nbytes > len(data):
+        return None
+    length = 0
+    for b in data[pos + 2 : pos + 2 + nbytes]:
+        length = length * 256 + b
+    start = pos + 2 + nbytes
+    if start + length > len(data):
+        return None
+    return (tag, 2 + nbytes, length, start)
+
+
+def extract_spki_der(cert_der: bytes) -> bytes | None:
+    """Extract the DER of subjectPublicKeyInfo from a DER certificate.
+
+    Minimal DER walker (fail-closed None on malformed input); hashes the
+    full SPKI SEQUENCE TLV per RFC 7469.
+    """
+    tlv = _der_read_tlv(cert_der, 0)
+    if tlv is None or tlv[0] != 0x30:
+        return None
+    tbs = _der_read_tlv(cert_der, tlv[3])
+    if tbs is None or tbs[0] != 0x30:
+        return None
+    tbs_start, tbs_len = tbs[3], tbs[2]
+    tbs_end = tbs_start + tbs_len
+    if tbs_end > len(cert_der):
+        return None
+    pos = tbs_start
+    if pos < tbs_end and cert_der[pos] == 0xA0:
+        item = _der_read_tlv(cert_der, pos)
+        if item is None:
+            return None
+        pos = item[3] + item[2]
+    for _ in range(5):
+        if pos >= tbs_end:
+            return None
+        item = _der_read_tlv(cert_der, pos)
+        if item is None:
+            return None
+        pos = item[3] + item[2]
+    if pos >= tbs_end or cert_der[pos] != 0x30:
+        return None
+    item = _der_read_tlv(cert_der, pos)
+    if item is None:
+        return None
+    total = item[1] + item[2]
+    if pos + total > len(cert_der):
+        return None
+    return cert_der[pos : pos + total]
+
+
+def spki_sha256(cert_der: bytes) -> bytes | None:
+    """SHA256 over the leaf SPKI DER (None on malformed input)."""
+    spki = extract_spki_der(cert_der)
+    if spki is None:
+        return None
+    return hashlib.sha256(spki).digest()
+
+
+def resolve_and_check_host(host: str, port: int) -> str | None:
+    """Resolve ``host`` and re-run the SSRF deny policy on every IP (F1).
+
+    ``validate_host`` runs lexical + normalized-literal checks at startup,
+    but a hostname can resolve to a denied address at connect time (DNS
+    rebinding / split horizon). This re-resolves via ``getaddrinfo`` and
+    denies the connection when ANY returned IP is unconditionally
+    SSRF-denied (whole ``169.254.0.0/16``, IPv6 ``fe80::/10``,
+    unspecified, IPv4-mapped equivalents). Private/loopback ranges stay
+    ALLOWED (routers live on LAN, mirroring :func:`validate_host`).
+
+    Returns None when every resolved IP passes, else an error string
+    (fail-closed: resolution failure, empty results, unparseable IPs, and
+    any denied IP all refuse the connection before credentials are sent).
+    Never sends credentials itself.
+    """
+    bare = (host or "").strip()
+    if bare.startswith("[") and bare.endswith("]") and len(bare) >= 2:
+        bare = bare[1:-1]
+    if not bare:
+        return "empty host"
+    try:
+        infos = socket.getaddrinfo(bare, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as e:
+        return f"dns resolution failed: {e}"
+    except Exception as e:
+        return f"dns resolution failed: {e}"
+    if not infos:
+        return "dns resolution returned no addresses"
+    for info in infos:
+        try:
+            ip_str = info[4][0]
+        except (IndexError, TypeError):
+            return "dns resolution returned malformed address"
+        try:
+            addr = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return f"unparseable resolved IP {ip_str!r}"
+        if is_normalized_ssrf_denied(addr):
+            return f"resolved IP denied: {ip_str}"
+    return None
+
+
+def verify_tls_pin(
+    host: str,
+    port: int,
+    pin: bytes,
+    ca_file: str = "",
+    timeout: int = 5,
+    ssl_verify: bool = True,
+) -> str | None:
+    """Verify a device TLS SPKI pin over a fresh handshake (no HTTP).
+
+    Opens a direct TLS connection to ``host:port``, extracts the leaf
+    certificate, and compares ``SHA256(SPKI)`` against ``pin``. Chain
+    validation follows ``ssl_verify``/``ca_file`` (custom CA bundle when
+    provided). Returns None on success, an error string on failure
+    (fail-closed: any network, validation, or pin mismatch is an error).
+    Never performs HTTP or follows redirects.
+
+    F1: DNS is re-resolved here and every returned IP is re-checked against
+    the SSRF deny policy fail-closed before connecting (``host`` passed only
+    lexical checks at startup; DNS may resolve differently now).
+    """
+    bare = host.strip()
+    if bare.startswith("[") and bare.endswith("]") and len(bare) >= 2:
+        bare = bare[1:-1]
+    # F1: resolve-then-revalidate before any socket: a hostname that passed
+    # lexical checks may still resolve to a denied address right now.
+    dns_err = resolve_and_check_host(host, port)
+    if dns_err:
+        return dns_err
+    try:
+        if ssl_verify or ca_file.strip():
+            ctx = ssl.create_default_context(cafile=(ca_file.strip() or None))
+            if not ssl_verify:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+        else:
+            ctx = ssl._create_unverified_context()
+            ctx.check_hostname = False
+        raw_sock = socket.create_connection((bare, port), timeout=timeout)
+    except Exception as e:
+        return f"pin check connection failed: {e}"
+    try:
+        with ctx.wrap_socket(raw_sock, server_hostname=bare) as tls:
+            try:
+                der = tls.getpeercert(binary_form=True)
+            except Exception as e:
+                return f"pin check peer cert failed: {e}"
+            if not der:
+                return "pin check got no peer certificate"
+            digest = spki_sha256(bytes(der))
+            if digest is None:
+                return "pin check could not parse peer SPKI"
+            if digest != pin:
+                return "TLS SPKI pin mismatch"
+            return None
+    except ssl.SSLCertVerificationError as e:
+        return f"TLS certificate verification failed: {e}"
+    except Exception as e:
+        msg = str(e)
+        if "pin mismatch" in msg.lower() or "certificate" in msg.lower():
+            return msg
+        return f"pin check TLS failed: {e}"
+    finally:
+        try:
+            raw_sock.close()
+        except Exception:
+            pass
+
+
+def redact_secrets(text: str, password: str | None, user: str | None = None) -> str:
+    """Redact credential material from log/error text (central helper).
+
+    Replaces the password, the base64 of ``user:password`` (HTTP Basic), and
+    the base64 of the password alone. Never returns credential material;
+    safe to apply unconditionally before printing or embedding in JSON.
+    """
+    out = text or ""
+    secrets: list[str] = []
+    if password:
+        secrets.append(password)
+        try:
+            if user is not None:
+                creds = f"{user}:{password}".encode("utf-8")
+                secrets.append(base64.b64encode(creds).decode("ascii"))
+        except Exception:
+            pass
+        try:
+            secrets.append(base64.b64encode(password.encode("utf-8")).decode("ascii"))
+        except Exception:
+            pass
+    for secret in secrets:
+        if secret and secret in out:
+            out = out.replace(secret, "[REDACTED]")
+    return out
