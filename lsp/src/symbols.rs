@@ -1,19 +1,43 @@
-// ── Document symbols (Stage B) ────────────────────────────────
+// ── Document symbols (run collapsing + detail) ──────────────────
 //
 // textDocument/documentSymbol support. Emits a FLAT list of document
 // symbols (no `children`) — flat sidesteps the LSP rule that a parent's
 // range must contain every child range, which RouterOS scripts violate
 // routinely (blocks are brace-based, not range-nested).
 //
+// Provider precedence: when the client supports LSP documentSymbol, the
+// server list below WINS over the Tree-sitter fallback
+// (`languages/rsc/outline.scm`). The fallback exists for editors without a
+// running `rsc-ls`; both providers agree on one row per command plus
+// keyword/variable rows, and on kinds (Variable 13 vs Function 12, Object
+// 19 for menu commands). The query file documents the same contract.
+//
 // Classification per logical line (`diagnostics::logical_lines`, so `\`
 // continuations are joined before inspection):
 // - leading `/…` token   → menu command: SymbolKind.Object (19), named by
 //   the path + verb substring exactly as written ("/tool fetch add").
+//   CONSECUTIVE logical lines with the IDENTICAL path + verb collapse into
+//   ONE symbol named "<path verb> (×N)" spanning the whole run (first line
+//   start to last line end). This keeps firewall rule dumps readable:
+//   fourteen `/ip/firewall/filter add …` lines surface as one
+//   "/ip/firewall/filter add (×14)" landmark instead of fourteen rows.
+//   Only strictly adjacent command lines merge: a blank line, a comment,
+//   or any other statement between them breaks the run. `:local`/`:global`
+//   and `:verb` rows never merge and always break a run.
 // - `:local` / `:global` → SymbolKind.Variable (13), named by the variable
-//   identifier token that follows.
+//   identifier token that follows. Each declaration stays an INDIVIDUAL
+//   landmark — never collapsed — so rename targets remain addressable.
 // - any other `:verb`    → SymbolKind.Function (12), named by the verb.
 // - anything else (bare values, property fragments, `#` comments) is
 //   skipped.
+//
+// `detail` disambiguates sibling rows: `comment=<value>` when the line
+// carries a comment property, else the first distinguishing property in
+// token order among interface/chain/address/name/action, else the first
+// property overall. Collapsed runs reuse the FIRST line's detail. `detail`
+// is `None` (omitted on the wire) when the line carries no property.
+// Serialized shape matches LSP `DocumentSymbol`; `children`/`tags` are
+// omitted.
 //
 // All ranges are computed in internal byte coordinates against physical
 // document lines; the protocol boundary (main.rs) converts characters to
@@ -33,28 +57,152 @@ mod symbol_kind {
 /// Defensive cap on emitted symbols: documents are already capped at 5 MiB,
 /// but pathological generated files could still yield hundreds of thousands
 /// of one-line commands. Beyond the cap, remaining lines are not classified.
-const MAX_SYMBOLS: usize = 5000;
+pub(crate) const MAX_SYMBOLS: usize = 5000;
 
 /// One flat document symbol in INTERNAL byte coordinates.
 ///
-/// Serialized shape matches LSP `DocumentSymbol`; optional fields (detail,
-/// tags, children) are omitted. Ranges must still be converted to the
-/// negotiated wire encoding before serialization — see [`compute_document_symbols`].
+/// Serialized shape matches LSP `DocumentSymbol`; optional fields (tags,
+/// children) are omitted. `detail` is omitted when `None`. Ranges must
+/// still be converted to the negotiated wire encoding before
+/// serialization — see [`compute_document_symbols`].
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct DocumentSymbol {
     pub name: String,
     pub kind: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     pub range: diagnostics::Range,
     #[serde(rename = "selectionRange")]
     pub selection_range: diagnostics::Range,
+}
+
+/// Property keys preferred for `detail`, in priority order. `comment` is
+/// handled first unconditionally; the rest disambiguate sibling rows
+/// (`interface=`, `chain=`, `address=` cover the common firewall/address
+/// dumps).
+const DETAIL_PREFERRED_KEYS: &[&str] = &["interface", "chain", "address", "name", "action"];
+
+/// Max chars for a symbol `detail` string (mirrors completion's
+/// `MAX_DETAIL_CHARS` semantics; kept local to avoid cross-module coupling).
+const MAX_SYMBOL_DETAIL_CHARS: usize = 256;
+
+/// Single-line detail scrub for symbol `detail` strings (F9).
+///
+/// Each run of ASCII controls (including `\r`, `\n`, `\t`) becomes one
+/// space, then the result is capped at [`MAX_SYMBOL_DETAIL_CHARS`] chars
+/// with a trailing `…`. Applied to every `menu_detail` return so a
+/// `comment="line1\nline2..."` value can never break the outline layout or
+/// smuggle multiline content onto the wire. Normal inputs pass through
+/// unchanged.
+pub(crate) fn sanitize_symbol_detail(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_gap = false;
+    for ch in s.chars() {
+        if ch.is_ascii_control() {
+            if !in_gap {
+                out.push(' ');
+                in_gap = true;
+            }
+        } else {
+            in_gap = false;
+            out.push(ch);
+        }
+    }
+    let trimmed = out.trim().to_string();
+    if trimmed.chars().count() <= MAX_SYMBOL_DETAIL_CHARS {
+        trimmed
+    } else {
+        let kept: String = trimmed.chars().take(MAX_SYMBOL_DETAIL_CHARS).collect();
+        format!("{kept}…")
+    }
+}
+
+/// Extract the `detail` string for a menu-command line from its tokens.
+///
+/// - `comment=<value>` when any token carries a `comment` property (value
+///   kept verbatim, quotes included: `comment="allow dns"`).
+/// - else the first property in TOKEN order whose key is in
+///   [`DETAIL_PREFERRED_KEYS`] (`chain=input`, `interface=ether1`, …).
+/// - else the first property overall (`key=value` verbatim).
+/// - else `None` (no property on the line).
+pub(crate) fn menu_detail(tokens: &[crate::parser::SpanToken]) -> Option<String> {
+    let mut first_overall: Option<String> = None;
+    let mut first_preferred: Option<String> = None;
+    for tok in tokens {
+        let Some((key, _)) = crate::parser::split_key_value(&tok.text) else {
+            continue;
+        };
+        if key == "comment" {
+            // F9: comment values are attacker-influenced device text — scrub
+            // newlines/controls and cap length before emitting on the wire.
+            return Some(sanitize_symbol_detail(&tok.text));
+        }
+        if first_overall.is_none() {
+            first_overall = Some(tok.text.clone());
+        }
+        if first_preferred.is_none() && DETAIL_PREFERRED_KEYS.contains(&key) {
+            first_preferred = Some(tok.text.clone());
+        }
+    }
+    first_preferred
+        .or(first_overall)
+        .map(|d| sanitize_symbol_detail(&d))
+}
+
+/// One classified menu-command line, before run collapsing.
+pub(crate) struct MenuEntry {
+    /// Verbatim path + verb substring ("exactly as written").
+    name: String,
+    detail: Option<String>,
+    range: diagnostics::Range,
+    selection_range: diagnostics::Range,
 }
 
 /// Compute the flat document-symbol list for a script document.
 ///
 /// Pure function over (menu data, document text); deterministic order —
 /// symbols appear in document order. An empty document yields an empty list.
+/// Consecutive identical menu path + verb lines collapse into one
+/// `(×N)` symbol; `:local`/`:global` declarations stay individual.
 pub(crate) fn compute_document_symbols(data: &MenuData, doc: &str) -> Vec<DocumentSymbol> {
     let mut symbols = Vec::new();
+    // Pending run of identical menu names: (entry of first line, count,
+    // end range of last line). Flushed when a different name, a
+    // non-menu symbol, or a skipped line breaks adjacency.
+    let mut pending: Option<(MenuEntry, usize, diagnostics::Range)> = None;
+
+    // Flush helper: materialize the pending run as one symbol if capacity
+    // remains. Collapsed names append " (×N)"; single lines keep the bare
+    // name. Range spans first-line start to last-line end.
+    let flush = |pending: &mut Option<(MenuEntry, usize, diagnostics::Range)>,
+                 symbols: &mut Vec<DocumentSymbol>| {
+        let Some((first, count, last_range)) = pending.take() else {
+            return;
+        };
+        if symbols.len() >= MAX_SYMBOLS {
+            return;
+        }
+        if count > 1 {
+            symbols.push(DocumentSymbol {
+                name: format!("{} (×{})", first.name, count),
+                kind: symbol_kind::OBJECT,
+                detail: first.detail,
+                range: diagnostics::Range {
+                    start: first.range.start,
+                    end: last_range.end,
+                },
+                selection_range: first.selection_range,
+            });
+        } else {
+            symbols.push(DocumentSymbol {
+                name: first.name,
+                kind: symbol_kind::OBJECT,
+                detail: first.detail,
+                range: first.range,
+                selection_range: first.selection_range,
+            });
+        }
+    };
 
     for line in diagnostics::logical_lines(doc) {
         if symbols.len() >= MAX_SYMBOLS {
@@ -62,6 +210,8 @@ pub(crate) fn compute_document_symbols(data: &MenuData, doc: &str) -> Vec<Docume
         }
         let tokens = tokenize_with_spans(line.text());
         let Some(first) = tokens.first() else {
+            // Blank logical line breaks a run (strict adjacency).
+            flush(&mut pending, &mut symbols);
             continue; // blank logical line
         };
 
@@ -73,24 +223,66 @@ pub(crate) fn compute_document_symbols(data: &MenuData, doc: &str) -> Vec<Docume
         if first.text.starts_with('/') {
             // Root "/" alone is a navigation fragment, not a command — skip.
             if first.text == "/" {
+                flush(&mut pending, &mut symbols);
                 continue;
             }
-            if let Some(sym) = menu_command_symbol(data, &line, &tokens, span) {
+            if let Some(entry) = menu_command_entry(data, &line, &tokens, span) {
+                match pending.take() {
+                    Some((prev, count, last_range)) if prev.name == entry.name => {
+                        // Extend the run: keep first entry, bump count, move
+                        // the end edge to this line's end.
+                        pending = Some((prev, count + 1, entry.range));
+                        let _ = last_range;
+                    }
+                    Some((prev, count, last_range)) => {
+                        // Different name: flush previous, start a new run.
+                        let mut slot = Some((prev, count, last_range));
+                        flush(&mut slot, &mut symbols);
+                        debug_assert!(slot.is_none());
+                        if symbols.len() < MAX_SYMBOLS {
+                            let last = entry.range.clone();
+                            pending = Some((entry, 1, last));
+                        }
+                    }
+                    None => {
+                        // No open run: start one only when capacity remains
+                        // (mirrors the `< MAX_SYMBOLS` guard on the
+                        // different-name arm above — starting a run that the
+                        // final `flush` would drop is wasted work).
+                        if symbols.len() < MAX_SYMBOLS {
+                            let last = entry.range.clone();
+                            pending = Some((entry, 1, last));
+                        }
+                    }
+                }
+                continue;
+            }
+            // Unclassifiable menu line breaks the run.
+            flush(&mut pending, &mut symbols);
+        } else if let Some(sym) = script_command_symbol(&line, &tokens, span) {
+            // Script rows (Variable landmarks and :verb Functions) never
+            // merge: flush any open run first. The shared
+            // `declared_variable` primitive also catches brace-prefixed
+            // declarations (`{ :local x }`), which land here even though
+            // the logical line does not open with `:`.
+            flush(&mut pending, &mut symbols);
+            // Same cap as the loop-top break: the flush above may have just
+            // filled the last slot, so re-check before pushing.
+            if symbols.len() < MAX_SYMBOLS {
                 symbols.push(sym);
             }
-        } else if first.text.starts_with(':')
-            && let Some(sym) = script_command_symbol(&line, &tokens, span)
-        {
-            symbols.push(sym);
+        } else {
+            // Everything else (bare values, lone properties, comments) is
+            // not a statement — deliberately skipped, and breaks a run.
+            flush(&mut pending, &mut symbols);
         }
-        // Everything else (bare values, lone properties, comments) is not a
-        // statement — deliberately skipped.
     }
+    flush(&mut pending, &mut symbols);
 
     symbols
 }
 
-/// Build the symbol for a `/path … verb …` menu-command line.
+/// Build the classified entry for a `/path … verb …` menu-command line.
 ///
 /// Mirrors `parser::parse_line`'s submenu walk so symbol naming stays
 /// consistent with completion behavior: leading slash-token starts the path,
@@ -99,13 +291,13 @@ pub(crate) fn compute_document_symbols(data: &MenuData, doc: &str) -> Vec<Docume
 ///
 /// `name` is the original substring covering path + verb ("exactly as
 /// written", preserving case and separators); `selectionRange` covers the
-/// first path token.
-fn menu_command_symbol(
+/// first path token; `detail` comes from [`menu_detail`].
+fn menu_command_entry(
     data: &MenuData,
     line: &diagnostics::LogicalLine,
     tokens: &[crate::parser::SpanToken],
     span: diagnostics::Range,
-) -> Option<DocumentSymbol> {
+) -> Option<MenuEntry> {
     let first = &tokens[0];
     let mut path_parts: Vec<String> = vec![first.text.trim_start_matches('/').to_string()];
     let mut tail_end = first.end; // end offset of the last path segment
@@ -153,10 +345,11 @@ fn menu_command_symbol(
     let start = crate::floor_char_boundary(line.text(), first.start);
     let end = crate::floor_char_boundary(line.text(), tail_end);
     let name = line.text()[start..end].to_string();
+    let detail = menu_detail(tokens);
 
-    Some(DocumentSymbol {
+    Some(MenuEntry {
         name,
-        kind: symbol_kind::OBJECT,
+        detail,
         range: span,
         selection_range: line.map_range(first.start, first.end),
     })
@@ -171,181 +364,50 @@ fn menu_command_symbol(
 ///
 /// Declaration naming is delegated to [`crate::navigation::declared_variable`]
 /// so documentSymbol and go-to-definition/references share ONE notion of
-/// what a declaration is and where its identifier spans. Note this narrows
-/// `selectionRange` of inline-valued locals (`:local x=1`) from the whole
-/// `x=1` token down to exactly `x` — the identifier a rename would target.
+/// what a declaration is and where its identifier spans. The delegation
+/// also inherits the leading-separator tolerance (`{ :local x }`,
+/// `;`-separated tails): a declaration after `{`/`}`/`;` separators still
+/// yields a Variable landmark. Note this narrows `selectionRange` of
+/// inline-valued locals (`:local x=1`) from the whole `x=1` token down to
+/// exactly `x` — the identifier a rename would target.
 fn script_command_symbol(
     line: &diagnostics::LogicalLine,
     tokens: &[crate::parser::SpanToken],
     span: diagnostics::Range,
 ) -> Option<DocumentSymbol> {
-    let first = &tokens[0];
-    if first.text == ":local" || first.text == ":global" {
+    // Declarations first (position-independent via the shared primitive):
+    // a brace- or semicolon-prefixed `:local x` still landmarks `x`.
+    if let Some((_kind, ident, ident_start, ident_end)) =
+        crate::navigation::declared_variable(tokens)
+    {
         // Delegation preserves the historical contract: a declaration line
         // without a bare identifier (`:global` alone) yields NO symbol, it
         // does NOT degrade into a Function entry.
-        let (_kind, ident, ident_start, ident_end) = crate::navigation::declared_variable(tokens)?;
         return Some(DocumentSymbol {
             name: ident,
             kind: symbol_kind::VARIABLE,
+            detail: None,
             range: span,
             selection_range: line.map_range(ident_start, ident_end),
         });
+    }
+    let first = &tokens[0];
+    // Historical contract: a bare `:local` / `:global` without an
+    // identifier yields NO symbol — it must NOT degrade into a Function
+    // entry for the command word itself. (Declaration success returned
+    // above; reaching here means no identifier followed.)
+    if first.text == ":local" || first.text == ":global" {
+        return None;
+    }
+    if !first.text.starts_with(':') {
+        return None;
     }
 
     Some(DocumentSymbol {
         name: first.text.clone(),
         kind: symbol_kind::FUNCTION,
+        detail: None,
         range: span,
         selection_range: line.map_range(first.start, first.end),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::menus::MenuData;
-
-    fn synthetic_data() -> MenuData {
-        MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/ip/address"
-type = "Directory"
-[[menus.arguments]]
-name = "address"
-type = "ipPrefix"
-[[menus]]
-path = "/tool"
-type = "Directory"
-[[menus]]
-path = "/tool/fetch"
-type = "Command"
-"#,
-        )
-    }
-
-    fn kinds(syms: &[DocumentSymbol]) -> Vec<i32> {
-        syms.iter().map(|s| s.kind).collect()
-    }
-
-    fn names(syms: &[DocumentSymbol]) -> Vec<&str> {
-        syms.iter().map(|s| s.name.as_str()).collect()
-    }
-
-    #[test]
-    fn test_menu_global_local_mix() {
-        let doc = concat!(
-            "/ip/address add address=1.2.3.4\n",
-            ":global backupName \"b\"\n",
-            ":local i\n",
-            ":put done\n",
-            "print\n",            // bare fragment — skipped
-            "# just a comment\n", // comment — skipped
-        );
-        let syms = compute_document_symbols(&synthetic_data(), doc);
-        assert_eq!(
-            names(&syms),
-            vec!["/ip/address add", "backupName", "i", ":put"]
-        );
-        assert_eq!(kinds(&syms), vec![19, 13, 13, 12]);
-    }
-
-    #[test]
-    fn test_menu_name_is_verbatim_substring_including_submenu_segments() {
-        // "/tool fetch add": "/tool" is a path, "fetch" resolves as a known
-        // child of /tool, "add" is the verb → name covers all three, exactly
-        // as written (spaces preserved).
-        let doc = "/tool fetch add url=http://x\n";
-        let syms = compute_document_symbols(&synthetic_data(), doc);
-        assert_eq!(names(&syms), vec!["/tool fetch add"]);
-        assert_eq!(kinds(&syms), vec![19]);
-        // selectionRange covers the FIRST path token "/tool".
-        assert_eq!(syms[0].selection_range.start.line, 0);
-        assert_eq!(syms[0].selection_range.start.character, 0);
-        assert_eq!(syms[0].selection_range.end.character, 5);
-    }
-
-    #[test]
-    fn test_selection_range_covers_first_path_token() {
-        let doc = "/ip/address add";
-        let syms = compute_document_symbols(&synthetic_data(), doc);
-        assert_eq!(syms.len(), 1);
-        assert_eq!(syms[0].selection_range.start.character, 0);
-        assert_eq!(
-            syms[0].selection_range.end.character,
-            "/ip/address".len() as u32
-        );
-        assert_eq!(syms[0].selection_range.end.line, 0);
-    }
-
-    #[test]
-    fn test_continuation_line_yields_single_symbol_spanning_physical_lines() {
-        let doc = "/ip/address add \\\naddress=1.2.3.4\n";
-        let syms = compute_document_symbols(&synthetic_data(), doc);
-        assert_eq!(syms.len(), 1, "continuation joins into ONE logical command");
-        assert_eq!(syms[0].name, "/ip/address add");
-        // Physical span crosses the continuation: starts line 0, ends line 1
-        // at the end of "address=1.2.3.4".
-        assert_eq!(syms[0].range.start.line, 0);
-        assert_eq!(syms[0].range.end.line, 1);
-        assert_eq!(syms[0].range.end.character, "address=1.2.3.4".len() as u32);
-    }
-
-    #[test]
-    fn test_local_with_inline_value_names_identifier_only() {
-        let doc = ":local x=1\n";
-        let syms = compute_document_symbols(&synthetic_data(), doc);
-        assert_eq!(names(&syms), vec!["x"]);
-        assert_eq!(kinds(&syms), vec![13]);
-    }
-
-    #[test]
-    fn test_bare_declaration_without_identifier_is_skipped() {
-        let doc = ":global\n:put ok\n";
-        let syms = compute_document_symbols(&synthetic_data(), doc);
-        assert_eq!(names(&syms), vec![":put"]);
-    }
-
-    #[test]
-    fn test_braces_inside_quotes_do_not_confuse_classification() {
-        // The quoted value contains '{'; classification must still be driven
-        // by the first token only.
-        let doc = ":put \"}{\"\n";
-        let syms = compute_document_symbols(&synthetic_data(), doc);
-        assert_eq!(names(&syms), vec![":put"]);
-    }
-
-    #[test]
-    fn test_empty_document_yields_empty_list() {
-        assert!(compute_document_symbols(&synthetic_data(), "").is_empty());
-        assert!(compute_document_symbols(&synthetic_data(), "\n\n  \n").is_empty());
-    }
-
-    #[test]
-    fn test_root_slash_and_property_fragments_are_skipped() {
-        let doc = "/\nchain=input\naddress=\n";
-        let syms = compute_document_symbols(&synthetic_data(), doc);
-        assert!(syms.is_empty(), "got {:?}", names(&syms));
-    }
-
-    #[test]
-    fn test_symbol_cap_bounds_output() {
-        let doc = ":put x\n".repeat(MAX_SYMBOLS + 100);
-        let syms = compute_document_symbols(&synthetic_data(), &doc);
-        assert_eq!(syms.len(), MAX_SYMBOLS);
-    }
-
-    #[test]
-    fn test_symbols_serialize_to_lsp_wire_shape() {
-        let syms = compute_document_symbols(&synthetic_data(), "/ip/address add");
-        let v = serde_json::to_value(&syms).unwrap();
-        let s = &v[0];
-        assert_eq!(s["name"], "/ip/address add");
-        assert_eq!(s["kind"], 19);
-        assert!(s["range"]["start"]["line"].is_u64());
-        assert!(s["selectionRange"]["start"]["character"].is_u64());
-        assert!(s.get("children").is_none(), "flat symbols have no children");
-        assert!(s.get("detail").is_none());
-    }
 }
