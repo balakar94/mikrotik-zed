@@ -50,6 +50,16 @@
 // | `MAX_BRACE_DEPTH`                 | 4096           | parser.rs       | Open-brace stack bound (walk_structure + syntax)               |
 // | `MAX_SIGNATURE_PROPERTIES`        | 40             | signature.rs    | Properties per signature label                                 |
 // | `MAX_SUGGEST_INPUT_BYTES`         | 256            | suggest.rs      | Max mistyped token length for quick-fix suggestions            |
+// | `MAX_DETAIL_CHARS`                | 256            | text_util.rs    | Single-line completion `detail` cap                            |
+// | `MAX_DETAIL_TYPE_CHARS`           | 64             | text_util.rs    | Type half embedded in a completion `detail`                    |
+// | `MAX_HOVER_PROPERTIES`            | 12             | text_util.rs    | Properties per menu hover card (rest folds into a footer)      |
+// | `MAX_HOVER_DESC_CHARS`            | 800            | text_util.rs    | Description chars embedded in hover markdown                   |
+// | `MAX_LABEL_TYPE_CHARS`            | 64             | text_util.rs    | Type half of a signature `name=type` label segment             |
+// | `MAX_SIGNATURE_LABEL_BYTES`       | 4096           | text_util.rs    | Total signature label budget (stop appends, never cut mid-seg) |
+//
+// Live-cache invalidation (no cap — same values): `didChange` never clears;
+// `didClose`, `LiveConfig` change (see `server::live_connection_changed`),
+// and `rsc.live.refresh` do (`rsc.live.status` is read-only).
 //
 // Scattered micro-caps deliberately stay beside their features —
 // they tune one algorithm rather than a cross-module resource budget,

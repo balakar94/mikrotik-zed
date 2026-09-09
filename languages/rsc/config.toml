@@ -3,7 +3,10 @@ grammar = "rsc"
 path_suffixes = ["rsc"]
 line_comments = ["#"]
 autoclose_before = ";:.,=}])>\"' \t\n"
-word_characters = ["_", "-", "$", "@"]
+# Word characters for double-click selection and word motions. `$` covers
+# `$var` references; `:` keeps `:verb` script keywords whole; `/` keeps
+# `/ip/address` menu paths whole. Brackets/autoclose above are unaffected.
+word_characters = ["_", "-", "$", "@", ":", "/"]
 
 brackets = [
     { start = "{", end = "}", close = true, newline = true },
