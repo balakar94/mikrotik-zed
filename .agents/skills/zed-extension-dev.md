@@ -150,6 +150,10 @@ the authoritative checklist, kept current against the official Zed publishing do
   `[mikrotik-rsc]` entry to top-level `extensions.toml` whose `version` equals the `version` in
   `extension.toml` at that commit; run `pnpm sort-extensions`.
 - **Prerequisite:** manually test in Zed (_Install Dev Extension_) at the exact submodule commit being submitted.
+- **Store builds are signed tags:** a version sent to the registry is ALWAYS an
+  annotated + signed tag (`git tag -s`); plain stable GitHub builds stay
+  unsigned by design. Setup + procedure:
+  [`docs/publishing-runbook.md`](../../docs/publishing-runbook.md) → *Release kinds & tag signing*.
 - **Local gates:** `make validate`, plus `make check-manifest` — `extension.toml` may contain only keys
   known to Zed's manifest schema; unknown keys are silently ignored and hide typos.
 - **Compatibility:** built against the latest `zed_extension_api` (0.7.x); newer-API builds do not load

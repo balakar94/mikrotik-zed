@@ -94,7 +94,7 @@ Untracked locals: `llms.txt`, `llms-full.txt` (`make sync`), `extension.wasm`, b
 
 - **Grammar:** `python scripts/publish_grammar.py --dry-run`, then `--push` — validates generation, pushes the working copy, updates `extension.toml rev` itself. **Never hand-edit `rev`.**
 - **Version:** `make bump VERSION=x.y.z` (fmt + syncs `Cargo.toml`/`lsp/Cargo.toml`/`extension.toml` + coherence checks; see `CHANGELOG.md`). Grammar crate/package versions are independent — coherence per-group, never cross-group.
-- **Binaries:** pushing a `v*.*.*` tag triggers `.github/workflows/release.yml` (multi-platform `rsc-ls` + WASM → GitHub Release).
+- **Binaries:** pushing a `v*.*.*` tag triggers `.github/workflows/release.yml` (multi-platform `rsc-ls` + WASM → GitHub Release). Store submissions use signed tags — see `docs/publishing-runbook.md` → *Release kinds & tag signing*.
 - **Registry:** follow `docs/publishing-runbook.md` (one extension per PR, ≤3 open, reply ≤3 weeks).
 
 ## Device deploy (optional, local only)

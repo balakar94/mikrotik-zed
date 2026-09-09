@@ -52,6 +52,47 @@ License: Apache-2.0 with `LICENSE` at the extension root is accepted by policy �
    - run `pnpm sort-extensions`
 5. Open the PR under the same registry rules (one extension, ≤3 open, reply ≤3 weeks).
 
+## Release kinds & tag signing
+
+Two different things share the `vX.Y.Z` tag namespace — the signed tag is the
+durable mark that tells them apart:
+
+| Kind | Tag | What it produces |
+|------|-----|------------------|
+| Stable GitHub build | lightweight, unsigned (`git tag vX.Y.Z`) | `release.yml` publishes the public binaries + WASM to GitHub Releases |
+| Store submission build | **annotated + signed** (`git tag -s vX.Y.Z`) | same binaries, plus the green Verified badge proving publisher identity; this is the build a registry PR refers to |
+
+Rule: a version sent to the store is ALWAYS a signed tag. A plain stable
+release stays unsigned — that asymmetry is intentional, not an omission.
+
+### One-time signing setup (SSH, no GPG needed)
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_sign -C "release signing"
+# GitHub → Settings → SSH and GPG keys → New SSH key → Kind: Signing Key → paste ~/.ssh/id_sign.pub
+git config --global gpg.format ssh
+git config --global user.signingkey ~/.ssh/id_sign.pub
+```
+
+Keep `tag.gpgSign` OFF globally — store tags are signed explicitly, on order,
+never by accident.
+
+### Signing a store build
+
+```bash
+make bump VERSION=x.y.z          # then commit the bump on main
+git tag -s vx.y.z -m "vx.y.z"    # annotated + signed; prompts for the key passphrase
+git tag -v vx.y.z                # must print "Good signature"
+git push origin vx.y.z           # triggers release.yml (idempotent re-run if replacing a tag)
+```
+
+Re-signing an already-pushed lightweight tag (same commit, signature added
+later): `git tag -d vx.y.z && git tag -s vx.y.z -m "vx.y.z" <commit>`,
+then `git push --force origin vx.y.z`. The existing GitHub Release stays
+attached to the tag name and gains the Verified badge; `release.yml`
+re-runs and re-uploads identical assets by design. Clones that fetched the
+old tag object see a tag-conflict warning on next fetch — expected.
+
 ## Local gates before every submission/update
 
 ```bash
