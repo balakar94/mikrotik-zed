@@ -15,6 +15,15 @@
 use crate::menus::{ArgEntry, MenuData, MenuEntry};
 use crate::parser::SpanToken;
 use crate::suggest::MAX_SUGGEST_INPUT_BYTES;
+// Shared text helpers live in `crate::text_util` (single owner —
+// `verb_role`, `type_gloss`, `sanitize_markdown_for_hover`, and the
+// label-budget caps); the `#[cfg(test)]` re-export keeps the historical
+// `signature::MAX_LABEL_TYPE_CHARS` path resolving for tests.
+#[cfg(test)]
+pub(crate) use crate::text_util::MAX_LABEL_TYPE_CHARS;
+pub(crate) use crate::text_util::{MAX_SIGNATURE_LABEL_BYTES, sanitize_label_segment};
+use crate::text_util::{sanitize_markdown_for_hover, type_gloss, verb_role};
+use std::collections::HashSet;
 
 /// Cap on how many properties the signature may list, counted AFTER the
 /// required-first/alphabetical sort. Bounds both the constructed label string
@@ -67,16 +76,82 @@ fn display_type(arg: &ArgEntry) -> &str {
     }
 }
 
-/// Settable named properties of `menu`, REQUIRED FIRST then alphabetically
-/// within each group, capped at [`MAX_SIGNATURE_PROPERTIES`].
+/// Type as rendered inside the `name=type` label segment.
+///
+/// Long enum member lists collapse to a bare `enum`; the full members stay
+/// in the parameter documentation. Short enums (few members, short display
+/// string) keep their members inline so common cases stay scannable.
+fn label_type(arg: &ArgEntry) -> String {
+    if arg.arg_type.starts_with("enum") {
+        let members = arg.enum_members();
+        if members.len() > 4 || display_type(arg).len() > 32 {
+            return "enum".to_string();
+        }
+    }
+    display_type(arg).to_string()
+}
+
+/// Full type for the parameter documentation: the complete member list for
+/// collapsed enums, otherwise the raw display type.
+fn doc_type(arg: &ArgEntry) -> String {
+    if arg.arg_type.starts_with("enum")
+        && label_type(arg) == "enum"
+        && !arg.enum_members().is_empty()
+    {
+        format!("enum ({})", arg.enum_members().join(" | "))
+    } else {
+        display_type(arg).to_string()
+    }
+}
+
+/// Outer (non-bracket-region) `key` names in COMPLETED pairs only, lowercased
+/// for case-insensitive comparison. A pair counts as completed only when its
+/// token ends strictly before the cursor (`end < cursor_byte`): the pair
+/// under the cursor (`url=`, `url="…`, partial keys) stays listed so
+/// `activeParameter` can still highlight it. Mirrors the bracket walk in
+/// [`resolve_verb_token`] so `[find key=value]` never filters an outer
+/// property.
+fn typed_keys(tokens: &[SpanToken], cursor_byte: usize) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut depth: u32 = 0;
+    for t in tokens {
+        let (opens, closes) = crate::parser::bracket_counts(&t.text);
+        if depth > 0 || opens > 0 {
+            depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
+            continue;
+        }
+        if t.end < cursor_byte
+            && let Some((k, _)) = crate::parser::split_key_value(&t.text)
+        {
+            out.insert(k.to_ascii_lowercase());
+        }
+        depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
+    }
+    out
+}
+
+/// Settable named properties of `menu` over an explicit typed-key exclusion
+/// set, REQUIRED FIRST then alphabetically within each group, capped at
+/// [`MAX_SIGNATURE_PROPERTIES`].
 ///
 /// Only `arguments` participate: flags (`X`, `D`) are print-output markers,
 /// and `read_only` properties are outputs — neither is ever typed as a
 /// `name=value` pair by a user, so listing them would be misleading.
 /// The returned slice backs BOTH the parameters array and the
 /// `activeParameter` match so the two can never disagree on indices.
-fn sorted_properties(menu: &MenuEntry) -> Vec<&ArgEntry> {
-    let mut props: Vec<&ArgEntry> = menu.arguments.iter().collect();
+///
+/// Already-typed `key=` pairs (outer tokens only) are filtered out, mirroring
+/// the completion `ctx.properties` exclusion: re-offering a typed property
+/// is noise, and required-missing entries stay pinned first among the rest.
+fn sorted_filtered_properties<'a>(
+    menu: &'a MenuEntry,
+    typed: &HashSet<String>,
+) -> Vec<&'a ArgEntry> {
+    let mut props: Vec<&ArgEntry> = menu
+        .arguments
+        .iter()
+        .filter(|a| !typed.contains(&a.name.to_ascii_lowercase()))
+        .collect();
     // Descending on `required` (true sorts first), ties broken by name —
     // a total order, hence independent of the embedded table's order.
     props.sort_by(|a, b| {
@@ -204,19 +279,71 @@ fn detect_active_parameter(
         return None;
     }
 
-    if let Some(idx) = properties.iter().position(|p| p.name == key) {
+    if let Some(idx) = properties
+        .iter()
+        .position(|p| p.name.eq_ignore_ascii_case(key))
+    {
         return Some(idx as u32);
     }
-    // Unique-prefix match; two or more hits stay silent (ambiguous).
+    // Unique-prefix match (case-insensitive); two or more hits stay silent (ambiguous).
+    let lower_key = key.to_ascii_lowercase();
     let mut candidates = properties
         .iter()
         .enumerate()
-        .filter(|(_, p)| p.name.starts_with(key));
+        .filter(|(_, p)| p.name.to_ascii_lowercase().starts_with(&lower_key));
     let (idx, _) = candidates.next()?;
     if candidates.next().is_some() {
         return None;
     }
     Some(idx as u32)
+}
+
+/// The completed-pair key when the cursor sits strictly past a KNOWN outer
+/// `key=value` pair after the verb (newest reached token is a `key=value`
+/// whose token ends before the cursor and whose key names a menu argument).
+/// The caller then advances `activeParameter` to the next missing required
+/// property instead of re-highlighting the finished pair. Unknown keys,
+/// bare partial words, and the pair under the cursor yield `None` (the
+/// normal detection path applies).
+fn completed_known_key<'a>(
+    menu: &MenuEntry,
+    tokens: &'a [SpanToken],
+    verb_token_idx: usize,
+    cursor_byte: usize,
+) -> Option<&'a str> {
+    let mut depth_by_index: Vec<u32> = Vec::with_capacity(tokens.len());
+    let mut depth: u32 = 0;
+    for t in tokens.iter() {
+        let (opens, closes) = crate::parser::bracket_counts(&t.text);
+        depth_by_index.push(depth);
+        if depth > 0 || opens > 0 {
+            depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
+            continue;
+        }
+        depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
+    }
+    let token = tokens[verb_token_idx + 1..]
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(i, _)| {
+            depth_by_index
+                .get(verb_token_idx + 1 + i)
+                .is_some_and(|&d| d == 0)
+        })
+        .map(|(_, t)| t)
+        .find(|t| t.start < cursor_byte)?;
+    let (key, _) = crate::parser::split_key_value(&token.text)?;
+    if token.end < cursor_byte
+        && menu
+            .arguments
+            .iter()
+            .any(|a| a.name.eq_ignore_ascii_case(key))
+    {
+        Some(key)
+    } else {
+        None
+    }
 }
 
 /// Build the signature-help response for a resolved `menu`.
@@ -234,7 +361,12 @@ pub(crate) fn compute_signature_help(
     verb_token_idx: usize,
     cursor_byte: usize,
 ) -> Option<SignatureHelp> {
-    let properties = sorted_properties(menu);
+    // Exclude COMPLETED `key=` pairs (same exclusion completion uses
+    // via `ctx.properties`); the pair under the cursor stays so
+    // `activeParameter` can still highlight it. What remains keeps
+    // required-missing first.
+    let typed = typed_keys(tokens, cursor_byte);
+    let properties = sorted_filtered_properties(menu, &typed);
     if properties.is_empty() {
         return None;
     }
@@ -258,9 +390,13 @@ pub(crate) fn compute_signature_help(
     let mut label = format!("{} {}", menu.path, verb);
     let mut parameters = Vec::with_capacity(properties.len());
     for arg in &properties {
-        let typ = display_type(arg);
+        let typ = label_type(arg);
+        let segment = sanitize_label_segment(&arg.name, &typ);
+        // Total-label budget: stop before exceeding ~4KiB so offsets stay exact.
+        if label.len() + ' '.len_utf8() + segment.len() > MAX_SIGNATURE_LABEL_BYTES {
+            break;
+        }
         let start = label.len() + ' '.len_utf8();
-        let segment = format!("{}={}", arg.name, typ);
         label.push(' ');
         label.push_str(&segment);
 
@@ -268,10 +404,14 @@ pub(crate) fn compute_signature_help(
         if arg.required {
             documentation.push_str("(required) ");
         }
-        documentation.push_str(typ);
+        documentation.push_str(&doc_type(arg));
+        if let Some(gloss) = type_gloss(&arg.arg_type) {
+            documentation.push_str(" — ");
+            documentation.push_str(gloss);
+        }
         if !arg.description.is_empty() {
             documentation.push_str(" — ");
-            documentation.push_str(&arg.description);
+            documentation.push_str(&sanitize_markdown_for_hover(&arg.description));
         }
 
         parameters.push(ParameterInformation {
@@ -280,30 +420,51 @@ pub(crate) fn compute_signature_help(
         });
     }
 
-    // Short markdown header: backticked resolved path + menu type (the
-    // dataset carries no menu-level description), plus the ordering note
+    // Short markdown header: backticked resolved path + verb, menu type,
+    // and the verb role (what this command does), plus the ordering note
     // once at least one required property exists.
+    let menu_kind = if menu.menu_type.is_empty() {
+        "Directory"
+    } else {
+        &menu.menu_type
+    };
     let mut documentation = format!(
-        "`{}` ({})",
+        "`{} {verb}` ({menu_kind}) — {verb} {}",
         menu.path,
-        if menu.menu_type.is_empty() {
-            "Directory"
-        } else {
-            &menu.menu_type
-        }
+        verb_role(verb)
     );
     if properties.iter().any(|p| p.required) {
         documentation.push_str("\n\nRequired properties listed first.");
     }
     // Truncation note: the property list stays capped at
     // MAX_SIGNATURE_PROPERTIES, but the header says how many were hidden.
-    let total = menu.arguments.len();
-    if total > properties.len() {
-        documentation.push_str(&format!("\n\n… (+{} more)", total - properties.len()));
+    // `total` counts only untyped properties so the note stays consistent
+    // with the filtered list actually shown.
+    let total_untyped = menu
+        .arguments
+        .iter()
+        .filter(|a| !typed.contains(&a.name.to_ascii_lowercase()))
+        .count();
+    if total_untyped > properties.len() {
+        documentation.push_str(&format!(
+            "\n\n… (+{} more)",
+            total_untyped - properties.len()
+        ));
     }
 
     let active_parameter =
-        detect_active_parameter(tokens, verb_token_idx, cursor_byte, &properties);
+        if completed_known_key(menu, tokens, verb_token_idx, cursor_byte).is_some() {
+            // The cursor sits past a completed KNOWN `key=value` pair: advance
+            // to the next missing required property instead of re-highlighting
+            // the finished one. No required missing ⇒ no highlight (the popup
+            // still shows).
+            properties
+                .iter()
+                .position(|p| p.required)
+                .map(|idx| idx as u32)
+        } else {
+            detect_active_parameter(tokens, verb_token_idx, cursor_byte, &properties)
+        };
 
     Some(SignatureHelp {
         signatures: vec![SignatureInformation {
@@ -314,362 +475,4 @@ pub(crate) fn compute_signature_help(
         active_signature: 0,
         active_parameter,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::menus::MenuData;
-    use crate::tokenize_with_spans;
-
-    /// /tool/fetch-shaped fixture: two required, two optional sharing a
-    /// prefix (for ambiguity checks), one enum type with spaces.
-    fn fetch_data() -> MenuData {
-        MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/tool/fetch"
-type = "Command"
-[[menus.arguments]]
-name = "url"
-type = "string"
-required = true
-[[menus.arguments]]
-name = "check-certificate"
-type = "bool"
-[[menus.arguments]]
-name = "check-expired"
-type = "bool"
-[[menus.arguments]]
-name = "http-method"
-type = "enum (get | post)"
-required = true
-[[menus]]
-path = "/empty/menu"
-type = "Directory"
-"#,
-        )
-    }
-
-    fn help_for(
-        data: &MenuData,
-        path: &str,
-        line_text: &str,
-        cursor: usize,
-    ) -> Option<SignatureHelp> {
-        let m = menu(data, path);
-        let tokens = tokenize_with_spans(line_text);
-        let verb_idx = resolve_verb_token(data, &tokens)?;
-        compute_signature_help(m, &tokens, verb_idx, cursor)
-    }
-
-    fn menu<'a>(data: &'a MenuData, path: &str) -> &'a MenuEntry {
-        data.menu_by_path.get(path).expect("fixture menu")
-    }
-
-    /// Compute with the cursor placed at byte `cursor` of `line_text`,
-    /// resolving the verb exactly like the handler does.
-    fn help_at(data: &MenuData, line_text: &str, cursor: usize) -> SignatureHelp {
-        help_opt(data, line_text, cursor).expect("fixture menu has properties and a verb")
-    }
-
-    fn help_opt(data: &MenuData, line_text: &str, cursor: usize) -> Option<SignatureHelp> {
-        let m = menu(data, "/tool/fetch");
-        let tokens = tokenize_with_spans(line_text);
-        let verb_idx = resolve_verb_token(data, &tokens)?;
-        compute_signature_help(m, &tokens, verb_idx, cursor)
-    }
-
-    fn active(help: &SignatureHelp) -> Option<usize> {
-        help.active_parameter.map(|v| v as usize)
-    }
-
-    // ── Label construction ────────────────────────────────────────
-
-    #[test]
-    fn test_label_required_first_alphabetical_and_offsets_slice_exactly() {
-        let line = "/tool/fetch add ";
-        let help = help_at(&fetch_data(), line, line.len());
-        assert_eq!(help.signatures.len(), 1, "exactly one signature");
-        let sig = &help.signatures[0];
-        // Required first (alphabetical: http-method, url), then the rest.
-        assert_eq!(
-            sig.label,
-            "/tool/fetch add http-method=enum (get | post) url=string check-certificate=bool check-expired=bool"
-        );
-        let names: Vec<&str> = sig
-            .parameters
-            .iter()
-            .map(|p| &sig.label[p.label[0]..p.label[1]])
-            .map(|seg| seg.split('=').next().unwrap())
-            .collect();
-        assert_eq!(
-            names,
-            ["http-method", "url", "check-certificate", "check-expired"]
-        );
-        // Every offset pair slices the label cleanly (start <= end, in bounds).
-        for p in &sig.parameters {
-            assert!(p.label[0] < p.label[1] && p.label[1] <= sig.label.len());
-        }
-    }
-
-    #[test]
-    fn test_documentation_marks_required_and_mentions_ordering() {
-        let line = "/tool/fetch add ";
-        let sig = &help_at(&fetch_data(), line, line.len()).signatures[0];
-        assert!(
-            sig.documentation.contains("`/tool/fetch` (Command)")
-                && sig
-                    .documentation
-                    .contains("Required properties listed first."),
-            "got {}",
-            sig.documentation
-        );
-        let required_docs: Vec<&str> = sig
-            .parameters
-            .iter()
-            .map(|p| p.documentation.as_str())
-            .filter(|d| d.starts_with("(required) "))
-            .collect();
-        assert_eq!(required_docs.len(), 2, "http-method + url are required");
-        // Optional docs have no marker; enum type survives verbatim.
-        assert!(sig.parameters[2].documentation == "bool");
-        assert!(
-            sig.parameters[0]
-                .documentation
-                .starts_with("(required) enum (get | post)")
-        );
-    }
-
-    #[test]
-    fn test_description_attached_to_parameter_documentation() {
-        let data = MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/m"
-type = "Directory"
-[[menus.arguments]]
-name = "opt"
-type = "num"
-description = "how much"
-"#,
-        );
-        let help = help_for(&data, "/m", "/m add ", 7).expect("has properties");
-        assert_eq!(
-            help.signatures[0].parameters[0].documentation,
-            "num — how much"
-        );
-    }
-
-    #[test]
-    fn test_no_required_properties_omits_ordering_note() {
-        let data = MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/m"
-type = "Directory"
-[[menus.arguments]]
-name = "alpha"
-type = "string"
-"#,
-        );
-        let help = help_for(&data, "/m", "/m print ", 9).unwrap();
-        assert!(!help.signatures[0].documentation.contains("Required"));
-        assert_eq!(help.signatures[0].label, "/m print alpha=string");
-    }
-
-    #[test]
-    fn test_empty_type_displays_any() {
-        let data = MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/m"
-type = "Directory"
-[[menus.arguments]]
-name = "blank"
-type = ""
-"#,
-        );
-        let help = help_for(&data, "/m", "/m add ", 7).unwrap();
-        assert_eq!(help.signatures[0].label, "/m add blank=any");
-    }
-
-    // ── Gating / caps ─────────────────────────────────────────────
-
-    #[test]
-    fn test_menu_without_arguments_returns_none() {
-        let data = MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/empty/menu"
-type = "Directory"
-"#,
-        );
-        let help = help_for(&data, "/empty/menu", "/empty/menu print ", 17);
-        assert!(help.is_none(), "anti-noise: nothing to show");
-    }
-
-    #[test]
-    fn test_property_list_capped_at_max() {
-        let mut toml = String::from("[[menus]]\npath = \"/big\"\ntype = \"Directory\"\n");
-        for i in 0..50 {
-            toml.push_str(&format!(
-                "[[menus.arguments]]\nname = \"prop{i:02}\"\ntype = \"string\"\n"
-            ));
-        }
-        let data = MenuData::from_toml_str(&toml);
-        let help = help_for(&data, "/big", "/big add ", 9).expect("capped list still non-empty");
-        assert_eq!(
-            help.signatures[0].parameters.len(),
-            MAX_SIGNATURE_PROPERTIES
-        );
-        // Alphabetical truncation keeps the FIRST forty (prop00..prop39).
-        let last = help.signatures[0].parameters.last().unwrap();
-        let seg = &help.signatures[0].label[last.label[0]..last.label[1]];
-        assert_eq!(seg.split('=').next().unwrap(), "prop39");
-    }
-
-    #[test]
-    fn test_truncation_note_reports_hidden_count() {
-        let mut toml = String::from("[[menus]]\npath = \"/big60\"\ntype = \"Directory\"\n");
-        for i in 0..60 {
-            toml.push_str(&format!(
-                "[[menus.arguments]]\nname = \"prop{i:02}\"\ntype = \"string\"\n"
-            ));
-        }
-        let data = MenuData::from_toml_str(&toml);
-        let help =
-            help_for(&data, "/big60", "/big60 add ", 11).expect("capped list still non-empty");
-        assert_eq!(
-            help.signatures[0].parameters.len(),
-            MAX_SIGNATURE_PROPERTIES
-        );
-        assert!(
-            help.signatures[0].documentation.contains("(+20 more)"),
-            "truncation note must report hidden count, got {}",
-            help.signatures[0].documentation
-        );
-    }
-
-    // ── activeParameter detection ─────────────────────────────────
-
-    #[test]
-    fn test_exact_key_match_after_equals() {
-        let line = "/tool/fetch add url=";
-        let help = help_at(&fetch_data(), line, line.len());
-        assert_eq!(
-            active(&help),
-            Some(1),
-            "url is the second (required-first) param"
-        );
-    }
-
-    #[test]
-    fn test_unique_prefix_partial_word_matches() {
-        // `check-c` prefixes exactly one property.
-        let line = "/tool/fetch add check-c";
-        let help = help_at(&fetch_data(), line, line.len());
-        assert_eq!(active(&help), Some(2));
-    }
-
-    #[test]
-    fn test_ambiguous_prefix_yields_no_active_parameter() {
-        let line = "/tool/fetch add check-";
-        let help = help_at(&fetch_data(), line, line.len());
-        assert!(
-            help.active_parameter.is_none(),
-            "check- matches two properties ⇒ omit instead of guessing"
-        );
-        assert_eq!(help.signatures.len(), 1, "popup still shows");
-    }
-
-    #[test]
-    fn test_cursor_inside_quoted_value_keeps_key_active() {
-        // Unterminated quote: tokenizer keeps `url="http://x y` as ONE token,
-        // so the spaces/quotes cannot spawn phantom words.
-        let line = "/tool/fetch add url=\"http://x y";
-        let help = help_at(&fetch_data(), line, line.find("//").unwrap());
-        assert_eq!(active(&help), Some(1));
-    }
-
-    #[test]
-    fn test_cursor_on_verb_or_before_it_yields_no_active_parameter() {
-        let line = "/tool/fetch add url=x";
-        let verb_end = line.rfind("add").unwrap() + 3;
-        let help = help_at(&fetch_data(), line, verb_end);
-        assert!(
-            help.active_parameter.is_none(),
-            "verb token itself never matches"
-        );
-        // Cursor inside the menu path: likewise nothing highlighted.
-        let help = help_at(&fetch_data(), line, 5);
-        assert!(help.active_parameter.is_none());
-    }
-
-    #[test]
-    fn test_completed_pair_before_cursor_stays_active() {
-        // Just finished `url=x `: the newest reached token is url's pair.
-        let line = "/tool/fetch add url=x ";
-        let help = help_at(&fetch_data(), line, line.len());
-        assert_eq!(active(&help), Some(1));
-    }
-
-    #[test]
-    fn test_unknown_key_after_verb_yields_no_active_parameter() {
-        let line = "/tool/fetch add zzz=";
-        let help = help_at(&fetch_data(), line, line.len());
-        assert!(help.active_parameter.is_none());
-    }
-
-    #[test]
-    fn test_absurdly_long_key_yields_no_active_parameter() {
-        let long = "k".repeat(MAX_SUGGEST_INPUT_BYTES + 1);
-        let line = format!("/tool/fetch add {long}=");
-        let help = help_at(&fetch_data(), &line, line.len());
-        assert!(help.active_parameter.is_none());
-    }
-
-    #[test]
-    fn test_verb_found_after_submenu_words_not_property_collision() {
-        // Space-separated sub-menu segments precede the verb; the detector
-        // must anchor on the VERB token, not the first bare word.
-        let data = MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/ip/firewall/filter"
-type = "Directory"
-[[menus.arguments]]
-name = "chain"
-type = "enum (input | forward)"
-required = true
-[[menus]]
-path = "/ip"
-type = "Directory"
-[[menus]]
-path = "/ip/firewall"
-type = "Directory"
-"#,
-        );
-        let line = "/ip firewall filter add chain=";
-        let help = help_for(&data, "/ip/firewall/filter", line, line.len()).unwrap();
-        assert_eq!(active(&help), Some(0));
-    }
-
-    #[test]
-    fn test_real_data_ip_address_signature() {
-        // Real embedded table: /ip/address has `interface` required, `address`
-        // untyped. Required-first ordering must hold on live data too.
-        let data = MenuData::load();
-        let line = "/ip/address add ";
-        let help = help_for(&data, "/ip/address", line, line.len()).expect("real menu");
-        let sig = &help.signatures[0];
-        let first = &sig.label[sig.parameters[0].label[0]..sig.parameters[0].label[1]];
-        assert_eq!(first, "interface=iface_enum", "required property leads");
-        assert!(sig.label.starts_with("/ip/address add "));
-        assert!(
-            sig.parameters[0]
-                .documentation
-                .starts_with("(required) iface_enum")
-        );
-    }
 }
