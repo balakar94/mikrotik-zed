@@ -53,7 +53,7 @@ language_server_command(id, worktree) called per worktree
            ├─ textDocument/completion (triggers: /  space  =  :)
            ├─ textDocument/hover
            └─ textDocument/diagnostic (pull)
-Release builds Linux aarch64 natively on ubuntu-24.04-arm (no zig/cargo-zigbuild); 6 triples total — 4 platform triples + Windows ARM64 (x86_64 + aarch64 Windows).
+Release builds Linux aarch64 natively on ubuntu-24.04-arm (no zig/cargo-zigbuild); 6 triples total (macOS ×2, Linux ×2, Windows ×2).
 ```
 
 ### Supply-chain verification (auto-download)

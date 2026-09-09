@@ -10,7 +10,7 @@ Guide for the pure-Rust language server `rsc-ls` and WASM extension that provide
 
 ## State
 
-Working end-to-end: workspace member `lsp/` (native binary `rsc-ls`) + WASM `cdylib` `src/lib.rs` (`zed_extension_api 0.7`). Diagnostics push+pull, 7 rules; completion with statement snippets; flat document symbols; folding ranges. Auto-download from GitHub Releases with PATH fallback and 4 platform triples. Live enrichment (0.5.3, opt-in) via `RSC_LS_LIVE=1` / `MIKROTIK_LIVE=1` (`lsp/src/live.rs: LiveConfig::from_env`) — 11 `ResourceKind` variants grouped in 7 families (interfaces/bridges, ipv4/ipv6 addresses, address-lists, firewall chains, pools) (`lsp/src/live.rs: live_resource_for_menu_property`), in-memory TTL cache only (`lsp/src/live.rs: LiveCache`, `lsp/src/caps.rs: LIVE_TTL_SECS` 60s), stale-while-revalidate hydrator non-blocking (`lsp/src/live.rs: get_cached_or_fetch_background` / `trigger_background_fetch` with coalescing), negative cache `LIVE_NEGATIVE_TTL_SECS` 15s, `LIVE_MAX_HOSTS` 4, `LIVE_CUSTOM_RESOURCES_MAX` 8, SSRF deny `169.254.169.254` (`lsp/src/live.rs: is_ssrf_denied_host` / `validate_host`), 5s per-request / 2s blocking timeouts clamped 1..30s (`lsp/src/caps.rs: LIVE_TIMEOUT_SECS` / `LIVE_FETCH_BLOCKING_TIMEOUT_SECS`), URL via `url` crate with `fe80::` bracket handling (`lsp/src/live.rs: build_rest_url`).
+Working end-to-end: workspace member `lsp/` (native binary `rsc-ls`) + WASM `cdylib` `src/lib.rs` (`zed_extension_api 0.7`). Diagnostics push+pull, 7 rules; relevance-ranked completion with statement snippets; flat document symbols; folding ranges. Auto-download from GitHub Releases with PATH fallback and 6 platform triples. Live enrichment (0.5.3, opt-in) via `RSC_LS_LIVE=1` / `MIKROTIK_LIVE=1` (`lsp/src/live.rs: LiveConfig::from_env`) — 11 `ResourceKind` variants grouped in 7 families (interfaces/bridges, ipv4/ipv6 addresses, address-lists, firewall chains, pools) (`lsp/src/live.rs: live_resource_for_menu_property`), in-memory TTL cache only (`lsp/src/live.rs: LiveCache`, `lsp/src/caps.rs: LIVE_TTL_SECS` 60s), stale-while-revalidate hydrator non-blocking (`lsp/src/live.rs: get_cached_or_fetch_background` / `trigger_background_fetch` with coalescing), negative cache `LIVE_NEGATIVE_TTL_SECS` 15s, `LIVE_MAX_HOSTS` 4, `LIVE_CUSTOM_RESOURCES_MAX` 8, SSRF deny `169.254.169.254` (`lsp/src/live.rs: is_ssrf_denied_host` / `validate_host`), 5s per-request / 2s blocking timeouts clamped 1..30s (`lsp/src/caps.rs: LIVE_TIMEOUT_SECS` / `LIVE_FETCH_BLOCKING_TIMEOUT_SECS`), URL via `url` crate with `fe80::` bracket handling (`lsp/src/live.rs: build_rest_url`).
 
 ## Architecture
 
@@ -32,7 +32,7 @@ Protocol: `Content-Length` framing, `textDocumentSync = {"openClose": true, "cha
 | File | Role |
 |------|------|
 | `src/lib.rs` | WASM extension; `RscExtension::language_server_command` (PATH→cache→download), `platform_triple`, `LanguageServerInstallationStatus` |
-| `lsp/src/main.rs` | Binary bootstrap: CLI dispatch, logging/banner setup, `Server::new(data)` + `run()`; declares all modules and re-exports shared paths (incl. `Server`, `exit_code`, `is_valid_file_uri`); hosts the child-of-root test modules (`main_tests/`) |
+| `lsp/src/main.rs` | Binary bootstrap: CLI dispatch, logging/banner setup, `Server::new(data)` + `run()`; declares all modules and re-exports shared paths (incl. `Server`, `exit_code`, `is_valid_file_uri`); white-box tests live in `lsp/src/tests/` (manifest `tests/mod.rs`, one file per `<module>_<aspect>`) |
 | `lsp/src/server.rs` | Server core: `Server` struct + full `impl` — stdio loop (`run`), `handle_message` (all method dispatch incl. `workspace/executeCommand` `rsc.live.refresh`/`rsc.live.status` + `workspace/didChangeConfiguration` hot-reload via `LiveConfig::apply_settings_value`), tracked-doc store with caps, `publish_diagnostics`, `compute_code_actions`, navigation adapters, canonical `is_valid_file_uri`; items `pub(crate)`, re-exported at crate root |
 | `lsp/src/live.rs` | Live hydrator: stale-while-revalidate (`get_cached_or_fetch_background`, `trigger_background_fetch`, coalescing via `can_spawn_fetch`/`record_fetch_attempt`), negative cache (`failed_at`, `LIVE_NEGATIVE_TTL_SECS`), TLS insecure via rustls `ServerCertVerifier` when `MIKROTIK_SSL=0` (`build_insecure_agent`), URL via `url` crate with `fe80::` bracket handling (`build_rest_url`, `format_host_for_url`), multi-host split (`parse_hosts`, `LIVE_MAX_HOSTS`), custom dispatcher `RSC_LS_LIVE_RESOURCES` JSON `{property,path,field}` (`parse_custom_resources`, `LIVE_CUSTOM_RESOURCES_MAX`), observability |
 | `lsp/src/caps.rs` | Single source of truth for caps (re-exported at crate root): `MAX_MESSAGE_SIZE` 10 MiB, `MAX_HEADER_SIZE` 32 KiB, `MAX_DOC_SIZE` 5 MiB, `MAX_DOCS` 100, `MAX_CODE_ACTIONS` 8, `MAX_DIAG_LINES` 3000, `MAX_DIAG_BYTES` 500 KB, `MAX_LIVE_ITEMS` 500, `MAX_LIVE_VALUE_LEN` 64, `MAX_LIVE_RESPONSE_BYTES` 512 KiB, `MAX_CACHE_ENTRIES` 16, `LIVE_TTL_SECS` 60, `LIVE_TIMEOUT_SECS` 5, `LIVE_FETCH_BLOCKING_TIMEOUT_SECS` 2, `LIVE_NEGATIVE_TTL_SECS` 15, `LIVE_MAX_HOSTS` 4, `LIVE_CUSTOM_RESOURCES_MAX` 8 |
@@ -59,7 +59,7 @@ Advertised in `initialize`: `positionEncoding`, `textDocumentSync {openClose:tru
 
 ### Completion (`textDocument/completion`)
 
-Strategy: return all candidates, let Zed fuzzy-filter. Exceptions: `property=` → value completions; a `:`-prefixed token under the cursor → only labels starting with the typed `:`-word (no fallback, see below).
+Strategy: relevance-ranked `sortText` tiers (`0!live_` device truth < required `0` < optional `1` < verb `2` < submenu `3` < enum `4` < common-hint `5` < placeholder `6` < flag `7` < typo-fallback `8` < snippet `9`), match quality (exact < prefix < substring) inside each tier, relevance-ordered truncation at `MAX_COMPLETION_ITEMS`. Typed-prefix `filterText` plus `textEdit` replacement shadows for values/submenus. Exceptions: `property=` → value completions; a `:`-prefixed token under the cursor → only labels starting with the typed `:`-word (no fallback, see below). Live items (`0!live_…`, detail `live — …`) sort first whenever the device cache is fresh.
 
 - No path → roots (`get_root_completion_items`, `kind::CLASS`)
 - Before verb → sub-menus (`get_sub_menu_completion_items`) + `STANDARD_VERBS` + `Command` children (`get_verb_completion_items`, `kind::FUNCTION`)
@@ -104,9 +104,9 @@ Returns `quickfix` actions ("Did you mean 'X'?") for client-echoed diagnostics w
 |---|------|----------|------|---------|
 | 1 | `unknown-menu` | Warning (2) | `path` not in `menu_by_path` nor `child_names_by_parent`, not prefix of any menu | `/foo/bar add` → `Unknown menu '/foo/bar'` |
 | 2 | `unknown-property` | Warning (2) | key not in `arguments ∪ flags ∪ read_only` for known menu | `/ip/address add bad=1` → `Unknown property 'bad' for '/ip/address'` |
-| 3 | `missing-required` | Info (3) | `Directory`/`Settings Directory` + verb `add`/`set` missing `arg.required` | `/ip/address add` → `Missing required property 'address' for '/ip/address add'` |
+| 3 | `missing-required` | Warning (2) | `Directory`/`Settings Directory` + verb `add`/`set` missing `arg.required` (breaks `/import`) | `/ip/address add` → `Missing required property 'address' for '/ip/address add'` |
 | 4 | `duplicate-property` | Warning (2) | same key twice (range = second occurrence) | `address=1.1.1.1 address=2.2.2.2` → `Duplicate property 'address'` |
-| 5 | `invalid-enum-value` | Hint (4) | `arg_type` starts with `enum` and value not in `enum (a \| b \| ...)` | `chain=invalid` → `Invalid value 'invalid' for 'chain' (expected one of: input \| forward \| output)` |
+| 5 | `invalid-enum-value` | Warning (2) | `arg_type` starts with `enum` and value not in `enum (a \| b \| ...)` (breaks `/import`); typo’d values append `Did you mean …?` | `chain=invalid` → `Invalid value 'invalid' for 'chain' (expected one of: input \| forward \| output)` |
 | 6 | `unclosed-brace` | Error (1) | `{` never closed before EOF; range = that brace char; companion code `unmatched-brace` flags a stray `}` with no open `{`. Shares the quote/comment-aware walk with folding (`parser::walk_structure`) — braces inside strings/comments are inert, `\` continuations keep strings alive across lines; capped at 10/publish oldest-first | `do={` with no closer → `Brace '{' opened here is never closed` |
 | 7 | `unclosed-quote` | Error (1) | quoted string whose opening quote never terminates before EOF; error points at the OPENING quote, rest of document treated as string content (no cascade); same walk/cap as rule 6 | `:put "oops` → `Quoted string opened here is never closed` |
 
@@ -133,7 +133,7 @@ Stale-while-revalidate, never blocks completion (`lsp/src/live.rs` + `lsp/src/se
 4. **Implement module**: create `lsp/src/<feature>.rs` (like `completion.rs`/`hover.rs`/`diagnostics.rs`/`symbols.rs`/`folding.rs`), expose a pure `compute_<feature>(...) -> Vec<T>/Option<Value>` function (no I/O) for testability. Register `mod <feature>` alongside the others in `main.rs`.
 5. **Serialize LSP response**: `serde_json::json!({"jsonrpc":"2.0","id":id,"result":...})`; return `None` for notifications. Use `source="rsc-ls"` and correct `severity` for diagnostics.
 6. **Wire publish if needed**: for push diagnostics pattern, add `publish_diagnostics` call after `didOpen`/`didChange`/`didClose`.
-7. **Test**: add `#[cfg(test)]` with `MenuData::from_toml_str(synthetic)` (see the test modules in `diagnostics.rs`, `completion.rs`, `hover.rs`, `main.rs`) plus `MenuData::load()` real-data sanity. Run `cargo test -p rsc-ls`.
+7. **Test**: add tests under `lsp/src/tests/<module>_<aspect>.rs` (one file per aspect, ~300-line soft cap, shared fixtures where reused) with `MenuData::from_toml_str(synthetic)` plus `MenuData::load()` real-data sanity. Run `cargo test -p rsc-ls`.
 8. **WASM/extension**: if new `initializationOptions` or file types needed, update `extension.toml` and `src/lib.rs` (never use `std::env::var`/`cfg` there — use `current_platform`/`Worktree`).
 
 ## Performance & Limits
@@ -147,6 +147,9 @@ Canonical values live in `caps.rs` (single source of truth, re-exported from the
 | `MAX_DOC_SIZE` | 5 MiB | `caps.rs` | Truncate `didOpen`/`didChange` text at `floor_char_boundary` |
 | `MAX_DOCS` | 100 | `caps.rs` | Reject new URIs when cap reached |
 | `MAX_CODE_ACTIONS` | 8 | `caps.rs` | Cap one `textDocument/codeAction` response |
+| `MAX_DIAGNOSTICS` | 2000 | `caps.rs` | Total semantic diagnostics per publish (truncates before syntax extend) |
+| `MAX_SYNTAX_DIAGNOSTICS` | 10 | `diagnostics.rs` | Cap on unclosed/unmatched brace + quote diagnostics per publish (oldest-first) |
+| `MAX_COMPLETION_ITEMS` | 200 | `caps.rs` | Completion items per response (relevance-ordered truncation) |
 | `MAX_DIAG_LINES` | 3000 | `caps.rs` | Only first N lines diagnosed |
 | `MAX_DIAG_BYTES` | 500 KB | `caps.rs` | Truncate doc for diagnostics at char boundary |
 | `MAX_SYNTAX_DIAGNOSTICS` | 10 | `diagnostics.rs` | Cap on unclosed/unmatched brace + quote diagnostics per publish (oldest-first) |
@@ -164,12 +167,12 @@ Incremental edits: `lsp_position_to_offset` + `apply_incremental_edit` (`encodin
 ## Testing Strategy
 
 ```bash
-cargo test -p rsc-ls                  # unit tests: menus, server, completion, hover, main, diagnostics
+cargo test -p rsc-ls                  # white-box suite lsp/src/tests/ + E2E targets
 cargo test -p rsc-ls -- diagnostics   # single module
 cargo test -p rsc-ls -- --nocapture   # show eprintln logs
 python -m pytest tests/ -v            # Python integration tests
 cd grammars/rsc && npx tree-sitter test  # grammar corpus
-make validate                         # generate-check + fmt + clippy + test-all + sync-check + extract
+make validate                         # check-manifest + docs-check + generate-check + fmt + clippy + test-all + extract (sync-check separate)
 ```
 
 | Area | File | Pattern |
@@ -182,8 +185,8 @@ make validate                         # generate-check + fmt + clippy + test-all
 | Completion | `lsp/src/completion.rs` | `test_root_*`, `test_submenu_*`, `test_arg_*`, `test_value_*`, `test_snippets_*` / `test_at_statement_start_gating` (B3), real-data `test_real_data_*` |
 | Hover | `lsp/src/hover.rs` | `test_hover_menu_*`, `test_hover_property_*`, `test_hover_flag_*`, `test_hover_verb_*`, `test_find_word_*` |
 | Diagnostics | `lsp/src/diagnostics.rs` | `test_unknown_menu`, `test_missing_required`, `test_duplicate`, `test_invalid_enum`, `test_large_doc_capped`, `test_implicit_parent` |
-| Symbols/folding | `lsp/src/symbols.rs`, `lsp/src/folding.rs` | unit fixtures + server-level integration in root test modules (`main_tests/`, declared in `main.rs`: `test_document_symbols_*`, `test_folding_ranges_*`) incl. untracked-null and `-32602` cases |
-| Navigation | `lsp/src/navigation.rs` | unit: declaration extraction (incl. continuation-split), usage scan (`$$`, strings, comments, parens/arithmetic), definition-choice rule, references counts/cap; server-level in root test modules (`main_tests/`: `test_server_definition_*`, `test_server_references_*`, UTF-16 emoji pin); E2E wire tests |
+| Symbols/folding | `lsp/src/symbols.rs`, `lsp/src/folding.rs` | unit fixtures + server-level integration in `lsp/src/tests/` (`server_docs.rs`, `symbols.rs`, `folding.rs`: `test_document_symbols_*`, `test_folding_ranges_*`) incl. untracked-null and `-32602` cases |
+| Navigation | `lsp/src/navigation.rs` | unit: declaration extraction (incl. continuation-split), usage scan (`$$`, strings, comments, parens/arithmetic), definition-choice rule, references counts/cap; server-level in `lsp/src/tests/` (`navigation_*.rs`, `server_config.rs`: `test_server_definition_*`, `test_server_references_*`, UTF-16 emoji pin); E2E wire tests |
 | Manual E2E | Zed | `Install Dev Extension` → open `.rsc` → trigger `/` ` ` `=` `:` completion, hover, folding gutter, outline/document symbols, verify `publishDiagnostics` |
 
 ### E2E harness (`lsp/tests/e2e.rs`)
@@ -223,7 +226,7 @@ cargo build --target wasm32-wasip2 --release             # WASM component (Zed b
 cargo test -p rsc-ls && python -m pytest tests/ -v
 ```
 
-Auto-download: `RscExtension::language_server_command` (`src/lib.rs`) tries `worktree.which("rsc-ls")` → cached `rsc-ls` → `current_platform()` → `latest_github_release` / `github_release_by_tag_name` → `download_file` → `make_file_executable`. Triples: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-gnu`; Windows → error with manual build hint.
+Auto-download: `RscExtension::language_server_command` (`src/lib.rs`) tries `worktree.which("rsc-ls")` → cached `rsc-ls` → `current_platform()` → `latest_github_release` / `github_release_by_tag_name` → `download_file` → `make_file_executable`. Triples: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`; extension-less release blobs, `.exe` suffix applied at spawn on Windows.
 
 ## Reference
 
