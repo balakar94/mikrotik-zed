@@ -1,10 +1,11 @@
 // Brace, comment and string syntax rules.
-// Copied (not moved) from `lsp/src/diagnostics.rs` (`mod syntax_rules` L3130-3135, L3141-3170, L3172-3356); the original block is
+// Copied (not moved) from `lsp/src/diagnostics.rs` (`mod syntax_rules` L3130-3135, L3141-3170,
+// L3172-3356); the original block is
 // left untouched. `use super::*` is adapted to `use crate::diagnostics::*;` for the new location.
 use crate::diagnostics::*;
 use crate::menus::MenuData;
 
-// ── Syntactic structure rules (unclosed braces / quotes) ───────────
+// ── Syntactic structure rules (unclosed braces / quotes) ─────────────────
 //
 // Coverage for rules 6–8. Docs deliberately favor `:`-prefixed script lines
 // (skipped by the menu rules) so total-count assertions isolate the syntax

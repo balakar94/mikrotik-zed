@@ -1,5 +1,5 @@
 // Comma-separated enums and shorthand commands.
-// Copied (not moved) from `lsp/src/diagnostics.rs` (`mod tests` L1564-1614, L2119-2260); the original block is
+// Copied (not moved) from `lsp/src/diagnostics.rs`; the original block is
 // left untouched. `use super::*` is adapted to `use crate::diagnostics::*;` for the new location.
 use crate::diagnostics::*;
 use crate::menus::MenuData;
@@ -68,7 +68,7 @@ fn test_comma_separated_enum_single_value_still_strict() {
     );
 }
 
-// ── Centralized parser fix (slash-verb, quote-aware =, brackets) ──
+// ── Centralized parser fix (slash-verb, quote-aware =, brackets) ─────────
 
 fn slash_verb_data() -> MenuData {
     MenuData::from_toml_str(

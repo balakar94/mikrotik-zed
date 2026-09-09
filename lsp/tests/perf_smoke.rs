@@ -1,20 +1,20 @@
-//! Performance smoke gates for the `rsc-ls` language server.
-//!
-//! Companion to `e2e.rs` / `framing_chaos.rs`: this file pins the
-//! resource-cap surface over the REAL binary (`CARGO_BIN_EXE_rsc-ls`)
-//! with synthetic docs only (no device, no filesystem). The client is
-//! the same tiny std-only shape (threads + `mpsc` + `serde_json`);
-//! every wait is bounded by [`RECV_TIMEOUT`] so a wedged server fails
-//! fast instead of hanging CI.
-//!
-//! Covered:
-//! - 5 MiB didOpen truncates at the cap and the server stays alive
-//! - 3000-line diagnostics stay bounded with exactly one `truncated` hint
-//! - completion answers stay capped at 200 items, relevance-sorted
-//!   (live-first) so truncation keeps the most relevant candidates
-//!
-//! Timing budgets live ONLY in `#[ignore]`d release-oriented tests;
-//! the default suite asserts caps and shapes, never elapsed time.
+// Performance smoke gates for the `rsc-ls` language server.
+//
+// Companion to `e2e.rs` / `framing_chaos.rs`: this file pins the
+// resource-cap surface over the REAL binary (`CARGO_BIN_EXE_rsc-ls`)
+// with synthetic docs only (no device, no filesystem). The client is
+// the same tiny std-only shape (threads + `mpsc` + `serde_json`);
+// every wait is bounded by [`RECV_TIMEOUT`] so a wedged server fails
+// fast instead of hanging CI.
+//
+// Covered:
+// - 5 MiB didOpen truncates at the cap and the server stays alive
+// - 3000-line diagnostics stay bounded with exactly one `truncated` hint
+// - completion answers stay capped at 200 items, relevance-sorted
+//   (live-first) so truncation keeps the most relevant candidates
+//
+// Timing budgets live ONLY in `#[ignore]`d release-oriented tests;
+// the default suite asserts caps and shapes, never elapsed time.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
@@ -254,7 +254,7 @@ fn open_text_document(client: &mut PerfClient, uri: &str, text: &str) {
     );
 }
 
-// ── Cap asserts (run by default, no timing) ────────────────────────
+// ── Cap asserts (run by default, no timing) ──────────────────────────────
 
 #[test]
 fn perf_didopen_5mib_truncates_and_stays_alive() {
@@ -368,7 +368,7 @@ fn perf_completion_capped_at_200_and_relevance_sorted() {
     );
 }
 
-// ── Release-only budgets (ignored by default) ──────────────────────
+// ── Release-only budgets (ignored by default) ────────────────────────────
 
 /// 5 MiB open latency budget. Ignored in the default suite (debug
 /// builds are slow and CI machines vary); run explicitly in release:

@@ -1,4 +1,4 @@
-//! Variable navigation — references.
+// Variable navigation — references.
 use crate::menus::MenuData;
 use crate::navigation::*;
 use crate::parser::tokenize_with_spans;
@@ -41,13 +41,13 @@ type = "Directory"
     ))
 }
 
-// ── Server handle_message integration ─────────────────────────
+// ── Server handle_message integration ────────────────────────────────────
 
 fn make_server() -> Server {
     Server::new(synthetic_data())
 }
 
-// ── Variable navigation (textDocument/definition + references) ──
+// ── Variable navigation (textDocument/definition + references) ───────────
 //
 // Wire-contract coverage for the navigation handlers: -32602 /
 // null / [] shapes per sibling-handler strictness, exact declaration
@@ -90,7 +90,7 @@ fn summary(hits: &[VariableHit]) -> Vec<String> {
         .collect()
 }
 
-// ── Declaration extraction ────────────────────────────────────
+// ── Declaration extraction ───────────────────────────────────────────────
 
 #[test]
 fn test_word_at_matches_hover_extraction_on_usage() {
@@ -107,7 +107,7 @@ fn test_word_at_matches_hover_extraction_on_usage() {
     assert_eq!(word_at(text, 4), "put");
 }
 
-// ── Cursor → occurrence resolution ────────────────────────────
+// ── Cursor → occurrence resolution ───────────────────────────────────────
 
 #[test]
 fn test_hit_at_cursor_resolves_usages_and_declarations_only_in_place() {
@@ -139,7 +139,7 @@ fn test_hit_at_cursor_strips_defensive_sigil_and_rejects_empty() {
     assert!(hit_at_cursor(&index, "zz", 0, 0).is_none());
 }
 
-// ── Definition-choice rule ────────────────────────────────────
+// ── Definition-choice rule ───────────────────────────────────────────────
 
 #[test]
 fn test_choose_definition_prefers_closest_preceding_local() {
@@ -183,7 +183,7 @@ fn test_choose_definition_unknown_name_is_none() {
     assert!(choose_definition(&index, "zzz", (0, 0)).is_none());
 }
 
-// ── References collection ─────────────────────────────────────
+// ── References collection ────────────────────────────────────────────────
 
 #[test]
 fn test_collect_references_counts_toggled_by_include_declaration() {

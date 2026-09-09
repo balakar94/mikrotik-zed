@@ -1,4 +1,4 @@
-//! White-box: rename (rename).
+// White-box: rename (rename).
 use crate::encoding::PositionEncoding;
 use crate::rename::*;
 

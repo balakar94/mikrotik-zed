@@ -1,4 +1,4 @@
-//! White-box: diag completion.
+// White-box: diag completion.
 
 use crate::diagnostics;
 use crate::menus::MenuData;
@@ -39,7 +39,7 @@ fn make_server() -> Server {
     Server::new(synth())
 }
 
-// ── publishDiagnostics caps and incremental ────────────────────────
+// ── publishDiagnostics caps and incremental ──────────────────────────────
 
 #[test]
 fn test_diagnostic_pull_and_push_consistency() {
@@ -91,7 +91,7 @@ fn test_large_doc_truncation_preserves_first() {
     assert_eq!(diags[0].range.start.line, 0);
 }
 
-// ── Completion integration ────────────────────────────────────────
+// ── Completion integration ───────────────────────────────────────────────
 
 #[test]
 fn test_completion_for_empty_context_returns_roots() {

@@ -1,7 +1,8 @@
-// ── Live fetch ─────────────────────────────────────────────
+// ── Live fetch ───────────────────────────────────────────────────────────
 //
-// Fetch concurrency permits, agent cache, hydrator and fetchers. Extracted verbatim from `live.rs`; re-exported there
-// so `crate::live::…` paths keep resolving unchanged.
+// Fetch concurrency permits, agent cache, hydrator and fetchers.
+//
+// Split from `live.rs`; re-exported there, `crate::live::…` paths unchanged.
 
 use crate::caps::{MAX_LIVE_ITEMS, MAX_LIVE_RESPONSE_BYTES};
 use crate::live_cache::{ResourceKind, sanitize_resource_values};
@@ -18,7 +19,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-// ── Bounded fetch concurrency (A-03) ───────────────────────────────
+// ── Bounded fetch concurrency (A-03) ─────────────────────────────────────
 //
 // `trigger_background_fetch` historically spawned one thread per cache
 // miss, coalesced only by the 2 s window (`LIVE_FETCH_BLOCKING_TIMEOUT_SECS`).
@@ -52,11 +53,12 @@ impl Drop for FetchPermitGuard {
     }
 }
 
-// ── Fetch ────────────────────────────────────────────────────────
+// ── Fetch ────────────────────────────────────────────────────────────────
 
 /// Get a cached `ureq::Agent` for the given timeout and TLS verification mode, or build a new one.
 ///
-/// Uses a global `OnceLock` cache keyed by `(timeout_secs, ssl_verify)` to reuse agents across calls.
+/// Uses a global `OnceLock` cache keyed by `(timeout_secs, ssl_verify)` to reuse agents across
+/// calls.
 /// Logs `live agent reuse` on hit. Prefer `get_cached_agent_for_config` (pin/CA aware); this
 /// wrapper exists for unit tests and pin-less call sites.
 pub(crate) fn get_cached_agent(timeout: Duration, ssl_verify: bool) -> ureq::Agent {

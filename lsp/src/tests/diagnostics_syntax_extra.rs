@@ -1,5 +1,6 @@
 // Quote, stray-brace and syntax cap rules.
-// Copied (not moved) from `lsp/src/diagnostics.rs` (`mod syntax_rules` L3141-3170, L3357-3477); the original block is
+// Copied (not moved) from `lsp/src/diagnostics.rs` (`mod syntax_rules` L3141-3170, L3357-3477); the
+// original block is
 // left untouched. `use super::*` is adapted to `use crate::diagnostics::*;` for the new location.
 use crate::diagnostics::*;
 use crate::menus::MenuData;

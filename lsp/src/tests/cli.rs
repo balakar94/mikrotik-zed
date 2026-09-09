@@ -1,7 +1,7 @@
-//! White-box: cli (cli).
+// White-box: cli (cli).
 use crate::cli::*;
 
-// ── version_string ────────────────────────────────────────────
+// ── version_string ───────────────────────────────────────────────────────
 
 #[test]
 fn test_version_string_contains_cargo_pkg_version() {
@@ -27,7 +27,7 @@ fn test_version_string_is_single_plain_line() {
     assert_eq!(v, v.trim_end(), "no trailing whitespace");
 }
 
-// ── build_sha_suffix (both branches, pure) ────────────────────
+// ── build_sha_suffix (both branches, pure) ───────────────────────────────
 
 #[test]
 fn test_build_sha_suffix_absent_yields_empty() {
@@ -53,7 +53,7 @@ fn test_build_sha_suffix_short_input_used_whole() {
     assert_eq!(build_sha_suffix(Some("abc")), " (build abc)");
 }
 
-// ── parse_cli_args ────────────────────────────────────────────
+// ── parse_cli_args ───────────────────────────────────────────────────────
 
 fn args(list: &[&str]) -> Vec<String> {
     list.iter().map(|s| s.to_string()).collect()
@@ -109,7 +109,7 @@ fn test_usage_error_reason_mentions_count_for_multi_arg() {
     }
 }
 
-// ── exit_code_for / error_output (pure, no real streams) ──────
+// ── exit_code_for / error_output (pure, no real streams) ─────────────────
 
 #[test]
 fn test_exit_code_matrix() {

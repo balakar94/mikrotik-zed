@@ -1,4 +1,4 @@
-//! Variable navigation.
+// Variable navigation.
 use crate::menus::MenuData;
 use crate::navigation::*;
 use crate::parser::tokenize_with_spans;
@@ -41,13 +41,13 @@ type = "Directory"
     ))
 }
 
-// ── Server handle_message integration ─────────────────────────
+// ── Server handle_message integration ────────────────────────────────────
 
 fn make_server() -> Server {
     Server::new(synthetic_data())
 }
 
-// ── Variable navigation (textDocument/definition + references) ──
+// ── Variable navigation (textDocument/definition + references) ───────────
 //
 // Wire-contract coverage for the navigation handlers: -32602 /
 // null / [] shapes per sibling-handler strictness, exact declaration
@@ -90,7 +90,7 @@ fn summary(hits: &[VariableHit]) -> Vec<String> {
         .collect()
 }
 
-// ── Declaration extraction ────────────────────────────────────
+// ── Declaration extraction ───────────────────────────────────────────────
 
 #[test]
 fn test_index_declarations_then_usages_in_document_order() {
@@ -128,7 +128,7 @@ fn test_empty_document_yields_empty_index() {
     assert!(index_of("# only a comment\n").is_empty());
 }
 
-// ── Usage scanning: quotes, $$, comments ─────────────────────
+// ── Usage scanning: quotes, $$, comments ─────────────────────────────────
 
 #[test]
 fn test_usage_scan_double_quoted_interpolates_single_quoted_literal() {

@@ -1,5 +1,6 @@
 // Diagnostic source, ranges and line continuations.
-// Copied (not moved) from `lsp/src/diagnostics.rs` (`mod extra_coverage` L2359-2410, L2793-2907); the original block is
+// Copied (not moved) from `lsp/src/diagnostics.rs` (`mod extra_coverage` L2359-2410, L2793-2907);
+// the original block is
 // left untouched. `use super::*` is adapted to `use crate::diagnostics::*;` for the new location.
 use crate::diagnostics::*;
 use crate::menus::MenuData;
@@ -81,7 +82,7 @@ fn test_diagnostics_range_within_line() {
     assert_eq!(d.range.end.character, 8);
 }
 
-// ── RouterOS backslash line continuation ──────────────────────────
+// ── RouterOS backslash line continuation ─────────────────────────────────
 
 #[test]
 fn test_continuation_quoted_url_no_unknown_menu() {

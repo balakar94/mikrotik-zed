@@ -1,23 +1,23 @@
-//! Wire/chaos gates for the `rsc-ls` language server.
-//!
-//! Companion to `e2e.rs` (which owns the happy-path wire truths): this
-//! file is Stream D territory — hostile transports and rename wire
-//! shapes. It spawns the REAL binary via `CARGO_BIN_EXE_rsc-ls` and
-//! speaks raw Content-Length framed JSON-RPC over stdio with a
-//! deliberately tiny std-only client (threads + `mpsc` +
-//! `serde_json`). Every wait is bounded by [`RECV_TIMEOUT`] so a wedged
-//! server fails fast instead of hanging CI.
-//!
-//! Covered (synthetic docs only, no device, no filesystem):
-//! - chunked writes (1-byte and 7-byte) still frame correctly
-//! - LF-only (`\n`) frame terminators are accepted
-//! - 32 KiB header boundary: exactly 32 KiB parses, 32 KiB+1 with a
-//!   Content-Length drains-and-skips while staying aligned, 32 KiB+1
-//!   without one terminates the server (exit code 1)
-//! - pipelined [oversized body -> valid frame] stays aligned
-//! - garbage-JSON body then a valid frame recovers (JSON errors are
-//!   non-terminal)
-//! - rename over the wire: valid declaration rename returns a
+// Wire/chaos gates for the `rsc-ls` language server.
+//
+// Companion to `e2e.rs` (which owns the happy-path wire truths): this
+// file is Stream D territory — hostile transports and rename wire
+// shapes. It spawns the REAL binary via `CARGO_BIN_EXE_rsc-ls` and
+// speaks raw Content-Length framed JSON-RPC over stdio with a
+// deliberately tiny std-only client (threads + `mpsc` +
+// `serde_json`). Every wait is bounded by [`RECV_TIMEOUT`] so a wedged
+// server fails fast instead of hanging CI.
+//
+// Covered (synthetic docs only, no device, no filesystem):
+// - chunked writes (1-byte and 7-byte) still frame correctly
+// - LF-only (`\n`) frame terminators are accepted
+// - 32 KiB header boundary: exactly 32 KiB parses, 32 KiB+1 with a
+//   Content-Length drains-and-skips while staying aligned, 32 KiB+1
+//   without one terminates the server (exit code 1)
+// - pipelined [oversized body -> valid frame] stays aligned
+// - garbage-JSON body then a valid frame recovers (JSON errors are
+//   non-terminal)
+// - rename over the wire: valid declaration rename returns a
 //!   single-document `changes` map with sigil preservation; an invalid
 //!   new name returns null; malformed params return -32602 echoing id
 //!
@@ -333,7 +333,7 @@ fn open_text_document(client: &mut ChaosClient, uri: &str, text: &str) {
     );
 }
 
-// ── Chunked transport ────────────────────────────────────────────
+// ── Chunked transport ────────────────────────────────────────────────────
 
 #[test]
 fn framing_chunked_1byte_writes_still_frame_initialize() {
@@ -375,7 +375,7 @@ fn framing_lf_only_frame_is_accepted() {
     );
 }
 
-// ── 32 KiB header boundary ───────────────────────────────────────
+// ── 32 KiB header boundary ───────────────────────────────────────────────
 
 /// Header section of EXACTLY `total` bytes: a valid Content-Length line,
 /// one `X-Pad` line absorbing the remainder, and the blank terminator.
@@ -442,7 +442,7 @@ fn framing_header_32kib_plus_one_without_length_terminates() {
     );
 }
 
-// ── Oversized body + garbage recovery ────────────────────────────
+// ── Oversized body + garbage recovery ────────────────────────────────────
 
 #[test]
 fn framing_oversized_then_valid_pipelined_stays_aligned() {
@@ -475,7 +475,7 @@ fn framing_garbage_body_then_valid_recovers() {
     );
 }
 
-// ── Rename over the wire ─────────────────────────────────────────
+// ── Rename over the wire ─────────────────────────────────────────────────
 
 const WIRE_RENAME_DOC: &str = ":local wan \"ether1\"\n:put $wan\n";
 

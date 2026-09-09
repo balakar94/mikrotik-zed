@@ -1,4 +1,4 @@
-//! Signature — labels and budgets.
+// Signature — labels and budgets.
 use crate::menus::MenuData;
 use crate::menus::MenuEntry;
 use crate::parser::tokenize_with_spans;
@@ -121,7 +121,7 @@ fn active(help: &SignatureHelp) -> Option<usize> {
     help.active_parameter.map(|v| v as usize)
 }
 
-// ── Label construction ────────────────────────────────────────
+// ── Label construction ───────────────────────────────────────────────────
 
 #[test]
 fn test_signature_quoted_value_keeps_key_active() {
@@ -153,7 +153,7 @@ fn test_signature_quoted_value_keeps_key_active() {
     assert_eq!(resp["result"]["activeParameter"], 1);
 }
 
-// ── Gating: anti-noise contract ──────────────────────────────
+// ── Gating: anti-noise contract ──────────────────────────────────────────
 
 #[test]
 fn test_signature_no_verb_returns_null() {
@@ -224,7 +224,7 @@ fn test_signature_malformed_params_return_32602() {
     assert_eq!(resp["id"], 69);
 }
 
-// ── Encoding & continuation integration ──────────────────────
+// ── Encoding & continuation integration ──────────────────────────────────
 
 #[test]
 fn test_signature_utf16_multibyte_before_cursor() {

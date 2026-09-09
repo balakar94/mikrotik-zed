@@ -1,4 +1,4 @@
-//! White-box: parser.
+// White-box: parser.
 use crate::parser::*;
 fn events(doc: &str) -> Vec<(StructureEvent, usize, usize)> {
     let mut out = Vec::new();
@@ -49,7 +49,7 @@ type = "Directory"
     )
 }
 
-// ── tokenize ──────────────────────────────────────────────────
+// ── tokenize ─────────────────────────────────────────────────────────────
 
 #[test]
 fn test_walk_structure_escaped_quotes_do_not_confuse_state() {
@@ -64,7 +64,7 @@ fn test_walk_structure_empty_document_yields_no_events() {
     assert!(events("\n\n   \n").is_empty());
 }
 
-// ── build_before_cursor ───────────────────────────────────────
+// ── build_before_cursor ──────────────────────────────────────────────────
 
 #[test]
 fn test_build_before_cursor_single_line() {

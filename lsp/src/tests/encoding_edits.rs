@@ -1,4 +1,4 @@
-//! Position encoding.
+// Position encoding.
 use crate::encoding::PositionEncoding;
 use crate::encoding::*;
 use crate::menus::MenuData;
@@ -44,7 +44,7 @@ fn initialize(encodings: Option<serde_json::Value>) -> (Server, serde_json::Valu
     (server, resp)
 }
 
-// ── Negotiation matrix ────────────────────────────────────────
+// ── Negotiation matrix ───────────────────────────────────────────────────
 
 #[test]
 fn test_apply_incremental_edit_single_line_replace() {

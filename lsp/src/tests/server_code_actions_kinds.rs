@@ -1,4 +1,4 @@
-//! Server — code actions (kinds).
+// Server — code actions (kinds).
 use crate::caps::MAX_CODE_ACTIONS;
 use crate::menus::MenuData;
 use crate::server::Server;
@@ -40,13 +40,13 @@ type = "Directory"
     ))
 }
 
-// ── Server handle_message integration ─────────────────────────
+// ── Server handle_message integration ────────────────────────────────────
 
 fn make_server() -> Server {
     Server::new(synthetic_data())
 }
 
-// ── Code actions (did-you-mean quick-fixes) ──────────────────
+// ── Code actions (did-you-mean quick-fixes) ──────────────────────────────
 
 /// Open `doc` in `server` and return its diagnostics exactly as a
 /// client would echo them back inside a codeAction request: computed

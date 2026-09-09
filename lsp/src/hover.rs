@@ -1,4 +1,4 @@
-// ── Hover logic for the RSC language server ─────────────────────
+// ── Hover logic for the RSC language server ──────────────────────────────
 //
 // When the user hovers over a word, check:
 // 1. Is it a menu path (starts with /)?
@@ -274,7 +274,8 @@ pub fn compute_hover(
             .iter()
             .find(|f| normalize_key(&f.name) == normalize_key(word))
         {
-            // Hygiene: ~28% flags have empty description upstream; fallback to type so card never empty
+            // Hygiene: ~28% flags have empty description upstream; fallback to type so card never
+            // empty
             let md = if flag.description.is_empty() {
                 if flag.arg_type.is_empty() {
                     format!("**{}**", flag.name)

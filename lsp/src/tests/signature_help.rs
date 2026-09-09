@@ -1,4 +1,4 @@
-//! Signature help.
+// Signature help.
 use crate::menus::MenuData;
 use crate::menus::MenuEntry;
 use crate::parser::tokenize_with_spans;
@@ -65,7 +65,7 @@ fn sig_request(id: i64, uri: &str, line: usize, character: usize) -> serde_json:
 const FETCH_LABEL: &str = "/tool/fetch add http-method=enum (get | post) url=string \
                                check-certificate=bool check-expired=bool";
 
-// ── Capability advertisement ─────────────────────────────────
+// ── Capability advertisement ─────────────────────────────────────────────
 
 fn fetch_data() -> MenuData {
     MenuData::from_toml_str(
@@ -122,7 +122,7 @@ fn active(help: &SignatureHelp) -> Option<usize> {
     help.active_parameter.map(|v| v as usize)
 }
 
-// ── Label construction ────────────────────────────────────────
+// ── Label construction ───────────────────────────────────────────────────
 
 #[test]
 fn test_initialize_advertises_signature_help_provider_object_form() {
@@ -139,7 +139,7 @@ fn test_initialize_advertises_signature_help_provider_object_form() {
     assert_eq!(provider["triggerCharacters"], serde_json::json!([" ", "="]));
 }
 
-// ── Signature construction ───────────────────────────────────
+// ── Signature construction ───────────────────────────────────────────────
 
 #[test]
 fn test_signature_after_verb_lists_required_first_with_offset_labels() {
@@ -211,7 +211,7 @@ fn test_signature_after_verb_lists_required_first_with_offset_labels() {
     assert!(result.get("activeParameter").is_none());
 }
 
-// ── activeParameter detection ────────────────────────────────
+// ── activeParameter detection ────────────────────────────────────────────
 
 #[test]
 fn test_signature_prefix_match_highlights_right_param() {

@@ -1,5 +1,6 @@
 // Completion context gating (root, menu, verb, args).
-// Copied (not moved) from `lsp/src/completion.rs` (`mod extra_coverage` L1694-1747, L1749-1940); the original block is
+// Copied (not moved) from `lsp/src/completion.rs` (`mod extra_coverage` L1694-1747, L1749-1940);
+// the original block is
 // left untouched. `use super::*` is adapted to `use crate::completion::*;` for the new location.
 use crate::completion::*;
 use crate::menus::MenuData;
@@ -58,7 +59,7 @@ type = "string"
 "#,
     )
 }
-// ── Root menus only when at root ─────────────────────────────────
+// ── Root menus only when at root ─────────────────────────────────────────
 
 #[test]
 fn test_root_only_at_empty_context() {
@@ -109,7 +110,7 @@ fn test_empty_context_vs_whitespace_only() {
     assert!(ws.iter().any(|i| i.label == "/ip"));
 }
 
-// ── Sub-menus after path ──────────────────────────────────────────
+// ── Sub-menus after path ─────────────────────────────────────────────────
 
 #[test]
 fn test_submenus_after_ip_path() {
@@ -160,7 +161,7 @@ fn test_submenus_include_only_directory_types() {
     );
 }
 
-// ── Verbs after menu+space ────────────────────────────────────────
+// ── Verbs after menu+space ───────────────────────────────────────────────
 
 #[test]
 fn test_verbs_after_menu_space() {
@@ -198,7 +199,7 @@ fn test_verbs_include_action_command() {
     assert_eq!(check.detail.as_deref(), Some("action command"));
 }
 
-// ── Args after verb ───────────────────────────────────────────────
+// ── Args after verb ──────────────────────────────────────────────────────
 
 #[test]
 fn test_args_after_verb_only_args_and_flags() {

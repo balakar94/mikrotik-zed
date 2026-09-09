@@ -1,5 +1,5 @@
 // Transport hardening and user validation.
-// Copied (not moved) from `lsp/src/live.rs` (`mod tests` L3481-3489, L4990-5124); the original block is
+// Copied (not moved) from `lsp/src/live.rs`; the original block is
 // left untouched. `use super::*` is adapted to `use crate::live::*;` for the new location.
 use crate::live::*;
 use std::collections::HashMap;
@@ -13,7 +13,7 @@ fn cfg_with(mut map: HashMap<&str, &str>) -> LiveConfig {
     }
     LiveConfig::from_env_with(|k| map.get(k).map(|v| v.to_string()))
 }
-// ── Transport hardening ────────────────────────────────────
+// ── Transport hardening ──────────────────────────────────────────────────
 
 fn secure_base_cfg() -> LiveConfig {
     LiveConfig::from_env_with(|k| match k {

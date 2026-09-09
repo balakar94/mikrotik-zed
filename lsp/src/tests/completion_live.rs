@@ -1,5 +1,6 @@
 // Live-cache merged completions.
-// Copied (not moved) from `lsp/src/completion.rs` (`mod live_merge` L2553-2753); the original block is
+// Copied (not moved) from `lsp/src/completion.rs` (`mod live_merge` L2553-2753); the original block
+// is
 // left untouched. `use super::*` is adapted to `use crate::completion::*;` for the new location.
 use crate::completion::*;
 use crate::live::{LiveCache, live_values_for_property};
@@ -128,7 +129,8 @@ fn test_non_cached_live_property_returns_static_placeholder() {
     let data = synth();
     let mut cache = LiveCache::new(Duration::from_secs(60));
     cache.insert("interfaces".to_string(), vec!["ether1".to_string()]);
-    // address is mapped to ip_addresses, but cache only has interfaces -> returns static placeholder
+    // address is mapped to ip_addresses, but cache only has interfaces -> returns static
+    // placeholder
     let items = compute_completions_with_live(&data, "/ip/address add address=", Some(&cache));
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(labels, vec!["0.0.0.0/0"]);

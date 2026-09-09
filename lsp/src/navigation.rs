@@ -1,4 +1,4 @@
-// ── Variable navigation (textDocument/definition + references) ──
+// ── Variable navigation (textDocument/definition + references) ───────────
 //
 // Pure computation module for RouterOS script variable navigation, in the
 // house style of `signature.rs`: no I/O, deterministic output, unit-tested

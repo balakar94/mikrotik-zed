@@ -1,4 +1,4 @@
-// ── Folding ranges (Stage B) ──────────────────────────────────
+// ── Folding ranges (Stage B) ─────────────────────────────────────────────
 //
 // textDocument/foldingRange support. Two independent sources, both emitted
 // only when they span more than one physical line (`startLine < endLine`),

@@ -1,4 +1,4 @@
-//! Encoding — boundaries and ranges.
+// Encoding — boundaries and ranges.
 use crate::diagnostics;
 use crate::encoding::*;
 use crate::menus::MenuData;
@@ -44,7 +44,7 @@ fn initialize(encodings: Option<serde_json::Value>) -> (Server, serde_json::Valu
     (server, resp)
 }
 
-// ── Regression: incremental edits must not corrupt documents ──
+// ── Regression: incremental edits must not corrupt documents ─────────────
 
 #[test]
 fn test_apply_incremental_edit_out_of_bounds() {
@@ -68,7 +68,7 @@ fn test_apply_incremental_edit_start_after_end_error() {
     assert!(matches!(res, Err(EditError::OutOfBounds)));
 }
 
-// ── utf16_to_byte_offset ──────────────────────────────────────
+// ── utf16_to_byte_offset ─────────────────────────────────────────────────
 
 #[test]
 fn test_utf16_to_byte_offset_ascii_fast_path() {
@@ -117,7 +117,7 @@ fn test_utf16_to_byte_offset_empty_line() {
     assert_eq!(utf16_to_byte_offset("", 7), 0);
 }
 
-// ── byte_offset_to_utf16_units ────────────────────────────────
+// ── byte_offset_to_utf16_units ───────────────────────────────────────────
 
 #[test]
 fn test_byte_offset_to_utf16_units_ascii() {
@@ -188,7 +188,7 @@ fn test_position_conversion_round_trip_property() {
     }
 }
 
-// ── strip_bom_prefix ────────────────────────────────────────
+// ── strip_bom_prefix ─────────────────────────────────────────────────────
 
 #[test]
 fn test_strip_bom_prefix_present() {
@@ -205,7 +205,7 @@ fn test_strip_bom_prefix_empty() {
     assert_eq!(strip_bom_prefix(""), "");
 }
 
-// ── convert_diagnostic_ranges ─────────────────────────────────
+// ── convert_diagnostic_ranges ────────────────────────────────────────────
 
 #[test]
 fn test_convert_diagnostic_ranges_multiline_and_noop() {

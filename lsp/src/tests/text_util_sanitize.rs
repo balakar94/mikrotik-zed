@@ -1,4 +1,4 @@
-//! White-box: sanitizer.
+// White-box: sanitizer.
 
 use crate::menus::MenuData;
 use std::sync::Arc;
@@ -69,7 +69,7 @@ type = "enum (accept | drop)"
     ))
 }
 
-// ── Hover markdown fixtures ────────────────────────────────────────
+// ── Hover markdown fixtures ──────────────────────────────────────────────
 
 fn validator_markdown_data() -> MenuData {
     MenuData::from_toml_str(
@@ -138,7 +138,7 @@ fn validator_hover_markdown_script_and_control_never_panics() {
     // hover keeps returning markdown with the property name intact.
 }
 
-// ── Signature offset integrity ─────────────────────────────────────
+// ── Signature offset integrity ───────────────────────────────────────────
 
 #[test]
 fn validator_signature_label_offsets_slice_exactly() {
@@ -166,7 +166,7 @@ fn validator_signature_label_offsets_slice_exactly() {
     assert!(wire.get("activeSignature").is_some());
 }
 
-// ── Error shape: -32602 pin, -32700 implemented (see pointer below) ──
+// ── Error shape: -32602 pin, -32700 implemented (see pointer below) ──────
 
 #[test]
 fn validator_invalid_params_shape_pins_32602_with_id_echo() {
@@ -188,7 +188,7 @@ fn validator_invalid_params_shape_pins_32602_with_id_echo() {
 // `server.rs::test_parse_error_response_shape`. No duplicate assert here
 // (stream ownership: server.rs).
 
-// ── Completion common-hint tier ────────────────────────────────────
+// ── Completion common-hint tier ──────────────────────────────────────────
 
 #[test]
 fn validator_chain_bare_enum_yields_common_hints_with_exact_detail() {

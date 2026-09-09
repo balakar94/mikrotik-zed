@@ -1,13 +1,13 @@
-//! Integration tests for the `rsc-ls` CLI flags (`--version`, `--help`,
-//! unknown-argument handling).
-//!
-//! These spawn the real binary via `CARGO_BIN_EXE_rsc-ls`, exercising the
-//! same probe surface used to identify which copy of `rsc-ls` Zed resolved
-//! at runtime (PATH → cache → GitHub download).
-//!
-//! Stdin is wired to `/dev/null`: a correct implementation never reads
-//! stdin for these flags, and a broken one fails fast on EOF instead of
-//! hanging CI.
+// Integration tests for the `rsc-ls` CLI flags (`--version`, `--help`,
+// unknown-argument handling).
+//
+// These spawn the real binary via `CARGO_BIN_EXE_rsc-ls`, exercising the
+// same probe surface used to identify which copy of `rsc-ls` Zed resolved
+// at runtime (PATH → cache → GitHub download).
+//
+// Stdin is wired to `/dev/null`: a correct implementation never reads
+// stdin for these flags, and a broken one fails fast on EOF instead of
+// hanging CI.
 
 use std::process::{Command, Stdio};
 

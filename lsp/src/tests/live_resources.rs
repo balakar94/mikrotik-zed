@@ -1,5 +1,5 @@
 // Live resource kinds and multi-resource isolation.
-// Copied (not moved) from `lsp/src/live.rs` (`mod tests` L3481-3489, L4210-4437); the original block is
+// Copied (not moved) from `lsp/src/live.rs`; the original block is
 // left untouched. `use super::*` is adapted to `use crate::live::*;` for the new location.
 use crate::caps::*;
 use crate::live::*;

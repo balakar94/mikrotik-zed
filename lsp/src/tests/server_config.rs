@@ -1,6 +1,7 @@
 // Live settings scope and rename handler.
-// Copied (not moved) from `lsp/src/server.rs` (`mod tests` L2331-2357, L2784-2948); the original block is
-// left untouched. `use super::*` is adapted to `use crate::server::{Server, is_valid_file_uri};` for the new location.
+// Copied (not moved) from `lsp/src/server.rs`; the original block is
+// left untouched. `use super::*` is adapted to `use crate::server::{Server, is_valid_file_uri};`
+// for the new location.
 use crate::caps::{MAX_DIAG_BYTES, MAX_DIAG_LINES, MAX_DOC_SIZE, MAX_DOCS};
 use crate::diagnostics;
 use crate::menus::MenuData;
@@ -34,7 +35,7 @@ type = "enum (accept | drop | reject)"
 "#,
     ))
 }
-// ── Live settings scope tightening ────────────────────────────
+// ── Live settings scope tightening ───────────────────────────────────────
 
 #[test]
 fn test_server_did_change_configuration_unscoped_host_ignored() {
@@ -112,7 +113,7 @@ fn test_server_did_change_configuration_scoped_host_denied_by_default() {
     });
 }
 
-// ── Rename handler ────────────────────────────────────────────
+// ── Rename handler ───────────────────────────────────────────────────────
 
 #[test]
 fn test_server_rename_happy_path_returns_single_document_edit() {

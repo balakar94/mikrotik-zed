@@ -1,4 +1,4 @@
-//! Diagnostics — severity pins.
+// Diagnostics — severity pins.
 use crate::diagnostics;
 use crate::diagnostics::severity;
 use crate::diagnostics::*;
@@ -49,7 +49,7 @@ where
         .collect()
 }
 
-// ── (d) diagnostics severity matrix ──────────────────────────────────
+// ── (d) diagnostics severity matrix ──────────────────────────────────────
 
 fn synth() -> MenuData {
     MenuData::from_toml_str(
@@ -103,7 +103,7 @@ type = "bool"
 "#,
     )
 }
-// ── Explicit 5 rules with severity ─────────────────────────────────
+// ── Explicit 5 rules with severity ───────────────────────────────────────
 
 #[test]
 fn test_rule3_missing_required_info_for_add_on_directory() {

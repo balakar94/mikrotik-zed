@@ -1,6 +1,7 @@
 // Caps companions and URI validation.
-// Copied (not moved) from `lsp/src/server.rs` (`mod tests` L2331-2357, L2359-2452); the original block is
-// left untouched. `use super::*` is adapted to `use crate::server::{Server, is_valid_file_uri};` for the new location.
+// Copied (not moved) from `lsp/src/server.rs`; the original block is
+// left untouched. `use super::*` is adapted to `use crate::server::{Server, is_valid_file_uri};`
+// for the new location.
 use crate::caps::{MAX_DIAG_BYTES, MAX_DIAG_LINES, MAX_DOC_SIZE, MAX_DOCS};
 use crate::diagnostics;
 use crate::menus::MenuData;
@@ -34,7 +35,7 @@ type = "enum (accept | drop | reject)"
 "#,
     ))
 }
-// ── Caps constants ────────────────────────────────────────────────
+// ── Caps constants ───────────────────────────────────────────────────────
 //
 // The shared caps themselves are pinned by exact value in `caps.rs`
 // (and cross-checked by tests/test_enclosure.py). The tests below are
@@ -68,7 +69,7 @@ fn test_caps_max_diag_lines_is_3000() {
     );
 }
 
-// ── URI validation ────────────────────────────────────────────────
+// ── URI validation ───────────────────────────────────────────────────────
 
 #[test]
 fn test_uri_valid_file_uris() {
@@ -126,4 +127,4 @@ fn test_uri_allows_valid_with_dots_in_name() {
     assert!(!is_valid_file_uri("file:///home/user/.."));
 }
 
-// ── didOpen / didChange / didClose handling ───────────────────────
+// ── didOpen / didChange / didClose handling ──────────────────────────────

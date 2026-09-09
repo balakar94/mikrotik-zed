@@ -1,4 +1,4 @@
-//! Variable navigation.
+// Variable navigation.
 use crate::menus::MenuData;
 use crate::navigation::*;
 use crate::parser::tokenize_with_spans;
@@ -41,13 +41,13 @@ type = "Directory"
     ))
 }
 
-// ── Server handle_message integration ─────────────────────────
+// ── Server handle_message integration ────────────────────────────────────
 
 fn make_server() -> Server {
     Server::new(synthetic_data())
 }
 
-// ── Variable navigation (textDocument/definition + references) ──
+// ── Variable navigation (textDocument/definition + references) ───────────
 //
 // Wire-contract coverage for the navigation handlers: -32602 /
 // null / [] shapes per sibling-handler strictness, exact declaration
@@ -90,7 +90,7 @@ fn summary(hits: &[VariableHit]) -> Vec<String> {
         .collect()
 }
 
-// ── Declaration extraction ────────────────────────────────────
+// ── Declaration extraction ───────────────────────────────────────────────
 
 #[test]
 fn test_server_initialize_advertises_navigation_providers() {
@@ -273,4 +273,4 @@ fn test_declared_variable_rejects_slash_and_dotdot_prefix() {
     );
 }
 
-// ── Index building ────────────────────────────────────────────
+// ── Index building ───────────────────────────────────────────────────────

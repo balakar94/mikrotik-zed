@@ -1,7 +1,7 @@
-// ── Tokenizer / RouterOS line parser ────────────────────────────
+// ── Tokenizer / RouterOS line parser ─────────────────────────────────────
 //
 // Quote-aware tokenization and structural parsing of RouterOS
-// command lines (ported from ls.mjs). Pure functions over strings —
+// command lines. Pure functions over strings —
 // consumers: completion, hover, diagnostics, and the LSP handlers.
 
 use crate::menus::{LineContext, MenuData};
@@ -20,7 +20,7 @@ pub(crate) struct SpanToken {
     pub end: usize,
 }
 
-// ── Unified quote / escape / comment contract ───────────────────
+// ── Unified quote / escape / comment contract ────────────────────────────
 //
 // Single source of truth for RouterOS string and comment semantics. All
 // three scanners (`scan_token`, `effective_content_end`, `walk_structure`)
@@ -167,7 +167,7 @@ fn scan_token(bytes: &[u8], start: usize) -> usize {
     i
 }
 
-// ── Whole-document structural walk ──────────────────────────────
+// ── Whole-document structural walk ───────────────────────────────────────
 //
 // Shared quote/comment-aware scan over a full document, used by every
 // consumer that must agree on what counts as a *structural* `{` / `}`
@@ -707,7 +707,7 @@ pub fn parse_line(data: &MenuData, before_cursor: &str) -> LineContext {
     }
 }
 
-// ── Per-document parse cache ──────────────────────────────────────
+// ── Per-document parse cache ─────────────────────────────────────────────
 //
 // Request handlers used to re-run the continuation-aware logical-line join
 // (`diagnostics::logical_lines`) on every request. This cache memoizes that

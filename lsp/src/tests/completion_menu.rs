@@ -1,5 +1,5 @@
 // Root and sub-menu completions.
-// Copied (not moved) from `lsp/src/completion.rs` (`mod tests` L1077-1164, L1166-1324); the original block is
+// Copied (not moved) from `lsp/src/completion.rs`; the original block is
 // left untouched. `use super::*` is adapted to `use crate::completion::*;` for the new location.
 use crate::completion::*;
 use crate::menus::MenuData;
@@ -92,7 +92,7 @@ type = "Directory"
 "#;
     MenuData::from_toml_str(toml_str)
 }
-// ── Root completions ──────────────────────────────────────────
+// ── Root completions ─────────────────────────────────────────────────────
 
 #[test]
 fn test_root_completions_empty_input() {
@@ -191,7 +191,7 @@ fn test_root_completions_are_only_roots() {
     assert!(labels.contains(&"/beep"));
 }
 
-// ── Sub-menu completions ──────────────────────────────────────
+// ── Sub-menu completions ─────────────────────────────────────────────────
 
 #[test]
 fn test_submenu_completions_for_ip() {
@@ -204,7 +204,8 @@ fn test_submenu_completions_for_ip() {
         "should contain address sub-menu"
     );
     assert!(labels.contains(&"route"), "should contain route sub-menu");
-    // Also contains verb-like path? firewall is implicit? Check child_names_by_parent for /ip should have address, route, firewall
+    // Also contains verb-like path? firewall is implicit? Check child_names_by_parent for /ip
+    // should have address, route, firewall
     assert!(
         labels.contains(&"firewall"),
         "should contain implicit firewall child"

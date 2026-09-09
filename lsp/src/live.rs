@@ -1,4 +1,4 @@
-// ── Live device data (opt-in, in-memory only) ───────────────────
+// ── Live device data (opt-in, in-memory only) ────────────────────────────
 //
 // Provides interface-name enrichment for completion without ever touching
 // the snapshot `data/commands.toml` on disk. All state lives in a

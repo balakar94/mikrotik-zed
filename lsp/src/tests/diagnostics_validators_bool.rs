@@ -1,4 +1,4 @@
-//! Diagnostics — typed validators.
+// Diagnostics — typed validators.
 use crate::diagnostics::severity;
 use crate::diagnostics::*;
 use crate::menus::MenuData;
@@ -109,7 +109,7 @@ fn assert_validator_severity_contract(diags: &[crate::diagnostics::Diagnostic]) 
     }
 }
 
-// ── Typed validators: Hint-only ────────────────────────────────────
+// ── Typed validators: Hint-only ──────────────────────────────────────────
 
 fn typed_data() -> MenuData {
     MenuData::from_toml_str(
@@ -171,7 +171,7 @@ fn codes_for(data: &MenuData, doc: &str) -> Vec<Diagnostic> {
 fn has_code(diags: &[Diagnostic], code: &str) -> bool {
     diags.iter().any(|d| d.code.as_deref() == Some(code))
 }
-// ── bool ────────────────────────────────────────────────────
+// ── bool ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn validator_typed_bool_invalid_is_hint_only() {

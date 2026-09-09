@@ -1,8 +1,9 @@
-// ── Diagnostics for RSC language server ───────────────────────────
+// ── Diagnostics for RSC language server ──────────────────────────────────
 //
 // Provides pull and push diagnostics for MikroTik RouterOS Script files.
 // Rules:
-//  1. Unknown menu path: Warning if path not in menu_by_path nor child_names_by_parent (including implicit parents)
+//  1. Unknown menu path: Warning if path not in menu_by_path nor child_names_by_parent (including
+//     implicit parents)
 //  2. Unknown property: Warning if property key not in menu.arguments/flags/read_only
 //     (except `value-name` on `unset` lines: verb-level pseudo-key owned by Rule 10)
 //  3. Missing required property: Warning for Directory menus when `add`/`set` missing required args
@@ -96,7 +97,7 @@ fn with_suggestion(base: String, suggestion: Option<String>) -> String {
     }
 }
 
-// ── Typed value shape checks (Rule 9, Hint-only) ────────────────
+// ── Typed value shape checks (Rule 9, Hint-only) ─────────────────────────
 //
 // Syntactic plausibility only: each predicate accepts a deliberate SUPERSET
 // of documented RouterOS spellings (case-insensitive bools, lenient numeric
@@ -539,7 +540,8 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             continue;
         }
 
-        // Quick check: does line contain '/'? If not, likely not a menu command, skip unknown-menu check.
+        // Quick check: does line contain '/'? If not, likely not a menu command, skip unknown-menu
+        // check.
         // But we still parse to detect path.
         let ctx = crate::parse_line(data, line);
 
@@ -575,16 +577,20 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             }
         }
 
-        // Need menu entry for remaining rules; if path unknown or not a known menu, skip remaining unless path is known implicitly
-        // For implicit parents (no direct menu entry but valid as parent), we skip property checks because they have no arguments.
+        // Need menu entry for remaining rules; if path unknown or not a known menu, skip remaining
+        // unless path is known implicitly
+        // For implicit parents (no direct menu entry but valid as parent), we skip property checks
+        // because they have no arguments.
         let menu = if !ctx.path.is_empty() {
             data.menu_by_path.get(&ctx.path)
         } else {
             None
         };
 
-        // If menu is None but path is implicit parent, we will have is_known true but no menu entry; then property checks should be skipped (no args expected).
-        // For unknown property / missing required, we require a known Directory menu with arguments.
+        // If menu is None but path is implicit parent, we will have is_known true but no menu
+        // entry; then property checks should be skipped (no args expected).
+        // For unknown property / missing required, we require a known Directory menu with
+        // arguments.
 
         // ---- Tokenize with spans for duplicate and precise range detection ----
         // Property occurrences are recorded DURING tokenization, so diagnostic
@@ -1055,7 +1061,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
     diagnostics
 }
 
-// ── Syntactic structure rules ──────────────────────────────────────
+// ── Syntactic structure rules ────────────────────────────────────────────
 //
 // Detect plain syntax breakage the menu-semantics rules cannot see. All
 // three diagnostics below derive from ONE stack pass over the shared
@@ -1234,7 +1240,7 @@ fn syntax_diagnostics(doc: &str) -> Vec<Diagnostic> {
     out
 }
 
-// ── RouterOS backslash line continuation ──────────────────────────
+// ── RouterOS backslash line continuation ─────────────────────────────────
 //
 // RouterOS joins a physical line ending in an unescaped trailing `\` with the
 // next physical line (the newline is removed, no separator is inserted).
@@ -1559,7 +1565,7 @@ fn line_has_set_selector(tokens: &[crate::parser::SpanToken], verb: &str) -> boo
     false
 }
 
-// ── Syntactic structure rules (unclosed braces / quotes) ───────────
+// ── Syntactic structure rules (unclosed braces / quotes) ─────────────────
 //
 // Coverage for rules 6–8. Docs deliberately favor `:`-prefixed script lines
 // (skipped by the menu rules) so total-count assertions isolate the syntax

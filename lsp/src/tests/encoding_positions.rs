@@ -1,4 +1,4 @@
-//! Position encoding.
+// Position encoding.
 use crate::encoding::PositionEncoding;
 use crate::encoding::*;
 use crate::menus::MenuData;
@@ -44,7 +44,7 @@ fn initialize(encodings: Option<serde_json::Value>) -> (Server, serde_json::Valu
     (server, resp)
 }
 
-// ── Negotiation matrix ────────────────────────────────────────
+// ── Negotiation matrix ───────────────────────────────────────────────────
 
 #[test]
 fn test_initialize_without_capability_defaults_to_utf16() {
@@ -159,7 +159,7 @@ fn test_floor_char_boundary_clamps() {
     assert_eq!(floor_char_boundary("", 5), 0);
 }
 
-// ── lsp_position_to_offset ────────────────────────────────────
+// ── lsp_position_to_offset ───────────────────────────────────────────────
 
 #[test]
 fn test_lsp_position_to_offset_single_line() {
@@ -273,4 +273,4 @@ fn test_lsp_position_to_offset_utf16_crlf_excludes_cr() {
     );
 }
 
-// ── apply_incremental_edit ────────────────────────────────────
+// ── apply_incremental_edit ───────────────────────────────────────────────

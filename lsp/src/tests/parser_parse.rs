@@ -1,4 +1,4 @@
-//! White-box: parser.
+// White-box: parser.
 use crate::parser::*;
 fn slash_verb_data() -> MenuData {
     MenuData::from_toml_str(
@@ -73,7 +73,7 @@ type = "Directory"
     )
 }
 
-// ── tokenize ──────────────────────────────────────────────────
+// ── tokenize ─────────────────────────────────────────────────────────────
 
 #[test]
 fn test_split_key_value_rejects_quote_blind_equals() {

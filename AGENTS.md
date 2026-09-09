@@ -52,6 +52,13 @@ First clone: `make grammar-clone` (pinned `rev`) + `make install` (`SKIP_SYSTEM=
 - Hover cards share `text_util` caps/dedup; typed validators + `SuggestBudget` bound diagnostic quick-fixes; symbols/navigation/folding are hard-capped — `lsp/src/caps.rs` is the single source of truth. Tests: `lsp/src/tests/<module>_<aspect>.rs`; perf budgets in `perf.yml` (schedule-only).
 - Privileged transport settings apply only with `RSC_LS_ALLOW_SETTINGS_TRANSPORT=1` (env always wins; legacy shim off by default). Never log secrets.
 
+## Comment style (`lsp/` Rust)
+
+- File header: `// ── Title ──` banner at exactly 76 cols, one blank line, then prose. `//` everywhere (never `//!`); no history refs, no volatile line numbers.
+- Section banners follow the same 76-col rule. Prose ≤100 cols; `-` unordered / `1.` ordered lists with text-aligned continuations; blank lines around lists and paragraphs, never double.
+- `///` item docs: summary first, `backticks` for code. Markdown tables and URLs are exempt from wrapping.
+- Behavior descriptions must match current code (tiers, severities, gates); caps values live in `caps.rs`, never duplicated.
+
 ## Data pipeline
 
 `manual.mikrotik.com ──sync_llms.py──▶ llms-full.txt (untracked) ──extract_commands.py──▶ data/commands.toml (tracked, generated) ──include_str!()──▶ rsc-ls`

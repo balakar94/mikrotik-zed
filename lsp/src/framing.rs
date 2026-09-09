@@ -1,4 +1,4 @@
-// ── JSON-RPC Content-Length framing ─────────────────────────────
+// ── JSON-RPC Content-Length framing ──────────────────────────────────────
 //
 // Reads one length-prefixed message at a time from a buffered byte
 // stream. Defensive properties (all preserved from the original inline

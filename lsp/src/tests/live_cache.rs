@@ -1,5 +1,5 @@
 // Live cache TTL, caps and disabled fallbacks.
-// Copied (not moved) from `lsp/src/live.rs` (`mod tests` L3481-3489, L4052-4209); the original block is
+// Copied (not moved) from `lsp/src/live.rs`; the original block is
 // left untouched. `use super::*` is adapted to `use crate::live::*;` for the new location.
 use crate::caps::*;
 use crate::live::*;

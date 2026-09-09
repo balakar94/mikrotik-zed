@@ -1,4 +1,4 @@
-//! Menus — lookup.
+// Menus — lookup.
 use crate::menus::*;
 fn test_commands_toml() -> &'static str {
     r#"
@@ -239,7 +239,7 @@ fn test_specific_menus_exist() {
     );
 }
 
-// ── Manual-audit pins over the EMBEDDED dataset ───────────────
+// ── Manual-audit pins over the EMBEDDED dataset ──────────────────────────
 //
 // The tests below guard what actually SHIPS to users (the table baked in
 // via include_str!), end to end through the extraction pipeline. They

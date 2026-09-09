@@ -1,4 +1,4 @@
-// ── Rename provider (textDocument/rename) ─────────────────────────
+// ── Rename provider (textDocument/rename) ────────────────────────────────
 //
 // Rename the RouterOS script variable under the cursor: the declaration
 // chosen by `navigation::choose_definition`'s deterministic rule plus every

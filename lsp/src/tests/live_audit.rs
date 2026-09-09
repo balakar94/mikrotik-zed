@@ -1,5 +1,5 @@
 // Live security audit (identity, deny reasons, CA).
-// Copied (not moved) from `lsp/src/live.rs` (`mod tests` L3481-3489, L4992-5000, L5125-5237); the original block is
+// Copied (not moved) from `lsp/src/live.rs`; the original block is
 // left untouched. `use super::*` is adapted to `use crate::live::*;` for the new location.
 use crate::caps::*;
 use crate::live::*;
@@ -23,7 +23,7 @@ fn secure_base_cfg() -> LiveConfig {
     })
 }
 
-// ── Security audit F1–F8 ─────────────────────────────────────
+// ── Security audit F1–F8 ─────────────────────────────────────────────────
 
 #[test]
 fn test_live_identity_changed_covers_pin_and_ca() {

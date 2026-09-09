@@ -1,6 +1,7 @@
 // Document size limits and BOM handling.
-// Copied (not moved) from `lsp/src/server.rs` (`mod tests` L2331-2357, L2597-2783); the original block is
-// left untouched. `use super::*` is adapted to `use crate::server::{Server, is_valid_file_uri};` for the new location.
+// Copied (not moved) from `lsp/src/server.rs`; the original block is
+// left untouched. `use super::*` is adapted to `use crate::server::{Server, is_valid_file_uri};`
+// for the new location.
 use crate::caps::{MAX_DIAG_BYTES, MAX_DIAG_LINES, MAX_DOC_SIZE, MAX_DOCS};
 use crate::diagnostics;
 use crate::menus::MenuData;
@@ -88,7 +89,7 @@ fn test_server_did_change_full_sync_truncation() {
     );
 }
 
-// ── MAX_DOCS enforcement ──────────────────────────────────────────
+// ── MAX_DOCS enforcement ─────────────────────────────────────────────────
 
 #[test]
 fn test_server_max_docs_enforced_at_100() {
@@ -174,7 +175,7 @@ fn test_server_did_open_oversized_at_cap_is_rejected_not_inserted() {
     assert_eq!(server.docs.len(), MAX_DOCS);
 }
 
-// ── BOM handling ────────────────────────────────────────────────
+// ── BOM handling ─────────────────────────────────────────────────────────
 
 #[test]
 fn test_server_did_open_strips_leading_bom_before_store() {

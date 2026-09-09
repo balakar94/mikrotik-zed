@@ -1,4 +1,4 @@
-//! Hover — menu.
+// Hover — menu.
 use super::hover_fixtures::*;
 
 #[test]

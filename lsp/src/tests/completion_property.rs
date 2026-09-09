@@ -1,5 +1,5 @@
 // Argument and value completions.
-// Copied (not moved) from `lsp/src/completion.rs` (`mod tests` L1077-1164, L1325-1515); the original block is
+// Copied (not moved) from `lsp/src/completion.rs`; the original block is
 // left untouched. `use super::*` is adapted to `use crate::completion::*;` for the new location.
 use crate::completion::*;
 use crate::menus::MenuData;
@@ -92,7 +92,7 @@ type = "Directory"
 "#;
     MenuData::from_toml_str(toml_str)
 }
-// ── Argument completions (after verb) ─────────────────────────
+// ── Argument completions (after verb) ────────────────────────────────────
 
 #[test]
 fn test_arg_completions_after_verb() {
@@ -174,7 +174,7 @@ fn test_arg_completions_unknown_menu_returns_empty() {
     assert!(items.is_empty(), "unknown menu should return no args");
 }
 
-// ── Value completions (after "property=") ──────────────────────
+// ── Value completions (after "property=") ────────────────────────────────
 
 #[test]
 fn test_value_completions_enum_chain() {

@@ -1,4 +1,4 @@
-//! Framing — codec and limits.
+// Framing — codec and limits.
 use crate::caps::MAX_DOC_SIZE;
 use crate::caps::{MAX_HEADER_SIZE, MAX_MESSAGE_SIZE};
 use crate::folding;
@@ -99,7 +99,7 @@ fn test_parse_content_length_edge_cases() {
     );
 }
 
-// ── discard_bytes ─────────────────────────────────────────────
+// ── discard_bytes ────────────────────────────────────────────────────────
 
 #[test]
 fn test_discard_bytes() {
@@ -121,7 +121,7 @@ fn test_discard_bytes_zero() {
     assert_eq!(remaining, b"hello");
 }
 
-// ── read_message (golden streams) ─────────────────────────────
+// ── read_message (golden streams) ────────────────────────────────────────
 
 /// Build one length-prefixed frame around `body`.
 
@@ -212,7 +212,7 @@ fn test_read_message_zero_length_body_skipped() {
     ));
 }
 
-// ── Oversized header blocks (bounded-read regression) ────────────
+// ── Oversized header blocks (bounded-read regression) ────────────────────
 //
 // The header walk must cap per-line buffering BEFORE a newline is ever
 // found, so these streams exercise the exact branch the former

@@ -1,5 +1,6 @@
 // Completion ranking goldens (filter, fetch).
-// Copied (not moved) from `lsp/src/completion.rs` (`mod completion_ranking_goldens` L2758-2955); the original block is
+// Copied (not moved) from `lsp/src/completion.rs` (`mod completion_ranking_goldens` L2758-2955);
+// the original block is
 // left untouched. `use super::*` is adapted to `use crate::completion::*;` for the new location.
 use crate::completion::*;
 use crate::menus::MenuData;
@@ -26,7 +27,7 @@ fn apply_edit(line: &str, edit: &TextEdit) -> String {
     format!("{}{}{}", &line[..s], edit.new_text, &line[e..])
 }
 
-// ── /ip/firewall/filter chain ─────────────────────────────────
+// ── /ip/firewall/filter chain ────────────────────────────────────────────
 
 #[test]
 fn test_golden_filter_chain_empty_gives_common_hints() {
@@ -141,7 +142,7 @@ fn test_golden_filter_action_typo_falls_back_demoted() {
     }
 }
 
-// ── /tool/fetch ───────────────────────────────────────────────
+// ── /tool/fetch ──────────────────────────────────────────────────────────
 
 #[test]
 fn test_golden_fetch_http_method_prefix_ranking_and_replace() {
@@ -198,4 +199,4 @@ fn test_golden_fetch_partial_property_name_boosts_rank() {
     assert!(method.text_edit.is_none());
 }
 
-// ── Pure rank() unit pins ─────────────────────────────────────
+// ── Pure rank() unit pins ────────────────────────────────────────────────

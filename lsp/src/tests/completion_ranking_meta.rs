@@ -1,10 +1,11 @@
 // Ranking tiers, live key, token span and truncation.
-// Copied (not moved) from `lsp/src/completion.rs` (`mod completion_ranking_goldens` L2954-3096); the original block is
+// Copied (not moved) from `lsp/src/completion.rs` (`mod completion_ranking_goldens` L2954-3096);
+// the original block is
 // left untouched. `use super::*` is adapted to `use crate::completion::*;` for the new location.
 use crate::completion::*;
 use crate::menus::MenuData;
 
-// ── Pure rank() unit pins ─────────────────────────────────────
+// ── Pure rank() unit pins ────────────────────────────────────────────────
 
 #[test]
 fn test_rank_tier_shapes_and_match_quality() {
@@ -127,7 +128,7 @@ fn test_partial_name_token_span_basics() {
     assert!(partial_name_token("\"a:b").is_none());
 }
 
-// ── Truncation is relevance-ordered ───────────────────────────
+// ── Truncation is relevance-ordered ──────────────────────────────────────
 
 #[test]
 fn test_truncation_keeps_most_relevant_200() {

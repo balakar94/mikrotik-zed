@@ -1,5 +1,5 @@
 // Enrichment triggers and SSRF bypass vectors.
-// Copied (not moved) from `lsp/src/live.rs` (`mod tests` L3481-3489, L4650-4834); the original block is
+// Copied (not moved) from `lsp/src/live.rs`; the original block is
 // left untouched. `use super::*` is adapted to `use crate::live::*;` for the new location.
 use crate::live::*;
 use std::collections::HashMap;
@@ -16,7 +16,7 @@ fn cfg_with(mut map: HashMap<&str, &str>) -> LiveConfig {
     }
     LiveConfig::from_env_with(|k| map.get(k).map(|v| v.to_string()))
 }
-// ── Completion enrichment trigger (D2) ───────────────────────
+// ── Completion enrichment trigger (D2) ───────────────────────────────────
 //
 // These tests exercise the synchronous coalescing logic of
 // `trigger_enrichment_for_completion`. The host is loopback with a closed
@@ -117,7 +117,7 @@ fn test_trigger_enrichment_custom_resource_uses_custom_key() {
     );
 }
 
-// ── SSRF normalize-then-check regression ───────────────────────
+// ── SSRF normalize-then-check regression ─────────────────────────────────
 
 #[test]
 fn test_ssrf_bypass_vectors_denied_by_default() {

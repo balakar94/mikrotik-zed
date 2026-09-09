@@ -1,5 +1,5 @@
 // Missing required, duplicate and enum diagnostics.
-// Copied (not moved) from `lsp/src/diagnostics.rs` (`mod tests` L1564-1614, L1761-1908); the original block is
+// Copied (not moved) from `lsp/src/diagnostics.rs`; the original block is
 // left untouched. `use super::*` is adapted to `use crate::diagnostics::*;` for the new location.
 use crate::caps::*;
 use crate::diagnostics::*;

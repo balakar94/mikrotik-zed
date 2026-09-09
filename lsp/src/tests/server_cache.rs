@@ -1,6 +1,7 @@
 // Completion cache and parse cache lifecycle.
-// Copied (not moved) from `lsp/src/server.rs` (`mod tests` L2331-2357, L2949-3054); the original block is
-// left untouched. `use super::*` is adapted to `use crate::server::{Server, is_valid_file_uri};` for the new location.
+// Copied (not moved) from `lsp/src/server.rs`; the original block is
+// left untouched. `use super::*` is adapted to `use crate::server::{Server, is_valid_file_uri};`
+// for the new location.
 use crate::caps::{MAX_DIAG_BYTES, MAX_DIAG_LINES, MAX_DOC_SIZE, MAX_DOCS};
 use crate::diagnostics;
 use crate::menus::MenuData;
@@ -34,7 +35,7 @@ type = "enum (accept | drop | reject)"
 "#,
     ))
 }
-// ── Parse cache lifecycle ─────────────────────────────────────
+// ── Parse cache lifecycle ────────────────────────────────────────────────
 
 #[test]
 fn test_server_completion_identical_cold_and_warm() {

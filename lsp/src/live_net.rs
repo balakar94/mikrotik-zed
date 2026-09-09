@@ -1,7 +1,8 @@
-// ── Live network trust ─────────────────────────────────────────────
+// ── Live network trust ───────────────────────────────────────────────────
 //
-// Host validation + SSRF deny, DNS revalidation, TLS pin/CA, SHA256/SPKI, `LiveError`. Extracted verbatim from `live.rs`; re-exported there
-// so `crate::live::…` paths keep resolving unchanged.
+// Host validation + SSRF deny, DNS revalidation, TLS pin/CA, SHA256/SPKI, `LiveError`.
+//
+// Split from `live.rs`; re-exported there, `crate::live::…` paths unchanged.
 
 use crate::live_cache::ResourceKind;
 use crate::live_config::{CustomResource, LiveConfig};
@@ -10,7 +11,7 @@ use crate::logging::{log_debug, log_warn, sanitize_for_log};
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 
-// ── Minimal SHA256 + SPKI extraction (no new deps) ─────────────────
+// ── Minimal SHA256 + SPKI extraction (no new deps) ───────────────────────
 //
 // The pin compares `SHA256(DER(subjectPublicKeyInfo))` of the leaf cert
 // (RFC 7469 style). `ring` is not a direct dependency, so a compact pure-Rust
@@ -376,7 +377,8 @@ pub(crate) fn is_loopback_or_private(host: &str) -> bool {
         if addr.is_loopback() {
             return true;
         }
-        // RFC1918 private for IPv4; ULA (fc00::/7) is considered private but not required for this flag.
+        // RFC1918 private for IPv4; ULA (fc00::/7) is considered private but not required for this
+        // flag.
         match addr {
             std::net::IpAddr::V4(v4) => {
                 let o = v4.octets();
@@ -494,7 +496,7 @@ pub(crate) fn live_identity_changed(old: &LiveConfig, new: &LiveConfig) -> bool 
         || old.ca_file != new.ca_file
 }
 
-// ── F1: resolve-then-revalidate (DNS TOCTOU) ─────────────────────
+// ── F1: resolve-then-revalidate (DNS TOCTOU) ─────────────────────────────
 //
 // Lexical + normalized-literal checks run at config time, but a hostname
 // can resolve to a denied address at fetch time (DNS rebinding / split
@@ -558,7 +560,7 @@ pub(crate) fn resolve_and_validate_host(
     Ok(())
 }
 
-// ── F8: bounded CA-bundle loading ────────────────────────────────
+// ── F8: bounded CA-bundle loading ────────────────────────────────────────
 
 /// Max bytes read from `MIKROTIK_CA_FILE` (256 KiB — PEM bundles are small;
 /// anything larger is a misconfiguration, not a trust anchor).
@@ -769,7 +771,7 @@ pub(crate) fn build_custom_rest_url(
     Ok(url_str)
 }
 
-// ── LiveError ────────────────────────────────────────────────────
+// ── LiveError ────────────────────────────────────────────────────────────
 
 /// Errors from live fetching, never containing `pass`.
 #[derive(Debug, Clone)]

@@ -1,4 +1,4 @@
-// ── Shared text utilities (single owner for deduped helpers) ───
+// ── Shared text utilities (single owner for deduped helpers) ─────────────
 //
 // `hover.rs`, `completion.rs`, and `signature.rs` previously carried three
 // divergent copies of the markdown sanitizer + strip helpers, two copies of
