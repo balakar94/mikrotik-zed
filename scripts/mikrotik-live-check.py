@@ -5,7 +5,7 @@ MikroTik Live health check — verify REST connectivity for LSP enrichment.
 Mirrors `lsp/src/live.rs` LiveConfig::from_env semantics so the same env vars
 work for both the deploy companion and the language server.
 
-Env vars (mirrored in scripts/mikrotik-deploy.py and lsp/src/live.rs):
+Env vars (mirrored in scripts/mikrotik-deploy.py and lsp/src/live_config.rs):
   MIKROTIK_HOST    - device host/IP (required)
   MIKROTIK_USER    - username (default: admin)
   MIKROTIK_PASS    - password (required, never logged)
@@ -47,11 +47,12 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from _mikrotik_shared import (  # noqa: E402
+    check_target,
+    clamp_int,
     env_int,
     format_host_for_url,
     parse_fingerprint,
     redact_secrets,
-    resolve_and_check_host,
     resolve_scheme,
     validate_host,
     validate_user,
@@ -120,7 +121,7 @@ def main() -> None:
             file=sys.stderr,
         )
 
-    # Port resolution mirrors live.rs: default 443, env overrides
+    # Port resolution mirrors live_config.rs: default 443, env overrides
     port = args.port
     if port is None:
         port_raw = os.getenv("MIKROTIK_PORT")
@@ -133,19 +134,8 @@ def main() -> None:
         else:
             port = 443
 
-    # Clamp timeout 1..30 like live.rs
-    timeout = args.timeout
-    if timeout is None:
-        timeout = 5
-    try:
-        timeout = int(timeout)
-    except (ValueError, TypeError):
-        print(f"warning: invalid timeout {timeout!r}, using default 5", file=sys.stderr)
-        timeout = 5
-    if timeout < 1:
-        timeout = 1
-    if timeout > 30:
-        timeout = 30
+    # Clamp timeout 1..30 like live_config.rs (deploy uses 1..300).
+    timeout = clamp_int(args.timeout, 1, 30, 5)
 
     ssl_verify = not args.no_ssl_verify
     force_http = bool(args.http)
@@ -190,12 +180,7 @@ def main() -> None:
             print(f"Live FAIL: {msg}")
         sys.exit(4)
 
-    scheme, legacy_shim = resolve_scheme(port, force_http, not ssl_verify)
-    if legacy_shim:
-        print(
-            "warning: --no-ssl-verify no longer selects the scheme; use --http (or MIKROTIK_HTTP=1) explicitly",
-            file=sys.stderr,
-        )
+    scheme = resolve_scheme(port, force_http)
 
     host_for_url = format_host_for_url(host)
     url = f"{scheme}://{host_for_url}:{port}/rest/interface"
@@ -225,13 +210,13 @@ def main() -> None:
             print(f"DRY-RUN: host={host} port={port} scheme={scheme} user={user} url={url}")
         sys.exit(0)
 
-    # F1: resolve-then-revalidate before any credential use (fail fast, no
-    # prompt when DNS already refuses). Lexical checks ran at startup; DNS
-    # may resolve differently now. verify_tls_pin re-checks on its own
-    # handshake when a pin is set.
-    dns_err = resolve_and_check_host(host, port)
-    if dns_err:
-        msg = dns_err
+    # F1: lexical + resolve-then-revalidate before any credential use (fail
+    # fast, no prompt when DNS already refuses). Lexical checks ran at
+    # startup; DNS may resolve differently now. verify_tls_pin re-checks on
+    # its own handshake when a pin is set.
+    target_err = check_target(host, port)
+    if target_err:
+        msg = target_err
         print(f"error: {msg}", file=sys.stderr)
         if args.json:
             print(json.dumps({"ok": False, "error": msg, "host": host, "url": url}))
