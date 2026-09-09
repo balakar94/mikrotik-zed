@@ -1,7 +1,7 @@
 // Wire/chaos gates for the `rsc-ls` language server.
 //
 // Companion to `e2e.rs` (which owns the happy-path wire truths): this
-// file is Stream D territory — hostile transports and rename wire
+// file owns the hostile side — adversarial transports and rename wire
 // shapes. It spawns the REAL binary via `CARGO_BIN_EXE_rsc-ls` and
 // speaks raw Content-Length framed JSON-RPC over stdio with a
 // deliberately tiny std-only client (threads + `mpsc` +

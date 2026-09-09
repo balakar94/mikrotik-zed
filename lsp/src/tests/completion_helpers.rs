@@ -226,7 +226,7 @@ fn test_real_data_value_completions_chain_and_action() {
     assert!(labels.contains(&"drop"));
 }
 
-// ── Stream B: sanitize reuse ─────────────────────────────────────────────
+// ── Sanitize reuse ───────────────────────────────────────────────────────
 
 #[test]
 fn test_documentation_from_sanitizes_markdown() {

@@ -99,7 +99,7 @@ fn test_initialize_advertises_incremental_sync() {
 
 #[test]
 fn test_initialize_advertises_all_providers() {
-    // Stage B: every supported provider must be advertised together.
+    // Every supported provider must be advertised together.
     let (_, resp) = initialize(None);
     let caps = &resp["result"]["capabilities"];
     assert_eq!(
