@@ -1,5 +1,17 @@
 [
   {
+    "label": "MikroTik: Check script (dry-run, no device)",
+    "command": "python3",
+    "args": ["scripts/mikrotik-deploy.py", "$ZED_FILE", "--dry-run"],
+    "env": {},
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": true,
+    "reveal": "always",
+    "shell": "system",
+    "tags": ["mikrotik-check", "mikrotik-dry-run"]
+  },
+  {
     "label": "MikroTik: Deploy current file (REST)",
     "command": "python3",
     "args": ["scripts/mikrotik-deploy.py", "$ZED_FILE", "--method", "rest"],
@@ -26,27 +38,21 @@
     "tags": ["mikrotik-deploy", "mikrotik-ssh"]
   },
   {
-    "label": "MikroTik: Dry-run deploy (preview)",
+    "label": "MikroTik: Validate RSC syntax (local only, no device)",
     "command": "python3",
-    "args": ["scripts/mikrotik-deploy.py", "$ZED_FILE", "--dry-run"],
+    "args": [
+      "-c",
+      "import pathlib, sys\np = pathlib.Path(sys.argv[1])\nif not p.is_file():\n    print(f'error: file not found: {p}', file=sys.stderr)\n    raise SystemExit(2)\nn = p.stat().st_size\nif n == 0:\n    print(f'error: file is empty: {p}', file=sys.stderr)\n    raise SystemExit(2)\nif n > 5242880:\n    print(f'error: file too large (>5MiB): {n} bytes', file=sys.stderr)\n    raise SystemExit(2)\ntry:\n    text = p.read_text(encoding='utf-8')\nexcept Exception as exc:\n    print(f'error: unreadable as UTF-8: {exc}', file=sys.stderr)\n    raise SystemExit(2)\nlines = text.count(chr(10)) + (0 if text.endswith(chr(10)) else 1)\nprint(f'Validate OK: {p.name} ({n} bytes, {lines} lines, UTF-8) - semantic checks come from rsc-ls diagnostics; use Check script for a deploy preview.')",
+      "$ZED_FILE"
+    ],
     "env": {},
     "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": false,
     "allow_concurrent_runs": true,
-    "reveal": "always",
-    "shell": "system",
-    "tags": ["mikrotik-deploy", "mikrotik-dry-run"]
-  },
-  {
-    "label": "MikroTik: Validate RSC syntax",
-    "command": "python3",
-    "args": ["scripts/mikrotik-deploy.py", "$ZED_FILE", "--dry-run"],
-    "env": { "MIKROTIK_HOST": "dry-run-only" },
-    "cwd": "$ZED_WORKTREE_ROOT",
-    "use_new_terminal": false,
     "reveal": "on_error",
+    "hide": "on_success",
     "shell": "system",
-    "tags": ["mikrotik-validate"]
+    "tags": ["mikrotik-validate", "mikrotik-check"]
   },
   {
     "label": "MikroTik: Live — Check connectivity (opt-in)",
@@ -80,7 +86,7 @@
     "reveal": "always",
     "hide": "on_success",
     "shell": "system",
-    "tags": ["mikrotik-live", "mikrotik-deploy"]
+    "tags": ["mikrotik-live", "mikrotik-verify"]
   },
   {
     "label": "MikroTik: Live — Enable enrichment (set RSC_LS_LIVE=1)",
