@@ -4,9 +4,22 @@
 // Rules:
 //  1. Unknown menu path: Warning if path not in menu_by_path nor child_names_by_parent (including implicit parents)
 //  2. Unknown property: Warning if property key not in menu.arguments/flags/read_only
-//  3. Missing required property: Info for Directory menus when `add`/`set` missing required args
+//     (except `value-name` on `unset` lines: verb-level pseudo-key owned by Rule 10)
+//  3. Missing required property: Warning for Directory menus when `add`/`set` missing required args
 //  4. Duplicate property: Warning if same key appears twice
-//  5. Type hint: Hint for enum properties with invalid value
+//  5. Invalid enum value: Warning for enum properties with invalid value
+//  8. Unknown command verb: Warning for verbs outside the standard set
+//  9. Invalid typed value: Hint (never Error) for bool/num/time/macAddr/
+//     ipAddr-ipPrefix-family/ubit properties whose value fails a syntactic
+//     shape check (`invalid-bool-value`, `invalid-num-value`,
+//     `invalid-time-value`, `invalid-mac-value`, `invalid-ip-value`,
+//     `invalid-ubit-value`). Silent on empty/truncated types, empty values,
+//     dynamic values (`$var`, `[find ...]`, `(expr)`), and a lone trailing
+//     comma left by whitespace tokenization (`rates=1Mbps, 2Mbps`).
+// 10. Non-unsettable property: Hint when `unset` targets a property whose
+//     dataset entry carries `unset=false` (`non-unsettable-property`)
+// 11. Read-only write: Information when a read_only column appears as `key=`
+//     on `add`/`set` (`read-only-write`)
 //
 // Syntactic rules (share the quote/comment-aware walk with folding via
 // crate::parser::walk_structure; braces and quotes inside comments or
@@ -35,11 +48,12 @@ use std::collections::{HashMap, HashSet};
 /// diagnostics back to exactly the ones we produced.
 pub(crate) const DIAGNOSTIC_SOURCE: &str = "rsc-ls";
 /// Cap on syntactic diagnostics (the unclosed/unmatched brace and quote
-/// family) emitted per publish. The FIRST ten in document order win; the
-/// rest are dropped silently — past ten structural errors the remaining
-/// squiggles would be noise around an already-broken file, and the response
-/// payload stays bounded.
-const MAX_SYNTAX_DIAGNOSTICS: usize = 10;
+/// family) emitted per publish. The FIRST ten in document order win; when
+/// more exist, an explicit `truncated` Information footer names the dropped
+/// remainder ("(+N more - see full list)") so the 11th error is acknowledged
+/// instead of silently swallowed — mirroring the semantic truncation path.
+/// The response payload stays bounded (at most ten findings plus one hint).
+pub(crate) const MAX_SYNTAX_DIAGNOSTICS: usize = 10;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct Position {
@@ -67,7 +81,411 @@ pub mod severity {
     pub const ERROR: u8 = 1;
     pub const WARNING: u8 = 2;
     pub const INFORMATION: u8 = 3;
+    /// Hint for low-confidence, never-blocking findings (typed value shapes,
+    /// non-unsettable `unset` targets). Advisory only by design.
     pub const HINT: u8 = 4;
+}
+
+/// Append a `Did you mean 'x'?` suffix to a diagnostic message when a
+/// suggestion survived the length-aware threshold, else return `base`
+/// unchanged. Message-only UX: the quick-fix CodeAction edit is untouched.
+fn with_suggestion(base: String, suggestion: Option<String>) -> String {
+    match suggestion {
+        Some(s) => format!("{base}. Did you mean '{s}'?"),
+        None => base,
+    }
+}
+
+// ── Typed value shape checks (Rule 9, Hint-only) ────────────────
+//
+// Syntactic plausibility only: each predicate accepts a deliberate SUPERSET
+// of documented RouterOS spellings (case-insensitive bools, lenient numeric
+// units, `never`/`infinite` times) so gaps in the upstream type table cost a
+// missed Hint, never a false positive. Anything dynamic (`$var`,
+// `[find ...]`, `(expr)`), empty, or attached to an empty/truncated type
+// string stays silent.
+
+/// Canonical RouterOS booleans plus the spellings scripts commonly use.
+/// RouterOS itself is case-insensitive; matching is too.
+const BOOL_WORDS: &[&str] = &["yes", "no", "true", "false", "on", "off"];
+
+/// One Rule 9 finding: wire `code`, rendered message, and an optional
+/// `Did you mean` candidate (only for closed vocabularies: bool, ubit).
+struct TypedHint {
+    code: &'static str,
+    /// Human-readable expectation fragment, e.g. `bool: yes | no`.
+    expected: String,
+    suggestion: Option<String>,
+}
+
+impl TypedHint {
+    fn message(&self, key: &str, raw_value: &str) -> String {
+        let shown = raw_value.trim().trim_matches('"').trim_matches('\'').trim();
+        format!(
+            "Invalid value '{shown}' for '{key}' (expected {})",
+            self.expected
+        )
+    }
+}
+
+/// Dispatch a property value to its type-shape predicate. Returns `None`
+/// when the value looks plausible OR when validation is impossible (empty
+/// or truncated type, empty/dynamic value, unowned type family).
+fn check_typed_value(
+    arg: &crate::menus::ArgEntry,
+    raw_value: &str,
+    budget: &mut crate::suggest::SuggestBudget,
+) -> Option<TypedHint> {
+    let arg_type = arg.arg_type.trim();
+    // Silent on missing types and on generator-truncated display strings.
+    if arg_type.is_empty() || arg_type.contains("...") {
+        return None;
+    }
+    let value = raw_value.trim().trim_matches('"').trim_matches('\'').trim();
+    if value.is_empty() {
+        return None;
+    }
+    // Dynamic values resolve at runtime; their type is unknowable statically.
+    if value.contains(['$', '[', ']', '(', ')']) {
+        return None;
+    }
+    // `enum` stays owned by Rule 5 (Warning with embedded member lists).
+    if arg_type == "enum" || arg_type.starts_with("enum ") || arg_type.starts_with("enum(") {
+        return None;
+    }
+    if arg_type == "bool" {
+        if is_valid_bool(value) {
+            return None;
+        }
+        return Some(TypedHint {
+            code: "invalid-bool-value",
+            expected: format!("bool: {}", BOOL_WORDS.join(" | ")),
+            suggestion: budget.candidate(value, BOOL_WORDS.iter()),
+        });
+    }
+    if arg_type == "num" {
+        if is_valid_num(value) {
+            return None;
+        }
+        return Some(TypedHint {
+            code: "invalid-num-value",
+            expected: "number with optional unit (e.g. 10, 1500, 10M)".to_string(),
+            suggestion: None,
+        });
+    }
+    if arg_type == "time" {
+        if is_valid_time(value) {
+            return None;
+        }
+        return Some(TypedHint {
+            code: "invalid-time-value",
+            expected: "time interval (e.g. 00:10:00, 1h30m, 30s)".to_string(),
+            suggestion: None,
+        });
+    }
+    if arg_type == "macAddr" {
+        if is_valid_mac(value) {
+            return None;
+        }
+        return Some(TypedHint {
+            code: "invalid-mac-value",
+            expected: "MAC address (AA:BB:CC:DD:EE:FF)".to_string(),
+            suggestion: None,
+        });
+    }
+    if matches!(arg_type, "ipAddr" | "ipPrefix" | "ip6Addr" | "ip6Prefix") {
+        if is_valid_ip_field(value) {
+            return None;
+        }
+        return Some(TypedHint {
+            code: "invalid-ip-value",
+            expected: "IP address or prefix (e.g. 192.168.1.1, 10.0.0.0/24, ::1)".to_string(),
+            suggestion: None,
+        });
+    }
+    if arg_type == "ubit" || arg_type.starts_with("ubit ") || arg_type.starts_with("ubit(") {
+        let members = arg.ubit_members();
+        if members.is_empty() {
+            return None;
+        }
+        // Multi-select bitmask: comma-separated members, each checked; a
+        // single leading `!` is RouterOS exclusion syntax, not a typo.
+        //
+        // Whitespace-split remainder: `tokenize_with_spans` splits on ASCII
+        // whitespace, so `rates=1Mbps, 2Mbps` stores only `1Mbps,` for the
+        // key while `2Mbps` becomes a bare token. A lone trailing comma is
+        // therefore a split artifact, not an empty member — drop exactly one
+        // before the empty-member check. Genuine typos (`rates=,`, `a,,b`,
+        // `a,,`) still flag because an empty segment survives the strip.
+        let effective = value.strip_suffix(',').unwrap_or(value);
+        let mut bad: Option<String> = None;
+        for member in effective.split(',') {
+            let clean = member
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .trim()
+                .trim_start_matches('!')
+                .trim();
+            if clean.is_empty() || members.iter().any(|m| m == clean) {
+                continue;
+            }
+            bad = Some(clean.to_string());
+            break;
+        }
+        // An empty member (`rates=,`, `a,,b`) is a typo worth hinting, but
+        // only when nothing else already failed: keep the single-worst-
+        // finding shape. Checked against the trailing-comma-normalized form
+        // above so a whitespace-split remainder never flags.
+        if bad.is_none()
+            && effective.split(',').any(|m| {
+                m.trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .trim()
+                    .is_empty()
+            })
+        {
+            bad = Some(String::new());
+        }
+        if let Some(offender) = bad {
+            return Some(TypedHint {
+                code: "invalid-ubit-value",
+                expected: format!("one of: {}", members.join(", ")),
+                suggestion: if offender.is_empty() {
+                    None
+                } else {
+                    budget.candidate(&offender, members.iter())
+                },
+            });
+        }
+        return None;
+    }
+    // Every other family (string, iface_enum, date, file, switch, range,
+    // multi, object, `address (flags=...)`, timezone, ...) is unowned.
+    None
+}
+
+fn is_valid_bool(value: &str) -> bool {
+    BOOL_WORDS
+        .iter()
+        .any(|w| w.eq_ignore_ascii_case(value.trim()))
+}
+
+fn is_valid_num(value: &str) -> bool {
+    let s = value.trim();
+    let s = s.strip_prefix('+').unwrap_or(s);
+    let s = s.strip_prefix('-').unwrap_or(s);
+    if s.is_empty() {
+        return false;
+    }
+    // Hex literals (`0x10`).
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        return !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit());
+    }
+    // Decimal head plus an optional alphabetic unit tail (`10`, `1.5`, `10M`,
+    // `100%`). The tail is deliberately permissive: unknown units cost a
+    // missed Hint, never a false positive.
+    let cut = s
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(s.len());
+    let (head, tail) = s.split_at(cut);
+    if head.is_empty()
+        || !head.chars().any(|c| c.is_ascii_digit())
+        || head.chars().filter(|&c| c == '.').count() > 1
+        || (head.starts_with('.') || head.ends_with('.'))
+    {
+        return false;
+    }
+    tail.chars().all(|c| c.is_ascii_alphabetic() || c == '%')
+}
+
+fn is_valid_time(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    if lower == "never" || lower == "infinite" {
+        return true;
+    }
+    // Ignore whitespace so quoted multi-part durations never false-positive.
+    let compact: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
+    if compact.is_empty() {
+        return false;
+    }
+    // Clock form (`HH:MM:SS`, `MM:SS`).
+    if compact.contains(':') {
+        let parts: Vec<&str> = compact.split(':').collect();
+        if parts.len() != 2 && parts.len() != 3 {
+            return false;
+        }
+        return parts
+            .iter()
+            .all(|p| !p.is_empty() && p.len() <= 3 && p.chars().all(|c| c.is_ascii_digit()));
+    }
+    // Bare number reads as seconds.
+    if compact.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    // Duration runs: `<digits><unit>` repeated (`1h30m`, `30s`, `10ms`).
+    let mut rest = compact.as_str();
+    if !rest.starts_with(|c: char| c.is_ascii_digit()) {
+        return false;
+    }
+    while !rest.is_empty() {
+        let digits = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if digits == 0 {
+            return false;
+        }
+        rest = &rest[digits..];
+        let units = rest
+            .find(|c: char| !c.is_ascii_alphabetic())
+            .unwrap_or(rest.len());
+        if units == 0 {
+            return false;
+        }
+        rest = &rest[units..];
+        if !rest.is_empty() && !rest.starts_with(|c: char| c.is_ascii_digit()) {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_valid_mac(value: &str) -> bool {
+    let s = value.trim();
+    // RouterOS prints `:` separators; `-` is accepted as a common variant.
+    // Mixed separators are rejected.
+    let sep = if s.contains(':') && !s.contains('-') {
+        ':'
+    } else if s.contains('-') && !s.contains(':') {
+        '-'
+    } else {
+        return false;
+    };
+    let parts: Vec<&str> = s.split(sep).collect();
+    parts.len() == 6
+        && parts
+            .iter()
+            .all(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+fn is_valid_ipv4(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() != 4 {
+        return false;
+    }
+    parts.iter().all(|p| {
+        !p.is_empty()
+            && p.len() <= 3
+            && p.chars().all(|c| c.is_ascii_digit())
+            && p.parse::<u32>().is_ok_and(|n| n <= 255)
+    })
+}
+
+fn is_valid_ipv6(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    // Zone id (`fe80::1%ether1`): validate the address part only.
+    let addr = match s.split_once('%') {
+        Some((head, _)) => head,
+        None => s,
+    };
+    if addr.is_empty()
+        || !addr
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.')
+        || addr.contains(":::")
+        || addr.matches("::").count() > 1
+    {
+        return false;
+    }
+    // One side of a `::` split: `8`-minus-compression groups, where a
+    // trailing embedded IPv4 (`::ffff:1.2.3.4`) counts as two groups.
+    fn side_groups(side: &str, allow_v4_tail: bool) -> Option<usize> {
+        if side.is_empty() {
+            return Some(0);
+        }
+        let parts: Vec<&str> = side.split(':').collect();
+        let mut count = 0;
+        for (i, part) in parts.iter().enumerate() {
+            let is_last = i + 1 == parts.len();
+            if is_last && allow_v4_tail && part.contains('.') {
+                if !is_valid_ipv4(part) {
+                    return None;
+                }
+                count += 2;
+            } else {
+                if part.is_empty() || part.len() > 4 || !part.chars().all(|c| c.is_ascii_hexdigit())
+                {
+                    return None;
+                }
+                count += 1;
+            }
+        }
+        Some(count)
+    }
+    match addr.split_once("::") {
+        Some((head, tail)) => {
+            let (Some(h), Some(t)) = (side_groups(head, false), side_groups(tail, true)) else {
+                return false;
+            };
+            h + t <= 7
+        }
+        None => {
+            if addr.starts_with(':') || addr.ends_with(':') {
+                return false;
+            }
+            side_groups(addr, true) == Some(8)
+        }
+    }
+}
+
+/// Validate one IP-typed value: a single address or prefix, or a
+/// comma-separated list of them. Mirrors the charset discipline of the live
+/// enrichment filters (`live.rs`): no control characters, no surrounding
+/// garbage — then structural IPv4/IPv6 checks with no new dependencies.
+fn is_valid_ip_field(value: &str) -> bool {
+    if value.trim().is_empty() || value.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    let members: Vec<&str> = value.split(',').map(|m| m.trim()).collect();
+    if members.iter().any(|m| m.is_empty()) {
+        return false;
+    }
+    members.iter().all(|m| is_valid_ip_or_prefix(m))
+}
+
+fn is_valid_ip_or_prefix(value: &str) -> bool {
+    let (host, prefix) = match value.split_once('/') {
+        Some((h, p)) => (h.trim(), Some(p.trim())),
+        None => (value.trim(), None),
+    };
+    if host.is_empty() {
+        return false;
+    }
+    let is_v6 = host.contains(':');
+    if !(if is_v6 {
+        is_valid_ipv6(host)
+    } else {
+        is_valid_ipv4(host)
+    }) {
+        return false;
+    }
+    match prefix {
+        None => true,
+        Some(p) => {
+            if p.is_empty() {
+                return false;
+            }
+            // Netmask form (`192.168.1.0/255.255.255.0`) is tolerated.
+            if p.contains('.') {
+                return is_valid_ipv4(p);
+            }
+            let max: u32 = if is_v6 { 128 } else { 32 };
+            p.chars().all(|c| c.is_ascii_digit()) && p.parse::<u32>().is_ok_and(|n| n <= max)
+        }
+    }
 }
 
 /// Compute diagnostics for a document.
@@ -96,6 +514,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
     };
 
     let mut diagnostics = Vec::new();
+    let mut budget = crate::suggest::SuggestBudget::new();
 
     for ll in iter_lines {
         let line = ll.text.as_str();
@@ -142,12 +561,13 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                 || data.ancestor_prefixes.contains(&ctx.path);
             if !is_known && let Some((start_char, end_char)) = find_substring_range(line, &ctx.path)
             {
+                let suggestion = budget.candidate(&ctx.path, data.menu_by_path.keys());
                 diagnostics.push(Diagnostic {
                     range: ll.map_range(start_char, end_char),
                     severity: Some(severity::WARNING),
                     code: Some("unknown-menu".to_string()),
                     source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                    message: format!("Unknown menu '{}'", ctx.path),
+                    message: with_suggestion(format!("Unknown menu '{}'", ctx.path), suggestion),
                 });
                 // If menu unknown, don't emit further property diagnostics for this line
                 // to avoid cascading false positives.
@@ -218,9 +638,12 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
         // above, so no cascade. Verbs are case-insensitive on RouterOS.
         // Menu-specific verbs outside STANDARD_VERBS (e.g. `run` on
         // /system/script, `info`/`warning`/`error`/`debug` on /log) are
-        // allowlisted so valid device commands stay silent.
-        const MENU_SPECIFIC_VERBS: &[&str] =
-            &["run", "info", "warning", "error", "debug", "monitor"];
+        // allowlisted so valid device commands stay silent. `unset` clears
+        // an optional property (`/ip/address unset 0 comment`) and is a
+        // real RouterOS verb on Directory menus.
+        const MENU_SPECIFIC_VERBS: &[&str] = &[
+            "run", "info", "warning", "error", "debug", "monitor", "unset",
+        ];
         if let Some(cmd) = ctx.command.as_deref()
             && !ctx.path.is_empty()
             && (data.menu_by_path.contains_key(&ctx.path)
@@ -233,12 +656,22 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                 .any(|v| v.eq_ignore_ascii_case(cmd))
             && let Some((s, e)) = command_span
         {
+            let suggestion = budget.candidate(
+                cmd,
+                MenuData::STANDARD_VERBS
+                    .iter()
+                    .copied()
+                    .chain(MENU_SPECIFIC_VERBS.iter().copied()),
+            );
             diagnostics.push(Diagnostic {
                 range: ll.map_range(s, e),
                 severity: Some(severity::WARNING),
                 code: Some("unknown-command".to_string()),
                 source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                message: format!("Unknown command '{}' for '{}'", cmd, ctx.path),
+                message: with_suggestion(
+                    format!("Unknown command '{}' for '{}'", cmd, ctx.path),
+                    suggestion,
+                ),
             });
         }
 
@@ -278,16 +711,30 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             }
 
             // ---- Rule 2: Unknown property ----
+            // The named `unset` form (`... unset 0 value-name=<prop>`) is
+            // owned by Rule 10 below: `value-name` is a verb-level pseudo-key,
+            // not a menu property, so it never flags here on `unset` lines.
+            let is_unset = ctx
+                .command
+                .as_deref()
+                .is_some_and(|c| c.eq_ignore_ascii_case("unset"));
             for (key, spans) in &key_spans {
+                if is_unset && key == "value-name" {
+                    continue;
+                }
                 if !allowed.contains(key)
                     && let Some(&(s, e)) = spans.first()
                 {
+                    let suggestion = budget.candidate(key, allowed.iter());
                     diagnostics.push(Diagnostic {
                         range: ll.map_range(s, e),
                         severity: Some(severity::WARNING),
                         code: Some("unknown-property".to_string()),
                         source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                        message: format!("Unknown property '{}' for '{}'", key, ctx.path),
+                        message: with_suggestion(
+                            format!("Unknown property '{}' for '{}'", key, ctx.path),
+                            suggestion,
+                        ),
                     });
                 }
             }
@@ -310,7 +757,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                         let (s, e) = command_span.unwrap_or((0, line.len().min(8)));
                         diagnostics.push(Diagnostic {
                             range: ll.map_range(s, e),
-                            severity: Some(severity::INFORMATION),
+                            severity: Some(severity::WARNING),
                             code: Some("missing-required".to_string()),
                             source: Some(DIAGNOSTIC_SOURCE.to_string()),
                             message: format!(
@@ -324,7 +771,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                 }
             }
 
-            // ---- Rule 5: Type hint for enum properties with invalid value ----
+            // ---- Rule 5: Invalid enum value for enum properties ----
             // Members come from the embedded enum_values list when present
             // (complete even for display-truncated types); the type-string
             // parser is only a fallback. When neither yields members, the
@@ -367,19 +814,164 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                             // only (skip "key="), keeping any quotes in range.
                             let s = span.0 + key.len() + 1;
                             let e = span.1.max(s);
+                            let suggestion = budget.candidate(val, allowed_vals.iter());
                             diagnostics.push(Diagnostic {
                                 range: ll.map_range(s, e),
-                                severity: Some(severity::HINT),
+                                severity: Some(severity::WARNING),
                                 code: Some("invalid-enum-value".to_string()),
                                 source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                                message: format!(
-                                    "Invalid value '{}' for '{}' (expected one of: {})",
-                                    val,
-                                    key,
-                                    allowed_vals.join(" | ")
+                                message: with_suggestion(
+                                    format!(
+                                        "Invalid value '{}' for '{}' (expected one of: {})",
+                                        val,
+                                        key,
+                                        allowed_vals.join(" | ")
+                                    ),
+                                    suggestion,
                                 ),
                             });
                         }
+                    }
+                }
+            }
+
+            // ---- Rule 9: Typed value shape checks (Hint-only) ----
+            // Syntactic plausibility only — never Error, never Warning — so
+            // an incomplete upstream type table degrades to silence instead
+            // of false positives. `enum` types stay owned by Rule 5 above.
+            for (key, (value, span)) in &key_values {
+                // The named `unset` form is owned by Rule 10 below.
+                if key == "value-name" {
+                    continue;
+                }
+                let Some(arg) = menu.arguments.iter().find(|a| a.name == *key) else {
+                    continue;
+                };
+                if let Some(hint) = check_typed_value(arg, value, &mut budget) {
+                    let s = span.0 + key.len() + 1;
+                    let e = span.1.max(s);
+                    diagnostics.push(Diagnostic {
+                        range: ll.map_range(s, e),
+                        severity: Some(severity::HINT),
+                        code: Some(hint.code.to_string()),
+                        source: Some(DIAGNOSTIC_SOURCE.to_string()),
+                        message: with_suggestion(hint.message(key, value), hint.suggestion),
+                    });
+                }
+            }
+
+            // ---- Rule 10: `unset` of a non-unsettable property (Hint) ----
+            // RouterOS clears optional values positionally
+            // (`/ip/address unset 0 comment`) or via the named form
+            // (`... unset 0 value-name=comment`). Warn only when the dataset
+            // entry explicitly carries `unset=false`; unknown names (numbers,
+            // interface names, selectors) stay silent.
+            if ctx
+                .command
+                .as_deref()
+                .is_some_and(|c| c.eq_ignore_ascii_case("unset"))
+            {
+                // Positional targets: bare tokens after the verb that are not
+                // path segments, selectors (`0`, `*AB12`, `[find ...]`), or
+                // `key=value` pairs.
+                let verb_idx = tokens.iter().position(|t| {
+                    ctx.command
+                        .as_deref()
+                        .is_some_and(|c| t.text.eq_ignore_ascii_case(c))
+                });
+                if let Some(vi) = verb_idx {
+                    for token in tokens.iter().skip(vi + 1) {
+                        let text = token.text.as_str();
+                        if text.starts_with('/') {
+                            continue;
+                        }
+                        if crate::parser::split_key_value(text).is_some() || text.contains('=') {
+                            continue;
+                        }
+                        let (opens, _) = crate::parser::bracket_counts(text);
+                        if opens > 0 || text.contains(['[', ']']) {
+                            continue;
+                        }
+                        if is_index_selector(text) {
+                            continue;
+                        }
+                        // Space-separated submenu spelling (`/ip firewall ...`)
+                        // leaks path segments as bare tokens; never flag those.
+                        if ctx
+                            .path
+                            .split('/')
+                            .any(|seg| seg.eq_ignore_ascii_case(text))
+                        {
+                            continue;
+                        }
+                        if let Some(arg) = menu.arguments.iter().find(|a| a.name == text)
+                            && !arg.unset
+                        {
+                            diagnostics.push(Diagnostic {
+                                range: ll.map_range(token.start, token.end),
+                                severity: Some(severity::HINT),
+                                code: Some("non-unsettable-property".to_string()),
+                                source: Some(DIAGNOSTIC_SOURCE.to_string()),
+                                message: format!(
+                                    "Property '{}' cannot be unset (unsettable: no) for '{}'",
+                                    text, ctx.path
+                                ),
+                            });
+                        }
+                    }
+                }
+                // Named form: `value-name=<property>`.
+                if let Some((named_value, named_span)) = key_values.get("value-name") {
+                    let target = named_value
+                        .trim()
+                        .trim_matches('"')
+                        .trim_matches('\'')
+                        .trim()
+                        .to_string();
+                    if !target.is_empty()
+                        && !target.contains(['$', '[', ']', '(', ')'])
+                        && let Some(arg) = menu.arguments.iter().find(|a| a.name == target)
+                        && !arg.unset
+                    {
+                        let s = named_span.0 + "value-name".len() + 1;
+                        let e = named_span.1.max(s);
+                        diagnostics.push(Diagnostic {
+                            range: ll.map_range(s, e),
+                            severity: Some(severity::HINT),
+                            code: Some("non-unsettable-property".to_string()),
+                            source: Some(DIAGNOSTIC_SOURCE.to_string()),
+                            message: format!(
+                                "Property '{target}' cannot be unset (unsettable: no) for '{}'",
+                                ctx.path
+                            ),
+                        });
+                    }
+                }
+            }
+
+            // ---- Rule 11: read-only column written via add/set (Info) ----
+            // `read_only` entries are output columns (e.g. `/log` stats);
+            // assigning them on `add`/`set` cannot take effect.
+            if ctx
+                .command
+                .as_deref()
+                .is_some_and(|c| c == "add" || c == "set")
+            {
+                for (key, spans) in &key_spans {
+                    if menu.read_only.iter().any(|r| r.name == *key)
+                        && let Some(&(s, e)) = spans.first()
+                    {
+                        diagnostics.push(Diagnostic {
+                            range: ll.map_range(s, e),
+                            severity: Some(severity::INFORMATION),
+                            code: Some("read-only-write".to_string()),
+                            source: Some(DIAGNOSTIC_SOURCE.to_string()),
+                            message: format!(
+                                "Property '{}' is read-only and cannot be set with '{}' (output column only)",
+                                key,
+                                ctx.command.as_deref().unwrap_or("")
+                            ),
+                        });
                     }
                 }
             }
@@ -542,7 +1134,8 @@ impl SyntaxFinding {
 /// Positions come from the shared walker in byte coordinates and are mapped
 /// to wire encoding by the usual boundary conversion (`convert_diagnostic_ranges`),
 /// exactly like every other rule's output. Output is deterministic: sorted by
-/// document position ("oldest first"), capped at [`MAX_SYNTAX_DIAGNOSTICS`].
+/// document position ("oldest first"), capped at [`MAX_SYNTAX_DIAGNOSTICS`]
+/// plus one explicit `truncated` footer when the cap drops findings.
 ///
 /// Memory-bounded by construction: the walk records lightweight
 /// (position, kind) pairs only; sorting, truncation, and Diagnostic
@@ -604,15 +1197,41 @@ fn syntax_diagnostics(doc: &str) -> Vec<Diagnostic> {
         });
     }
 
-    // Deterministic ordering across the three sources, then a silent cap
-    // keeping the OLDEST ten (document order). Full Diagnostics — with
-    // their heap messages — are built only for the survivors.
+    // Deterministic ordering across the three sources, then an explicit
+    // cap keeping the OLDEST ten (document order) plus a `truncated`
+    // Information footer naming the dropped remainder — mirroring the
+    // semantic truncation path so the 11th error is acknowledged, not
+    // silent. Full Diagnostics — with their heap messages — are built
+    // only for the survivors.
     findings.sort_by_key(|f| (f.line, f.character));
+    let total = findings.len();
+    let dropped = total.saturating_sub(MAX_SYNTAX_DIAGNOSTICS);
     findings.truncate(MAX_SYNTAX_DIAGNOSTICS);
-    findings
+    let mut out: Vec<Diagnostic> = findings
         .into_iter()
         .map(SyntaxFinding::into_diagnostic)
-        .collect()
+        .collect();
+    if dropped > 0 {
+        out.push(Diagnostic {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 0,
+                },
+            },
+            severity: Some(severity::INFORMATION),
+            code: Some("truncated".to_string()),
+            source: Some(DIAGNOSTIC_SOURCE.to_string()),
+            message: format!(
+                "Diagnostic truncated: showing first {MAX_SYNTAX_DIAGNOSTICS} of {total} syntax diagnostics (+{dropped} more - see full list) — some issues beyond limit not shown"
+            ),
+        });
+    }
+    out
 }
 
 // ── RouterOS backslash line continuation ──────────────────────────
@@ -659,13 +1278,13 @@ fn continuation_body_end(line: &str) -> Option<usize> {
 
 /// Returns true if this physical line continues onto the next line via a
 /// trailing unescaped backslash (RouterOS line continuation).
-fn has_line_continuation(line: &str) -> bool {
+pub(crate) fn has_line_continuation(line: &str) -> bool {
     continuation_body_end(line).is_some()
 }
 
 /// A slice of one physical line contributed to a [`LogicalLine`].
 #[derive(Debug)]
-struct Segment {
+pub(crate) struct Segment {
     /// Byte offset of this chunk within [`LogicalLine::text`].
     text_start: usize,
     /// Byte length of this chunk (segments tile `text` contiguously).
@@ -688,8 +1307,8 @@ struct Segment {
 /// [`LogicalLine::last_physical_line`] and [`LogicalLine::map_range`].
 #[derive(Debug, Default)]
 pub(crate) struct LogicalLine {
-    text: String,
-    segments: Vec<Segment>,
+    pub(crate) text: String,
+    pub(crate) segments: Vec<Segment>,
 }
 
 impl LogicalLine {
@@ -727,7 +1346,7 @@ impl LogicalLine {
 
     /// Map a byte offset in the joined text to a [`Position`] in original
     /// document coordinates. Out-of-bounds offsets are clamped defensively.
-    fn map_pos(&self, offset: usize) -> Position {
+    pub(crate) fn map_pos(&self, offset: usize) -> Position {
         let offset = crate::floor_char_boundary(&self.text, offset.min(self.text.len()));
         let idx = self.segments.partition_point(|s| s.text_start <= offset);
         let Some(seg) = idx.checked_sub(1).and_then(|i| self.segments.get(i)) else {
@@ -794,7 +1413,7 @@ impl LogicalLine {
 /// predicate [`has_line_continuation`] decides whether to join, then
 /// [`continuation_body_end`] yields the exact body cut point (guaranteed
 /// `Some` at that point).
-fn build_logical_lines(raw_lines: &[&str]) -> Vec<LogicalLine> {
+pub(crate) fn build_logical_lines(raw_lines: &[&str]) -> Vec<LogicalLine> {
     let mut logicals = Vec::new();
     let mut current = LogicalLine::default();
 
@@ -940,1848 +1559,9 @@ fn line_has_set_selector(tokens: &[crate::parser::SpanToken], verb: &str) -> boo
     false
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::menus::MenuData;
-
-    fn synthetic_data() -> MenuData {
-        MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/ip/address"
-type = "Directory"
-[[menus.arguments]]
-name = "address"
-type = "ipPrefix"
-required = true
-[[menus.arguments]]
-name = "interface"
-type = "iface_enum"
-required = true
-[[menus.arguments]]
-name = "comment"
-type = "string"
-[[menus.flags]]
-name = "X"
-description = "disabled"
-[[menus]]
-path = "/ip/route"
-type = "Directory"
-[[menus.arguments]]
-name = "gateway"
-type = "ipAddr"
-[[menus]]
-path = "/ip/firewall/filter"
-type = "Directory"
-[[menus.arguments]]
-name = "chain"
-type = "enum (input | forward | output)"
-required = true
-[[menus.arguments]]
-name = "action"
-type = "enum (accept | drop | reject)"
-[[menus]]
-path = "/interface/bridge/port"
-type = "Directory"
-[[menus]]
-path = "/system/clock"
-type = "Directory"
-[[menus.arguments]]
-name = "time-zone-name"
-type = "string"
-[[menus.arguments]]
-name = "enabled"
-type = "bool"
-"#,
-        )
-    }
-
-    #[test]
-    fn test_unknown_menu_warning() {
-        let data = synthetic_data();
-        let doc = "/foo/bar add something=1";
-        let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-menu")),
-            "should have unknown-menu diagnostic, got {:?}",
-            diags
-        );
-        assert!(diags.iter().any(|d| d.message.contains("/foo/bar")));
-        assert!(diags.iter().any(|d| d.severity == Some(severity::WARNING)));
-    }
-
-    #[test]
-    fn test_known_menu_no_unknown_diag() {
-        let data = synthetic_data();
-        let doc = "/ip/address add address=1.1.1.1/24 interface=ether1";
-        let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
-        // Should not have unknown-menu
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-menu")),
-            "should not have unknown-menu for known path"
-        );
-    }
-
-    #[test]
-    fn test_unknown_property_warning() {
-        let data = synthetic_data();
-        let doc = "/ip/address add address=1.1.1.1/24 unknownprop=foo";
-        let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-property"))
-        );
-        assert!(diags.iter().any(|d| d.message.contains("unknownprop")));
-    }
-
-    #[test]
-    fn test_known_property_no_unknown() {
-        let data = synthetic_data();
-        let doc = "/ip/address add address=1.1.1.1/24 interface=ether1 comment=\"hi\"";
-        let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-property")),
-            "should not have unknown-property for valid props, got {:?}",
-            diags
-        );
-    }
-
-    #[test]
-    fn test_missing_required_info() {
-        let data = synthetic_data();
-        // /ip/address add requires address and interface
-        let doc = "/ip/address add comment=hi";
-        let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
-        let missing: Vec<_> = diags
-            .iter()
-            .filter(|d| d.code.as_deref() == Some("missing-required"))
-            .collect();
-        assert!(
-            !missing.is_empty(),
-            "should have missing-required, got {:?}",
-            diags
-        );
-        assert!(missing.iter().any(|d| d.message.contains("address")));
-        assert!(missing.iter().any(|d| d.message.contains("interface")));
-        assert!(
-            missing
-                .iter()
-                .all(|d| d.severity == Some(severity::INFORMATION))
-        );
-    }
-
-    #[test]
-    fn test_no_missing_when_required_present() {
-        let data = synthetic_data();
-        let doc = "/ip/address add address=1.1.1.1/24 interface=ether1";
-        let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("missing-required")),
-            "should not have missing-required when all present"
-        );
-    }
-
-    #[test]
-    fn test_missing_not_emitted_for_print_verb() {
-        let data = synthetic_data();
-        // print does not require address/interface
-        let doc = "/ip/address print";
-        let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("missing-required")),
-            "print should not trigger missing-required"
-        );
-    }
-
-    #[test]
-    fn test_duplicate_property_warning() {
-        let data = synthetic_data();
-        let doc = "/ip/address add address=1.1.1.1 interface=ether1 address=2.2.2.2";
-        let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("duplicate-property")),
-            "should have duplicate-property, got {:?}",
-            diags
-        );
-        assert!(diags.iter().any(|d| d.message.contains("address")));
-    }
-
-    #[test]
-    fn test_no_duplicate_when_unique() {
-        let data = synthetic_data();
-        let doc = "/ip/address add address=1.1.1.1 interface=ether1";
-        let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("duplicate-property")),
-            "should not have duplicate when unique"
-        );
-    }
-
-    #[test]
-    fn test_invalid_enum_hint() {
-        let data = synthetic_data();
-        let doc = "/ip/firewall/filter add chain=invalid action=accept";
-        let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
-        let hints: Vec<_> = diags
-            .iter()
-            .filter(|d| d.code.as_deref() == Some("invalid-enum-value"))
-            .collect();
-        assert!(
-            !hints.is_empty(),
-            "should have invalid-enum-value, got {:?}",
-            diags
-        );
-        assert!(hints.iter().any(|d| d.message.contains("invalid")));
-        assert!(hints.iter().all(|d| d.severity == Some(severity::HINT)));
-    }
-
-    #[test]
-    fn test_valid_enum_no_hint() {
-        let data = synthetic_data();
-        let doc = "/ip/firewall/filter add chain=input action=accept";
-        let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("invalid-enum-value")),
-            "should not have hint for valid enum values"
-        );
-    }
-
-    #[test]
-    fn test_multiple_rules_together() {
-        let data = synthetic_data();
-        let doc = "/foo/bar add unknown=foo chain=bad\n/ip/address add address=1.1.1.1 interface=ether1 address=1.1.1.1\n/ip/firewall/filter add chain=bad";
-        let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-menu"))
-        );
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("duplicate-property"))
-        );
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("invalid-enum-value"))
-        );
-    }
-
-    #[test]
-    fn test_empty_and_comment_lines_no_diags() {
-        let data = synthetic_data();
-        let doc = "# comment\n\n   \n:global x 1\n/ip/address add address=1.1.1.1 interface=ether1";
-        let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
-        // Only last line should be checked, and it's valid
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-menu")),
-            "comments and empty should not produce diagnostics"
-        );
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-property")),
-            "valid line should not have unknown-property"
-        );
-    }
-
-    #[test]
-    fn test_large_doc_capped() {
-        let data = synthetic_data();
-        // Generate large doc beyond cap
-        let mut doc = String::new();
-        for i in 0..4000 {
-            doc.push_str(&format!("/foo/unknown{} add badprop=1\n", i));
-        }
-        let diags = compute_diagnostics(&data, &doc, "file:///test.rsc");
-        // Should be capped at MAX_DIAG_LINES (3000) -> at most 3000 diagnostics (one per line)
-        // plus one truncation hint (Information) when truncated.
-        assert!(
-            diags.len() <= MAX_DIAG_LINES + 1,
-            "diagnostics should be capped, got {}",
-            diags.len()
-        );
-        // Should still have some diagnostics
-        assert!(!diags.is_empty());
-    }
-
-    #[test]
-    fn test_single_line_semantic_count_capped_with_hint() {
-        // Regression: one logical line with thousands of distinct unknown
-        // keys must not yield one Diagnostic per key. The semantic loop is
-        // bounded by MAX_DIAGNOSTICS; the count-only truncation still emits
-        // the "truncated" hint. The input stays under MAX_DIAG_BYTES/LINES
-        // so only the count cap applies (no syntax findings on this line).
-        let data = synthetic_data();
-        let mut doc = String::from("/ip/address add address=1.1.1.1/24 interface=ether1");
-        for i in 0..(MAX_DIAGNOSTICS + 1000) {
-            doc.push_str(&format!(" unknownkey{i}=1"));
-        }
-        assert!(
-            doc.len() < MAX_DIAG_BYTES,
-            "test input must stay under the byte cap, got {} bytes",
-            doc.len()
-        );
-        let diags = compute_diagnostics(&data, &doc, "file:///test.rsc");
-        assert!(
-            diags.iter().any(|d| d.code.as_deref() == Some("truncated")),
-            "count truncation must emit a hint, got {} diagnostics",
-            diags.len()
-        );
-        let non_hint = diags
-            .iter()
-            .filter(|d| d.code.as_deref() != Some("truncated"))
-            .count();
-        assert!(
-            non_hint <= MAX_DIAGNOSTICS,
-            "semantic findings must be capped at {MAX_DIAGNOSTICS}, got {non_hint}"
-        );
-        assert!(
-            diags.len() <= MAX_DIAGNOSTICS + 1 + MAX_SYNTAX_DIAGNOSTICS,
-            "total stays bounded (semantic + hint + syntax), got {}",
-            diags.len()
-        );
-    }
-
-    #[test]
-    fn test_incremental_edit_simulation() {
-        let data = synthetic_data();
-        // Simulate incremental edits: initial doc has error, then fix
-        let doc1 = "/ip/address add comment=hi"; // missing required
-        let diags1 = compute_diagnostics(&data, doc1, "file:///test.rsc");
-        assert!(
-            diags1
-                .iter()
-                .any(|d| d.code.as_deref() == Some("missing-required"))
-        );
-
-        let doc2 = "/ip/address add address=1.1.1.1/24 interface=ether1"; // fixed
-        let diags2 = compute_diagnostics(&data, doc2, "file:///test.rsc");
-        assert!(
-            !diags2
-                .iter()
-                .any(|d| d.code.as_deref() == Some("missing-required"))
-        );
-    }
-
-    #[test]
-    fn test_implicit_parent_not_unknown() {
-        let data = synthetic_data();
-        // /ip/firewall is implicit parent (no direct entry but has children), should not be unknown
-        // synthetic data has /ip/firewall/filter, so /ip/firewall should be considered known via child_names
-        let doc = "/ip/firewall print";
-        let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-menu")),
-            "implicit parent /ip/firewall should not be unknown, got {:?}",
-            diags
-        );
-    }
-
-    // ── Rule 5 via embedded enum_values ───────────────────────────
-
-    fn truncated_display_data() -> MenuData {
-        // Mirrors real generated data: display type truncated by the
-        // generator's 100-char cap, complete members in enum_values.
-        MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/interface/wireless"
-type = "Directory"
-[[menus.arguments]]
-name = "band"
-type = "enum (2ghz-b | 2ghz-onlyg | 2ghz-b/g | 5ghz-a | 5ghz-onlyn | 5ghz-a/n | 2ghz-on..."
-enum_values = ["2ghz-b", "5ghz-a", "5ghz-onlyac"]
-[[menus.arguments]]
-name = "legacy-no-values"
-type = "enum (a | b"
-"#,
-        )
-    }
-
-    #[test]
-    fn test_invalid_enum_hint_fires_via_enum_values_despite_truncated_display() {
-        let data = truncated_display_data();
-        let diags =
-            compute_diagnostics(&data, "/interface/wireless set band=bogus", "file:///t.rsc");
-        let hint = diags
-            .iter()
-            .find(|d| d.code.as_deref() == Some("invalid-enum-value"))
-            .expect("hint must fire using embedded enum_values");
-        assert!(hint.message.contains("bogus"));
-        assert!(hint.message.contains("2ghz-b | 5ghz-a | 5ghz-onlyac"));
-    }
-
-    #[test]
-    fn test_valid_embedded_enum_value_no_hint() {
-        let data = truncated_display_data();
-        for good in ["2ghz-b", "5ghz-a", "5ghz-onlyac"] {
-            let doc = format!("/interface/wireless set band={good}");
-            let diags = compute_diagnostics(&data, &doc, "file:///t.rsc");
-            assert!(
-                !diags
-                    .iter()
-                    .any(|d| d.code.as_deref() == Some("invalid-enum-value")),
-                "{good} is a documented member — no hint, got {diags:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_truncated_type_without_values_stays_silent() {
-        // No enum_values AND unparsable display string → no hint (never guess).
-        let data = truncated_display_data();
-        let diags = compute_diagnostics(
-            &data,
-            "/interface/wireless set legacy-no-values=bogus",
-            "file:///t.rsc",
-        );
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("invalid-enum-value"))
-        );
-    }
-
-    #[test]
-    fn test_real_data_action_enum_hint_fires() {
-        // End-to-end on the regenerated table: action's display type is
-        // truncated, but its embedded enum_values make the rule live again.
-        let data = MenuData::load();
-        let doc = "/ip/firewall/filter add chain=input action=frobnicate";
-        let diags = compute_diagnostics(&data, doc, "file:///real.rsc");
-        let hint = diags
-            .iter()
-            .find(|d| d.code.as_deref() == Some("invalid-enum-value"))
-            .expect("invalid-enum-value must fire on real data now");
-        assert!(hint.message.contains("frobnicate"));
-        assert!(hint.message.contains("accept"));
-
-        // A documented value stays clean.
-        let ok = compute_diagnostics(
-            &data,
-            "/ip/firewall/filter add chain=input action=accept",
-            "file:///real.rsc",
-        );
-        assert!(
-            !ok.iter()
-                .any(|d| d.code.as_deref() == Some("invalid-enum-value"))
-        );
-    }
-
-    #[test]
-    fn test_comma_separated_enum_list_valid() {
-        let data = synthetic_data();
-        // Single valid member in list should be considered valid (lenient: any matches)
-        let doc = "/ip/firewall/filter add chain=input,forward action=accept";
-        let diags = compute_diagnostics(&data, doc, "file:///t.rsc");
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("invalid-enum-value")),
-            "comma list with at least one valid member must not hint, got {diags:?}"
-        );
-
-        // Variants with spaces and mixed valid/invalid: still lenient (any valid => no hint)
-        let doc2 = "/ip/firewall/filter add chain=input , forward action=accept,drop";
-        let diags2 = compute_diagnostics(&data, doc2, "file:///t.rsc");
-        assert!(
-            !diags2
-                .iter()
-                .any(|d| d.code.as_deref() == Some("invalid-enum-value")),
-            "comma list with spaces and valid members must not hint, got {diags2:?}"
-        );
-
-        // No member matches -> must hint
-        let doc3 = "/ip/firewall/filter add chain=bogus,also-bogus action=accept";
-        let diags3 = compute_diagnostics(&data, doc3, "file:///t.rsc");
-        assert!(
-            diags3
-                .iter()
-                .any(|d| d.code.as_deref() == Some("invalid-enum-value")),
-            "comma list with zero valid members must hint, got {diags3:?}"
-        );
-
-        // Empty value stays silent (existing early return)
-        let doc4 = "/ip/firewall/filter add chain= action=accept";
-        let diags4 = compute_diagnostics(&data, doc4, "file:///t.rsc");
-        assert!(
-            !diags4
-                .iter()
-                .any(|d| d.code.as_deref() == Some("invalid-enum-value")),
-            "empty value must not hint"
-        );
-    }
-
-    #[test]
-    fn test_comma_separated_enum_single_value_still_strict() {
-        let data = synthetic_data();
-        let doc = "/ip/firewall/filter add chain=invalid action=accept";
-        let diags = compute_diagnostics(&data, doc, "file:///t.rsc");
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("invalid-enum-value")),
-            "single invalid value must still hint"
-        );
-    }
-
-    // ── Centralized parser fix (slash-verb, quote-aware =, brackets) ──
-
-    fn slash_verb_data() -> MenuData {
-        MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/ipv6/nd/prefix"
-type = "Directory"
-[[menus.arguments]]
-name = "interface"
-type = "iface_enum"
-[[menus.arguments]]
-name = "comment"
-type = "string"
-[[menus]]
-path = "/log"
-type = "Directory"
-[[menus]]
-path = "/system/scheduler"
-type = "Directory"
-[[menus.arguments]]
-name = "name"
-type = "string"
-[[menus]]
-path = "/ip/address"
-type = "Directory"
-[[menus.arguments]]
-name = "address"
-type = "ipPrefix"
-[[menus.arguments]]
-name = "interface"
-type = "iface_enum"
-[[menus.arguments]]
-name = "comment"
-type = "string"
-"#,
-        )
-    }
-
-    #[test]
-    fn test_slash_verb_shorthand_no_unknown_menu() {
-        let data = slash_verb_data();
-        let diags = compute_diagnostics(
-            &data,
-            "/ipv6/nd/prefix/add interface=bridge",
-            "file:///t.rsc",
-        );
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-menu")),
-            "slash-verb shorthand must resolve via Rule 1 parse_line fix, got {diags:?}"
-        );
-    }
-
-    #[test]
-    fn test_log_info_quoted_equals_no_bogus_properties() {
-        let data = slash_verb_data();
-        let diags =
-            compute_diagnostics(&data, r#"/log info ("digi prevPd=" . $x)"#, "file:///t.rsc");
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-property")),
-            "quoted `=` must not spawn unknown-property keys, got {diags:?}"
-        );
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-menu")),
-            "got {diags:?}"
-        );
-    }
-
-    #[test]
-    fn test_bracket_find_inner_keys_ignored() {
-        let data = slash_verb_data();
-        let diags = compute_diagnostics(
-            &data,
-            "/ip/address set [find pool-name=digi-ipv6] address=1.1.1.1 interface=ether1",
-            "file:///t.rsc",
-        );
-        assert!(
-            !diags.iter().any(|d| d
-                .code
-                .as_deref()
-                .is_some_and(|c| c == "unknown-property" && d.message.contains("pool-name"))),
-            "inner bracket key must stay invisible, got {diags:?}"
-        );
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("duplicate-property")),
-            "got {diags:?}"
-        );
-    }
-
-    #[test]
-    fn test_quoted_comment_with_equals_still_property_no_warning() {
-        let data = slash_verb_data();
-        let diags = compute_diagnostics(
-            &data,
-            r#"/ip/address add address=1.1.1.1 interface=ether1 comment="a=b c=d""#,
-            "file:///t.rsc",
-        );
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-property")),
-            "comment must stay a known property, got {diags:?}"
-        );
-    }
-
-    #[test]
-    fn test_concat_comment_still_property_no_warning() {
-        let data = slash_verb_data();
-        let diags = compute_diagnostics(
-            &data,
-            r#"/ip/address add address=1.1.1.1 interface=ether1 comment=("X old=" . $y)"#,
-            "file:///t.rsc",
-        );
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-property")),
-            "concat comment must stay property comment, got {diags:?}"
-        );
-    }
-
-    #[test]
-    fn test_unknown_command_warning() {
-        let data = slash_verb_data();
-        let diags = compute_diagnostics(
-            &data,
-            "/ip/address adn address=1.1.1.1 interface=ether1",
-            "file:///t.rsc",
-        );
-        let unk: Vec<_> = diags
-            .iter()
-            .filter(|d| d.code.as_deref() == Some("unknown-command"))
-            .collect();
-        assert_eq!(unk.len(), 1, "one unknown-command, got {diags:?}");
-        assert!(unk[0].message.contains("adn"));
-        assert_eq!(unk[0].severity, Some(severity::WARNING));
-    }
-
-    #[test]
-    fn test_known_command_no_unknown_command() {
-        let data = slash_verb_data();
-        let diags = compute_diagnostics(
-            &data,
-            "/ip/address add address=1.1.1.1 interface=ether1",
-            "file:///t.rsc",
-        );
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-command")),
-            "known verb must stay clean, got {diags:?}"
-        );
-    }
-
-    #[test]
-    fn test_unknown_command_skipped_when_path_unknown() {
-        let data = slash_verb_data();
-        let diags = compute_diagnostics(&data, "/foo/bar adn x=1", "file:///t.rsc");
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-menu")),
-            "Rule 1 must fire, got {diags:?}"
-        );
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-command")),
-            "no cascade on unknown path, got {diags:?}"
-        );
-    }
-
-    #[test]
-    fn test_set_with_find_selector_suppresses_missing_required() {
-        let data = synthetic_data();
-        let diags = compute_diagnostics(
-            &data,
-            "/ip/address set [find interface=ether1] interface=ether1",
-            "file:///t.rsc",
-        );
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("missing-required")),
-            "set with [find] selector must not require creation args, got {diags:?}"
-        );
-    }
-
-    #[test]
-    fn test_set_with_numeric_selector_suppresses_missing_required() {
-        let data = synthetic_data();
-        let diags =
-            compute_diagnostics(&data, "/ip/address set 0 interface=ether1", "file:///t.rsc");
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("missing-required")),
-            "set with numeric selector must not require creation args, got {diags:?}"
-        );
-    }
-
-    #[test]
-    fn test_add_without_selector_still_requires() {
-        let data = synthetic_data();
-        let diags = compute_diagnostics(&data, "/ip/address add comment=hi", "file:///t.rsc");
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("missing-required")),
-            "add without required args must still warn, got {diags:?}"
-        );
-    }
-}
-
-#[cfg(test)]
-mod extra_coverage {
-    use super::*;
-    use crate::menus::MenuData;
-
-    fn synth() -> MenuData {
-        MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/ip/address"
-type = "Directory"
-[[menus.arguments]]
-name = "address"
-type = "ipPrefix"
-required = true
-[[menus.arguments]]
-name = "interface"
-type = "iface_enum"
-required = true
-[[menus.arguments]]
-name = "comment"
-type = "string"
-[[menus.flags]]
-name = "X"
-description = "disabled"
-[[menus]]
-path = "/ip/firewall/filter"
-type = "Directory"
-[[menus.arguments]]
-name = "chain"
-type = "enum (input | forward | output)"
-required = true
-[[menus.arguments]]
-name = "action"
-type = "enum (accept | drop | reject)"
-[[menus]]
-path = "/interface/list"
-type = "Directory"
-[[menus.arguments]]
-name = "name"
-type = "string"
-required = true
-[[menus]]
-path = "/tool/ping"
-type = "Command"
-[[menus]]
-path = "/tool/fetch"
-type = "Command"
-[[menus.arguments]]
-name = "url"
-type = "string"
-[[menus.arguments]]
-name = "ssl-verify"
-type = "bool"
-"#,
-        )
-    }
-
-    // ── Explicit 5 rules with severity ─────────────────────────────────
-
-    #[test]
-    fn test_rule1_unknown_menu_warning_severity() {
-        let data = synth();
-        let diags = compute_diagnostics(&data, "/foo/bar add x=1", "file:///a.rsc");
-        let d = diags
-            .iter()
-            .find(|d| d.code.as_deref() == Some("unknown-menu"))
-            .expect("unknown-menu");
-        assert_eq!(d.severity, Some(severity::WARNING));
-        assert_eq!(d.source.as_deref(), Some("rsc-ls"));
-        assert!(d.message.contains("/foo/bar"));
-        assert_eq!(d.range.start.line, 0);
-    }
-
-    #[test]
-    fn test_rule2_unknown_property_warning_severity() {
-        let data = synth();
-        let diags = compute_diagnostics(
-            &data,
-            "/ip/address add address=1.1.1.1 interface=ether1 bogus=1",
-            "file:///a.rsc",
-        );
-        let d = diags
-            .iter()
-            .find(|d| d.code.as_deref() == Some("unknown-property"))
-            .expect("unknown-property");
-        assert_eq!(d.severity, Some(severity::WARNING));
-        assert!(d.message.contains("bogus"));
-        assert!(d.message.contains("/ip/address"));
-    }
-
-    #[test]
-    fn test_rule3_missing_required_info_for_add_on_directory() {
-        let data = synth();
-        let diags = compute_diagnostics(&data, "/ip/address add comment=hi", "file:///a.rsc");
-        let missing: Vec<_> = diags
-            .iter()
-            .filter(|d| d.code.as_deref() == Some("missing-required"))
-            .collect();
-        assert_eq!(
-            missing.len(),
-            2,
-            "should have 2 missing (address, interface)"
-        );
-        for m in &missing {
-            assert_eq!(m.severity, Some(severity::INFORMATION));
-            assert!(m.message.contains("Missing required"));
-        }
-        assert!(missing.iter().any(|d| d.message.contains("address")));
-        assert!(missing.iter().any(|d| d.message.contains("interface")));
-    }
-
-    #[test]
-    fn test_rule3_missing_required_for_set_on_directory() {
-        let data = synth();
-        let diags = compute_diagnostics(&data, "/ip/address set comment=hi", "file:///a.rsc");
-        // set on Directory should also require
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("missing-required"))
-        );
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.severity == Some(severity::INFORMATION))
-        );
-    }
-
-    #[test]
-    fn test_rule3_not_for_command_type() {
-        let data = synth();
-        // /tool/ping is Command, not Directory, so missing-required should not trigger
-        let diags = compute_diagnostics(&data, "/tool/ping address=1.1.1.1", "file:///a.rsc");
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("missing-required"))
-        );
-    }
-
-    #[test]
-    fn test_rule3_not_for_print_verb() {
-        let data = synth();
-        let diags = compute_diagnostics(&data, "/ip/address print", "file:///a.rsc");
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("missing-required"))
-        );
-    }
-
-    #[test]
-    fn test_rule4_duplicate_property_warning_severity() {
-        let data = synth();
-        let diags = compute_diagnostics(
-            &data,
-            "/ip/address add address=1.1.1.1 interface=ether1 address=2.2.2.2",
-            "file:///a.rsc",
-        );
-        let d = diags
-            .iter()
-            .find(|d| d.code.as_deref() == Some("duplicate-property"))
-            .expect("duplicate");
-        assert_eq!(d.severity, Some(severity::WARNING));
-        assert!(d.message.contains("address"));
-        // Second occurrence range should be after first
-        assert!(d.range.start.character > 0);
-    }
-
-    #[test]
-    fn test_rule4_duplicate_with_three_occurrences_still_warns() {
-        let data = synth();
-        let diags = compute_diagnostics(
-            &data,
-            "/ip/address add address=1 interface=ether1 address=2 address=3",
-            "file:///a.rsc",
-        );
-        // Should have at least one duplicate diagnostic
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("duplicate-property"))
-        );
-    }
-
-    #[test]
-    fn test_inline_comment_does_not_spawn_unknown_property_diagnostic() {
-        let data = synth();
-        let doc = "/ip/address add address=1.1.1.1/24 interface=ether1 # inline note: foo=bar invalid_key=123";
-        let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
-        assert!(
-            diags.is_empty(),
-            "inline comments must not trigger unknown property diagnostics: {diags:?}"
-        );
-    }
-
-    #[test]
-    fn test_rule5_invalid_enum_hint_severity() {
-        let data = synth();
-        let diags = compute_diagnostics(
-            &data,
-            "/ip/firewall/filter add chain=invalid",
-            "file:///a.rsc",
-        );
-        let d = diags
-            .iter()
-            .find(|d| d.code.as_deref() == Some("invalid-enum-value"))
-            .expect("hint");
-        assert_eq!(d.severity, Some(severity::HINT));
-        assert!(d.message.contains("Invalid value"));
-        assert!(d.message.contains("input | forward | output"));
-        assert!(d.message.contains("invalid"));
-    }
-
-    #[test]
-    fn test_rule5_valid_enum_no_hint() {
-        let data = synth();
-        let diags = compute_diagnostics(
-            &data,
-            "/ip/firewall/filter add chain=input",
-            "file:///a.rsc",
-        );
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("invalid-enum-value"))
-        );
-    }
-
-    #[test]
-    fn test_rule5_empty_value_not_hint() {
-        let data = synth();
-        let diags = compute_diagnostics(&data, "/ip/firewall/filter add chain=", "file:///a.rsc");
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("invalid-enum-value"))
-        );
-    }
-
-    #[test]
-    fn test_rule5_quoted_value_stripped_then_checked() {
-        let data = synth();
-        let diags = compute_diagnostics(
-            &data,
-            "/ip/firewall/filter add chain=\"invalid\"",
-            "file:///a.rsc",
-        );
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("invalid-enum-value"))
-        );
-        let diags2 = compute_diagnostics(
-            &data,
-            "/ip/firewall/filter add chain=\"input\"",
-            "file:///a.rsc",
-        );
-        assert!(
-            !diags2
-                .iter()
-                .any(|d| d.code.as_deref() == Some("invalid-enum-value"))
-        );
-    }
-
-    // ── Empty and comment-only docs ────────────────────────────────────
-
-    #[test]
-    fn test_empty_doc_no_diags() {
-        let data = synth();
-        let diags = compute_diagnostics(&data, "", "file:///a.rsc");
-        assert!(diags.is_empty());
-    }
-
-    #[test]
-    fn test_whitespace_only_no_diags() {
-        let data = synth();
-        let diags = compute_diagnostics(&data, "   \n\n\t\n  ", "file:///a.rsc");
-        assert!(diags.is_empty());
-    }
-
-    #[test]
-    fn test_comment_only_no_diags() {
-        let data = synth();
-        let doc = "# comment\n# another\n   # indented\n";
-        let diags = compute_diagnostics(&data, doc, "file:///a.rsc");
-        assert!(diags.is_empty());
-    }
-
-    #[test]
-    fn test_global_and_brace_lines_no_diags() {
-        let data = synth();
-        let doc = ":global x 1\n:local y 2\n{\n}\n..\n";
-        let diags = compute_diagnostics(&data, doc, "file:///a.rsc");
-        assert!(diags.is_empty());
-    }
-
-    #[test]
-    fn test_mixed_valid_and_comments() {
-        let data = synth();
-        let doc = "# comment\n\n/ip/address add address=1.1.1.1 interface=ether1\n# trailing\n";
-        let diags = compute_diagnostics(&data, doc, "file:///a.rsc");
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-menu"))
-        );
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-property"))
-        );
-    }
-
-    // ── Large doc caps ─────────────────────────────────────────────────
-
-    #[test]
-    fn test_large_doc_capped_at_max_diag_lines() {
-        let data = synth();
-        let doc = "/unknown/menu add x=1\n".repeat(4000);
-        let diags = compute_diagnostics(&data, &doc, "file:///a.rsc");
-        assert!(diags.len() <= MAX_DIAG_LINES + 1);
-        assert!(diags.len() <= 3001);
-        assert!(!diags.is_empty());
-        // All except the truncation hint should be unknown-menu
-        assert!(
-            diags
-                .iter()
-                .filter(|d| d.code.as_deref() != Some("truncated"))
-                .all(|d| d.code.as_deref() == Some("unknown-menu"))
-        );
-    }
-
-    #[test]
-    fn test_large_doc_capped_at_max_diag_bytes() {
-        let data = synth();
-        // Each line ~30 bytes, need >500KB => ~17000 lines, but MAX_DIAG_LINES is 3000 so lines cap hits first
-        // To test bytes cap, use long lines
-        let long_line = format!("/unknown/menu add x={}\n", "a".repeat(500));
-        let doc = long_line.repeat(2000); // ~1M bytes
-        assert!(doc.len() > MAX_DIAG_BYTES);
-        let diags = compute_diagnostics(&data, &doc, "file:///a.rsc");
-        // Should be capped (either lines or bytes) plus truncation hint
-        assert!(diags.len() <= MAX_DIAG_LINES + 1);
-        assert!(!diags.is_empty());
-        // Ensure first diags preserved
-        assert_eq!(diags[0].range.start.line, 0);
-    }
-
-    #[test]
-    fn test_large_doc_truncation_preserves_first_n() {
-        let data = synth();
-        // First 5 lines are errors, then 5000 more errors beyond cap
-        let mut doc = String::new();
-        for i in 0..5 {
-            doc.push_str(&format!("/unknown{}/menu add x=1\n", i));
-        }
-        doc.push_str(&"/unknown/menu add x=1\n".repeat(5000));
-        let diags = compute_diagnostics(&data, &doc, "file:///a.rsc");
-        assert!(diags.len() <= 3001);
-        // First 5 should be present
-        for i in 0..5 {
-            let needle = format!("/unknown{}/menu", i);
-            assert!(
-                diags.iter().any(|d| d.message.contains(&needle)),
-                "missing {needle}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_large_doc_bytes_truncation_preserves_first() {
-        let data = synth();
-        let first = "/unknown/first add x=1\n";
-        let tail = "/unknown/tail add x=1\n".repeat(50_000); // huge
-        let doc = format!("{}{}", first, tail);
-        assert!(doc.len() > MAX_DIAG_BYTES);
-        let diags = compute_diagnostics(&data, &doc, "file:///a.rsc");
-        assert!(!diags.is_empty());
-        assert!(diags.iter().any(|d| d.message.contains("/unknown/first")));
-    }
-
-    // ── Incremental edits simulation ───────────────────────────────────
-
-    #[test]
-    fn test_incremental_fix_removes_diag() {
-        let data = synth();
-        let before = "/ip/address add comment=hi"; // missing required
-        let after = "/ip/address add address=1.1.1.1 interface=ether1";
-        assert!(
-            compute_diagnostics(&data, before, "file:///a.rsc")
-                .iter()
-                .any(|d| d.code.as_deref() == Some("missing-required"))
-        );
-        assert!(
-            !compute_diagnostics(&data, after, "file:///a.rsc")
-                .iter()
-                .any(|d| d.code.as_deref() == Some("missing-required"))
-        );
-    }
-
-    #[test]
-    fn test_incremental_introduces_duplicate() {
-        let data = synth();
-        let before = "/ip/address add address=1.1.1.1 interface=ether1";
-        let after = "/ip/address add address=1.1.1.1 interface=ether1 address=2.2.2.2";
-        assert!(
-            !compute_diagnostics(&data, before, "file:///a.rsc")
-                .iter()
-                .any(|d| d.code.as_deref() == Some("duplicate-property"))
-        );
-        assert!(
-            compute_diagnostics(&data, after, "file:///a.rsc")
-                .iter()
-                .any(|d| d.code.as_deref() == Some("duplicate-property"))
-        );
-    }
-
-    #[test]
-    fn test_unknown_menu_does_not_cascade_property_errors() {
-        let data = synth();
-        // Unknown menu should not also emit unknown-property for same line
-        let doc = "/unknown/menu add bogus=1";
-        let diags = compute_diagnostics(&data, doc, "file:///a.rsc");
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-menu"))
-        );
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-property")),
-            "should not cascade"
-        );
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("missing-required"))
-        );
-    }
-
-    #[test]
-    fn test_diagnostics_source_always_rsc_ls() {
-        let data = synth();
-        let doc = "/foo/bar add x=1\n/ip/address add unknown=1\n/ip/address add address=1 interface=ether1 address=2\n/ip/firewall/filter add chain=bad";
-        let diags = compute_diagnostics(&data, doc, "file:///a.rsc");
-        for d in &diags {
-            assert_eq!(d.source.as_deref(), Some("rsc-ls"));
-        }
-    }
-
-    #[test]
-    fn test_diagnostics_range_within_line() {
-        let data = synth();
-        let line = "/foo/bar add x=1";
-        let diags = compute_diagnostics(&data, line, "file:///a.rsc");
-        let d = diags
-            .iter()
-            .find(|d| d.code.as_deref() == Some("unknown-menu"))
-            .unwrap();
-        assert_eq!(d.range.start.line, 0);
-        // Path "/foo/bar" starts at 0, ends at 8
-        assert_eq!(d.range.start.character, 0);
-        assert_eq!(d.range.end.character, 8);
-    }
-
-    // ── RouterOS backslash line continuation ──────────────────────────
-
-    #[test]
-    fn test_continuation_quoted_url_no_unknown_menu() {
-        let data = synth();
-        // Real-world reproduction: /tool/fetch URL split across lines with a
-        // trailing backslash inside a quoted string. The second physical line
-        // starts with '/' and must NOT be diagnosed as an unknown menu.
-        let doc = concat!(
-            "/tool/fetch add ssl-verify=no url=\"https://raw.githubusercontent.com",
-            "/hagezi/dns-blocklists\\\n/main/hosts/pro.txt\"",
-        );
-        let diags = compute_diagnostics(&data, doc, "file:///a.rsc");
-        assert!(
-            diags.is_empty(),
-            "joined continuation must not produce diagnostics, got {diags:?}"
-        );
-    }
-
-    #[test]
-    fn test_continuation_property_split_recognized() {
-        let data = synth();
-        // Property split across lines. Note the space BEFORE the backslash:
-        // RouterOS removes the newline without inserting whitespace, so a
-        // separating space must be present for the tokens to stay distinct
-        // (exactly as on a real router).
-        let doc = "/ip/address add address=10.0.0.1/24 \\\ninterface=ether1";
-        let diags = compute_diagnostics(&data, doc, "file:///a.rsc");
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("missing-required")),
-            "interface must be recognized via continuation, got {diags:?}"
-        );
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-property")),
-            "no unknown property expected, got {diags:?}"
-        );
-    }
-
-    #[test]
-    fn test_continuation_range_maps_to_physical_lines() {
-        let data = synth();
-        let doc = "/ip/address add bogusprop=x\\\n other=y";
-        let diags = compute_diagnostics(&data, doc, "file:///a.rsc");
-        let ups: Vec<_> = diags
-            .iter()
-            .filter(|d| d.code.as_deref() == Some("unknown-property"))
-            .collect();
-        assert_eq!(ups.len(), 2, "expected two unknown-property, got {ups:?}");
-
-        // 'bogusprop' lives in the first segment: joined offset == physical
-        // offset on line 0 ("/ip/address add " is 16 bytes).
-        let bogus = ups
-            .iter()
-            .find(|d| d.message.contains("'bogusprop'"))
-            .expect("bogusprop diag");
-        assert_eq!(bogus.range.start.line, 0);
-        assert_eq!(bogus.range.start.character, 16);
-        assert_eq!(bogus.range.end.character, 25);
-
-        // ' other=y' is appended verbatim from physical line 1, so 'other'
-        // starts at character 1 of line 1.
-        let other = ups
-            .iter()
-            .find(|d| d.message.contains("Unknown property 'other'"))
-            .expect("other diag");
-        assert_eq!(other.range.start.line, 1);
-        assert_eq!(other.range.start.character, 1);
-        assert_eq!(other.range.end.line, 1);
-        assert_eq!(other.range.end.character, 6);
-    }
-
-    #[test]
-    fn test_escaped_backslash_not_continuation() {
-        let data = synth();
-        // Line 1 ends with an escaped backslash pair ("...with \\"): even run,
-        // so it does NOT swallow the next command line.
-        let doc = "/ip/address add comment=\"ends with \\\\\n/foo/bar add x=1";
-        let diags = compute_diagnostics(&data, doc, "file:///a.rsc");
-        let menu = diags
-            .iter()
-            .find(|d| d.code.as_deref() == Some("unknown-menu"))
-            .expect("/foo/bar must still be flagged as unknown menu");
-        assert!(menu.message.contains("/foo/bar"));
-        assert_eq!(menu.range.start.line, 1);
-    }
-
-    #[test]
-    fn test_comment_not_continued() {
-        let data = synth();
-        // A '#' comment never continues, even with a trailing backslash.
-        let doc = "# note \\\n/foo/bar add x=1";
-        let diags = compute_diagnostics(&data, doc, "file:///a.rsc");
-        let menus: Vec<_> = diags
-            .iter()
-            .filter(|d| d.code.as_deref() == Some("unknown-menu"))
-            .collect();
-        assert_eq!(menus.len(), 1, "only /foo/bar should be flagged");
-        assert!(menus[0].message.contains("/foo/bar"));
-        assert_eq!(menus[0].range.start.line, 1);
-    }
-
-    #[test]
-    fn test_dangling_continuation_at_eof_no_panic() {
-        let data = synth();
-        // EOF right after the backslash: must not panic; the logical line is
-        // flushed and missing-required is still reported sensibly.
-        let doc = "/ip/address add address=1.1.1.1\\";
-        let diags = compute_diagnostics(&data, doc, "file:///a.rsc");
-        let missing = diags
-            .iter()
-            .find(|d| {
-                d.code.as_deref() == Some("missing-required") && d.message.contains("interface")
-            })
-            .expect("interface should still be reported as missing");
-        assert_eq!(missing.range.start.line, 0);
-    }
-
-    #[test]
-    fn test_crlf_continuation() {
-        let data = synth();
-        // Same reproduction as the quoted-url case but with CRLF endings.
-        let doc = concat!(
-            "/tool/fetch add ssl-verify=no url=\"https://raw.githubusercontent.com",
-            "/hagezi/dns-blocklists\\\r\n/main/hosts/pro.txt\"",
-        );
-        let diags = compute_diagnostics(&data, doc, "file:///a.rsc");
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-menu")),
-            "CRLF continuation must not produce unknown-menu, got {diags:?}"
-        );
-    }
-
-    #[test]
-    fn test_has_line_continuation_cases() {
-        // Single trailing backslash: normal continuation.
-        assert!(has_line_continuation("/ip/address add address=1.1.1.1\\"));
-        // Trailing backslash followed by whitespace: still continues.
-        assert!(has_line_continuation("add x=1\\   "));
-        // Escaped pair = literal backslash: NOT a continuation.
-        assert!(!has_line_continuation("add comment=x\\\\"));
-        // Triple run = one escaped + one continuation.
-        assert!(has_line_continuation("add comment=x\\\\\\"));
-        // Inside double quotes (unterminated string): continues.
-        assert!(has_line_continuation("url=\"https://example.com/foo\\"));
-        // Escaped quote inside double quotes, then trailing backslash.
-        assert!(has_line_continuation("url=\"a\\\" b\\"));
-        // Single quotes behave like double quotes.
-        assert!(has_line_continuation("set x='abc\\"));
-        // Unquoted '#' cuts effective content: comments never continue.
-        assert!(!has_line_continuation("# note \\"));
-        assert!(!has_line_continuation("add x=1 # trailing \\"));
-        // Plain lines are not continuations.
-        assert!(!has_line_continuation(""));
-        assert!(!has_line_continuation("print"));
-    }
-
-    #[test]
-    fn test_logical_line_map_spans_join() {
-        // A range whose start/end land on different physical lines maps to a
-        // multi-line LSP range (allowed by the spec).
-        let ll = build_logical_lines(&["/tool/fetch add url=\"abc\\", "def\""]);
-        assert_eq!(ll.len(), 1);
-        // Joined text: /tool/fetch add url="abcdef" (len 28).
-        let joined = ll[0].text.as_str();
-        assert_eq!(joined, "/tool/fetch add url=\"abcdef\"");
-        assert_eq!(ll[0].segments.len(), 2);
-        // Segment 0 covers bytes 0..24 ("...\"abc"), segment 1 bytes 24..28
-        // ("def\""). A range from 'c' (byte 23, physical line 0) to 'd'
-        // (byte 24, physical line 1) spans the join point.
-        let r = ll[0].map_range(23, 24);
-        assert_eq!(r.start.line, 0);
-        assert_eq!(r.start.character, 23);
-        assert_eq!(r.end.line, 1);
-        assert_eq!(r.end.character, 0);
-        // Out-of-bounds offsets clamp defensively to the end of the text:
-        // byte 28 lands at line 1, character 4.
-        let clamped = ll[0].map_pos(joined.len() + 100);
-        assert_eq!(clamped.line, 1);
-        assert_eq!(clamped.character, 4);
-    }
-
-    // ── Token-position ranges ──────────────────────────────────────
-
-    fn demo_menu_data() -> MenuData {
-        MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/demo/alpha"
-type = "Directory"
-[[menus.arguments]]
-name = "name"
-type = "string"
-
-[[menus]]
-path = "/demo/enum"
-type = "Directory"
-[[menus.arguments]]
-name = "mode"
-type = "enum (on | off)"
-"#,
-        )
-    }
-
-    #[test]
-    fn test_duplicate_property_highlights_second_occurrence_precisely() {
-        // PHASE 1: ranges come from tokenization, so the flagged occurrence
-        // is the SECOND property occurrence (bytes 33..40), never the "address"
-        // substring inside the menu path (bytes 4..11).
-        let md = MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/ip/address"
-type = "Directory"
-[[menus.arguments]]
-name = "address"
-type = "ipPrefix"
-required = true
-"#,
-        );
-        let line = "/ip/address add address=1.1.1.1 address=2.2.2.2";
-        let diags = compute_diagnostics(&md, line, "file:///a.rsc");
-        let dup = diags
-            .iter()
-            .find(|d| d.code.as_deref() == Some("duplicate-property"))
-            .expect("duplicate-property expected");
-        assert_eq!(dup.range.start.line, 0);
-        assert_eq!(dup.range.start.character, 32, "must flag second occurrence");
-        assert_eq!(dup.range.end.character, 39, "range covers the KEY only");
-    }
-
-    #[test]
-    fn test_unknown_property_key_inside_menu_path_is_not_misranged() {
-        // Key text also appears inside the menu path ("alpha" in "/demo/alpha");
-        // the diagnostic must point at the PROPERTY occurrence after "add".
-        let md = demo_menu_data();
-        let line = "/demo/alpha add alpha=1 name=x";
-        let diags = compute_diagnostics(&md, line, "file:///a.rsc");
-        let up = diags
-            .iter()
-            .find(|d| d.code.as_deref() == Some("unknown-property"))
-            .expect("unknown-property expected for 'alpha'");
-        assert_eq!(up.range.start.character, 16, "'alpha' after 'add'");
-        assert_eq!(up.range.end.character, 21);
-    }
-
-    #[test]
-    fn test_quoted_value_with_keylike_substring_no_phantom_diagnostics() {
-        // Quote-aware tokenization keeps this as ONE value token, so "alpha="
-        // inside the quoted string can no longer fabricate properties.
-        let md = demo_menu_data();
-        let line = r#"/demo/alpha add name="x alpha=9 y""#;
-        let diags = compute_diagnostics(&md, line, "file:///a.rsc");
-        assert!(
-            diags.is_empty(),
-            "quoted key-like substrings must not warn, got {diags:?}"
-        );
-    }
-
-    #[test]
-    fn test_enum_value_range_points_at_value_part_only() {
-        let md = demo_menu_data();
-        let line = "/demo/enum set mode=bogus";
-        let diags = compute_diagnostics(&md, line, "file:///a.rsc");
-        let hint = diags
-            .iter()
-            .find(|d| d.code.as_deref() == Some("invalid-enum-value"))
-            .expect("invalid-enum-value expected");
-        // "/demo/enum set mode=bogus": token "mode=bogus" starts at 15;
-        // value part starts after "key=" (15+5=20), ends at token end (25).
-        assert_eq!(hint.range.start.character, 20);
-        assert_eq!(hint.range.end.character, 25);
-    }
-
-    // ── Known-prefix O(1) parity ──────────────────────────────────
-
-    #[test]
-    fn test_known_prefix_parity_root_deep_implicit_unknown() {
-        let md = demo_menu_data();
-        // Root prefix of a known menu ("/demo") → known, no warning.
-        assert!(
-            !compute_diagnostics(&md, "/demo print", "f")
-                .iter()
-                .any(|d| { d.code.as_deref() == Some("unknown-menu") })
-        );
-        // Implicit parent with no direct entry but known children → known.
-        assert!(
-            !compute_diagnostics(&md, "/demo/enum print", "f")
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-menu"))
-        );
-        // Exact deep menu → known.
-        assert!(
-            !compute_diagnostics(&md, "/demo/alpha print", "f")
-                .iter()
-                .any(|d| d.code.as_deref() == Some("unknown-menu"))
-        );
-        // Genuinely unknown → still warned, same message shape as before.
-        let diags = compute_diagnostics(&md, "/foo/bar add x=1", "f");
-        let unk = diags
-            .iter()
-            .find(|d| d.code.as_deref() == Some("unknown-menu"))
-            .expect("unknown menu must still be flagged");
-        assert!(unk.message.contains("/foo/bar"));
-    }
-}
-
 // ── Syntactic structure rules (unclosed braces / quotes) ───────────
 //
 // Coverage for rules 6–8. Docs deliberately favor `:`-prefixed script lines
 // (skipped by the menu rules) so total-count assertions isolate the syntax
 // pipeline; one interaction test proves both rule families coexist in the
 // same publish.
-#[cfg(test)]
-mod syntax_rules {
-    use super::*;
-    use crate::menus::MenuData;
-
-    fn synth() -> MenuData {
-        MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/ip/address"
-type = "Directory"
-[[menus.arguments]]
-name = "address"
-type = "ipPrefix"
-required = true
-[[menus.arguments]]
-name = "interface"
-type = "iface_enum"
-required = true
-[[menus]]
-path = "/tool/fetch"
-type = "Command"
-[[menus.arguments]]
-name = "url"
-type = "string"
-[[menus.arguments]]
-name = "ssl-verify"
-type = "bool"
-"#,
-        )
-    }
-
-    fn codes(diags: &[Diagnostic]) -> Vec<&str> {
-        diags.iter().filter_map(|d| d.code.as_deref()).collect()
-    }
-
-    #[test]
-    fn test_balanced_doc_no_syntax_diagnostics() {
-        // Realistic script shape: nested blocks, braces inside strings and a
-        // trailing comment — all inert or matched. Also proves a stray-close
-        // report is NOT raised for legitimate closers of real blocks.
-        let doc = concat!(
-            ":do {\n",
-            "\t:foreach i in=[find] do={\n",
-            "\t\t:put (\"item { \" . $i)\n",
-            "\t}\n",
-            "}\n",
-            ":put 'all done}'\n",
-            "# trailing { comment\n",
-        );
-        assert!(
-            compute_diagnostics(&synth(), doc, "file:///a.rsc").is_empty(),
-            "balanced doc must stay clean"
-        );
-    }
-
-    #[test]
-    fn test_single_unclosed_brace_exact_range() {
-        // ':foreach i in=[find] do={' → '{' sits at byte 24 of line 0.
-        let doc = ":foreach i in=[find] do={\n\t:put $i\n";
-        let diags = compute_diagnostics(&synth(), doc, "file:///a.rsc");
-        assert_eq!(diags.len(), 1, "exactly one syntax error, got {diags:?}");
-        let d = &diags[0];
-        assert_eq!(d.code.as_deref(), Some("unclosed-brace"));
-        assert_eq!(d.severity, Some(severity::ERROR));
-        assert_eq!(d.source.as_deref(), Some("rsc-ls"));
-        assert_eq!(d.message, "Brace '{' opened here is never closed");
-        // Range covers EXACTLY the brace character.
-        assert_eq!(d.range.start.line, 0);
-        assert_eq!(d.range.start.character, 24);
-        assert_eq!(d.range.end.line, 0);
-        assert_eq!(d.range.end.character, 25);
-    }
-
-    #[test]
-    fn test_nested_unclosed_braces_each_reported() {
-        // Outer opens at (0,4), inner at (1,18); neither ever closes.
-        let doc = ":do {\n\t:if ($a > $b) do={\n\t\t:put x\n";
-        let diags = compute_diagnostics(&synth(), doc, "file:///a.rsc");
-        assert_eq!(
-            diags.len(),
-            2,
-            "both unclosed opens reported, got {diags:?}"
-        );
-        assert_eq!(
-            diags[0].range.start,
-            Position {
-                line: 0,
-                character: 4
-            }
-        );
-        assert_eq!(
-            diags[1].range.start,
-            Position {
-                line: 1,
-                character: 18
-            }
-        );
-        assert!(codes(&diags).iter().all(|&c| c == "unclosed-brace"));
-    }
-
-    #[test]
-    fn test_brace_inside_comment_is_inert() {
-        // '}', '{' and even a quote inside a comment must never fire.
-        let doc = "# } { \" unterminated-looking\n:put x\n";
-        assert!(compute_diagnostics(&synth(), doc, "file:///a.rsc").is_empty());
-    }
-
-    #[test]
-    fn test_brace_inside_closed_string_is_inert() {
-        let doc = ":put \"}{\"\n:put '}'\n# c {\n:put x\n";
-        assert!(compute_diagnostics(&synth(), doc, "file:///a.rsc").is_empty());
-    }
-
-    #[test]
-    fn test_split_url_continuation_not_flagged() {
-        // Real-world hagezi repro (mirror of the continuation tests above):
-        // a quoted URL split across lines by a trailing backslash inside the
-        // string must not read as an unclosed quote.
-        let data = synth();
-        let doc = concat!(
-            "/tool/fetch add ssl-verify=no url=\"https://raw.githubusercontent.com",
-            "/hagezi/dns-blocklists\\\n/main/hosts/pro.txt\"",
-        );
-        let diags = compute_diagnostics(&data, doc, "file:///a.rsc");
-        assert!(
-            diags.is_empty(),
-            "split-URL continuation must stay clean, got {diags:?}"
-        );
-    }
-
-    #[test]
-    fn test_unterminated_quote_at_eof_reports_opening_quote_once() {
-        // The open string swallows the rest of the document (including a
-        // stray '}') — exactly ONE error, pointing at the OPENING quote.
-        // ':log info "' → quote at byte 10 of line 0.
-        let doc = ":log info \"oops\n:put x\n}\n";
-        let diags = compute_diagnostics(&synth(), doc, "file:///a.rsc");
-        assert_eq!(
-            diags.len(),
-            1,
-            "no cascade past the root cause, got {diags:?}"
-        );
-        let d = &diags[0];
-        assert_eq!(d.code.as_deref(), Some("unclosed-quote"));
-        assert_eq!(d.severity, Some(severity::ERROR));
-        assert_eq!(d.message, "Quoted string opened here is never closed");
-        assert_eq!(d.range.start.line, 0);
-        assert_eq!(d.range.start.character, 10);
-        assert_eq!(d.range.end.character, 11);
-    }
-
-    #[test]
-    fn test_quote_spanning_lines_via_continuation_not_flagged() {
-        // String legitimately continues across the physical line via a
-        // trailing backslash INSIDE the quotes and closes on line 1.
-        let doc = ":put \"abc\\\ndef\"\n:put done\n";
-        assert!(compute_diagnostics(&synth(), doc, "file:///a.rsc").is_empty());
-    }
-
-    #[test]
-    fn test_crlf_variant_matches_lf() {
-        // LF baseline: unclosed brace at (0,4) plus unclosed quote at (1,6).
-        let lf = ":do {\n\t:put \"unterminated\n";
-        let diags = compute_diagnostics(&synth(), lf, "file:///a.rsc");
-        let starts: Vec<_> = diags
-            .iter()
-            .map(|d| (d.range.start.line, d.range.start.character))
-            .collect();
-        assert_eq!(
-            starts,
-            vec![(0, 4), (1, 6)],
-            "LF: brace then quote, oldest first, got {diags:?}"
-        );
-
-        // CRLF produces identical results (str::lines strips '\r'; columns
-        // are byte offsets within the stripped line).
-        let crlf = lf.replace('\n', "\r\n");
-        let diags_crlf = compute_diagnostics(&synth(), &crlf, "file:///a.rsc");
-        let starts_crlf: Vec<_> = diags_crlf
-            .iter()
-            .map(|d| (d.range.start.line, d.range.start.character))
-            .collect();
-        assert_eq!(starts_crlf, starts, "CRLF must match LF results");
-    }
-
-    #[test]
-    fn test_syntax_diagnostics_capped_at_10_oldest_first() {
-        // 15 unclosed opens on their own lines ('{' lines are skipped by the
-        // menu rules): only the FIRST ten survive, in document order.
-        let doc = "{\n".repeat(15);
-        let diags = compute_diagnostics(&synth(), &doc, "file:///a.rsc");
-        assert_eq!(diags.len(), 10, "cap keeps exactly 10, got {}", diags.len());
-        for (i, d) in diags.iter().enumerate() {
-            assert_eq!(d.code.as_deref(), Some("unclosed-brace"));
-            assert_eq!(
-                d.range.start,
-                Position {
-                    line: i as u32,
-                    character: 0
-                },
-                "oldest-first: line {i} expected"
-            );
-        }
-    }
-
-    #[test]
-    fn test_stray_close_brace_reported_at_char() {
-        // '}' with an empty stack → unmatched-brace at that exact character.
-        let doc = "}\n:put x\n";
-        let diags = compute_diagnostics(&synth(), doc, "file:///a.rsc");
-        assert_eq!(diags.len(), 1, "got {diags:?}");
-        let d = &diags[0];
-        assert_eq!(d.code.as_deref(), Some("unmatched-brace"));
-        assert_eq!(d.severity, Some(severity::ERROR));
-        assert_eq!(d.message, "Unmatched '}': no '{' is open at this point");
-        assert_eq!(
-            d.range.start,
-            Position {
-                line: 0,
-                character: 0
-            }
-        );
-        assert_eq!(
-            d.range.end,
-            Position {
-                line: 0,
-                character: 1
-            }
-        );
-    }
-
-    #[test]
-    fn test_close_after_balanced_block_only_flags_the_extra() {
-        // A well-formed block closes cleanly; only the EXTRA '}' is stray.
-        let doc = ":do {\n:put x\n}\n}\n";
-        let diags = compute_diagnostics(&synth(), doc, "file:///a.rsc");
-        assert_eq!(diags.len(), 1, "got {diags:?}");
-        assert_eq!(diags[0].code.as_deref(), Some("unmatched-brace"));
-        assert_eq!(
-            diags[0].range.start,
-            Position {
-                line: 3,
-                character: 0
-            }
-        );
-    }
-
-    #[test]
-    fn test_empty_and_whitespace_docs_no_syntax_diagnostics() {
-        let data = synth();
-        assert!(compute_diagnostics(&data, "", "file:///a.rsc").is_empty());
-        assert!(compute_diagnostics(&data, "   \n\n\t\n  ", "file:///a.rsc").is_empty());
-    }
-
-    #[test]
-    fn test_syntax_rule_runs_alongside_menu_rules_in_one_publish() {
-        // Interaction contract: menu-rule diagnostics and syntax-rule
-        // diagnostics flow through the same compute_diagnostics result.
-        let doc = "/foo/bar add x=1\ndo {\n";
-        let diags = compute_diagnostics(&synth(), doc, "file:///a.rsc");
-        let c = codes(&diags);
-        assert!(c.contains(&"unknown-menu"), "menu rule fired, got {c:?}");
-        assert!(
-            c.contains(&"unclosed-brace"),
-            "syntax rule fired, got {c:?}"
-        );
-    }
-
-    #[test]
-    fn test_syntax_findings_from_all_three_kinds_sort_globally() {
-        // Ordering contract for the deferred-materialization walk: findings
-        // from all three sources (stray close, unclosed open, unterminated
-        // quote) are sorted globally by document position — no assumption
-        // about which kind precedes which is allowed.
-        //
-        // Lines 0–1 are stray '}' with an empty stack; lines 2–3 open '{'
-        // that never close; line 4 opens a quote that swallows only its own
-        // tail (it is last, so no later event is masked).
-        let doc = "}\n}\n{\n{\n:put \"x\n";
-        let diags = compute_diagnostics(&synth(), doc, "file:///a.rsc");
-        let starts: Vec<_> = diags
-            .iter()
-            .map(|d| (d.code.as_deref().unwrap_or(""), d.range.start.clone()))
-            .collect();
-        assert_eq!(
-            starts,
-            vec![
-                (
-                    "unmatched-brace",
-                    Position {
-                        line: 0,
-                        character: 0
-                    }
-                ),
-                (
-                    "unmatched-brace",
-                    Position {
-                        line: 1,
-                        character: 0
-                    }
-                ),
-                (
-                    "unclosed-brace",
-                    Position {
-                        line: 2,
-                        character: 0
-                    }
-                ),
-                (
-                    "unclosed-brace",
-                    Position {
-                        line: 3,
-                        character: 0
-                    }
-                ),
-                (
-                    "unclosed-quote",
-                    Position {
-                        line: 4,
-                        character: 5
-                    }
-                ),
-            ],
-            "all three kinds interleaved in one document-ordered publish, got {starts:?}"
-        );
-    }
-}

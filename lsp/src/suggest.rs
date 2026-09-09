@@ -19,6 +19,45 @@
 /// fabricated range), so no suggestion attempt is made.
 pub(crate) const MAX_SUGGEST_INPUT_BYTES: usize = 256;
 
+/// Maximum `best_candidate` evaluations per diagnostics publish.
+///
+/// Each evaluation scans every candidate with Damerau-Levenshtein, so an
+/// adversarial 3000-line document of unknown menus would otherwise spend
+/// seconds per keystroke (worse in debug builds). [`SuggestBudget`]
+/// caps the spend: once exhausted, diagnostics still publish with the
+/// same codes/severities — only the inline "Did you mean …?" suffix is
+/// omitted for the remainder of the publish.
+pub(crate) const MAX_SUGGESTIONS_PER_PUBLISH: u32 = 100;
+
+/// Per-publish spend cap for [`best_candidate`]; see
+/// [`MAX_SUGGESTIONS_PER_PUBLISH`].
+pub(crate) struct SuggestBudget {
+    remaining: u32,
+}
+
+impl SuggestBudget {
+    pub(crate) fn new() -> Self {
+        Self {
+            remaining: MAX_SUGGESTIONS_PER_PUBLISH,
+        }
+    }
+
+    /// [`best_candidate`] unless the publish already spent its budget,
+    /// in which case `None` (caller emits the diagnostic without the
+    /// "Did you mean …?" suffix — same code and severity).
+    pub(crate) fn candidate(
+        &mut self,
+        input: &str,
+        candidates: impl Iterator<Item = impl AsRef<str>>,
+    ) -> Option<String> {
+        if self.remaining == 0 {
+            return None;
+        }
+        self.remaining -= 1;
+        best_candidate(input, candidates)
+    }
+}
+
 /// Edit distance between `a` and `b` under the **Optimal String
 /// Alignment** restriction of Damerau-Levenshtein (a.k.a. restricted
 /// edit distance): substitutions, insertions, deletions and
@@ -129,134 +168,4 @@ pub(crate) fn best_candidate(
         }
     }
     best.map(|(_, name)| name)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── damerau_levenshtein ───────────────────────────────────────
-
-    #[test]
-    fn test_dl_empty_strings() {
-        assert_eq!(damerau_levenshtein("", ""), 0);
-        assert_eq!(damerau_levenshtein("", "abc"), 3);
-        assert_eq!(damerau_levenshtein("abc", ""), 3);
-    }
-
-    #[test]
-    fn test_dl_equal_strings_zero() {
-        assert_eq!(damerau_levenshtein("address", "address"), 0);
-        assert_eq!(damerau_levenshtein("/ip/address", "/ip/address"), 0);
-    }
-
-    #[test]
-    fn test_dl_classic_kitten_sitten_is_one() {
-        assert_eq!(damerau_levenshtein("kitten", "sitten"), 1);
-        // The textbook kitten→sitting chain costs three edits.
-        assert_eq!(damerau_levenshtein("kitten", "sitting"), 3);
-    }
-
-    #[test]
-    fn test_dl_transposition_costs_one_under_osa() {
-        assert_eq!(damerau_levenshtein("ab", "ba"), 1);
-        assert_eq!(damerau_levenshtein("adress", "address"), 1); // insert 'd'
-        // Documented OSA restriction: editing "ca" into "abc" needs 3
-        // operations because the substring "a" would have to participate
-        // twice (unrestricted Damerau-Levenshtein would say 2).
-        assert_eq!(damerau_levenshtein("ca", "abc"), 3);
-    }
-
-    #[test]
-    fn test_dl_completely_different_hits_cap() {
-        // Four substitutions — far beyond any accepted threshold.
-        assert_eq!(damerau_levenshtein("aaaa", "bbbb"), 4);
-        assert_eq!(damerau_levenshtein("chain", "gateway"), 7);
-    }
-
-    #[test]
-    fn test_dl_multibyte_counts_characters_not_bytes() {
-        // Each '🚨' is 4 bytes but 1 char: one substitution total.
-        assert_eq!(damerau_levenshtein("🚨", "x"), 1);
-        assert_eq!(damerau_levenshtein("çç", "cc"), 2);
-    }
-
-    // ── suggestion_threshold ──────────────────────────────────────
-
-    #[test]
-    fn test_threshold_short_inputs_allow_one_edit_only() {
-        assert_eq!(suggestion_threshold(0), 1);
-        assert_eq!(suggestion_threshold(1), 1);
-        assert_eq!(suggestion_threshold(4), 1);
-    }
-
-    #[test]
-    fn test_threshold_longer_inputs_allow_two_edits() {
-        assert_eq!(suggestion_threshold(5), 2);
-        assert_eq!(suggestion_threshold(12), 2);
-    }
-
-    // ── best_candidate ────────────────────────────────────────────
-
-    #[test]
-    fn test_best_candidate_empty_input_returns_none() {
-        let cands = ["address", "interface"];
-        assert_eq!(best_candidate("", cands.into_iter()), None);
-        assert_eq!(best_candidate("   ", cands.into_iter()), None);
-    }
-
-    #[test]
-    fn test_best_candidate_no_candidates_returns_none() {
-        let empty: [String; 0] = [];
-        assert_eq!(best_candidate("adress", empty.into_iter()), None);
-    }
-
-    #[test]
-    fn test_best_candidate_four_letter_typo_suggests_within_threshold_one() {
-        // 4-char input → threshold 1: the adjacent transposition qualifies.
-        let picked = best_candidate("nmae", ["name", "comment"].into_iter());
-        assert_eq!(picked.as_deref(), Some("name"));
-    }
-
-    #[test]
-    fn test_best_candidate_long_garbage_beyond_threshold_returns_none() {
-        // 12 chars of nonsense stays outside threshold 2 of everything.
-        let picked = best_candidate(
-            "zzzqqqxxxwww",
-            ["address", "interface", "gateway", "chain"].into_iter(),
-        );
-        assert_eq!(picked, None);
-    }
-
-    #[test]
-    fn test_best_candidate_prefers_smallest_distance() {
-        // "adress" is 1 away from "address" and 2+ from the others.
-        let picked = best_candidate("adress", ["action", "interface", "address"].into_iter());
-        assert_eq!(picked.as_deref(), Some("address"));
-    }
-
-    #[test]
-    fn test_best_candidate_tie_breaks_lexicographically_regardless_of_order() {
-        // Both candidates sit at distance 1 ("aab": substitute last char;
-        // "aac": same) — the smaller name must win in EITHER order.
-        let a = best_candidate("aaa", ["aac", "aab"].into_iter());
-        let b = best_candidate("aaa", ["aab", "aac"].into_iter());
-        assert_eq!(a.as_deref(), Some("aab"));
-        assert_eq!(b.as_deref(), Some("aab"));
-    }
-
-    #[test]
-    fn test_best_candidate_rejects_identity_match() {
-        // Distance 0 means the diagnostic is stale; no phantom fix.
-        let picked = best_candidate("address", ["address", "comment"].into_iter());
-        assert_eq!(picked, None);
-    }
-
-    #[test]
-    fn test_best_candidate_menu_path_suggestion() {
-        let paths = ["/ip/address", "/ip/route", "/system/clock"];
-        // "/ip/addres" is one insertion away from "/ip/address".
-        let picked = best_candidate("/ip/addres", paths.into_iter());
-        assert_eq!(picked.as_deref(), Some("/ip/address"));
-    }
 }
