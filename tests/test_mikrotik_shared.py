@@ -580,3 +580,42 @@ class TestRustParity:
         for literal in self.LITERALS:
             assert literal in SHARED_PY.read_text(encoding="utf-8"), f"shared lost {literal!r}"
             assert literal in rust, f"Rust live_net.rs lost {literal!r}"
+
+
+# ── Deploy SSH pre-credential resolve gate ──────────────────────────
+
+class TestDeploySshResolveGate:
+    def _run_ssh(self, host: str, dry_run: bool):
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".rsc", delete=False, encoding="utf-8") as f:
+            f.write("/ip address add address=1.1.1.1/24 interface=ether1\n")
+            rsc = f.name
+        try:
+            env = {k: v for k, v in os.environ.items() if k != "MIKROTIK_HOST"}
+            env["MIKROTIK_PASS"] = "dummy"
+            argv = [sys.executable, str(DEPLOY_PY), rsc, "--method", "ssh", "--host", host]
+            if dry_run:
+                argv.append("--dry-run")
+            return subprocess.run(argv, capture_output=True, text=True, timeout=30, env=env)
+        finally:
+            try:
+                os.unlink(rsc)
+            except OSError:
+                pass
+
+    def test_ssh_unresolvable_host_fails_closed_before_credentials(self):
+        # `.invalid` never resolves (RFC 2606): lexical passes, the DNS
+        # phase refuses with exit 4 before paramiko dials.
+        result = self._run_ssh("nonexistent.invalid", dry_run=False)
+        assert result.returncode == 4, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+    def test_ssh_dry_run_never_touches_network(self):
+        # Same unresolvable host dry-runs cleanly: previews stay DNS-free.
+        result = self._run_ssh("nonexistent.invalid", dry_run=True)
+        assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert "DRY-RUN" in (result.stdout + result.stderr)
+
+    def test_ssh_dry_run_denied_host_still_exit_2(self):
+        result = self._run_ssh("169.254.169.254", dry_run=True)
+        assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"

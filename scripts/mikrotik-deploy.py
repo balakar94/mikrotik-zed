@@ -283,6 +283,13 @@ def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str,
     if not HAS_PARAMIKO:
         print("error: SSH method requires 'paramiko' (pip install paramiko)", file=sys.stderr)
         sys.exit(3)
+    # F1: lexical + resolve-then-revalidate before the password goes over
+    # the wire — same pre-credential phase as REST. Dry-run already
+    # returned above, so previews never touch the network.
+    target_err = check_target(host, port)
+    if target_err:
+        print(f"error: {target_err}", file=sys.stderr)
+        sys.exit(4)
 
     log(f"SSH: connecting to {host}:{port} as {user}")
     client = paramiko.SSHClient()
