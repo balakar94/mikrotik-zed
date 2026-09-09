@@ -10,10 +10,13 @@ Hard constraints in [`AGENTS.md`](../../AGENTS.md) → *Hard rules* still apply 
 
 | Level | Location | Command | What it Guards |
 |-------|----------|---------|----------------|
-| Unit (Rust) | `lsp/src/` | `cargo test -p rsc-ls` (603 tests) | `menus`, `parser`, `completion`, `hover`, `diagnostics` (7 rules, `MAX_DIAG_LINES` 3000 / `500KB`), `symbols`, `folding`, `framing`, `encoding`, `caps`, `live` cache/SSRF/host caps |
-| E2E wire | `lsp/tests/e2e.rs` (14 tests) | `cargo test -p rsc-ls --test e2e` | Real binary via `CARGO_BIN_EXE_rsc-ls`, Content-Length framing, incremental `change=2` sync, `publishDiagnostics` (incl. split-URL continuation), `completion`/`hover`/`documentSymbol`/`foldingRange`/`codeAction`/`signatureHelp`, variable `definition`/`references`, `-32601` echo, shutdown→exit 0, UTF-16 default |
-| Python | `tests/` (346 tests) | `pytest tests/ -v` / `make test-python` | Extraction (`test_extract_commands.py`), coverage (`test_commands_coverage.py`), enclosure/caps (`test_enclosure.py`), env/live opt-in (`test_live_opt_in.py`, `RSC_LS_LIVE`/`MIKROTIK_LIVE` in-memory only), staleness (`test_docs_staleness.py`), `extension.toml` schema (`test_zed_requirements.py`), release coherence (`test_release.py`) |
+| Unit (Rust) | `lsp/src/tests/<module>_<aspect>.rs` (one file per aspect, ~300-line soft cap) | `cargo test -p rsc-ls` | `menus`, `parser`, `completion` (tiers), `hover`, `diagnostics` (7 rules, `MAX_DIAG_LINES` 3000 / `500KB`), `symbols`, `folding`, `framing` codec, `encoding`, `caps`, `live` cache/SSRF/hosts/transport |
+| E2E wire | `lsp/tests/e2e.rs` + `cli.rs` + `framing_chaos.rs` + `perf_smoke.rs` (default suite; wall-clock budgets `#[ignore]`d) | `cargo test -p rsc-ls --test e2e` | Real binary via `CARGO_BIN_EXE_rsc-ls`, Content-Length framing, incremental `change=2` sync, `publishDiagnostics` (incl. split-URL continuation), `completion`/`hover`/`documentSymbol`/`foldingRange`/`codeAction`/`signatureHelp`, variable `definition`/`references`, `-32601` echo, shutdown→exit 0, UTF-16 default, hostile framing, cap/shape smoke |
+| Python | `tests/` | `pytest tests/ -v` / `make test-python` | Extraction (`test_extract_commands.py`), coverage (`test_commands_coverage.py`), enclosure/caps/server-query alignment (`test_enclosure.py`, incl. highlights dedup + outline kind pin), env/live opt-in (`test_live_opt_in.py`, `RSC_LS_LIVE`/`MIKROTIK_LIVE` in-memory only), shared SSRF vectors (`test_mikrotik_shared.py`), tasks mirror (`test_tasks_mirror.py`), staleness (`test_docs_staleness.py`), `extension.toml` schema (`test_zed_requirements.py`), release coherence (`test_release.py`) |
 | Grammar corpus | `grammars/rsc/test/corpus/*.txt` | `npx tree-sitter test` / `make test-grammar` | Node types, `ERROR`/`MISSING` regressions; update expectations with `npx tree-sitter test -u` (native) |
+| Docs lint | `docs/*.md` | `make docs-check` | Hygiene, relative links/anchors, index reachability, volatile-literal ban (see `docs-maintenance.md`) |
+
+Test counts are volatile — run the suite, never quote totals here.
 
 Harness notes: e2e reader thread + `mpsc`, every wait bounded at 5s (`RECV_TIMEOUT`) so a wedged server fails fast not hangs. Live tests are opt-in (`MIKROTIK_HOST`/`PASS`) — skipped otherwise. `validate` embedding is `include_str!()` → rebuild `rsc-ls` after `data/commands.toml` changes.
 
@@ -21,9 +24,10 @@ Suite aliases (see `make help` canonical):
 
 ```bash
 make test-grammar   # tree-sitter corpus only
-make test-rust      # cargo test --workspace (603 + 14 e2e)
-make test-python    # pytest 346
+make test-rust      # cargo test --workspace (white-box + E2E targets)
+make test-python    # pytest tests/
 make test-all       # all three sequentially
+make docs-check     # docs lint (not a test suite; runs inside validate)
 ```
 
 ### Harness Invariants & Data Prerequisites
@@ -41,7 +45,7 @@ Triggers: `push`/`pull_request` on `main`. Concurrency `ci-${{ github.ref }}` ca
 |-----|-----------|----------------|
 | `rust` (`ubuntu-latest`) | `make fmt` (`cargo fmt -- --check`), `make clippy` (`wasm32-wasip2` + `rsc-ls --all-targets -D warnings`), `make test-rust`, `cargo build --target wasm32-wasip2 --release`, `cargo build -p rsc-ls --release` | `fmt`/`clippy` must be clean; WASM+LSP compile gate |
 | `windows` (`windows-latest`) | `cargo test -p rsc-ls --locked`, `cargo build -p rsc-ls`, cross-check `aarch64-pc-windows-msvc` | Windows MSVC linkage regressions |
-| `python` (`ubuntu-latest`) | `make check-manifest` (schema via `scripts/check_zed_requirements.py`), `make sync` fetch `llms.txt`/`llms-full.txt`, `make test-python`, verify `data/commands.toml` timestamp-agnostic (`grep -v '^# Generated:'` diff vs `HEAD`, exit 1 if stale) | Unknown `extension.toml` keys (silently ignored by Zed), stale extraction |
+| `python` (`ubuntu-latest`) | `make check-manifest` (schema via `scripts/check_zed_requirements.py`), `make docs-check` (docs lint), `make sync` fetch `llms.txt`/`llms-full.txt`, `make test-python`, verify `data/commands.toml` timestamp-agnostic (`grep -v '^# Generated:'` diff vs `HEAD`, exit 1 if stale) | Unknown `extension.toml` keys (silently ignored by Zed), broken docs links/anchors, stale extraction |
 | `grammar` (`ubuntu-latest`) | Clone at pinned `extension.toml` `rev`, `make generate-check` (`npx tree-sitter generate` + `git diff --exit-code src/parser.c src/grammar.json src/node-types.json`), `make test-grammar`, `rev` vs `HEAD` coherence | Stale `parser.c`, placeholder `000...` rev, corpus failure |
 
 `sync-check` is NOT in `ci.yml` `validate` — it is a separate staleness gate: `python scripts/sync_llms.py --check` exits `0` ok / `2` drift / `1` fetch error. CI surfaces drift via `verify commands.toml` step (timestamp-agnostic).
@@ -77,10 +81,12 @@ Use `make help` as canonical list. Two gates matter for QA:
 
 ```bash
 make check      # fast compile gate: check-wasm + check-lsp (no tests)
-make validate   # full pre-commit/pre-PR gate: check-manifest + generate-check + fmt + clippy + test-all + extract
+make validate   # full pre-commit/pre-PR gate: check-manifest + docs-check + generate-check + fmt + clippy + test-all + extract
                 # includes extract idempotency: `git diff --exit-code data/commands.toml` (timestamp ignored in CI only)
 make sync-check # standalone staleness gate: exits 2 on drift, 1 on fetch error — NOT part of validate
 ```
+
+Release perf budgets (`.github/workflows/perf.yml`) run wall-clock asserts in release on a weekly schedule (Tue 05:17 UTC) plus manual `workflow_dispatch` — the opt-in for PRs with suspected perf regressions (Actions → Perf → Run workflow). Default `perf_smoke` cap/shape asserts already run inside `make test-rust`; run ignored budgets once pre-merge: `cargo test -p rsc-ls --release --test perf_smoke -- --ignored`.
 
 Manual e2e debug (wire harness stderr is nulled by default):
 
@@ -112,7 +118,7 @@ After `data/commands.toml` regeneration: `cargo test -p rsc-ls` must rebuild (em
 | 3 | `clippy` `-D warnings` (wasm + lsp) | Lint regression in `src/lib.rs` (wasm) or `lsp/src/` | `cargo clippy --target wasm32-wasip2 -- -D warnings`; `cargo clippy -p rsc-ls --all-targets -- -D warnings` |
 | 4 | `fmt` check | Unformatted Rust | `make fmt-fix && git add -u` |
 | 5 | `check-manifest` unknown keys | `extension.toml` has schema-unknown key (silently ignored by Zed) | `python scripts/check_zed_requirements.py`; remove/rename key; see `zed-extension-dev.md` |
-| 6 | `test-rust` / `test-python` red | Unit or extraction regression (603 Rust / 346 Python / 14 e2e) | `cargo test -p rsc-ls -- --nocapture`; `pytest tests/ -v`; `RSC_LS_E2E_STDERR=1 cargo test --test e2e -- --nocapture` |
+| 6 | `test-rust` / `test-python` red | Unit or extraction regression | `cargo test -p rsc-ls -- --nocapture`; `pytest tests/ -v`; `RSC_LS_E2E_STDERR=1 cargo test --test e2e -- --nocapture` |
 | 7 | `test-grammar` corpus failure (`ERROR`/`MISSING`) | Grammar regression or stale expectations | `make parse FILE=...` then `cd grammars/rsc && npx tree-sitter test -u`, review diff |
 | 8 | `docs-drift` issue opened (`upstream-docs`) | Upstream RouterOS docs drifted from `data/upstream-docs.toml` snapshot | Follow issue body: `python scripts/sync_llms.py && python scripts/extract_commands.py`, review `git diff data/`, commit & push → watchdog auto-closes |
 | 9 | `release.yml` `meta` version mismatch | `Cargo.toml`/`lsp/Cargo.toml` != tag `v*.*.*` | `make bump VERSION=x.y.z && cargo check && git diff` then `git tag vX.Y.Z && git push origin vX.Y.Z` |

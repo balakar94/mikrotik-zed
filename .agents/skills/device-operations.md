@@ -13,8 +13,8 @@ Two companion scripts provide all device I/O. Both **never log `MIKROTIK_PASS`**
 * Conceptually both share a REST + SSH duality, but in practice:
   * `scripts/mikrotik-deploy.py` supports **REST and SSH** (auto-select).
   * `scripts/mikrotik-live-check.py` is **REST only** — it validates the exact path `rsc-ls` uses for Live enrichment (`GET /rest/interface`).
-* Both resolve scheme as `https` by default; `MIKROTIK_HTTP=1` / `--http` forces `http`. `MIKROTIK_SSL=0` / `--no-ssl-verify` only disables certificate verification (rustls `ServerCertVerifier` in `rsc-ls`), never the scheme — legacy shim on non-standard ports warns.
-* Canonical caps live in `lsp/src/caps.rs` — never duplicate values here; look them up.
+* Both resolve scheme as `https` by default; `MIKROTIK_HTTP=1` / `--http` forces `http`. `MIKROTIK_SSL=0` / `--no-ssl-verify` only disables certificate verification (rustls `ServerCertVerifier` in `rsc-ls`), never the scheme — the legacy `port 80 + SSL=0 → http` shim is OFF by default (opt back in with `RSC_LS_LEGACY_HTTP_SHIM=1`); prefer `MIKROTIK_HTTP=1`.
+* Canonical caps live in `lsp/src/caps.rs` — never duplicate values here; look them up. User-facing reference: `docs/live-enrichment.md` + `docs/device-deploy.md`.
 
 ## mikrotik-deploy.py — Push .rsc to Device
 
@@ -90,6 +90,8 @@ Disabled by default. Enable with `RSC_LS_LIVE=1` or `MIKROTIK_LIVE=1` + `MIKROTI
 
 **Hot-reload:** `workspace/didChangeConfiguration` merges `rsc.live` / `mikrotik` / `MIKROTIK_*` via `LiveConfig::apply_settings_value`; `workspace/executeCommand` `rsc.live.refresh` / `rsc.live.status` for cache control.
 
+**Settings trust gate (default-deny):** transport/host keys (`host`, `user`, TLS downgrades, custom resources) from workspace settings are IGNORED unless `RSC_LS_ALLOW_SETTINGS_TRANSPORT=1` (env always wins); a `pass`/`password` key in settings is ALWAYS ignored with a warning — env/keychain is the sole password source. Never commit secrets (`.zed/settings.json` must stay secret-free). TLS precedence: custom CA bundle → SPKI pin (`MIKROTIK_FINGERPRINT=sha256:<64 hex>`, malformed fails closed) → boolean `MIKROTIK_SSL`.
+
 ## Zed Tasks (languages/rsc/tasks.json)
 
 Template → activation:
@@ -109,7 +111,7 @@ Six tasks (all `cwd: $ZED_WORKTREE_ROOT`):
 | `MikroTik: Live — Check connectivity (opt-in)` | `python3 scripts/mikrotik-live-check.py --host ${input:mikrotik_host} --user ${input:mikrotik_user} --method rest` | Prompts for host/user |
 | `MikroTik: Live — Enable enrichment (set RSC_LS_LIVE=1)` | `echo` hint | Never stores pass in `tasks.json` — use env/keychain |
 
-Run via Zed `task: spawn`. All deploy tasks require `MIKROTIK_HOST/USER/PASS` in env/keychain; the `echo` task documents `RSC_LS_LIVE=1`.
+Run via Zed `task: spawn`. All deploy tasks require `MIKROTIK_HOST/USER/PASS` in env/keychain; the `echo` task documents `RSC_LS_LIVE=1`. Workflow order is check → deploy → verify (Validate is a real local preflight, not a dry-run alias); mirror enforced by `tests/test_tasks_mirror.py` (both task files byte-identical, no secrets in env).
 
 ## Troubleshooting
 
@@ -146,3 +148,4 @@ Check `lsp/src/caps.rs` for authoritative caps; never hardcode RouterOS version 
 * `language-server` — `lsp/src/live.rs` + `caps.rs` internals (stale-while-revalidate, coalescing, `build_rest_url`, `url` crate, rustls).
 * `development-workflow` — `make` targets, `make validate`, `zed: open log`, `RSC_LS_LOG`, PATH vs auto-download.
 * `zed-extension-dev` — publishing, `extension.toml` `rev`, WASM shim.
+* `docs-maintenance` — user docs layer (`docs/live-enrichment.md`, `docs/device-deploy.md`); link pages, never duplicate env tables here.

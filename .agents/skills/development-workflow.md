@@ -12,7 +12,7 @@ Load this skill when the agent needs to:
 - Validate before commit/PR or prepare a release (grammar push, 6-target binaries).
 - Diagnose CI, formatting, clippy, or deploy-task failures.
 
-For deep dives see: `tree-sitter-grammar`, `commands-extraction`, `language-server`, `zed-extension-dev`, `routeros-reference`.
+For deep dives see: `tree-sitter-grammar`, `commands-extraction`, `language-server`, `zed-extension-dev`, `routeros-reference`, `docs-maintenance` (docs/ layer).
 
 ## Environment Setup
 
@@ -46,7 +46,7 @@ The canonical list is `make help` — do not duplicate it here. Targets worth ex
 | `make generate-check` | Regenerates and `git diff --exit-code` on generated files | CI / pre-commit: ensure `parser.c` committed |
 | `make clean-generated` | Same artifact cleanup as `make clean` + removes generated grammar sources | Rare; then `make generate` |
 | `make install` / `SKIP_SYSTEM=1 make install` | Full bootstrap (distro deps + toolchains + rsc-ls to PATH) | First setup; skip variant for CI/containers |
-| `make validate` | check-manifest + generate-check + fmt + clippy + test-all + extract | One-shot pre-PR gate |
+| `make validate` | check-manifest + docs-check + generate-check + fmt + clippy + test-all + extract | One-shot pre-PR gate |
 | `make sync-check` | CI-only staleness gate vs upstream docs (exit 2 on drift) — not part of validate | CI; standalone drift check |
 
 Aliases: `make check` expands to `check-wasm` + `check-lsp`. There is no bare `make test` — use `test-grammar` / `test-rust` / `test-python` / `test-all`.
@@ -130,7 +130,7 @@ Also: `make clippy` fails → `cargo clippy -- -D warnings` must be clean for bo
 | Canonical highlights | `languages/rsc/highlights.scm` (deduped to `grammars/rsc/queries/highlights.scm`) |
 | Brackets / indents / outline | `languages/rsc/brackets.scm`, `indents.scm`, `outline.scm` (no `injections.scm`) |
 | Language config | `languages/rsc/config.toml` (`_`, `-`, `$` word chars) |
-| Tasks template / active | `languages/rsc/tasks.json` → `.zed/tasks.json` (6 tasks: deploy REST/SSH/dry-run/validate + Live check/enable) |
+| Tasks template / active | `languages/rsc/tasks.json` → `.zed/tasks.json` (6 tasks: deploy REST/SSH/dry-run/validate + Live check/enable; workflow order check → deploy → verify) |
 | Command table | `data/commands.toml` (header: version, timestamp, sha256) |
 | Truth source docs | `llms-full.txt` (version in header), `llms.txt` (index) |
 | Extraction / sync | `scripts/extract_commands.py`, `scripts/sync_llms.py` |
@@ -153,5 +153,5 @@ Also: `make clippy` fails → `cargo clippy -- -D warnings` must be clean for bo
 - [ ] **ROADMAP.md**: update `Now — 0.5.x` with tag/hash and snapshot, remove redundant principles (e.g., English-only is implicit, not listed), keep `Volatile facts` pointer.
 - [ ] **README.md** if version/snapshot changed: update badge note and `Coverage` / `Sync` snapshot line.
 - [ ] **Docs sync if needed**: `make sync && make extract` then `head -20 data/commands.toml` + `cat data/upstream-docs.toml` to confirm hash/version.
-- [ ] **Validate**: `make validate` (includes `check-manifest` + `generate-check` + `fmt` + `clippy` + `test-all` + `extract` idempotency) — must be green.
+- [ ] **Validate**: `make validate` (includes `check-manifest` + `docs-check` + `generate-check` + `fmt` + `clippy` + `test-all` + `extract` idempotency) — must be green.
 - [ ] **Tag trigger note**: `release.yml` only runs on `git push origin v*.*.*` (or `workflow_dispatch`), never on plain `git push`. Verify tag push separately: `git tag vX.Y.Z && git push origin vX.Y.Z`.
