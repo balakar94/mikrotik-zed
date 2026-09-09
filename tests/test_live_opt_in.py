@@ -49,6 +49,20 @@ def _read(p: Path) -> str:
     return p.read_text(encoding="utf-8")
 
 
+# Live subsystem spans the `live.rs` facade plus the split-out modules.
+# Content pins below read the concatenation so they survive the split
+# (single-definition pins live in test_enclosure.py instead).
+LIVE_MODULES = [LSP_SRC / f"live_{m}.rs" for m in ("config", "net", "cache", "fetch")]
+
+
+def _read_live() -> str:
+    parts = [_read(LIVE_RS)]
+    for mod_path in LIVE_MODULES:
+        assert mod_path.exists(), f"{mod_path} missing — live subsystem layout changed?"
+        parts.append(_read(mod_path))
+    return "\n".join(parts)
+
+
 _ALLOWED_BINOPS = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -140,7 +154,7 @@ class TestLiveModuleExists:
         assert "live_resource_values_for_property" in txt
         assert "detail_label()" in txt
         assert "0!live_" in txt
-        assert "live — interface on device" in _read(LIVE_RS)
+        assert "live — interface on device" in _read_live()
 
 
 # ── 2. Caps values (defensive hard rule #7) ───────────────────────
@@ -168,23 +182,23 @@ class TestLiveCapsConstants:
         assert _caps_value("LIVE_FETCH_BLOCKING_TIMEOUT_SECS") == 2
 
     def test_live_rs_enforces_response_cap(self):
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         assert "MAX_LIVE_RESPONSE_BYTES" in txt
         assert "ResponseTooLarge" in txt
 
     def test_live_rs_enforces_value_len_cap(self):
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         # filter_value checks len > MAX_LIVE_VALUE_LEN
         assert "MAX_LIVE_VALUE_LEN" in txt
         assert "filter_value" in txt
 
     def test_live_rs_enforces_item_truncation(self):
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         assert "MAX_LIVE_ITEMS" in txt
         assert "truncate" in txt.lower()
 
     def test_live_rs_enforces_cache_cap(self):
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         assert "MAX_CACHE_ENTRIES" in txt
         assert "evicted" in txt.lower() or "evict" in txt.lower()
 
@@ -193,7 +207,7 @@ class TestLiveCapsConstants:
 
 class TestLiveSecurityInvariants:
     def test_host_delimiter_rejection_in_source(self):
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         # validate_host must reject @ ? # % and space
         assert "validate_host" in txt
         # The check block must contain those literals
@@ -207,13 +221,13 @@ class TestLiveSecurityInvariants:
 
     def test_host_validation_logic_rejects_delimiters(self):
         # Production contract: delimiter hosts map to InvalidHost (no Rust test-name pin).
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         assert "validate_host_with_allow" in txt
         assert "InvalidHost" in txt
         assert "contains URI delimiter" in txt
 
     def test_debug_redacts_pass(self):
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         assert "impl std::fmt::Debug for LiveConfig" in txt
         assert "[REDACTED]" in txt
         # Ensure pass field is not formatted via {:?} directly
@@ -222,7 +236,7 @@ class TestLiveSecurityInvariants:
         assert "MIKROTIK_PASS" in txt
 
     def test_pass_never_logged(self):
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         # No log line should interpolate `self.pass` or `config.pass`
         # Hold the invariant: log macros never contain ".pass"
         for line in txt.splitlines():
@@ -248,7 +262,7 @@ class TestLiveSecurityInvariants:
         assert "pass" not in block.lower(), "LiveError variants must not carry pass"
 
     def test_is_active_requires_host_and_pass(self):
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         # is_active must check host non-empty, pass non-empty, validate_host, enabled
         assert "fn is_active" in txt
         block = txt[txt.index("fn is_active"): txt.index("fn is_active") + 600]
@@ -263,7 +277,7 @@ class TestLiveSecurityInvariants:
 class TestLiveDefaultOffAndOptIn:
     def test_default_disabled_by_env(self):
         # Static: from_env defaults enabled=false when RSC_LS_LIVE not set
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         assert "RSC_LS_LIVE" in txt
         assert "MIKROTIK_LIVE" in txt
         assert "fn from_env" in txt
@@ -285,11 +299,11 @@ class TestLiveDefaultOffAndOptIn:
         assert "detail_label()" in prod
         assert "sort_text" in prod
         assert "0!live_" in prod
-        live_txt = _read(LIVE_RS)
+        live_txt = _read_live()
         assert "live — interface on device" in live_txt
 
     def test_live_values_mapping(self):
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         assert "fn is_live_property" in txt
         # must map interface, bridge, actual-interface, iface type, ip address, lists, chains
         assert '"interface"' in txt
@@ -302,7 +316,7 @@ class TestLiveDefaultOffAndOptIn:
         assert "iface" in txt.lower()
 
     def test_generic_resource_kind_coverage(self):
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         assert "enum ResourceKind" in txt
         assert "Interfaces" in txt
         assert "IpAddresses" in txt
@@ -317,7 +331,7 @@ class TestLiveDefaultOffAndOptIn:
 
     def test_opt_in_env_valid_mock(self):
         # Spec checklist: opt-in reads host/pass/timeout env, cache bounded by caps
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         assert "from_env_with" in txt
         assert "MIKROTIK_HOST" in txt
         assert "MIKROTIK_PASS" in txt
@@ -329,7 +343,7 @@ class TestLiveDefaultOffAndOptIn:
 
 class TestLiveFallback:
     def test_fetch_blocking_timeout_capped_at_2s(self):
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         assert "LIVE_FETCH_BLOCKING_TIMEOUT_SECS" in txt
         # The background helper still respects the blocking budget cap (coalescing window)
         assert "LIVE_FETCH_BLOCKING_TIMEOUT_SECS" in txt
@@ -340,7 +354,7 @@ class TestLiveFallback:
         assert "completion" in srv.lower()
 
     def test_invalid_host_returns_static_honest_set(self):
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         assert "InvalidHost" in txt
         assert "Disabled" in txt
         # Completion falls back to honest static set when live is unavailable
@@ -349,18 +363,18 @@ class TestLiveFallback:
         assert "honest" in comp.lower()
 
     def test_host_with_slash_rejected(self):
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         # Production contract: slash in host is rejected before URL build
         assert "host.contains('/')" in txt or 'contains(\'/\')' in txt
         assert "InvalidHost" in txt
 
     def test_response_too_large_handled(self):
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         assert "ResponseTooLarge" in txt
         assert "MAX_LIVE_RESPONSE_BYTES" in txt
 
     def test_network_errors_do_not_panic(self):
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         # Network error maps to Err, logged as warn, not unwrap
         assert "LiveError::Network" in txt
         assert "log_warn" in txt
@@ -494,11 +508,11 @@ class TestHonestCompletions:
         txt = _read(COMPLETION_RS)
         # Live merge must set ENUM_MEMBER, detail, sortText 0!live_
         assert "ENUM_MEMBER" in txt
-        assert "live — interface on device" in txt or "live — interface on device" in _read(LIVE_RS)
+        assert "live — interface on device" in txt or "live — interface on device" in _read_live()
         assert "0!live_" in txt
 
     def test_value_length_filter(self):
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         # filter_value enforces >64 dropped
         assert "MAX_LIVE_VALUE_LEN" in txt
         # Allow only alphanumeric, '-' or '_'
@@ -521,7 +535,7 @@ class TestCIGate:
         # Ensure pytest will discover this file
         assert Path(__file__).name == "test_live_opt_in.py"
         # Spec checklist: live surface stays wired (env names + caps), refactor-stable
-        txt = _read(LIVE_RS)
+        txt = _read_live()
         assert "RSC_LS_LIVE" in txt
         assert "MIKROTIK_HOST" in txt
         assert _caps_value("MAX_LIVE_ITEMS") == 500

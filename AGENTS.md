@@ -76,7 +76,7 @@ First clone: `make grammar-clone` (pinned `rev`) + `make install` (`SKIP_SYSTEM=
 
 - `grammars/rsc/` — tree-sitter grammar (untracked working copy)
 - `languages/rsc/` — Zed queries + `config.toml` + `tasks.json`
-- `lsp/src/` — `rsc-ls`: server, completion, hover, diagnostics, symbols, navigation, folding, `live.rs`, `caps.rs`, `tests/` (`live.rs`/`server.rs` are accepted single owners; split only as a dedicated follow-up, never drive-by)
+- `lsp/src/` — `rsc-ls`: server (+ `server_proto`/`server_publish`), completion, hover, diagnostics, symbols, navigation, folding, live (`live_config`/`live_net`/`live_cache`/`live_fetch` behind the `live.rs` facade), `caps.rs`, `tests/`
 - `src/lib.rs` — WASM shim; `data/` — `commands.toml` (generated) + `upstream-docs.toml` (provenance)
 - `scripts/` — sync/extract, `publish_grammar.py`, deploy + live-check (`_mikrotik_shared.py`: SSRF/TLS/redaction parity), `check_docs.py` (docs gate)
 - `tests/` — Python suite; `docs/` — user docs (`index.md` entrypoint), runbook, `adr/`; `.agents/skills/` — deep dives (below)
