@@ -17,6 +17,8 @@ Env vars (all can be overridden by CLI flags, mirrored in lsp/src/live.rs LiveCo
   MIKROTIK_HTTP   - "1" to force plain HTTP for REST transport (default: https)
   MIKROTIK_TIMEOUT - per-request REST timeout and seconds to wait for the remote SSH /import (default: 60, clamped 1..300; live defaults to 5, clamped 1..30; SSH connect stays at fixed 15s)
   MIKROTIK_ACCEPT_HOST_KEY - "1" to trust unknown SSH host keys (TOFU; deploy SSH only)
+  MIKROTIK_FINGERPRINT - SPKI SHA256 pin for REST TLS (format sha256:<hex>)
+  MIKROTIK_CA_FILE - custom CA bundle path for REST TLS
 
 Import success caveat: HTTP 200 or SSH exit code 0 does NOT guarantee the
 import succeeded. /import output is additionally scanned for high-confidence
@@ -56,7 +58,17 @@ import urllib.parse
 # (direct run as `python scripts/<name>.py`, or importlib in the test suite).
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from _mikrotik_shared import env_int, format_host_for_url, resolve_scheme, validate_host  # noqa: E402
+from _mikrotik_shared import (  # noqa: E402
+    env_int,
+    format_host_for_url,
+    parse_fingerprint,
+    redact_secrets,
+    resolve_and_check_host,
+    resolve_scheme,
+    validate_host,
+    validate_user,
+    verify_tls_pin,
+)
 
 # Optional dependencies - imported lazily
 try:
@@ -179,7 +191,7 @@ def _deny_ssrf_host_or_exit(host: str) -> None:
         sys.exit(2)
 
 
-def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: bool, content: str, filename: str, dry_run: bool, force_http: bool = False, timeout: int = 30) -> None:
+def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: bool, content: str, filename: str, dry_run: bool, force_http: bool = False, timeout: int = 30, fingerprint: bytes | None = None, ca_file: str = "") -> None:
     # SSRF gate before any URL construction, logging, or network access —
     # enforced even on --dry-run.
     _deny_ssrf_host_or_exit(host)
@@ -207,36 +219,64 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
         print("error: REST method requires 'requests' (pip install requests)", file=sys.stderr)
         sys.exit(3)
     base = f"{scheme}://{host_for_url}:{port}"
+    # F1: resolve-then-revalidate before Authorization is sent: lexical
+    # checks ran at startup, DNS may resolve differently now. Fail closed.
+    # (verify_tls_pin re-checks again on its own handshake when a pin is set.)
+    dns_err = resolve_and_check_host(host, port)
+    if dns_err:
+        print(f"error: {dns_err}", file=sys.stderr)
+        sys.exit(4)
 
     session = requests.Session()
     session.auth = (user, password)
-    session.verify = ssl_verify
+    # Custom CA bundle wins over the boolean flag; a pin enforces SPKI
+    # matching on top (verified pre-write below).
+    # F3: when a pin is configured, the HTTP connection itself must verify.
+    # The pin check above runs on a SEPARATE handshake (TOCTOU), so leaving
+    # CERT_NONE on the Authorization-carrying session would let a MITM
+    # between the two connections go unnoticed. Never CERT_NONE with a pin.
+    if fingerprint is not None and scheme == "https":
+        session.verify = ca_file if ca_file else True
+    else:
+        session.verify = ca_file if ca_file else ssl_verify
     session.headers.update({"Content-Type": "application/json"})
 
     # 1) Upload file content via /rest/file - RouterOS expects multipart or raw?
     # Fallback: use /rest/execute to run script directly without file
     # We try direct execute: POST /rest/execute with {"script": content}
     # This avoids file handling differences across versions.
+    # Redirects are disabled on every call: 3xx fails closed, never followed.
     log(f"REST: uploading {len(content)} bytes to {host} as {user} (direct execute)")
+    if fingerprint is not None and scheme == "https":
+        pin_err = verify_tls_pin(host, port, fingerprint, ca_file, effective_timeout, ssl_verify)
+        if pin_err:
+            print(f"error: {redact_secrets(pin_err, password, user)}", file=sys.stderr)
+            sys.exit(4)
     try:
         # Try direct execute
-        resp = session.post(f"{base}/rest/execute", json={"script": content}, timeout=effective_timeout)
+        resp = session.post(f"{base}/rest/execute", json={"script": content}, timeout=effective_timeout, allow_redirects=False)
         if resp.status_code in (200, 201, 204):
             log(f"REST: execute OK ({resp.status_code})")
             if resp.text and resp.text.strip():
                 print(resp.text)
             return
+        if 300 <= resp.status_code < 400:
+            print(f"error: redirect blocked (status {resp.status_code}); refusing to follow", file=sys.stderr)
+            sys.exit(4)
         # If execute not allowed, try file method
         log(f"REST execute returned {resp.status_code}: {resp.text[:500]}")
         log("REST: falling back to PUT /rest/file upload — EXPERIMENTAL: RouterOS's file API varies across versions")
         # File upload via /rest/file (PUT) — filename already validated and URL-encoded.
         # RouterOS file API is not well documented; we try PUT with contents field
-        put_resp = session.put(f"{base}/rest/file/{encoded_filename}", json={"contents": content}, timeout=effective_timeout)
+        put_resp = session.put(f"{base}/rest/file/{encoded_filename}", json={"contents": content}, timeout=effective_timeout, allow_redirects=False)
         if put_resp.status_code in (200, 201, 204):
             log(f"REST: file upload OK ({put_resp.status_code}), now importing")
             # RouterOS console accepts single-quoted strings; quoting guards
             # filenames containing spaces/special chars.
-            imp = session.post(f"{base}/rest/execute", json={"script": f"/import file={shlex.quote(filename)}"}, timeout=effective_timeout)
+            imp = session.post(f"{base}/rest/execute", json={"script": f"/import file={shlex.quote(filename)}"}, timeout=effective_timeout, allow_redirects=False)
+            if 300 <= imp.status_code < 400:
+                print(f"error: redirect blocked (status {imp.status_code}); refusing to follow", file=sys.stderr)
+                sys.exit(4)
             log(f"REST: import result {imp.status_code}: {imp.text[:1000]}")
             marker = _match_import_failure_marker(imp.text)
             if marker:
@@ -244,15 +284,10 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
                 sys.exit(5)
             return
         msg = f"error: REST deploy failed: execute={resp.status_code} {resp.text[:1000]} file={put_resp.status_code} {put_resp.text[:1000]}"
-        if password and password in msg:
-            msg = msg.replace(password, "[REDACTED]")
-        print(msg, file=sys.stderr)
+        print(redact_secrets(msg, password, user), file=sys.stderr)
         sys.exit(4)
     except requests.exceptions.RequestException as e:
-        msg = f"error: REST request failed: {e}"
-        if password and password in msg:
-            msg = msg.replace(password, "[REDACTED]")
-        print(msg, file=sys.stderr)
+        print(redact_secrets(f"error: REST request failed: {e}", password, user), file=sys.stderr)
         sys.exit(4)
 
 
@@ -281,7 +316,7 @@ def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str,
         # which only bounds the remote /import poll below).
         client.connect(hostname=host, port=port, username=user, password=password, look_for_keys=False, allow_agent=False, timeout=15)
     except Exception as e:
-        print(f"error: SSH connect failed: {e}", file=sys.stderr)
+        print(redact_secrets(f"error: SSH connect failed: {e}", password, user), file=sys.stderr)
         if not accept_host_key:
             print(
                 "hint: the host key may be missing from known_hosts. After verifying the device fingerprint,"
@@ -362,6 +397,16 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--dry-run", action="store_true", help="Show what would be done without connecting")
     p.add_argument("--filename", default=None, help="Remote filename (default: basename of file)")
+    p.add_argument(
+        "--fingerprint",
+        default=os.getenv("MIKROTIK_FINGERPRINT"),
+        help="SPKI SHA256 pin for REST TLS (env MIKROTIK_FINGERPRINT, format sha256:<hex>)",
+    )
+    p.add_argument(
+        "--ca-file",
+        default=os.getenv("MIKROTIK_CA_FILE"),
+        help="Custom CA bundle path for REST TLS (env MIKROTIK_CA_FILE)",
+    )
     return p.parse_args()
 
 
@@ -435,6 +480,28 @@ def main() -> None:
 
     ssl_verify = not args.no_ssl_verify
 
+    # Username parity with live.rs validate_user (fallback admin + WARN).
+    user_validated = validate_user(args.user or "admin")
+    if user_validated is None:
+        print(
+            f"warning: invalid user {(args.user or '').strip()!r}, falling back to admin",
+            file=sys.stderr,
+        )
+        args.user = "admin"
+    else:
+        args.user = user_validated
+
+    # TLS pin / CA bundle (REST only; fail closed on malformed pin).
+    ca_file = (args.ca_file or "").strip()
+    fingerprint_raw = (args.fingerprint or "").strip()
+    fingerprint = parse_fingerprint(fingerprint_raw) if fingerprint_raw else None
+    if fingerprint_raw and fingerprint is None:
+        print(
+            "error: invalid MIKROTIK_FINGERPRINT (expected sha256:<64 hex chars>)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     # Auto selection (allow dry-run without deps)
     if method == "auto":
         if args.dry_run:
@@ -449,7 +516,7 @@ def main() -> None:
             sys.exit(3)
 
     if method == "rest":
-        deploy_via_rest(args.host, args.user, args.password or "", port, ssl_verify, content, filename, args.dry_run, force_http=args.http, timeout=args.timeout)
+        deploy_via_rest(args.host, args.user, args.password or "", port, ssl_verify, content, filename, args.dry_run, force_http=args.http, timeout=args.timeout, fingerprint=fingerprint, ca_file=ca_file)
     elif method == "ssh":
         # For SSH, default port 22 if auto gave 443
         if args.port is None and port == 443:

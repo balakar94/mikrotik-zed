@@ -13,6 +13,8 @@ Env vars (mirrored in scripts/mikrotik-deploy.py and lsp/src/live.rs):
   MIKROTIK_SSL     - "0" to disable TLS verification (REST)
   MIKROTIK_HTTP    - "1" to force plain HTTP (default: https)
   MIKROTIK_TIMEOUT - per-request timeout seconds (1..30, default: 5 for live)
+  MIKROTIK_FINGERPRINT - SPKI SHA256 pin (format sha256:<hex>)
+  MIKROTIK_CA_FILE - custom CA bundle path
 
 The check performs a real authenticated GET to /rest/interface and reports
 item count. It never prints the password. Dry-run mode shows what would be
@@ -47,8 +49,13 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from _mikrotik_shared import (  # noqa: E402
     env_int,
     format_host_for_url,
+    parse_fingerprint,
+    redact_secrets,
+    resolve_and_check_host,
     resolve_scheme,
     validate_host,
+    validate_user,
+    verify_tls_pin,
 )
 
 # Optional requests - fallback to urllib
@@ -86,6 +93,16 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--json", action="store_true", help="Output JSON instead of human text")
     p.add_argument("--dry-run", action="store_true", help="Show what would be called without connecting")
+    p.add_argument(
+        "--fingerprint",
+        default=os.getenv("MIKROTIK_FINGERPRINT"),
+        help="SPKI SHA256 pin (env MIKROTIK_FINGERPRINT, format sha256:<hex>)",
+    )
+    p.add_argument(
+        "--ca-file",
+        default=os.getenv("MIKROTIK_CA_FILE"),
+        help="Custom CA bundle path (env MIKROTIK_CA_FILE)",
+    )
     # Compatibility shim for tasks.json that still passes --method rest (ignored, but required for test)
     p.add_argument("--method", choices=["rest", "auto", "ssh"], default="rest", help=argparse.SUPPRESS)
     return p.parse_args()
@@ -95,9 +112,13 @@ def main() -> None:
     args = parse_args()
 
     host = (args.host or "").strip()
-    user = (args.user or "admin").strip()
-    if not user:
-        user = "admin"
+    user_raw = args.user or "admin"
+    user = validate_user(user_raw) or "admin"
+    if user != (user_raw or "").strip():
+        print(
+            f"warning: invalid user {(user_raw or '').strip()!r}, falling back to admin",
+            file=sys.stderr,
+        )
 
     # Port resolution mirrors live.rs: default 443, env overrides
     port = args.port
@@ -128,6 +149,17 @@ def main() -> None:
 
     ssl_verify = not args.no_ssl_verify
     force_http = bool(args.http)
+    ca_file = (args.ca_file or "").strip()
+    fingerprint_raw = (args.fingerprint or "").strip()
+    fingerprint = parse_fingerprint(fingerprint_raw) if fingerprint_raw else None
+    if fingerprint_raw and fingerprint is None:
+        msg = "invalid MIKROTIK_FINGERPRINT (expected sha256:<64 hex chars>)"
+        print(f"error: {msg}", file=sys.stderr)
+        if args.json:
+            print(json.dumps({"ok": False, "error": msg, "host": host}))
+        else:
+            print(f"Live FAIL: {msg}")
+        sys.exit(4)
 
     # Host validation before any network
     if not host:
@@ -183,6 +215,8 @@ def main() -> None:
                         "ssl_verify": ssl_verify,
                         "timeout": timeout,
                         "method": args.method,
+                        "fingerprint_set": fingerprint is not None,
+                        "ca_file_set": bool(ca_file),
                     }
                 )
             )
@@ -190,6 +224,20 @@ def main() -> None:
             print(f"[mikrotik-live-check] DRY-RUN: would GET {url} as {user} (ssl_verify={ssl_verify}, timeout={timeout}s, method={args.method})")
             print(f"DRY-RUN: host={host} port={port} scheme={scheme} user={user} url={url}")
         sys.exit(0)
+
+    # F1: resolve-then-revalidate before any credential use (fail fast, no
+    # prompt when DNS already refuses). Lexical checks ran at startup; DNS
+    # may resolve differently now. verify_tls_pin re-checks on its own
+    # handshake when a pin is set.
+    dns_err = resolve_and_check_host(host, port)
+    if dns_err:
+        msg = dns_err
+        print(f"error: {msg}", file=sys.stderr)
+        if args.json:
+            print(json.dumps({"ok": False, "error": msg, "host": host, "url": url}))
+        else:
+            print(f"Live FAIL: {msg}")
+        sys.exit(4)
 
     # Password: env or prompt (never via argv, never logged)
     password = os.getenv("MIKROTIK_PASS")
@@ -220,12 +268,21 @@ def main() -> None:
         if HAS_REQUESTS:
             session = requests.Session()  # type: ignore[union-attr]
             session.auth = (user, password)
-            session.verify = ssl_verify
+            # Custom CA bundle wins over the boolean flag; a pin still
+            # enforces SPKI matching on top (verified below pre-parse).
+            # F3: when a pin is configured, the HTTP connection itself must
+            # verify (the pin check runs on a SEPARATE handshake — TOCTOU).
+            # Never CERT_NONE with Authorization when a pin is set.
+            if fingerprint is not None and scheme == "https":
+                session.verify = ca_file if ca_file else True
+            else:
+                session.verify = ca_file if ca_file else ssl_verify
             session.headers.update({"Content-Type": "application/json"})
             # Streamed read with byte cap — prevents OOM on unbounded responses
             # (same 512 KiB limit as caps.rs MAX_LIVE_RESPONSE_BYTES).
+            # Redirects are disabled: 3xx is a fail-closed error, never followed.
             try:
-                resp = session.get(url, timeout=timeout, stream=True)
+                resp = session.get(url, timeout=timeout, stream=True, allow_redirects=False)
             except requests.exceptions.Timeout as e:  # type: ignore[union-attr]
                 msg = f"request timed out: {e}"
                 print(f"error: {msg}", file=sys.stderr)
@@ -235,9 +292,7 @@ def main() -> None:
                     print(f"Live FAIL: {msg}")
                 sys.exit(4)
             except requests.exceptions.RequestException as e:  # type: ignore[union-attr]
-                msg = f"network error: {e}"
-                if password and password in msg:
-                    msg = msg.replace(password, "[REDACTED]")
+                msg = redact_secrets(f"network error: {e}", password, user)
                 print(f"error: {msg}", file=sys.stderr)
                 if args.json:
                     print(json.dumps({"ok": False, "error": msg, "host": host, "url": url}))
@@ -245,6 +300,24 @@ def main() -> None:
                     print(f"Live FAIL: {msg}")
                 sys.exit(4)
             status = resp.status_code
+            if 300 <= status < 400:
+                msg = f"redirect blocked (status {status}); refusing to follow"
+                print(f"error: {msg}", file=sys.stderr)
+                if args.json:
+                    print(json.dumps({"ok": False, "error": msg, "host": host, "url": url, "status": status}))
+                else:
+                    print(f"Live FAIL: {msg} status={status}")
+                sys.exit(4)
+            if fingerprint is not None and scheme == "https":
+                pin_err = verify_tls_pin(host, port, fingerprint, ca_file, timeout, ssl_verify)
+                if pin_err:
+                    msg = redact_secrets(pin_err, password, user)
+                    print(f"error: {msg}", file=sys.stderr)
+                    if args.json:
+                        print(json.dumps({"ok": False, "error": msg, "host": host, "url": url}))
+                    else:
+                        print(f"Live FAIL: {msg}")
+                    sys.exit(4)
             # Incremental streaming read — abort if exceeds MAX_BYTES
             content_chunks: list[bytes] = []
             total = 0
@@ -262,9 +335,7 @@ def main() -> None:
                             sys.exit(4)
                         content_chunks.append(chunk)
             except requests.exceptions.RequestException as e:  # type: ignore[union-attr]
-                msg = f"network error during streaming: {e}"
-                if password and password in msg:
-                    msg = msg.replace(password, "[REDACTED]")
+                msg = redact_secrets(f"network error during streaming: {e}", password, user)
                 print(f"error: {msg}", file=sys.stderr)
                 if args.json:
                     print(json.dumps({"ok": False, "error": msg, "host": host, "url": url}))
@@ -336,23 +407,55 @@ def main() -> None:
                     print(f"Live FAIL: {msg} {body_preview[:200]}")
                 sys.exit(4)
         else:
-            # Fallback urllib
+            # Fallback urllib (no redirects: fail closed on 3xx, never follow).
             import urllib.request
             import urllib.error
             import ssl
             import base64
+
+            class _NoRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, req, fp, code, msg, headers, newurl):
+                    return None
 
             req = urllib.request.Request(url, method="GET")
             creds = f"{user}:{password}".encode("utf-8")
             b64 = base64.b64encode(creds).decode("ascii")
             req.add_header("Authorization", f"Basic {b64}")
             req.add_header("Content-Type", "application/json")
-            # SSL context
+            # SSL context (custom CA bundle wins; pin verified below pre-parse).
+            # F3: when a pin is configured, never CERT_NONE on the
+            # Authorization-carrying connection (TOCTOU between the pin
+            # handshake and this HTTP connection). Force verification.
+            pin_enforced = fingerprint is not None and scheme == "https"
             ctx = None
-            if scheme == "https" and not ssl_verify:
-                ctx = ssl._create_unverified_context()
+            if scheme == "https":
+                if ca_file:
+                    ctx = ssl.create_default_context(cafile=ca_file)
+                    if not ssl_verify and not pin_enforced:
+                        ctx.check_hostname = False
+                        ctx.verify_mode = ssl.CERT_NONE
+                elif not ssl_verify and not pin_enforced:
+                    ctx = ssl._create_unverified_context()
+                elif pin_enforced:
+                    ctx = ssl.create_default_context()
+            handlers: list = [_NoRedirect]
+            if ctx is not None:
+                # OpenerDirector.open has no `context` kwarg; the context
+                # travels on the HTTPSHandler instead.
+                handlers.append(urllib.request.HTTPSHandler(context=ctx))
+            opener = urllib.request.build_opener(*handlers)
             try:
-                with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+                if fingerprint is not None and scheme == "https":
+                    pin_err = verify_tls_pin(host, port, fingerprint, ca_file, timeout, ssl_verify)
+                    if pin_err:
+                        msg = redact_secrets(pin_err, password, user)
+                        print(f"error: {msg}", file=sys.stderr)
+                        if args.json:
+                            print(json.dumps({"ok": False, "error": msg, "host": host, "url": url}))
+                        else:
+                            print(f"Live FAIL: {msg}")
+                        sys.exit(4)
+                with opener.open(req, timeout=timeout) as r:
                     status = r.status
                     # urllib does not support stream iteration like requests; still cap via limit
                     content = r.read(MAX_BYTES + 1)
@@ -406,6 +509,14 @@ def main() -> None:
                         sys.exit(4)
             except urllib.error.HTTPError as e:
                 status = e.code
+                if 300 <= status < 400:
+                    msg = f"redirect blocked (status {status}); refusing to follow"
+                    print(f"error: {msg}", file=sys.stderr)
+                    if args.json:
+                        print(json.dumps({"ok": False, "error": msg, "status": status, "host": host, "url": url}))
+                    else:
+                        print(f"Live FAIL: {msg} {status}")
+                    sys.exit(4)
                 try:
                     body = e.read().decode("utf-8", errors="replace")[:500]
                 except Exception:
@@ -418,7 +529,7 @@ def main() -> None:
                     print(f"Live FAIL: {msg} {body[:200]}")
                 sys.exit(4)
             except Exception as e:
-                msg = f"network error: {e}"
+                msg = redact_secrets(f"network error: {e}", password, user)
                 print(f"error: {msg}", file=sys.stderr)
                 if args.json:
                     print(json.dumps({"ok": False, "error": msg, "host": host, "url": url}))
@@ -428,11 +539,8 @@ def main() -> None:
     except SystemExit:
         raise
     except Exception as e:
-        # Ensure never leak password
-        msg = f"network error: {e}"
-        # Strip any password accidentally in message (paranoid)
-        if password and password in msg:
-            msg = msg.replace(password, "[REDACTED]")
+        # Ensure never leak password (central helper covers base64 too).
+        msg = redact_secrets(f"network error: {e}", password, user)
         print(f"error: {msg}", file=sys.stderr)
         if args.json:
             # Never include password
