@@ -2,21 +2,53 @@
 //
 // Port of the ls.mjs completion engine.  Strategy:
 // - Always return ALL possible candidates (sub-menus, verbs, arguments)
-//   and let Zed's fuzzy filter narrow them down.
+//   and let the client's fuzzy filter narrow them down.
 // - Exception: when the cursor sits inside a "property=value" token,
-//   switch to value suggestions (enum values, booleans, type hints) with
-//   a case-insensitive prefix pre-filter over the typed suffix.
+//   switch to value suggestions (enum values, booleans, curated common
+//   values, type hints) ranked by a pure relevance function
+//   ([`rank`]) over the typed suffix: exact match first, then prefix,
+//   then substring. A typed suffix matching nothing keeps the full set
+//   as a demoted fallback (tier `8`, detail hint) instead of an empty
+//   menu — the client fuzzy matcher remains the authority.
 // - Exception: when the cursor sits inside a `:`-prefixed token (`:` is a
 //   completion trigger character), keep only candidates whose label starts
 //   with that typed token — script globals and statement snippets. Menu
 //   paths and property names make no sense after a colon.
+//
+// Relevance model (ranking): every non-root item carries a
+// deterministic `sortText` of the form `<tier><match>_<normalized-label>`
+// (legacy shapes `0name` / `1name` / `9*` are preserved when no prefix is
+// typed; live values use `0!live_<label>` — the `!` (0x21) sorts before any
+// alphanumeric second char, so device truth always ranks above required
+// properties regardless of label text). Tier order: `0!live_` (device
+// truth) < `0` required property < `1` optional property < `2` verb < `3`
+// sub-menu < `4` true enum/bool value < `5` curated common value < `6`
+// type placeholder < `7` flag < `8` demoted typo fallback < `9` snippet.
+// Truncation at `MAX_COMPLETION_ITEMS` applies AFTER relevance sorting, so
+// the first 200 items are the most relevant ones, not the first ones
+// constructed.
+//
+// Snippet-order invariant: every statement snippet shares the single tier
+// key `9`; their curated table order (`STATEMENT_SNIPPETS`) is preserved
+// ONLY because the final sort (`sort_by`, stable) keeps equal keys in
+// construction order. Never replace it with an unstable sort, and never
+// give snippets distinct keys, without updating the golden tests.
+//
+// `filterText` is always populated from the label so clients never match
+// against snippet bodies (`address=$1$0`). `textEdit` is populated at this
+// layer ONLY for value items and sub-menu/verb items, with a single-line
+// (line 0) range assumption: the server rewrites those ranges with the
+// physical/logical-line mapping at runtime, so they are unit-test shadows
+// here. Property/flag items intentionally carry NO `textEdit` from this
+// layer — the server has no positional injector for those kinds and a
+// line-0 guess would corrupt multi-line documents (see Risks).
 
 use crate::caps::MAX_COMPLETION_ITEMS;
 use crate::live::{LiveCache, live_resource_values_for_property};
 use crate::menus::{ArgEntry, LineContext, MenuData};
 
 /// LSP CompletionItemKind values (mirrors the LSP spec)
-mod kind {
+pub(crate) mod kind {
     pub const FUNCTION: i32 = 3;
     pub const PROPERTY: i32 = 5;
     pub const CLASS: i32 = 9;
@@ -60,14 +92,17 @@ pub struct TextEdit {
 
 /// A completion item ready for JSON serialization.
 ///
-/// Newer optional fields (`documentation`, `sortText`) are omitted from the
-/// JSON when unset instead of serialized as null — semantically identical
-/// for LSP clients and keeps the payload small. Pre-existing optional fields
-/// keep their historical null-emitting shape for wire compatibility.
-/// `textEdit` is optional: when `Some`, it replaces the typed prefix (e.g.
-/// the suffix after `=` or a partial menu token) so that accepting `input`
-/// when `in` is already typed yields `input` rather than `ininput`. When
-/// `None`, the client falls back to `insertText` at the cursor.
+/// Newer optional fields (`documentation`, `sortText`, `filterText`) are
+/// omitted from the JSON when unset instead of serialized as null —
+/// semantically identical for LSP clients and keeps the payload small.
+/// Pre-existing optional fields keep their historical null-emitting shape
+/// for wire compatibility.
+/// `filterText` mirrors `label` so clients match against the visible name
+/// rather than the snippet body. `textEdit` is optional: when `Some`, it
+/// replaces the typed prefix (e.g. the suffix after `=` or a partial menu
+/// token) so that accepting `input` when `in` is already typed yields
+/// `input` rather than `ininput`. When `None`, the client falls back to
+/// `insertText` at the cursor.
 #[derive(serde::Serialize, Clone)]
 pub struct CompletionItem {
     pub label: String,
@@ -78,6 +113,8 @@ pub struct CompletionItem {
     pub insert_text_format: Option<i32>,
     #[serde(rename = "sortText", skip_serializing_if = "Option::is_none")]
     pub sort_text: Option<String>,
+    #[serde(rename = "filterText", skip_serializing_if = "Option::is_none")]
+    pub filter_text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub documentation: Option<Documentation>,
     #[serde(rename = "textEdit", skip_serializing_if = "Option::is_none")]
@@ -93,12 +130,169 @@ impl CompletionItem {
             insert_text: None,
             insert_text_format: None,
             sort_text: None,
+            filter_text: None,
             documentation: None,
             text_edit: None,
         }
     }
 }
 
+// ── Relevance ranking (pure, deterministic) ──────────────────────
+
+// Shared text helpers live in `crate::text_util` (single owner).
+use crate::text_util::{
+    MAX_DETAIL_TYPE_CHARS, normalize_key, sanitize_detail_text, sanitize_markdown_for_hover,
+};
+
+/// Relevance tier of a completion candidate.
+///
+/// The tier prefix is the major sort key inside `sortText`; see the module
+/// header for the full order. Variants are ordered by their prefix so the
+/// declaration itself documents the ranking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RankTier {
+    /// Device truth from the live cache (`0!live_<name>` — the `!` major
+    /// key sorts before every `0<name>` required property under the
+    /// lexicographic `sortText` ordering clients apply).
+    Live,
+    /// Required property (`0<name>`).
+    RequiredProp,
+    /// Optional property (`1<name>`).
+    OptionalProp,
+    /// Standard verb or action command (`2…`).
+    Verb,
+    /// Sub-menu (`3…`).
+    Submenu,
+    /// Documented enum/bool member (`4…`).
+    EnumValue,
+    /// Curated common value, e.g. firewall chains (`5…`).
+    CommonHint,
+    /// Honest type placeholder such as `0.0.0.0/0` (`6…`).
+    Placeholder,
+    /// Single-letter flag (`7…`).
+    Flag,
+    /// Typo fallback: typed prefix matched nothing (`8…`).
+    Demoted,
+    /// Statement snippet (`9…`).
+    Snippet,
+}
+
+impl RankTier {
+    pub(crate) fn prefix(self) -> &'static str {
+        match self {
+            RankTier::Live => "0!live_",
+            RankTier::RequiredProp => "0",
+            RankTier::OptionalProp => "1",
+            RankTier::Verb => "2",
+            RankTier::Submenu => "3",
+            RankTier::EnumValue => "4",
+            RankTier::CommonHint => "5",
+            RankTier::Placeholder => "6",
+            RankTier::Flag => "7",
+            RankTier::Demoted => "8",
+            RankTier::Snippet => "9",
+        }
+    }
+}
+
+/// Match quality of a candidate label against the typed prefix.
+///
+/// `'0'` exact (case-insensitive) < `'1'` prefix < `'2'` substring < `'3'`
+/// no match. An empty typed prefix is neutral (`'1'` for every candidate).
+fn match_rank(label: &str, typed_prefix: &str) -> char {
+    if typed_prefix.is_empty() {
+        return '1';
+    }
+    let label_key = normalize_key(label);
+    let typed_key = normalize_key(typed_prefix);
+    if label_key == typed_key {
+        '0'
+    } else if label_key.starts_with(&typed_key) {
+        '1'
+    } else if label_key.contains(&typed_key) {
+        '2'
+    } else {
+        '3'
+    }
+}
+
+/// Pure relevance rank: deterministic `sortText` for one candidate.
+///
+/// Inputs are the tier (caller-assigned by item kind), the visible label,
+/// and the already-typed prefix in the current token. No I/O, no global
+/// state — identical inputs always yield identical output, so truncation
+/// after sorting is reproducible.
+///
+/// Ordering rules:
+/// - Live uses the frozen shape `0!live_<label>` in BOTH the empty and
+///   typed cases: `typed_prefix` is deliberately ignored so cache
+///   (device-recency) order survives filtering, and the `!` second byte
+///   (0x21, below every alphanumeric) keeps device truth above required
+///   properties under client lexicographic ordering regardless of label.
+/// - Snippets share one tier key (`9`): their table offer order is curated
+///   UX, preserved by the stable sort (see the module-header invariant).
+/// - Required/optional properties keep their legacy `0name` / `1name`
+///   shapes when nothing is typed; a typed prefix adds the match rank
+///   (`0<match>_<name>`) so partial names boost inside the tier. The
+///   empty-vs-typed shapes are frozen: only the documented arms below may
+///   produce them (golden-tested).
+/// - Sub-menus, verbs, and flags always embed the label: their
+///   construction order is not deterministic (hash-index iteration), so an
+///   alphabetical key is what makes the output reproducible.
+/// - Enum/bool members, common hints, and placeholders keep construction
+///   (document/curated) order when unfiltered and embed the match rank plus
+///   label once a prefix is typed.
+pub(crate) fn rank(tier: RankTier, label: &str, typed_prefix: &str) -> String {
+    match tier {
+        RankTier::Live => format!("0!live_{label}"),
+        RankTier::Snippet => RankTier::Snippet.prefix().to_string(),
+        RankTier::RequiredProp if typed_prefix.is_empty() => format!("0{label}"),
+        RankTier::OptionalProp if typed_prefix.is_empty() => format!("1{label}"),
+        RankTier::Demoted => format!("8_{}", normalize_key(label)),
+        RankTier::Submenu | RankTier::Verb | RankTier::Flag => format!(
+            "{}{}_{}",
+            tier.prefix(),
+            match_rank(label, typed_prefix),
+            normalize_key(label)
+        ),
+        _ if typed_prefix.is_empty() => tier.prefix().to_string(),
+        _ => format!(
+            "{}{}_{}",
+            tier.prefix(),
+            match_rank(label, typed_prefix),
+            normalize_key(label)
+        ),
+    }
+}
+
+/// Curated common values for the `chain` property.
+///
+/// Upstream documents `chain` as a bare `enum` (chains are user-definable),
+/// so the embedded table carries no members and value completion would stay
+/// silent. These three built-in chains are offered one tier BELOW true enum
+/// members and one tier ABOVE type placeholders, with an explicit
+/// verify-on-device detail — a hint, never fabricated device truth.
+/// `iface`-typed properties stay silent unless Live provides values (no
+/// fabrication there either).
+const COMMON_CHAIN_VALUES: [&str; 3] = ["input", "forward", "output"];
+
+/// Detail text for curated common-value hints.
+pub(crate) const COMMON_HINT_DETAIL: &str = "common value — verify on device";
+
+/// Detail suffix marking a demoted typo fallback set.
+const FALLBACK_HINT_SUFFIX: &str = " (no prefix match — showing all values)";
+
+// Display-budget caps (`MAX_DETAIL_*`) and text sanitizers
+// (`sanitize_detail_text`, `sanitize_label_segment`,
+// `sanitize_markdown_for_hover`) live in `crate::text_util` (single owner)
+// and are re-exported at the top of this module; no local copies remain.
+
+/// Test-only shim over [`compute_completions_with_live`] with no live cache.
+///
+/// Production callers use `compute_completions_with_live`; this wrapper
+/// exists so unit, golden, and gate tests exercise the static path without
+/// threading `None` through every call site. Kept `pub` (not `#[cfg(test)]`)
+/// because white-box sanitizer tests also call it.
 #[allow(dead_code)]
 pub fn compute_completions(data: &MenuData, before_cursor: &str) -> Vec<CompletionItem> {
     compute_completions_with_live(data, before_cursor, None)
@@ -153,9 +347,28 @@ pub fn compute_completions_with_live(
 
     // Cap the final payload to keep the response bounded; live enrichment
     // has already been merged above so its items participate in the cap
-    // rather than being appended after it. Deterministic order is preserved
-    // (root items are sorted, other contexts have a stable construction
-    // order) so truncation is reproducible.
+    // rather than being appended after it. Items are STABLY sorted by
+    // relevance (`sortText`) BEFORE truncating so the first
+    // `MAX_COMPLETION_ITEMS` are the most relevant candidates, not merely
+    // the first ones constructed; equal keys keep construction order
+    // (snippet table order, enum document order). Every `sortText` is
+    // deterministic (see [`rank`]), so truncation is reproducible.
+    // `filterText` is backfilled from the label so clients match against
+    // the visible name instead of snippet bodies.
+    for item in &mut items {
+        if item.filter_text.is_none() {
+            item.filter_text = Some(item.label.clone());
+        }
+    }
+    items.sort_by(|a, b| match (&a.sort_text, &b.sort_text) {
+        // Stable sort: equal keys keep construction order (snippet table
+        // order, enum document order, curated hint order). No label
+        // tie-break here — it would alphabetize those curated orders.
+        (Some(x), Some(y)) => x.cmp(y),
+        (None, None) => a.label.cmp(&b.label),
+        (None, _) => std::cmp::Ordering::Less,
+        (_, None) => std::cmp::Ordering::Greater,
+    });
     if items.len() > MAX_COMPLETION_ITEMS {
         items.truncate(MAX_COMPLETION_ITEMS);
     }
@@ -197,22 +410,47 @@ fn match_context_with_live(
         if !has_trailing_ws || trimmed_suffix.is_empty() {
             let key = key_part.trim_start_matches(':').to_string();
             let typed_suffix = value_part.to_string();
-            let items = get_value_completions_with_live(data, context, &key, live_cache);
-            return filter_by_typed_prefix(items, &typed_suffix);
+            let effective = trimmed_suffix.to_string();
+            let mut items =
+                get_value_completions_with_live(data, context, &key, live_cache, &effective);
+            items = filter_by_typed_prefix(items, &typed_suffix);
+            attach_value_text_edit(&mut items, before_cursor, &typed_suffix);
+            return items;
         }
     }
 
     // If a verb is already typed (e.g., "add", "print"), only suggest
     // arguments — no more sub-menus or verbs.  This matches real RouterOS
     // terminal behavior where Tab after "add" shows property completions.
+    // A partial property name under the cursor (`… add act`) boosts the
+    // matching properties via `sortText`/`filterText` but never filters the
+    // set: the client fuzzy matcher stays the authority.
     if context.command.is_some() {
-        return get_arg_completion_items(data, context);
+        let partial = partial_name_token(before_cursor).filter(|(text, _, _)| {
+            context
+                .command
+                .as_deref()
+                .is_none_or(|cmd| !text.eq_ignore_ascii_case(cmd))
+        });
+        let typed = partial.as_ref().map(|(t, _, _)| t.as_str()).unwrap_or("");
+        return get_arg_completion_items(data, context, typed);
     }
 
-    // Before a verb: suggest sub-menus + standard verbs
+    // Before a verb: suggest sub-menus + standard verbs, relevance-ranked
+    // against a partial token under the cursor (`…/ip addr` aside, parser
+    // usually consumes space-separated partials as the command, so this
+    // mainly orders the unfiltered menu; any genuine partial still gets a
+    // replacing `textEdit` on prefix-matching items).
+    let partial = partial_name_token(before_cursor);
+    let typed = partial
+        .as_ref()
+        .map(|(t, _, _)| t.clone())
+        .unwrap_or_default();
+    let span = partial.map(|(_, s, e)| (s, e));
     let mut items = Vec::new();
-    items.extend(get_sub_menu_completion_items(data, context));
-    items.extend(get_verb_completion_items(data, context));
+    items.extend(get_sub_menu_completion_items(data, context, &typed));
+    items.extend(get_verb_completion_items(data, context, &typed));
+    attach_token_text_edit(&mut items, span, &typed);
     items
 }
 
@@ -305,7 +543,7 @@ const STATEMENT_SNIPPETS: [StatementSnippet; 4] = [
 /// `sortText` "9…" ranks them below menu/argument suggestions ("0…"/"1…")
 /// while staying deterministic; kind SNIPPET (15) + insertTextFormat Snippet(2)
 /// tell clients to expand placeholders/tab stops instead of inserting literally.
-fn statement_snippet_items() -> Vec<CompletionItem> {
+pub(crate) fn statement_snippet_items() -> Vec<CompletionItem> {
     STATEMENT_SNIPPETS
         .iter()
         .map(|s| {
@@ -313,7 +551,7 @@ fn statement_snippet_items() -> Vec<CompletionItem> {
             item.detail = Some("statement snippet".to_string());
             item.insert_text = Some(s.snippet.to_string());
             item.insert_text_format = Some(2); // Snippet
-            item.sort_text = Some(format!("9{}", s.label));
+            item.sort_text = Some(rank(RankTier::Snippet, s.label, ""));
             item.documentation = Some(Documentation {
                 kind: "markdown",
                 value: s.doc.to_string(),
@@ -323,31 +561,171 @@ fn statement_snippet_items() -> Vec<CompletionItem> {
         .collect()
 }
 
-/// Case-insensitive prefix filter over candidate labels using the value text
-/// the user already typed.
+/// Case-insensitive relevance filter over candidate labels using the value
+/// text the user already typed.
 ///
 /// Surrounding quote characters on the typed suffix are ignored so partial
 /// input like `chain="in` still filters to `input`. An empty effective
-/// prefix returns the candidates unchanged; a non-empty prefix that matches
-/// nothing also falls back to the full set (the client's own fuzzy matcher
-/// remains the authority).
+/// prefix returns the candidates unchanged (their `sortText` already encodes
+/// the neutral order). A non-empty prefix keeps exact, prefix, AND
+/// substring matches — ordered by the `sortText` rank the builders assigned
+/// — so the client's fuzzy matcher refines an already relevance-ordered
+/// set. A prefix matching NOTHING falls back to the full set (the client's
+/// own fuzzy matcher remains the authority) but demotes every item to the
+/// lowest tier ([`RankTier::Demoted`]) with a detail hint, so a zero-prefix
+/// typo no longer floods an undifferentiated menu.
 fn filter_by_typed_prefix(items: Vec<CompletionItem>, typed_suffix: &str) -> Vec<CompletionItem> {
     let trimmed = typed_suffix.trim_matches(|c| c == '"' || c == '\'');
     if trimmed.is_empty() {
         return items;
     }
-    let lower = trimmed.to_ascii_lowercase();
+    let lower = normalize_key(trimmed);
     let matched: Vec<CompletionItem> = items
         .iter()
-        .filter(|i| i.label.to_ascii_lowercase().starts_with(&lower))
+        .filter(|i| {
+            let label_key = normalize_key(&i.label);
+            label_key.starts_with(&lower) || label_key.contains(&lower)
+        })
         .cloned()
         .collect();
     if matched.is_empty() {
         // Nothing matches — fall back to the unfiltered set rather than
-        // returning zero items for a typo'd prefix.
+        // returning zero items for a typo'd prefix, but demote it to the
+        // lowest tier with a hint so the flooding is visible as such.
         items
+            .into_iter()
+            .map(|mut item| {
+                item.sort_text = Some(rank(RankTier::Demoted, &item.label, ""));
+                let hinted = match item.detail.take() {
+                    Some(d) => format!("{d}{FALLBACK_HINT_SUFFIX}"),
+                    None => FALLBACK_HINT_SUFFIX.trim_start().to_string(),
+                };
+                item.detail = Some(hinted);
+                item
+            })
+            .collect()
     } else {
         matched
+    }
+}
+
+// ── Single-line textEdit shadows (unit level) ────────────────────
+//
+// The builders below know only `before_cursor`, never the cursor's line
+// number, so the ranges here assume line 0. That is exact for pure
+// single-line callers and unit tests; the server rewrites value and
+// sub-menu/verb ranges with its physical/logical-line mapping at runtime,
+// making these shadows invisible on the wire for those kinds.
+// Property/flag items deliberately get NO shadow here: the server has no
+// positional injector for those kinds, so a line-0 guess could reach the
+// wire and corrupt multi-line documents.
+
+/// The last physical line of `before_cursor` — completion edits apply here.
+fn current_line(before_cursor: &str) -> &str {
+    before_cursor.rsplit('\n').next().unwrap_or(before_cursor)
+}
+
+/// Line-0 `TextEdit` replacing `[start_byte, end_byte)` with `new_text`.
+///
+/// Byte offsets are exact for ASCII test inputs; the server recomputes them
+/// per encoding at runtime.
+fn line_zero_edit(start_byte: usize, end_byte: usize, new_text: String) -> TextEdit {
+    let (start, end) = if start_byte <= end_byte {
+        (start_byte, end_byte)
+    } else {
+        (end_byte, end_byte)
+    };
+    TextEdit {
+        range: CompletionRange {
+            start: CompletionPosition {
+                line: 0,
+                character: start as u32,
+            },
+            end: CompletionPosition {
+                line: 0,
+                character: end as u32,
+            },
+        },
+        new_text,
+    }
+}
+
+/// Partial bare-word token under the cursor on the current line, if any.
+///
+/// Returns `(typed_text, byte_start, byte_end)` relative to the current
+/// line when the cursor sits mid-token (no trailing whitespace) and the
+/// last token looks like a partial property/verb/sub-menu name: it carries
+/// no `=`, and does not start with `/ : " ' ( [ $`. Quote-aware spans keep
+/// quoted text and block syntax out of name territory.
+pub(crate) fn partial_name_token(before_cursor: &str) -> Option<(String, usize, usize)> {
+    if before_cursor.ends_with(char::is_whitespace) {
+        return None;
+    }
+    let line = current_line(before_cursor);
+    if line.is_empty() {
+        return None;
+    }
+    let tokens = crate::parser::tokenize_with_spans(line);
+    let tok = tokens.last().cloned()?;
+    if tok.text.contains('=') {
+        return None;
+    }
+    if tok.text.starts_with(['/', ':', '"', '\'', '(', '[', '$']) {
+        return None;
+    }
+    if tok.text.is_empty() {
+        return None;
+    }
+    let end = tok.end.min(line.len());
+    let start = tok.start.min(end);
+    Some((tok.text, start, end))
+}
+
+/// Attach replacing `textEdit`s for the typed value suffix after `=`.
+///
+/// The range covers exactly the effective suffix (a leading opening quote
+/// is preserved: `"in` → `"input`), so accepting `input` when `in` is typed
+/// replaces instead of appending (`ininput`). A finished value followed by
+/// whitespace, or an empty suffix, yields a zero-length insertion edit at
+/// the cursor.
+fn attach_value_text_edit(items: &mut [CompletionItem], before_cursor: &str, typed_suffix: &str) {
+    let line = current_line(before_cursor);
+    let effective = typed_suffix.trim_matches(|c| c == '"' || c == '\'');
+    let (start, end) = if effective.is_empty() {
+        (line.len(), line.len())
+    } else {
+        (line.len().saturating_sub(effective.len()), line.len())
+    };
+    for item in items.iter_mut() {
+        let new_text = item
+            .insert_text
+            .clone()
+            .unwrap_or_else(|| item.label.clone());
+        item.text_edit = Some(line_zero_edit(start, end, new_text));
+    }
+}
+
+/// Attach replacing `textEdit`s to prefix-matching sub-menu/verb items.
+///
+/// `span`/`typed` come from [`partial_name_token`]; `None`/empty means the
+/// previous token is finished and every item stays a pure insertion.
+fn attach_token_text_edit(items: &mut [CompletionItem], span: Option<(usize, usize)>, typed: &str) {
+    let Some((start, end)) = span else {
+        return;
+    };
+    if typed.is_empty() {
+        return;
+    }
+    let lower = normalize_key(typed);
+    for item in items.iter_mut() {
+        let is_name_kind = item.kind == Some(kind::CLASS) || item.kind == Some(kind::FUNCTION);
+        if is_name_kind && normalize_key(&item.label).starts_with(&lower) {
+            let new_text = item
+                .insert_text
+                .clone()
+                .unwrap_or_else(|| item.label.clone());
+            item.text_edit = Some(line_zero_edit(start, end, new_text));
+        }
     }
 }
 
@@ -376,7 +754,7 @@ fn get_root_completion_items(data: &MenuData) -> Vec<CompletionItem> {
                 items.push(item);
             } else {
                 let mut item = CompletionItem::new(r.path.clone(), kind::CLASS);
-                item.detail = Some(format!("root menu — {}", r.path));
+                item.detail = Some(sanitize_detail_text(&format!("root menu — {}", r.path)));
                 item.insert_text = Some(r.path.clone());
                 item.insert_text_format = Some(1);
                 items.push(item);
@@ -415,16 +793,21 @@ fn get_root_completion_items(data: &MenuData) -> Vec<CompletionItem> {
 
 // ── Sub-menus ───────────────────────────────────────────────────
 
-fn get_sub_menu_completion_items(data: &MenuData, ctx: &LineContext) -> Vec<CompletionItem> {
+fn get_sub_menu_completion_items(
+    data: &MenuData,
+    ctx: &LineContext,
+    typed_prefix: &str,
+) -> Vec<CompletionItem> {
     match data.child_names_by_parent.get(&ctx.path) {
         Some(children) => children
             .iter()
             .filter(|c| c.menu_type == "Directory" || c.menu_type == "Settings Directory")
             .map(|c| {
                 let mut item = CompletionItem::new(c.name.clone(), kind::CLASS);
-                item.detail = Some(format!("sub-menu — {}", c.path));
+                item.detail = Some(sanitize_detail_text(&format!("sub-menu — {}", c.path)));
                 item.insert_text = Some(c.name.clone());
                 item.insert_text_format = Some(1);
+                item.sort_text = Some(rank(RankTier::Submenu, &c.name, typed_prefix));
                 item
             })
             .collect(),
@@ -434,7 +817,11 @@ fn get_sub_menu_completion_items(data: &MenuData, ctx: &LineContext) -> Vec<Comp
 
 // ── Verbs ───────────────────────────────────────────────────────
 
-fn get_verb_completion_items(data: &MenuData, ctx: &LineContext) -> Vec<CompletionItem> {
+fn get_verb_completion_items(
+    data: &MenuData,
+    ctx: &LineContext,
+    typed_prefix: &str,
+) -> Vec<CompletionItem> {
     let menu_type = data
         .menu_by_path
         .get(&ctx.path)
@@ -452,6 +839,7 @@ fn get_verb_completion_items(data: &MenuData, ctx: &LineContext) -> Vec<Completi
                 item.detail = Some(format!("{verb} — standard command"));
                 item.insert_text = Some(verb.to_string());
                 item.insert_text_format = Some(1);
+                item.sort_text = Some(rank(RankTier::Verb, verb, typed_prefix));
                 item
             })
             .collect()
@@ -467,6 +855,7 @@ fn get_verb_completion_items(data: &MenuData, ctx: &LineContext) -> Vec<Completi
                 item.detail = Some("action command".to_string());
                 item.insert_text = Some(child.name.clone());
                 item.insert_text_format = Some(1);
+                item.sort_text = Some(rank(RankTier::Verb, &child.name, typed_prefix));
                 items.push(item);
             }
         }
@@ -477,7 +866,11 @@ fn get_verb_completion_items(data: &MenuData, ctx: &LineContext) -> Vec<Completi
 
 // ── Arguments ───────────────────────────────────────────────────
 
-fn get_arg_completion_items(data: &MenuData, ctx: &LineContext) -> Vec<CompletionItem> {
+fn get_arg_completion_items(
+    data: &MenuData,
+    ctx: &LineContext,
+    typed_prefix: &str,
+) -> Vec<CompletionItem> {
     let menu = match data.menu_by_path.get(&ctx.path) {
         Some(m) => m,
         None => return Vec::new(),
@@ -491,14 +884,17 @@ fn get_arg_completion_items(data: &MenuData, ctx: &LineContext) -> Vec<Completio
         }
         let mut item = CompletionItem::new(arg.name.clone(), kind::PROPERTY);
         item.detail = Some(get_detail(arg));
-        // Required properties sort before optional ones for the client
-        // ("0…" < "1…"); other kinds keep the default (label) order by
-        // leaving sortText unset.
-        item.sort_text = Some(format!(
-            "{}{}",
-            if arg.required { "0" } else { "1" },
-            arg.name
-        ));
+        // Required properties rank before optional ones within the same
+        // match quality ("0…" < "1…"); a partial property name under the
+        // cursor boosts exact/prefix/substring matches inside each tier.
+        // No `textEdit` here by design (see the shadow-edit section): the
+        // server owns positional edits and has no injector for this kind.
+        let tier = if arg.required {
+            RankTier::RequiredProp
+        } else {
+            RankTier::OptionalProp
+        };
+        item.sort_text = Some(rank(tier, &arg.name, typed_prefix));
         item.documentation = documentation_from(arg.description.clone());
         item.insert_text = Some(get_insert_text(arg));
         item.insert_text_format = Some(2); // snippet
@@ -507,10 +903,14 @@ fn get_arg_completion_items(data: &MenuData, ctx: &LineContext) -> Vec<Completio
 
     for flag in &menu.flags {
         let mut item = CompletionItem::new(flag.name.clone(), kind::CONSTANT);
-        item.detail = Some(format!("{}: {}", flag.name, flag.description));
+        item.detail = Some(sanitize_detail_text(&format!(
+            "{}: {}",
+            flag.name, flag.description
+        )));
         item.documentation = documentation_from(flag.description.clone());
         item.insert_text = Some(flag.name.clone());
         item.insert_text_format = Some(1);
+        item.sort_text = Some(rank(RankTier::Flag, &flag.name, typed_prefix));
         items.push(item);
     }
 
@@ -524,6 +924,7 @@ fn get_value_completions_with_live(
     ctx: &LineContext,
     property_key: &str,
     live_cache: Option<&LiveCache>,
+    typed_prefix: &str,
 ) -> Vec<CompletionItem> {
     let menu = match data.menu_by_path.get(&ctx.path) {
         Some(m) => m,
@@ -542,11 +943,15 @@ fn get_value_completions_with_live(
     if arg.arg_type.starts_with("enum") {
         for val in arg.enum_members() {
             let mut item = CompletionItem::new(val.clone(), kind::ENUM_MEMBER);
-            item.detail = Some(format!("enum value — {}", arg.arg_type));
+            item.detail = Some(sanitize_detail_text(&format!(
+                "enum value — {}",
+                arg.arg_type
+            )));
             // Values insert bare: a preceding opening quote in the token is
             // never doubled.
-            item.insert_text = Some(val);
+            item.insert_text = Some(val.clone());
             item.insert_text_format = Some(1);
+            item.sort_text = Some(rank(RankTier::EnumValue, &val, typed_prefix));
             items.push(item);
         }
     }
@@ -558,20 +963,40 @@ fn get_value_completions_with_live(
             item.detail = Some("bool value".to_string());
             item.insert_text = Some(val.to_string());
             item.insert_text_format = Some(1);
+            item.sort_text = Some(rank(RankTier::EnumValue, val, typed_prefix));
             items.push(item);
+        }
+    }
+
+    // Curated common values for `chain`: upstream documents a bare `enum`
+    // (chains are user-definable), so without this the menu would stay
+    // silent. Offered one tier below true enum members, deduplicated
+    // against live/documented values below. `iface`-typed properties stay
+    // silent unless Live provides values — no fabrication.
+    if normalize_key(property_key) == "chain" {
+        for hint in COMMON_CHAIN_VALUES {
+            let already = items.iter().any(|it| it.label.eq_ignore_ascii_case(hint));
+            if !already {
+                let mut item = CompletionItem::new(hint.to_string(), kind::ENUM_MEMBER);
+                item.detail = Some(COMMON_HINT_DETAIL.to_string());
+                item.insert_text = Some(hint.to_string());
+                item.insert_text_format = Some(1);
+                item.sort_text = Some(rank(RankTier::CommonHint, hint, typed_prefix));
+                items.push(item);
+            }
         }
     }
 
     // IP address / prefix — one honest placeholder per actual type.
     if arg.arg_type.starts_with("ipPrefix") {
-        items.push(ip_placeholder(arg, "0.0.0.0/0"));
+        items.push(ip_placeholder(arg, "0.0.0.0/0", typed_prefix));
     } else if arg.arg_type.starts_with("ipAddr") || arg.arg_type == "address" {
-        items.push(ip_placeholder(arg, "0.0.0.0"));
+        items.push(ip_placeholder(arg, "0.0.0.0", typed_prefix));
     }
 
     // Live enrichment: merge device values (interfaces, IP addresses, address lists, chains, pools)
     // when the property is live-enrichable and a fresh cache entry exists. Deduplicates against
-    // static items and prefers live (sort_text "0live_<name>" ranks above static placeholders).
+    // static items and prefers live (sort_text "0!live_<name>" ranks above static placeholders).
     if let Some(cache) = live_cache
         && let Some((resource, live_vals)) =
             live_resource_values_for_property(cache, &ctx.path, property_key, &arg.arg_type)
@@ -585,7 +1010,7 @@ fn get_value_completions_with_live(
             item.detail = Some(resource.detail_label().to_string());
             item.insert_text = Some(val.clone());
             item.insert_text_format = Some(1);
-            item.sort_text = Some(format!("0live_{val}"));
+            item.sort_text = Some(rank(RankTier::Live, val, ""));
             items.push(item);
         }
     }
@@ -593,23 +1018,24 @@ fn get_value_completions_with_live(
     items
 }
 
-fn ip_placeholder(arg: &ArgEntry, value: &str) -> CompletionItem {
+fn ip_placeholder(arg: &ArgEntry, value: &str, typed_prefix: &str) -> CompletionItem {
     let mut item = CompletionItem::new(value.to_string(), kind::ENUM_MEMBER);
-    item.detail = Some(format!("type: {}", arg.arg_type));
+    item.detail = Some(sanitize_detail_text(&format!("type: {}", arg.arg_type)));
     item.insert_text = Some(value.to_string());
     item.insert_text_format = Some(1);
+    item.sort_text = Some(rank(RankTier::Placeholder, value, typed_prefix));
     item
 }
 
 // ── Helpers ─────────────────────────────────────────────────────
 
-fn documentation_from(description: String) -> Option<Documentation> {
+pub(crate) fn documentation_from(description: String) -> Option<Documentation> {
     if description.is_empty() {
         None
     } else {
         Some(Documentation {
             kind: "markdown",
-            value: description,
+            value: sanitize_markdown_for_hover(&description),
         })
     }
 }
@@ -619,7 +1045,7 @@ fn documentation_from(description: String) -> Option<Documentation> {
 ///
 /// The quotes belong to THIS snippet (`comment="$1"$0`); value completions
 /// never re-add them, so an already-typed opening quote is not doubled.
-fn get_insert_text(arg: &crate::menus::ArgEntry) -> String {
+pub(crate) fn get_insert_text(arg: &crate::menus::ArgEntry) -> String {
     if arg.arg_type == "string" {
         format!("{}=\"{}\"$0", arg.name, "$1")
     } else {
@@ -627,1623 +1053,14 @@ fn get_insert_text(arg: &crate::menus::ArgEntry) -> String {
     }
 }
 
-fn get_detail(arg: &crate::menus::ArgEntry) -> String {
+pub(crate) fn get_detail(arg: &crate::menus::ArgEntry) -> String {
     if arg.arg_type.is_empty() {
         "property".to_string()
     } else {
-        format!("type: {}", arg.arg_type)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::menus::MenuData;
-
-    fn synthetic_data() -> MenuData {
-        let toml_str = r#"
-[[menus]]
-path = "/ip/address"
-type = "Directory"
-
-[[menus.arguments]]
-name = "address"
-type = "ipPrefix"
-description = "The IP address"
-
-[[menus.arguments]]
-name = "interface"
-type = "iface_enum"
-description = "Interface name"
-
-[[menus.arguments]]
-name = "comment"
-type = "string"
-description = "Comment"
-
-[[menus.flags]]
-name = "X"
-description = "disabled"
-
-[[menus.flags]]
-name = "D"
-description = "dynamic"
-
-[[menus]]
-path = "/ip/route"
-type = "Directory"
-
-[[menus.arguments]]
-name = "gateway"
-type = "ipAddr"
-description = "Gateway address"
-
-[[menus]]
-path = "/ip/route/check"
-type = "Command"
-
-[[menus]]
-path = "/ip/firewall/filter"
-type = "Directory"
-
-[[menus.arguments]]
-name = "chain"
-type = "enum (input | forward | output)"
-description = "Chain name"
-
-[[menus.arguments]]
-name = "action"
-type = "enum (accept | drop | reject)"
-description = "Action"
-
-[[menus.arguments]]
-name = "enabled"
-type = "bool"
-description = "Enabled flag"
-
-[[menus.arguments]]
-name = "src-address"
-type = "ipAddr"
-description = "Source address"
-
-[[menus]]
-path = "/interface/bridge/port"
-type = "Directory"
-
-[[menus]]
-path = "/system/clock"
-type = "Directory"
-
-[[menus.arguments]]
-name = "enabled"
-type = "bool"
-
-[[menus.arguments]]
-name = "time-zone-name"
-type = "string"
-
-[[menus]]
-path = "/routing/bgp/connection"
-type = "Directory"
-"#;
-        MenuData::from_toml_str(toml_str)
-    }
-
-    // ── Root completions ──────────────────────────────────────────
-
-    #[test]
-    fn test_root_completions_empty_input() {
-        let data = synthetic_data();
-        let items = compute_completions(&data, "");
-        assert!(!items.is_empty(), "root completions should not be empty");
-        assert!(items.iter().any(|i| i.label == "/ip"), "should contain /ip");
-        assert!(
-            items.iter().any(|i| i.label == "/interface"),
-            "should contain /interface"
-        );
-        assert!(
-            items.iter().any(|i| i.label == "/system"),
-            "should contain /system"
-        );
-        // Root menus keep their CLASS kind and detail text; root Commands
-        // (e.g. /import) are FUNCTION/Command per C3.
-        for item in items.iter().filter(|i| i.label.starts_with('/')) {
-            if item.kind == Some(kind::CLASS) {
-                assert!(item.detail.as_ref().unwrap().contains("root menu"));
-            } else {
-                assert_eq!(item.kind, Some(kind::FUNCTION));
-                assert_eq!(item.detail.as_deref(), Some("Command"));
-            }
-        }
-        // …and statement-start snippets are appended on top of them.
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&":if"));
-        assert!(labels.contains(&":foreach"));
-        assert!(labels.contains(&":for"));
-        assert!(labels.contains(&":do"));
-    }
-
-    #[test]
-    fn test_root_completions_slash_only() {
-        // "/" alone must behave like the empty context: parse_line maps it
-        // to path "/" which has no child index entry, so compute_completions
-        // special-cases it back to ROOT menu completions instead of verbs.
-        //
-        // Divergence since statement snippets exist: "" is a statement start
-        // (nothing typed yet) so it additionally carries the four snippet
-        // items; "/" is mid-path navigation (last token "/") so snippets are
-        // withheld there. Root menus themselves must stay identical.
-        let data = synthetic_data();
-        let items_empty = compute_completions(&data, "");
-        let items_slash = compute_completions(&data, "/");
-        assert!(!items_slash.is_empty());
-        let slash_labels: Vec<&str> = items_slash.iter().map(|i| i.label.as_str()).collect();
-        assert!(slash_labels.contains(&"/ip"));
-        assert!(slash_labels.contains(&"/interface"));
-        assert!(slash_labels.contains(&"/system"));
-        assert!(!slash_labels.contains(&":if"), "no snippets after '/'");
-        // Same ROOT candidate set as the empty context, and NOT verb completions.
-        let empty_roots: Vec<&str> = items_empty
-            .iter()
-            .map(|i| i.label.as_str())
-            .filter(|l| l.starts_with('/'))
+        let capped: String = crate::text_util::collapse_controls(&arg.arg_type)
+            .chars()
+            .take(MAX_DETAIL_TYPE_CHARS)
             .collect();
-        assert_eq!(empty_roots, slash_labels);
-        assert!(!slash_labels.contains(&"print"));
-    }
-
-    #[test]
-    fn test_root_completions_are_only_roots() {
-        let data = MenuData::load();
-        let items = compute_completions(&data, "");
-        // All MENU labels should start with / (snippet labels start with ':').
-        for item in items.iter().filter(|i| i.label.starts_with('/')) {
-            assert!(
-                item.label.starts_with('/')
-                    && (item.kind == Some(kind::CLASS) || item.kind == Some(kind::FUNCTION)),
-                "root label should be a CLASS menu or FUNCTION command: {}",
-                item.label
-            );
-            if item.kind == Some(kind::FUNCTION) {
-                assert_eq!(item.detail.as_deref(), Some("Command"));
-            }
-        }
-        // Snippets are the only non-menu additions at statement start.
-        let extra: Vec<&str> = items
-            .iter()
-            .map(|i| i.label.as_str())
-            .filter(|l| !l.starts_with('/'))
-            .collect();
-        assert_eq!(extra, vec![":if", ":foreach", ":for", ":do"]);
-        // Should contain all 8 roots at least and root Commands per C3
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"/ip"));
-        assert!(labels.contains(&"/interface"));
-        assert!(labels.contains(&"/system"));
-        assert!(labels.contains(&"/tool"));
-        assert!(labels.contains(&"/queue"));
-        // Root commands (C3) — /import etc. are Commands, not Directory children
-        assert!(labels.contains(&"/import"));
-        assert!(labels.contains(&"/quit"));
-        assert!(labels.contains(&"/beep"));
-    }
-
-    // ── Sub-menu completions ──────────────────────────────────────
-
-    #[test]
-    fn test_submenu_completions_for_ip() {
-        let data = synthetic_data();
-        let items = compute_completions(&data, "/ip ");
-        // Should contain sub-menus address, route
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(
-            labels.contains(&"address"),
-            "should contain address sub-menu"
-        );
-        assert!(labels.contains(&"route"), "should contain route sub-menu");
-        // Also contains verb-like path? firewall is implicit? Check child_names_by_parent for /ip should have address, route, firewall
-        assert!(
-            labels.contains(&"firewall"),
-            "should contain implicit firewall child"
-        );
-    }
-
-    #[test]
-    fn test_submenu_completions_include_verbs() {
-        let data = synthetic_data();
-        let items = compute_completions(&data, "/ip/address ");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        // When no verb yet, should contain both sub-menus (none for /ip/address) and verbs
-        assert!(labels.contains(&"add"), "should contain verb add");
-        assert!(labels.contains(&"print"), "should contain verb print");
-        assert!(labels.contains(&"remove"), "should contain verb remove");
-        // Check kind for verbs
-        let add_item = items.iter().find(|i| i.label == "add").unwrap();
-        assert_eq!(add_item.kind, Some(kind::FUNCTION));
-    }
-
-    #[test]
-    fn test_submenu_for_unknown_path_returns_verbs_only() {
-        let data = synthetic_data();
-        let items = compute_completions(&data, "/unknown/path ");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        // No sub-menus, but verbs should still be present
-        assert!(labels.contains(&"add"));
-        assert!(labels.contains(&"print"));
-        // No sub-menu specific labels
-        assert!(!labels.contains(&"address"));
-    }
-
-    #[test]
-    fn test_submenu_action_command_included_as_verb() {
-        let data = synthetic_data();
-        // /ip/route has child /ip/route/check of type Command
-        let items = compute_completions(&data, "/ip/route ");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(
-            labels.contains(&"check"),
-            "should include action command 'check'"
-        );
-        let check_item = items.iter().find(|i| i.label == "check").unwrap();
-        assert_eq!(check_item.detail.as_deref(), Some("action command"));
-    }
-
-    // ── Argument completions (after verb) ─────────────────────────
-
-    #[test]
-    fn test_arg_completions_after_verb() {
-        let data = synthetic_data();
-        let items = compute_completions(&data, "/ip/address add ");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"address"), "should contain address arg");
-        assert!(
-            labels.contains(&"interface"),
-            "should contain interface arg"
-        );
-        assert!(labels.contains(&"comment"), "should contain comment arg");
-        // Should NOT contain verbs
-        assert!(
-            !labels.contains(&"print"),
-            "should not contain verbs when command present"
-        );
-        assert!(
-            !labels.contains(&"add"),
-            "should not contain add when command already typed"
-        );
-        // Check kinds
-        let addr_item = items.iter().find(|i| i.label == "address").unwrap();
-        assert_eq!(addr_item.kind, Some(kind::PROPERTY));
-        assert_eq!(addr_item.insert_text_format, Some(2));
-        assert!(addr_item.detail.as_ref().unwrap().contains("ipPrefix"));
-    }
-
-    #[test]
-    fn test_arg_completions_filter_used_properties() {
-        let data = synthetic_data();
-        // Already used address=1.1.1.1
-        let items = compute_completions(&data, "/ip/address add address=1.1.1.1 ");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(
-            !labels.contains(&"address"),
-            "already used prop should be filtered"
-        );
-        assert!(labels.contains(&"interface"), "unused prop should remain");
-    }
-
-    #[test]
-    fn test_arg_completions_include_flags() {
-        let data = synthetic_data();
-        let items = compute_completions(&data, "/ip/address add ");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"X"), "should contain flag X");
-        assert!(labels.contains(&"D"), "should contain flag D");
-        let flag_item = items.iter().find(|i| i.label == "X").unwrap();
-        assert_eq!(flag_item.kind, Some(kind::CONSTANT));
-    }
-
-    #[test]
-    fn test_arg_completions_string_type_has_quoted_insert() {
-        let data = synthetic_data();
-        let items = compute_completions(&data, "/ip/address add ");
-        let comment_item = items.iter().find(|i| i.label == "comment").unwrap();
-        let insert = comment_item.insert_text.as_ref().unwrap();
-        assert!(
-            insert.contains('"'),
-            "string type should have quoted insert_text"
-        );
-        assert!(insert.contains("$1"), "should be snippet with $1");
-    }
-
-    #[test]
-    fn test_arg_completions_non_string_type_plain_insert() {
-        let data = synthetic_data();
-        let items = compute_completions(&data, "/ip/address add ");
-        let addr_item = items.iter().find(|i| i.label == "address").unwrap();
-        let insert = addr_item.insert_text.as_ref().unwrap();
-        assert_eq!(insert, "address=$1$0");
-    }
-
-    #[test]
-    fn test_arg_completions_unknown_menu_returns_empty() {
-        let data = synthetic_data();
-        let items = compute_completions(&data, "/unknown/path add ");
-        assert!(items.is_empty(), "unknown menu should return no args");
-    }
-
-    // ── Value completions (after "property=") ──────────────────────
-
-    #[test]
-    fn test_value_completions_enum_chain() {
-        let data = synthetic_data();
-        let items = compute_completions(&data, "/ip/firewall/filter add chain=");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"input"));
-        assert!(labels.contains(&"forward"));
-        assert!(labels.contains(&"output"));
-        for item in &items {
-            assert_eq!(item.kind, Some(kind::ENUM_MEMBER));
-        }
-    }
-
-    #[test]
-    fn test_value_completions_enum_action() {
-        let data = synthetic_data();
-        let items = compute_completions(&data, "/ip/firewall/filter add action=");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"accept"));
-        assert!(labels.contains(&"drop"));
-        assert!(labels.contains(&"reject"));
-    }
-
-    #[test]
-    fn test_value_completions_bool() {
-        let data = synthetic_data();
-        let items = compute_completions(&data, "/ip/firewall/filter add enabled=");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"yes"));
-        assert!(labels.contains(&"no"));
-        assert!(labels.contains(&"true"));
-        assert!(labels.contains(&"false"));
-        assert_eq!(items.len(), 4);
-    }
-
-    #[test]
-    fn test_value_completions_bool_system_clock() {
-        let data = synthetic_data();
-        let items = compute_completions(&data, "/system/clock set enabled=");
-        assert!(!items.is_empty());
-        assert!(items.iter().any(|i| i.label == "yes"));
-    }
-
-    #[test]
-    fn test_value_completions_iface_enum_zero_items() {
-        // Honest placeholders: interface names are device-specific, so an
-        // iface_enum property yields ZERO items rather than fabricated
-        // suggestions like ether1/bridge.
-        let data = synthetic_data();
-        let items = compute_completions(&data, "/ip/address add interface=");
-        assert!(
-            items.is_empty(),
-            "iface_enum should produce no fabricated items, got {:?}",
-            items.iter().map(|i| &i.label).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn test_value_completions_ipaddr() {
-        let data = synthetic_data();
-        let items = compute_completions(&data, "/ip/address add address=");
-        // address is ipPrefix -> prefix placeholder
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(labels, vec!["0.0.0.0/0"]);
-    }
-
-    #[test]
-    fn test_value_completions_ipaddr_src_address() {
-        let data = synthetic_data();
-        let items = compute_completions(&data, "/ip/firewall/filter add src-address=");
-        // src-address is ipAddr (NOT ipPrefix) -> host-address placeholder,
-        // distinct from the prefix placeholder.
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(labels, vec!["0.0.0.0"]);
-    }
-
-    #[test]
-    fn test_value_completions_unknown_property_empty() {
-        let data = synthetic_data();
-        let items = compute_completions(&data, "/ip/address add unknownprop=");
-        assert!(
-            items.is_empty(),
-            "unknown property should return empty value completions"
-        );
-    }
-
-    #[test]
-    fn test_value_completions_unknown_menu_empty() {
-        let data = synthetic_data();
-        let items = compute_completions(&data, "/unknown add prop=");
-        assert!(items.is_empty());
-    }
-
-    #[test]
-    fn test_value_completions_with_space_before_equals_not_triggered() {
-        let data = synthetic_data();
-        // last_token is "chain" not "chain=" -> should be arg completions, not value
-        let items = compute_completions(&data, "/ip/firewall/filter add chain");
-        // Should be arg completions (not value), so labels contain property names not enum values
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"chain"), "should be arg completions");
-        assert!(
-            !labels.contains(&"input"),
-            "should not be value completions"
-        );
-    }
-
-    // ── Helpers ───────────────────────────────────────────────────
-
-    use crate::menus::parse_enum_values;
-
-    #[test]
-    fn test_parse_enum_values_normal() {
-        let vals = parse_enum_values("enum (input | forward | output)");
-        assert_eq!(vals, vec!["input", "forward", "output"]);
-    }
-
-    #[test]
-    fn test_parse_enum_values_with_spaces() {
-        let vals = parse_enum_values("enum (  a  |  b  |c )");
-        assert_eq!(vals, vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn test_parse_enum_values_malformed_no_parens() {
-        let vals = parse_enum_values("enum input | output");
-        assert!(vals.is_empty());
-    }
-
-    #[test]
-    fn test_parse_enum_values_empty() {
-        let vals = parse_enum_values("enum ()");
-        assert_eq!(vals, vec![""]);
-    }
-
-    #[test]
-    fn test_parse_enum_values_not_enum() {
-        let vals = parse_enum_values("bool");
-        assert!(vals.is_empty());
-    }
-
-    #[test]
-    fn test_get_insert_text_string() {
-        let arg = crate::menus::ArgEntry {
-            name: "comment".to_string(),
-            arg_type: "string".to_string(),
-            enum_values: Vec::new(),
-            description: "".to_string(),
-            required: false,
-            unset: false,
-        };
-        assert_eq!(get_insert_text(&arg), "comment=\"$1\"$0");
-    }
-
-    #[test]
-    fn test_get_insert_text_non_string() {
-        let arg = crate::menus::ArgEntry {
-            name: "address".to_string(),
-            arg_type: "ipPrefix".to_string(),
-            enum_values: Vec::new(),
-            description: "".to_string(),
-            required: false,
-            unset: false,
-        };
-        assert_eq!(get_insert_text(&arg), "address=$1$0");
-    }
-
-    #[test]
-    fn test_get_detail_empty_type() {
-        let arg = crate::menus::ArgEntry {
-            name: "foo".to_string(),
-            arg_type: "".to_string(),
-            enum_values: Vec::new(),
-            description: "".to_string(),
-            required: false,
-            unset: false,
-        };
-        assert_eq!(get_detail(&arg), "property");
-    }
-
-    #[test]
-    fn test_get_detail_with_type() {
-        let arg = crate::menus::ArgEntry {
-            name: "foo".to_string(),
-            arg_type: "bool".to_string(),
-            enum_values: Vec::new(),
-            description: "".to_string(),
-            required: false,
-            unset: false,
-        };
-        assert_eq!(get_detail(&arg), "type: bool");
-    }
-
-    // ── Real data sanity checks ───────────────────────────────────
-
-    #[test]
-    fn test_real_data_arg_completions_ip_address() {
-        let data = MenuData::load();
-        let items = compute_completions(&data, "/ip/address add ");
-        assert!(!items.is_empty());
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"address"));
-        assert!(labels.contains(&"interface"));
-    }
-
-    #[test]
-    fn test_real_data_value_completions_chain_and_action() {
-        // Real embedded data: `chain` is a bare "enum" upstream (chains are
-        // user-definable) → no members, no items. `action` embeds the
-        // complete member list extracted from the raw docs type string, so
-        // value completions work even though its display type is truncated.
-        let data = MenuData::load();
-        let chain_items = compute_completions(&data, "/ip/firewall/filter add chain=");
-        assert!(chain_items.is_empty(), "chain has no documented members");
-
-        let action_items = compute_completions(&data, "/ip/firewall/filter add action=");
-        assert!(
-            !action_items.is_empty(),
-            "action should complete via embedded enum_values"
-        );
-        let labels: Vec<&str> = action_items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"accept"));
-        assert!(labels.contains(&"drop"));
-    }
-}
-
-#[cfg(test)]
-mod extra_coverage {
-    use super::*;
-    use crate::menus::MenuData;
-
-    fn synthetic() -> MenuData {
-        MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/ip/address"
-type = "Directory"
-[[menus.arguments]]
-name = "address"
-type = "ipPrefix"
-[[menus.arguments]]
-name = "interface"
-type = "iface_enum"
-[[menus.arguments]]
-name = "comment"
-type = "string"
-[[menus.flags]]
-name = "X"
-description = "disabled"
-[[menus]]
-path = "/ip/route"
-type = "Directory"
-[[menus.arguments]]
-name = "gateway"
-type = "ipAddr"
-[[menus]]
-path = "/ip/route/check"
-type = "Command"
-[[menus]]
-path = "/ip/firewall/filter"
-type = "Directory"
-[[menus.arguments]]
-name = "chain"
-type = "enum (input | forward | output)"
-[[menus.arguments]]
-name = "action"
-type = "enum (accept | drop | reject)"
-[[menus.arguments]]
-name = "enabled"
-type = "bool"
-[[menus.arguments]]
-name = "src-address"
-type = "ipAddr"
-[[menus]]
-path = "/system/clock"
-type = "Directory"
-[[menus.arguments]]
-name = "enabled"
-type = "bool"
-[[menus.arguments]]
-name = "time-zone-name"
-type = "string"
-"#,
-        )
-    }
-
-    // ── Root menus only when at root ─────────────────────────────────
-
-    #[test]
-    fn test_root_only_at_empty_context() {
-        let data = synthetic();
-        let items = compute_completions(&data, "");
-        assert!(!items.is_empty());
-        // Menus keep CLASS kind (directories) or FUNCTION (root Commands);
-        // snippets (kind SNIPPET) are appended at statement start since B3.
-        for it in items.iter().filter(|i| i.label.starts_with('/')) {
-            assert!(it.label.starts_with('/'), "root label must start with /");
-            assert!(
-                it.kind == Some(kind::CLASS) || it.kind == Some(kind::FUNCTION),
-                "root kind must be CLASS or FUNCTION, got {:?} for {}",
-                it.kind,
-                it.label
-            );
-        }
-        // Should not contain verbs or properties at root
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(!labels.contains(&"add"));
-        assert!(!labels.contains(&"address"));
-        // Non-menu items must be exactly the four statement snippets.
-        let mut extra: Vec<&str> = labels.into_iter().filter(|l| !l.starts_with('/')).collect();
-        extra.sort_unstable();
-        assert_eq!(extra, vec![":do", ":for", ":foreach", ":if"]);
-    }
-
-    #[test]
-    fn test_root_not_returned_when_path_present() {
-        let data = synthetic();
-        let items = compute_completions(&data, "/ip ");
-        // Should contain sub-menus, not roots
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(
-            !labels.contains(&"/ip"),
-            "roots should not appear when path present"
-        );
-        assert!(labels.contains(&"address") || labels.contains(&"route"));
-    }
-
-    #[test]
-    fn test_empty_context_vs_whitespace_only() {
-        let data = synthetic();
-        let empty = compute_completions(&data, "");
-        let ws = compute_completions(&data, "   ");
-        // Both tokenizations yield empty path -> root completions
-        assert_eq!(empty.len(), ws.len());
-        assert!(ws.iter().any(|i| i.label == "/ip"));
-    }
-
-    // ── Sub-menus after path ──────────────────────────────────────────
-
-    #[test]
-    fn test_submenus_after_ip_path() {
-        let data = synthetic();
-        let items = compute_completions(&data, "/ip ");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"address"));
-        assert!(labels.contains(&"route"));
-        assert!(labels.contains(&"firewall"));
-        // Sub-menu kind should be CLASS
-        for it in items
-            .iter()
-            .filter(|i| ["address", "route", "firewall"].contains(&i.label.as_str()))
-        {
-            assert_eq!(it.kind, Some(kind::CLASS));
-        }
-    }
-
-    #[test]
-    fn test_submenus_after_ip_with_trailing_space_vs_without() {
-        let data = synthetic();
-        let with_space = compute_completions(&data, "/ip ");
-        let without = compute_completions(&data, "/ip");
-        // Both parse to path "/ip", so completions should be equivalent
-        let mut a: Vec<String> = with_space.iter().map(|i| i.label.clone()).collect();
-        let mut b: Vec<String> = without.iter().map(|i| i.label.clone()).collect();
-        a.sort();
-        b.sort();
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn test_submenus_include_only_directory_types() {
-        let data = synthetic();
-        // /ip/route has a child Command /ip/route/check which should appear via verbs, not sub-menu
-        let items = compute_completions(&data, "/ip/route ");
-        let sub_labels: Vec<&str> = items
-            .iter()
-            .filter(|i| i.kind == Some(kind::CLASS))
-            .map(|i| i.label.as_str())
-            .collect();
-        // No CLASS item should be "check" because check is Command; it appears as FUNCTION verb
-        assert!(!sub_labels.contains(&"check"));
-        assert!(
-            items
-                .iter()
-                .any(|i| i.label == "check" && i.kind == Some(kind::FUNCTION))
-        );
-    }
-
-    // ── Verbs after menu+space ────────────────────────────────────────
-
-    #[test]
-    fn test_verbs_after_menu_space() {
-        let data = synthetic();
-        let items = compute_completions(&data, "/ip/address ");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        for verb in MenuData::STANDARD_VERBS {
-            assert!(labels.contains(verb), "missing verb {verb}");
-        }
-        // Verbs should be FUNCTION kind
-        for it in items
-            .iter()
-            .filter(|i| MenuData::STANDARD_VERBS.contains(&i.label.as_str()))
-        {
-            assert_eq!(it.kind, Some(kind::FUNCTION));
-            assert!(it.detail.as_ref().unwrap().contains("standard"));
-        }
-    }
-
-    #[test]
-    fn test_verbs_after_menu_without_trailing_space() {
-        let data = synthetic();
-        let with = compute_completions(&data, "/ip/address ");
-        let without = compute_completions(&data, "/ip/address");
-        // Both should produce same verb+submenu set (no command yet)
-        assert_eq!(with.len(), without.len());
-    }
-
-    #[test]
-    fn test_verbs_include_action_command() {
-        let data = synthetic();
-        let items = compute_completions(&data, "/ip/route ");
-        assert!(items.iter().any(|i| i.label == "check"));
-        let check = items.iter().find(|i| i.label == "check").unwrap();
-        assert_eq!(check.detail.as_deref(), Some("action command"));
-    }
-
-    // ── Args after verb ───────────────────────────────────────────────
-
-    #[test]
-    fn test_args_after_verb_only_args_and_flags() {
-        let data = synthetic();
-        let items = compute_completions(&data, "/ip/address add ");
-        // Should contain args + flags, not verbs or sub-menus
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"address"));
-        assert!(labels.contains(&"interface"));
-        assert!(labels.contains(&"comment"));
-        assert!(labels.contains(&"X"));
-        assert!(!labels.contains(&"print"));
-        assert!(!labels.contains(&"route"));
-        for it in &items {
-            assert!(
-                it.kind == Some(kind::PROPERTY) || it.kind == Some(kind::CONSTANT),
-                "unexpected kind for {}: {:?}",
-                it.label,
-                it.kind
-            );
-        }
-    }
-
-    #[test]
-    fn test_args_after_verb_with_trailing_space_vs_without() {
-        let data = synthetic();
-        let with = compute_completions(&data, "/ip/address add ");
-        let without = compute_completions(&data, "/ip/address add");
-        // Both have command "add", so both should be arg completions
-        assert_eq!(with.len(), without.len());
-        assert!(with.iter().any(|i| i.label == "address"));
-        assert!(without.iter().any(|i| i.label == "address"));
-    }
-
-    #[test]
-    fn test_args_filter_used_properties() {
-        let data = synthetic();
-        let items = compute_completions(&data, "/ip/address add address=1.1.1.1 ");
-        assert!(!items.iter().any(|i| i.label == "address"));
-        assert!(items.iter().any(|i| i.label == "interface"));
-    }
-
-    #[test]
-    fn test_args_string_type_snippet() {
-        let data = synthetic();
-        let items = compute_completions(&data, "/ip/address add ");
-        let comment = items.iter().find(|i| i.label == "comment").unwrap();
-        assert_eq!(comment.insert_text.as_deref(), Some("comment=\"$1\"$0"));
-        assert_eq!(comment.insert_text_format, Some(2));
-    }
-
-    // ── Values after = ────────────────────────────────────────────────
-
-    #[test]
-    fn test_values_after_equals_enum() {
-        let data = synthetic();
-        let items = compute_completions(&data, "/ip/firewall/filter add chain=");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"input"));
-        assert!(labels.contains(&"forward"));
-        assert!(labels.contains(&"output"));
-        assert!(items.iter().all(|i| i.kind == Some(kind::ENUM_MEMBER)));
-    }
-
-    #[test]
-    fn test_values_after_equals_bool() {
-        let data = synthetic();
-        let items = compute_completions(&data, "/ip/firewall/filter add enabled=");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(items.len(), 4);
-        assert!(labels.contains(&"yes"));
-        assert!(labels.contains(&"no"));
-        assert!(labels.contains(&"true"));
-        assert!(labels.contains(&"false"));
-    }
-
-    #[test]
-    fn test_values_after_equals_iface_enum_zero_items() {
-        // Honest placeholders: iface_enum yields nothing device-specific.
-        let data = synthetic();
-        let items = compute_completions(&data, "/ip/address add interface=");
-        assert!(items.is_empty());
-    }
-
-    #[test]
-    fn test_values_after_equals_ip_prefix() {
-        let data = synthetic();
-        let items = compute_completions(&data, "/ip/address add address=");
-        assert!(items.iter().any(|i| i.label == "0.0.0.0/0"));
-        assert!(items[0].detail.as_ref().unwrap().contains("ipPrefix"));
-    }
-
-    #[test]
-    fn test_values_after_equals_ip_addr() {
-        let data = synthetic();
-        let items = compute_completions(&data, "/ip/route add gateway=");
-        // ipAddr gets the HOST placeholder, distinct from ipPrefix's /0 form.
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(labels, vec!["0.0.0.0"]);
-        let det = items[0].detail.as_ref().unwrap();
-        assert!(det.contains("ipAddr"));
-    }
-
-    #[test]
-    fn test_values_after_equals_requires_trailing_equals() {
-        let data = synthetic();
-        // Without "=", should be arg completions, not value
-        let arg_items = compute_completions(&data, "/ip/firewall/filter add chain");
-        assert!(arg_items.iter().any(|i| i.label == "chain"));
-        assert!(!arg_items.iter().any(|i| i.label == "input"));
-        // With "=", should be value completions
-        let val_items = compute_completions(&data, "/ip/firewall/filter add chain=");
-        assert!(val_items.iter().any(|i| i.label == "input"));
-        assert!(!val_items.iter().any(|i| i.label == "chain"));
-    }
-
-    #[test]
-    fn test_values_after_equals_unknown_property_empty() {
-        let data = synthetic();
-        let items = compute_completions(&data, "/ip/address add unknown=");
-        assert!(items.is_empty());
-    }
-
-    #[test]
-    fn test_values_after_equals_unknown_menu_empty() {
-        let data = synthetic();
-        let items = compute_completions(&data, "/unknown add prop=");
-        assert!(items.is_empty());
-    }
-
-    #[test]
-    fn test_values_after_equals_bool_also_triggers_iface_check_independent() {
-        // Ensure bool and iface_enum are independent: a bool prop should not get iface values
-        let data = synthetic();
-        let bool_items = compute_completions(&data, "/system/clock set enabled=");
-        // enabled is bool -> should have yes/no/true/false but not ether1
-        assert!(bool_items.iter().any(|i| i.label == "yes"));
-        assert!(!bool_items.iter().any(|i| i.label == "ether1"));
-    }
-
-    #[test]
-    fn test_completion_deterministic_no_panic_on_weird_input() {
-        let data = synthetic();
-        let weird = [
-            "",
-            " ",
-            "/",
-            "/ ",
-            "///",
-            "add",
-            "===",
-            "address===",
-            "/ip/address add address= a",
-            "/ip/address add \"comment=\"",
-        ];
-        for w in weird {
-            let items = compute_completions(&data, w);
-            // Should not panic, and result is Vec (maybe empty)
-            let _ = items.len();
-        }
-    }
-
-    #[test]
-    fn test_completion_with_real_data_smoke() {
-        let data = MenuData::load();
-        let cases = [
-            "",
-            "/",
-            "/ip ",
-            "/ip/address ",
-            "/ip/address add ",
-            "/ip/address add address=",
-            "/ip/firewall/filter add chain=",
-            "/system/clock set enabled=",
-        ];
-        for c in cases {
-            let items = compute_completions(&data, c);
-            // Ensure no panic and items is vec
-            assert!(items.len() < 10000, "unexpected huge completion for {c}");
-        }
-    }
-
-    // ── Partial value completion ("token contains =") ─────────────────
-
-    #[test]
-    fn test_partial_value_prefix_filters_enum() {
-        let data = synthetic();
-        let items = compute_completions(&data, "/ip/firewall/filter add chain=in");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(labels, vec!["input"], "only 'input' matches prefix 'in'");
-    }
-
-    #[test]
-    fn test_partial_value_prefix_case_insensitive() {
-        let data = synthetic();
-        let items = compute_completions(&data, "/ip/firewall/filter add chain=IN");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(labels, vec!["input"]);
-    }
-
-    #[test]
-    fn test_partial_value_no_match_falls_back_to_unfiltered() {
-        let data = synthetic();
-        let items = compute_completions(&data, "/ip/firewall/filter add chain=zzz");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(
-            labels.contains(&"input") && labels.contains(&"forward") && labels.contains(&"output"),
-            "non-matching non-empty prefix must fall back to the full set"
-        );
-    }
-
-    #[test]
-    fn test_partial_value_opening_quote_stripped_from_prefix() {
-        let data = synthetic();
-        // Token ends inside an opened quote: the quote char must not break
-        // the case-insensitive prefix filter…
-        let items = compute_completions(&data, "/ip/firewall/filter add chain=\"in");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(labels, vec!["input"]);
-
-        // …and accepting an item inserts the BARE value so the already-typed
-        // opening quote is never doubled.
-        assert_eq!(items[0].insert_text.as_deref(), Some("input"));
-        let after_quote = compute_completions(&data, "/ip/firewall/filter add chain=\"");
-        assert_eq!(after_quote.len(), 3, "empty effective prefix → unfiltered");
-        assert!(
-            after_quote
-                .iter()
-                .all(|i| !i.insert_text.as_deref().unwrap_or("").contains('"')),
-            "value inserts stay quote-free"
-        );
-    }
-
-    #[test]
-    fn test_partial_value_chain_in_suggests_values_not_args() {
-        // Regression guard for the exact scenario in the spec: `chain=in`
-        // must suggest chain VALUES, not the argument list.
-        let data = synthetic();
-        let items = compute_completions(&data, "/ip/firewall/filter add chain=in");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"input"));
-        assert!(
-            !labels.contains(&"action"),
-            "must not be argument completions"
-        );
-        assert!(!labels.contains(&"enabled"));
-    }
-
-    #[test]
-    fn test_trailing_space_after_value_stays_argument_completion() {
-        let data = synthetic();
-        // Cursor AFTER the finished token: value branch must NOT trigger.
-        let items = compute_completions(&data, "/ip/firewall/filter add chain=input ");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(
-            labels.contains(&"action"),
-            "finished value + space → next property suggestions"
-        );
-        assert!(
-            !labels.contains(&"forward"),
-            "must not be value completions"
-        );
-        // The used property is filtered out of the argument list.
-        assert!(!labels.contains(&"chain"));
-    }
-
-    // ── documentation on completion items ─────────────────────────────
-
-    #[test]
-    fn test_arg_item_documentation_markdown_from_description() {
-        let data = MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/docs/menu"
-type = "Directory"
-[[menus.arguments]]
-name = "with-desc"
-type = "ipPrefix"
-description = "The IP address"
-[[menus.arguments]]
-name = "no-desc"
-type = "string"
-"#,
-        );
-        let items = compute_completions(&data, "/docs/menu add ");
-        let with = items.iter().find(|i| i.label == "with-desc").unwrap();
-        let doc = with.documentation.as_ref().expect("documentation present");
-        assert_eq!(doc.kind, "markdown");
-        assert_eq!(doc.value, "The IP address");
-
-        // No description → no documentation field at all.
-        let without = items.iter().find(|i| i.label == "no-desc").unwrap();
-        assert!(without.documentation.is_none());
-    }
-
-    #[test]
-    fn test_flag_item_documentation_from_description() {
-        let data = MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/flags/menu"
-type = "Directory"
-[[menus.flags]]
-name = "X"
-description = "disabled"
-[[menus.flags]]
-name = "D"
-description = ""
-"#,
-        );
-        let items = compute_completions(&data, "/flags/menu add ");
-        let x = items.iter().find(|i| i.label == "X").unwrap();
-        let doc = x.documentation.as_ref().expect("flag documentation");
-        assert_eq!(doc.kind, "markdown");
-        assert_eq!(doc.value, "disabled");
-
-        // Flags WITHOUT description carry no documentation field at all.
-        let d = items.iter().find(|i| i.label == "D").unwrap();
-        assert!(d.documentation.is_none());
-    }
-
-    #[test]
-    fn test_items_without_description_have_no_documentation_field() {
-        // /system/clock time-zone-name has no description in this fixture.
-        let data = synthetic();
-        let items = compute_completions(&data, "/system/clock set ");
-        let tzn = items.iter().find(|i| i.label == "time-zone-name").unwrap();
-        assert!(tzn.documentation.is_none());
-    }
-
-    // ── sortText: required before optional ────────────────────────────
-
-    #[test]
-    fn test_sorttext_required_before_optional() {
-        let data = MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/demo"
-type = "Directory"
-[[menus.arguments]]
-name = "required-prop"
-type = "string"
-required = true
-[[menus.arguments]]
-name = "aaa-optional"
-type = "string"
-"#,
-        );
-        let items = compute_completions(&data, "/demo add ");
-        let req = items.iter().find(|i| i.label == "required-prop").unwrap();
-        let opt = items.iter().find(|i| i.label == "aaa-optional").unwrap();
-        assert_eq!(req.sort_text.as_deref(), Some("0required-prop"));
-        assert_eq!(opt.sort_text.as_deref(), Some("1aaa-optional"));
-        // Lexicographic sortText puts the required property first even
-        // though it sorts later alphabetically.
-        assert!(req.sort_text < opt.sort_text);
-    }
-
-    #[test]
-    fn test_sorttext_absent_for_non_property_kinds() {
-        let data = synthetic();
-        // Verbs and sub-menus keep default ordering (no sortText).
-        let verbs = compute_completions(&data, "/ip/address ");
-        let add = verbs.iter().find(|i| i.label == "add").unwrap();
-        assert!(add.sort_text.is_none());
-        // Flags are CONSTANT kind — default order too.
-        let args = compute_completions(&data, "/ip/address add ");
-        let flag = args.iter().find(|i| i.label == "X").unwrap();
-        assert!(flag.sort_text.is_none());
-    }
-
-    // ── Root trigger variants ─────────────────────────────────────────
-
-    #[test]
-    fn test_slash_alone_returns_root_menus_not_verbs() {
-        let data = synthetic();
-        let items = compute_completions(&data, "/");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        // Roots of this fixture: /ip and /system.
-        assert!(labels.contains(&"/ip"));
-        assert!(labels.contains(&"/system"));
-        assert!(
-            !labels.contains(&"add"),
-            "verbs must not leak into root trigger"
-        );
-        for i in &items {
-            assert_eq!(i.kind, Some(kind::CLASS));
-        }
-    }
-
-    // ── Statement-start snippets (B3) ─────────────────────────────
-
-    const SNIPPET_LABELS: [&str; 4] = [":if", ":foreach", ":for", ":do"];
-
-    fn snippet_items(items: &[CompletionItem]) -> Vec<&CompletionItem> {
-        items
-            .iter()
-            .filter(|i| SNIPPET_LABELS.contains(&i.label.as_str()))
-            .collect()
-    }
-
-    #[test]
-    fn test_at_statement_start_gating() {
-        // Statement starts…
-        assert!(at_statement_start(""), "nothing typed yet");
-        assert!(at_statement_start("   "), "whitespace only");
-        assert!(at_statement_start("{ "), "right after block opener");
-        assert!(
-            at_statement_start("{"),
-            "block opener without trailing space"
-        );
-        assert!(at_statement_start("; "));
-        // …and non-starts.
-        assert!(!at_statement_start(":if "), "previous token is the verb");
-        assert!(!at_statement_start("add address=1.1.1.1 "), "mid-command");
-        assert!(
-            !at_statement_start("do={ "),
-            "a 'do=' plus open-brace token is one token, not a bare block opener"
-        );
-        assert!(
-            !at_statement_start("x=1; "),
-            "a property token ending in a separator is one token, not a bare separator"
-        );
-    }
-
-    #[test]
-    fn test_snippets_shape_and_order() {
-        let data = synthetic();
-        let items = compute_completions(&data, "");
-        let snips = snippet_items(&items);
-        assert_eq!(snips.len(), 4, "exactly four snippets appended");
-        // Offer order matches the constant table.
-        let labels: Vec<&str> = snips.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(labels, SNIPPET_LABELS);
-        for s in snips {
-            assert_eq!(s.insert_text_format, Some(2), "insertTextFormat Snippet");
-            assert_eq!(s.kind, Some(kind::SNIPPET));
-            assert!(
-                s.sort_text.as_deref().unwrap_or("").starts_with('9'),
-                "snippets rank below other candidates: {:?}",
-                s.sort_text
-            );
-            // One-line markdown documentation.
-            let doc = s.documentation.as_ref().expect("docs required");
-            assert_eq!(doc.kind, "markdown");
-            assert!(!doc.value.contains('\n'), "documentation stays one line");
-            assert!(!s.insert_text.as_ref().unwrap().is_empty());
-            assert!(
-                s.insert_text.as_ref().unwrap().contains("$0")
-                    || s.insert_text.as_ref().unwrap().contains("${")
-            );
-        }
-    }
-
-    #[test]
-    fn test_snippet_bodies_match_spec() {
-        let data = synthetic();
-        let items = compute_completions(&data, "");
-        let by_label = |l: &str| {
-            items
-                .iter()
-                .find(|i| i.label == l)
-                .unwrap_or_else(|| panic!("snippet {l} missing"))
-                .insert_text
-                .clone()
-                .unwrap()
-        };
-        assert_eq!(
-            by_label(":if"),
-            ":if (${1:condition}) do={\n\t${2}\n} else={\n\t${3}\n}$0"
-        );
-        assert_eq!(
-            by_label(":foreach"),
-            ":foreach ${1:i} in=[${2:find expression}] do={\n\t${3}\n}$0"
-        );
-        assert_eq!(
-            by_label(":for"),
-            ":for ${1:i} from=${2:1} to=${3:10} do={\n\t${4}\n}$0"
-        );
-        assert_eq!(by_label(":do"), ":do {\n\t${1}\n} while=(${2:condition})$0");
-    }
-
-    #[test]
-    fn test_snippets_absent_mid_command() {
-        let data = synthetic();
-        // After a verb with properties — the classic mid-command position.
-        let items = compute_completions(&data, "/ip/address add ");
-        assert!(
-            snippet_items(&items).is_empty(),
-            "no snippets after a path+verb"
-        );
-        // Inside a value token.
-        let items = compute_completions(&data, "/ip/address add address=");
-        assert!(
-            snippet_items(&items).is_empty(),
-            "no snippets inside values"
-        );
-    }
-
-    #[test]
-    fn test_snippets_absent_after_slash_and_in_path_contexts() {
-        let data = synthetic();
-        // Typing a path — resolved menu path non-empty → gated off.
-        let items = compute_completions(&data, "/ip ");
-        assert!(
-            snippet_items(&items).is_empty(),
-            "no snippets in menu context"
-        );
-        // Trailing '/' (root navigation) → gated off.
-        let items = compute_completions(&data, "/");
-        assert!(
-            snippet_items(&items).is_empty(),
-            "no snippets while typing a path"
-        );
-    }
-
-    #[test]
-    fn test_snippets_present_after_block_opener() {
-        let data = synthetic();
-        // Statement start inside a script block.
-        let items = compute_completions(&data, "{ ");
-        assert_eq!(snippet_items(&items).len(), 4);
-    }
-
-    // ── ':' trigger character ──────────────────────────────────────
-
-    #[test]
-    fn test_colon_bare_at_statement_start_returns_only_colon_items() {
-        let data = synthetic();
-        // ':' alone at a fresh statement fires mid-token: the four
-        // statement snippets are the colon-prefixed candidates today, and
-        // NOTHING else (no root menus, no verbs) may leak into the menu.
-        let items = compute_completions(&data, ":");
-        assert_eq!(
-            items.len(),
-            4,
-            "got {:?}",
-            items.iter().map(|i| &i.label).collect::<Vec<_>>()
-        );
-        for i in &items {
-            assert!(
-                i.label.starts_with(':'),
-                "only ':'-prefixed labels allowed, got {}",
-                i.label
-            );
-        }
-        assert_eq!(snippet_items(&items).len(), 4);
-    }
-
-    #[test]
-    fn test_colon_prefix_filters_to_matching_script_items() {
-        let data = synthetic();
-        // ':i' narrows to :if …
-        let items = compute_completions(&data, ":i");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(labels, vec![":if"]);
-        // …':fo' keeps :foreach and :for in offer-table order…
-        let items = compute_completions(&data, ":fo");
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(labels, vec![":foreach", ":for"]);
-        // …and a fully typed unknown script word completes to NOTHING — no
-        // fallback to menu noise after a colon.
-        let items = compute_completions(&data, ":put");
-        assert!(
-            items.is_empty(),
-            "no fallback after ':put', got {:?}",
-            items.iter().map(|i| &i.label).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn test_colon_after_block_opener_still_offers_snippets() {
-        let data = synthetic();
-        // '{ :' — the brace opened the block; the colon word begins the
-        // next statement inside it.
-        let items = compute_completions(&data, "{ :");
-        assert_eq!(snippet_items(&items).len(), 4);
-        for i in &items {
-            assert!(i.label.starts_with(':'), "colon context leaked {}", i.label);
-        }
-    }
-
-    #[test]
-    fn test_colon_mid_statement_returns_no_menu_noise() {
-        let data = synthetic();
-        // A colon word after a verb is NOT a statement start: no snippets,
-        // and filtering the argument names leaves an intentionally quiet
-        // (empty) result instead of irrelevant property suggestions.
-        let items = compute_completions(&data, "/ip/address print :");
-        assert!(items.is_empty());
-    }
-
-    #[test]
-    fn test_trailing_space_after_colon_not_filtered() {
-        let data = synthetic();
-        // ':' finished with a space starts a NEW (empty) token — that
-        // request is not a script-word completion and must behave exactly
-        // as before the ':' trigger existed: plain root completions, no
-        // snippets (a lone ':' is not a `{`/`;` opener).
-        let items = compute_completions(&data, ": ");
-        assert!(
-            items.iter().any(|i| i.label == "/ip"),
-            "finished ':' token keeps ordinary root completions"
-        );
-        assert_eq!(snippet_items(&items).len(), 0);
-    }
-
-    #[test]
-    fn test_quoted_colon_is_not_script_word_context() {
-        let data = synthetic();
-        // A quote opens this token, so it never enters the ':' branch:
-        // root menus flow through unfiltered.
-        let items = compute_completions(&data, "\"a:b");
-        assert!(
-            items.iter().any(|i| i.label == "/ip"),
-            "quoted colon must not trigger script-word filtering"
-        );
-    }
-
-    #[test]
-    fn test_non_colon_contexts_unchanged_by_colon_trigger() {
-        let data = synthetic();
-        // Roots + snippets at a plain statement start…
-        let empty = compute_completions(&data, "");
-        assert!(empty.iter().any(|i| i.label == "/ip"));
-        assert_eq!(snippet_items(&empty).len(), 4);
-        // …arguments after a verb…
-        let args = compute_completions(&data, "/ip/address add ");
-        assert!(args.iter().any(|i| i.label == "address"));
-        assert!(!args.is_empty());
-        // …values after '='…
-        let vals = compute_completions(&data, "/ip/firewall/filter add chain=in");
-        assert_eq!(vals.len(), 1);
-        // …and root navigation via '/'.
-        let slash = compute_completions(&data, "/");
-        assert!(slash.iter().any(|i| i.label == "/ip"));
-    }
-}
-
-#[cfg(test)]
-mod live_merge {
-    use super::*;
-    use crate::live::{LiveCache, live_values_for_property};
-    use crate::menus::MenuData;
-    use std::time::Duration;
-
-    fn synth() -> MenuData {
-        MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/ip/address"
-type = "Directory"
-[[menus.arguments]]
-name = "address"
-type = "ipPrefix"
-[[menus.arguments]]
-name = "interface"
-type = "iface_enum"
-[[menus.arguments]]
-name = "comment"
-type = "string"
-[[menus]]
-path = "/interface/bridge/port"
-type = "Directory"
-[[menus.arguments]]
-name = "interface"
-type = "iface_enum"
-[[menus.arguments]]
-name = "bridge"
-type = "string"
-"#,
-        )
-    }
-
-    #[test]
-    fn test_iface_enum_without_live_returns_empty_honest() {
-        let data = synth();
-        // Honest placeholder: no fabricated items when live disabled.
-        let items = compute_completions(&data, "/ip/address add interface=");
-        assert!(
-            items.is_empty(),
-            "iface_enum without live must be empty, got {:?}",
-            items.iter().map(|i| &i.label).collect::<Vec<_>>()
-        );
-        // Via the live-aware entry point with None.
-        let items2 = compute_completions_with_live(&data, "/ip/address add interface=", None);
-        assert!(items2.is_empty());
-    }
-
-    #[test]
-    fn test_iface_enum_with_live_returns_live_items() {
-        let data = synth();
-        let mut cache = LiveCache::new(Duration::from_secs(60));
-        cache.insert(
-            "interfaces".to_string(),
-            vec![
-                "ether1".to_string(),
-                "wlan1".to_string(),
-                "bridge1".to_string(),
-            ],
-        );
-        let items =
-            compute_completions_with_live(&data, "/ip/address add interface=", Some(&cache));
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"ether1"));
-        assert!(labels.contains(&"wlan1"));
-        assert!(labels.contains(&"bridge1"));
-        assert_eq!(items.len(), 3);
-        for item in &items {
-            assert_eq!(item.kind, Some(kind::ENUM_MEMBER));
-            assert_eq!(item.detail.as_deref(), Some("live — interface on device"));
-            assert_eq!(item.insert_text.as_deref(), Some(item.label.as_str()));
-            assert!(
-                item.sort_text.as_deref().unwrap().starts_with("0live_"),
-                "sort_text must be 0live_, got {:?}",
-                item.sort_text
-            );
-            assert_eq!(item.insert_text_format, Some(1));
-        }
-        // Prefix filter still applies: typing "eth" narrows to ether1.
-        let filtered =
-            compute_completions_with_live(&data, "/ip/address add interface=eth", Some(&cache));
-        let fl: Vec<&str> = filtered.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(fl, vec!["ether1"]);
-    }
-
-    #[test]
-    fn test_live_dedup_prefers_live_over_static() {
-        // Synthetic enum that happens to contain a value also present as a live interface.
-        let data = MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/ip/address"
-type = "Directory"
-[[menus.arguments]]
-name = "interface"
-type = "enum (ether1 | ether2)"
-"#,
-        );
-        let mut cache = LiveCache::new(Duration::from_secs(60));
-        cache.insert(
-            "interfaces".to_string(),
-            vec!["ether1".to_string(), "wlan1".to_string()],
-        );
-        let items =
-            compute_completions_with_live(&data, "/ip/address add interface=", Some(&cache));
-        // ether1 appears only once, with live detail (not enum detail).
-        let ether1_items: Vec<_> = items.iter().filter(|i| i.label == "ether1").collect();
-        assert_eq!(ether1_items.len(), 1);
-        assert_eq!(
-            ether1_items[0].detail.as_deref(),
-            Some("live — interface on device")
-        );
-        assert!(
-            ether1_items[0]
-                .sort_text
-                .as_deref()
-                .unwrap()
-                .starts_with("0live_")
-        );
-        // ether2 remains as static enum value, wlan1 as live.
-        assert!(items.iter().any(|i| i.label == "ether2"));
-        assert!(items.iter().any(|i| i.label == "wlan1"));
-    }
-
-    #[test]
-    fn test_non_cached_live_property_returns_static_placeholder() {
-        let data = synth();
-        let mut cache = LiveCache::new(Duration::from_secs(60));
-        cache.insert("interfaces".to_string(), vec!["ether1".to_string()]);
-        // address is mapped to ip_addresses, but cache only has interfaces -> returns static placeholder
-        let items = compute_completions_with_live(&data, "/ip/address add address=", Some(&cache));
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(labels, vec!["0.0.0.0/0"]);
-        assert!(!labels.contains(&"ether1"));
-    }
-
-    #[test]
-    fn test_ip_address_live_completion() {
-        let data = synth();
-        let mut cache = LiveCache::new(Duration::from_secs(60));
-        cache.insert(
-            "ip_addresses".to_string(),
-            vec!["192.168.88.1/24".to_string(), "10.0.0.1/8".to_string()],
-        );
-        let items = compute_completions_with_live(&data, "/ip/address add address=", Some(&cache));
-        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"192.168.88.1/24"));
-        assert!(labels.contains(&"10.0.0.1/8"));
-        let live_item = items.iter().find(|i| i.label == "192.168.88.1/24").unwrap();
-        assert_eq!(
-            live_item.detail.as_deref(),
-            Some("live — IPv4 address on device")
-        );
-        assert_eq!(
-            live_item.sort_text.as_deref(),
-            Some("0live_192.168.88.1/24")
-        );
-    }
-
-    #[test]
-    fn test_bridge_property_uses_live_cache() {
-        let data = synth();
-        let mut cache = LiveCache::new(Duration::from_secs(60));
-        cache.insert("interfaces".to_string(), vec!["ether1".to_string()]);
-        // /interface/bridge/port interface= is iface_enum -> live
-        let items = compute_completions_with_live(
-            &data,
-            "/interface/bridge/port add interface=",
-            Some(&cache),
-        );
-        assert!(items.iter().any(|i| i.label == "ether1"));
-        // bridge property name itself is also live-mapped
-        let items2 = compute_completions_with_live(
-            &data,
-            "/interface/bridge/port add bridge=",
-            Some(&cache),
-        );
-        assert!(items2.iter().any(|i| i.label == "ether1"));
-    }
-
-    #[test]
-    fn test_live_values_for_property_direct() {
-        let mut cache = LiveCache::new(Duration::from_secs(60));
-        cache.insert(
-            "interfaces".to_string(),
-            vec!["a".to_string(), "b".to_string()],
-        );
-        cache.insert("ip_addresses".to_string(), vec!["10.0.0.1".to_string()]);
-        assert!(live_values_for_property(&cache, "interface", "string").is_some());
-        assert!(live_values_for_property(&cache, "bridge", "string").is_some());
-        assert!(live_values_for_property(&cache, "actual-interface", "string").is_some());
-        assert!(live_values_for_property(&cache, "foo", "iface_enum").is_some());
-        assert!(live_values_for_property(&cache, "address", "ipPrefix").is_some());
-        assert!(live_values_for_property(&cache, "comment", "string").is_none());
-    }
-
-    #[test]
-    fn test_stale_cache_returns_empty() {
-        let data = synth();
-        let mut cache = LiveCache::new(Duration::from_secs(0)); // TTL 0 => always stale
-        cache.insert("interfaces".to_string(), vec!["ether1".to_string()]);
-        // Even though an entry exists, it is stale so no live values.
-        let items =
-            compute_completions_with_live(&data, "/ip/address add interface=", Some(&cache));
-        assert!(items.is_empty(), "stale cache must behave like absent");
+        sanitize_detail_text(&format!("type: {capped}"))
     }
 }
