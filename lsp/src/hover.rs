@@ -5,7 +5,37 @@
 // 2. Is it a property name for the current menu?
 // 3. Is it a standard RouterOS verb?
 
-use crate::menus::MenuData;
+use crate::menus::{MenuData, MenuEntry};
+// Shared text helpers live in `crate::text_util` (single owner); the
+// re-exports below keep historical `hover::` paths resolving for tests.
+pub(crate) use crate::text_util::{MAX_HOVER_PROPERTIES, sanitize_markdown_for_hover};
+use crate::text_util::{normalize_key, type_gloss, verb_role};
+
+/// Case-insensitive menu lookup: exact hit first, then a linear scan.
+/// RouterOS paths are case-insensitive; the dataset keys are lowercase.
+fn find_menu<'a>(data: &'a MenuData, path: &str) -> Option<&'a MenuEntry> {
+    if let Some(m) = data.menu_by_path.get(path) {
+        return Some(m);
+    }
+    let needle = normalize_key(path);
+    data.menu_by_path
+        .iter()
+        .find(|(k, _)| normalize_key(k) == needle)
+        .map(|(_, v)| v)
+}
+
+/// Example value line for the most common scalar types.
+fn example_for(arg_type: &str) -> Option<&'static str> {
+    if arg_type.starts_with("ipPrefix") {
+        Some("Example: `192.168.1.1/24`")
+    } else if arg_type.starts_with("ipAddr") || arg_type == "address" {
+        Some("Example: `192.168.1.1`")
+    } else if arg_type == "bool" || arg_type == "boolean" {
+        Some("Example: `yes`")
+    } else {
+        None
+    }
+}
 
 /// Find word start (including /, -, _).
 ///
@@ -59,19 +89,35 @@ pub struct Hover {
 /// shared with navigation; hover re-attaches the prefix locally instead.
 fn colon_builtin_doc(colon_word: &str) -> Option<&'static str> {
     if colon_word.eq_ignore_ascii_case(":put") {
-        Some("Output values to the console.")
+        Some("`:put <value> — output values to the console.")
     } else if colon_word.eq_ignore_ascii_case(":if") {
-        Some("Conditional execution.")
+        Some("`:if (<cond>) do={...} — conditional execution.")
     } else if colon_word.eq_ignore_ascii_case(":foreach") {
-        Some("Iterate over a list.")
+        Some("`:foreach <var> in=<list> do={...} — iterate over a list.")
     } else if colon_word.eq_ignore_ascii_case(":for") {
-        Some("Counted loop.")
+        Some("`:for <var> from=<n> to=<m> do={...} — counted loop.")
     } else if colon_word.eq_ignore_ascii_case(":do") {
-        Some("Group commands.")
+        Some("`:do {...} while=(<cond>) — group commands.")
     } else if colon_word.eq_ignore_ascii_case(":local") {
-        Some("Declare a local variable.")
+        Some("`:local <name> [<value>] — declare a local variable.")
     } else if colon_word.eq_ignore_ascii_case(":global") {
-        Some("Declare or access a global variable.")
+        Some("`:global <name> [<value>] — declare or access a global variable.")
+    } else if colon_word.eq_ignore_ascii_case(":delay") {
+        Some("`:delay <seconds> — pause execution.")
+    } else if colon_word.eq_ignore_ascii_case(":error") {
+        Some("`:error <message> — raise a script error.")
+    } else if colon_word.eq_ignore_ascii_case(":return") {
+        Some("`:return [<value>] — return a value from a script.")
+    } else if colon_word.eq_ignore_ascii_case(":resolve") {
+        Some("`:resolve <host> — resolve a DNS name to an address.")
+    } else if colon_word.eq_ignore_ascii_case(":parse") {
+        Some("`:parse <text> — parse console commands from text.")
+    } else if colon_word.eq_ignore_ascii_case(":pick") {
+        Some("`:pick <value> <start> [<end>] — slice a string or array.")
+    } else if colon_word.eq_ignore_ascii_case(":tonum") {
+        Some("`:tonum <value> — convert a value to a number.")
+    } else if colon_word.eq_ignore_ascii_case(":totime") {
+        Some("`:totime <value> — convert a value to a time interval.")
     } else {
         None
     }
@@ -100,10 +146,10 @@ pub fn compute_hover(
             None
         };
 
-    // Check if it's a menu path
+    // Check if it's a menu path (case-insensitive; display keeps typed casing)
     // let chains (requires Rust 1.88+, MSRV is 1.94) — collapsed for clippy collapsible_if
     if word.starts_with('/')
-        && let Some(menu) = data.menu_by_path.get(word)
+        && let Some(menu) = find_menu(data, word)
     {
         let mut md = format!(
             "### {}\n\n**Type:** {}",
@@ -116,14 +162,29 @@ pub fn compute_hover(
         );
 
         if !menu.arguments.is_empty() {
+            let mut args: Vec<_> = menu.arguments.iter().collect();
+            args.sort_by(|a, b| {
+                b.required
+                    .cmp(&a.required)
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+            let total = args.len();
+            let shown = args.iter().take(MAX_HOVER_PROPERTIES);
             md.push_str("\n\n**Arguments:**");
-            for arg in &menu.arguments {
+            for arg in shown {
                 let typ = if arg.arg_type.is_empty() {
-                    "(any)"
+                    "any"
                 } else {
                     &arg.arg_type
                 };
-                md.push_str(&format!("\n  {}: {}", arg.name, typ));
+                let req = if arg.required { " (required)" } else { "" };
+                md.push_str(&format!("\n- **{}** `{}`{}", arg.name, typ, req));
+            }
+            if total > MAX_HOVER_PROPERTIES {
+                md.push_str(&format!(
+                    "\n\n(+{} more — see completion)",
+                    total - MAX_HOVER_PROPERTIES
+                ));
             }
         }
 
@@ -131,9 +192,9 @@ pub fn compute_hover(
             md.push_str("\n\n**Flags:**");
             for flag in &menu.flags {
                 let desc = if flag.description.is_empty() {
-                    ""
+                    String::new()
                 } else {
-                    &flag.description
+                    sanitize_markdown_for_hover(&flag.description)
                 };
                 md.push_str(&format!("\n  {} — {}", flag.name, desc));
             }
@@ -143,9 +204,9 @@ pub fn compute_hover(
             md.push_str("\n\n**Read-only:**");
             for ro in &menu.read_only {
                 let desc = if ro.description.is_empty() {
-                    ""
+                    String::new()
                 } else {
-                    &ro.description
+                    sanitize_markdown_for_hover(&ro.description)
                 };
                 md.push_str(&format!("\n  {} — {}", ro.name, desc));
             }
@@ -165,19 +226,41 @@ pub fn compute_hover(
     let before_cursor = crate::build_before_cursor(full_doc, cursor_line, character);
     let context = crate::parse_line(data, &before_cursor);
 
-    if let Some(menu) = data.menu_by_path.get(&context.path) {
-        if let Some(arg) = menu.arguments.iter().find(|a| a.name == word) {
+    if let Some(menu) = find_menu(data, &context.path) {
+        if let Some(arg) = menu
+            .arguments
+            .iter()
+            .find(|a| normalize_key(&a.name) == normalize_key(word))
+        {
             let typ = if arg.arg_type.is_empty() {
                 "any"
             } else {
                 &arg.arg_type
             };
             let mut md = format!("**{}**\n\nType: `{}`", arg.name, typ);
+            if let Some(gloss) = type_gloss(&arg.arg_type) {
+                md.push_str(&format!(" — {gloss}"));
+            }
+            // Context line: which command this property belongs to.
+            let ctx_line = match context.command.as_deref() {
+                Some(verb) => {
+                    let req = if arg.required { " · (required)" } else { "" };
+                    format!("\n\nin `{} {verb}`{req}", menu.path)
+                }
+                None => format!("\n\nin `{}`", menu.path),
+            };
+            md.push_str(&ctx_line);
             if !arg.enum_values.is_empty() {
                 md.push_str(&format!("\n\nValues: {}", arg.enum_values.join(" | ")));
             }
             if !arg.description.is_empty() {
-                md.push_str(&format!("\n\n{}", arg.description));
+                md.push_str(&format!(
+                    "\n\n{}",
+                    sanitize_markdown_for_hover(&arg.description)
+                ));
+            }
+            if let Some(ex) = example_for(&arg.arg_type) {
+                md.push_str(&format!("\n\n{ex}"));
             }
             return Some(Hover {
                 contents: HoverContents {
@@ -186,7 +269,11 @@ pub fn compute_hover(
                 },
             });
         }
-        if let Some(flag) = menu.flags.iter().find(|f| f.name == word) {
+        if let Some(flag) = menu
+            .flags
+            .iter()
+            .find(|f| normalize_key(&f.name) == normalize_key(word))
+        {
             // Hygiene: ~28% flags have empty description upstream; fallback to type so card never empty
             let md = if flag.description.is_empty() {
                 if flag.arg_type.is_empty() {
@@ -195,7 +282,11 @@ pub fn compute_hover(
                     format!("**{}**\n\nType: `{}`", flag.name, flag.arg_type)
                 }
             } else {
-                format!("**{}**\n\n{}", flag.name, flag.description)
+                format!(
+                    "**{}**\n\n{}",
+                    flag.name,
+                    sanitize_markdown_for_hover(&flag.description)
+                )
             };
             return Some(Hover {
                 contents: HoverContents {
@@ -211,7 +302,12 @@ pub fn compute_hover(
         .iter()
         .any(|v| word.eq_ignore_ascii_case(v))
     {
-        let md = format!("**{}**\n\nStandard RouterOS command.", word);
+        let role = verb_role(word);
+        let mut sentence = role.to_string();
+        if let Some(first) = sentence.get_mut(..1) {
+            first.make_ascii_uppercase();
+        }
+        let md = format!("**{word}**\n\n{sentence}.");
         return Some(Hover {
             contents: HoverContents {
                 kind: "markdown".to_string(),
@@ -241,800 +337,4 @@ pub fn compute_hover(
     }
 
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::menus::MenuData;
-
-    fn synthetic_data() -> MenuData {
-        let toml_str = r#"
-[[menus]]
-path = "/ip/address"
-type = "Directory"
-
-[[menus.arguments]]
-name = "address"
-type = "ipPrefix"
-description = "IP address"
-
-[[menus.arguments]]
-name = "interface"
-type = "iface_enum"
-
-[[menus.arguments]]
-name = "comment"
-type = "string"
-
-[[menus.arguments]]
-name = "no-type-prop"
-type = ""
-
-[[menus.flags]]
-name = "X"
-description = "disabled"
-
-[[menus.flags]]
-name = "D"
-description = ""
-
-[[menus]]
-path = "/ip/firewall/filter"
-type = "Directory"
-
-[[menus.arguments]]
-name = "chain"
-type = "enum (input | forward | output)"
-
-[[menus.arguments]]
-name = "action"
-type = "enum (accept | drop | reject)"
-
-[[menus]]
-path = "/interface/bridge"
-type = "Directory"
-
-[[menus]]
-path = "/empty/menu"
-type = "Directory"
-"#;
-        MenuData::from_toml_str(toml_str)
-    }
-
-    // ── Helpers for hover tests ───────────────────────────────────
-
-    fn hover_at(data: &MenuData, line: &str, character: usize) -> Option<Hover> {
-        // Single-line doc helper
-        compute_hover(data, line, character, line, 0)
-    }
-
-    // ── find_word_start / find_word_end ───────────────────────────
-
-    #[test]
-    fn test_find_word_start_mid_word() {
-        let line = "/ip/address";
-        // Cursor inside "address" (after "/ip/")
-        assert_eq!(find_word_start(line, 5), 0);
-        assert_eq!(find_word_start(line, 7), 0);
-    }
-
-    #[test]
-    fn test_find_word_start_at_boundary() {
-        let line = "/ip/address add";
-        // find_word_start looks backwards from pos, so at position 11 (space after "/ip/address")
-        // it includes the preceding word "/ip/address" because bytes[10] is alphanumeric.
-        // Expected to return 0 (start of menu path), not 11.
-        assert_eq!(find_word_start(line, 11), 0);
-        // At the space itself, word_end stays at 11 (space is not word char)
-        assert_eq!(find_word_end(line, 11), 11);
-        // Combined word extracted at space is "/ip/address"
-        let start = find_word_start(line, 11);
-        let end = find_word_end(line, 11);
-        assert_eq!(&line[start..end], "/ip/address");
-    }
-
-    #[test]
-    fn test_find_word_end_includes_slash_dash_underscore() {
-        let line = "/ip/firewall/filter";
-        let start = find_word_start(line, 5);
-        let end = find_word_end(line, 5);
-        assert_eq!(&line[start..end], "/ip/firewall/filter");
-    }
-
-    #[test]
-    fn test_find_word_with_dash_and_underscore() {
-        let line = "my-prop_name";
-        assert_eq!(find_word_start(line, 5), 0);
-        assert_eq!(find_word_end(line, 5), line.len());
-    }
-
-    #[test]
-    fn test_find_word_clamps_beyond_len() {
-        let line = "/ip/address";
-        let start = find_word_start(line, 100);
-        let end = find_word_end(line, 100);
-        // Beyond len should clamp and return the trailing word
-        assert_eq!(&line[start..end], "/ip/address");
-    }
-
-    #[test]
-    fn test_find_word_empty_line() {
-        let line = "";
-        assert_eq!(find_word_start(line, 0), 0);
-        assert_eq!(find_word_end(line, 0), 0);
-    }
-
-    // ── Menu hover ────────────────────────────────────────────────
-
-    #[test]
-    fn test_hover_menu_path_full() {
-        let data = synthetic_data();
-        let line = "/ip/address";
-        let h = hover_at(&data, line, 3).expect("should hover menu");
-        assert!(h.contents.value.contains("### /ip/address"));
-        assert!(h.contents.value.contains("**Type:** Directory"));
-        assert!(h.contents.value.contains("Arguments:"));
-        assert!(h.contents.value.contains("address: ipPrefix"));
-        assert!(h.contents.value.contains("Flags:"));
-        assert!(h.contents.value.contains("X — disabled"));
-        assert_eq!(h.contents.kind, "markdown");
-    }
-
-    #[test]
-    fn test_hover_menu_path_partial_inside() {
-        let data = synthetic_data();
-        let line = "/ip/address print";
-        // Hover at position inside "/ip/address" (character 5)
-        let h = compute_hover(&data, line, 5, line, 0)
-            .expect("should hover menu when cursor inside path");
-        assert!(h.contents.value.contains("/ip/address"));
-    }
-
-    #[test]
-    fn test_hover_menu_path_unknown_returns_none_or_verb() {
-        let data = synthetic_data();
-        let line = "/ip/unknown";
-        // "/ip/unknown" not in menu_by_path, next checks property/verb -> unknown -> None
-        let h = hover_at(&data, line, 4);
-        // Could be None or verb check (not a verb), so None
-        assert!(
-            h.is_none(),
-            "unknown menu should return None, got {:?}",
-            h.map(|x| x.contents.value)
-        );
-    }
-
-    #[test]
-    fn test_hover_menu_without_args() {
-        let data = synthetic_data();
-        let line = "/empty/menu";
-        let h = hover_at(&data, line, 2).expect("empty menu should still hover");
-        assert!(h.contents.value.contains("### /empty/menu"));
-        assert!(
-            !h.contents.value.contains("Arguments:"),
-            "should not contain Arguments section"
-        );
-    }
-
-    #[test]
-    fn test_hover_menu_type_fallback() {
-        let data = MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/test/menu"
-type = ""
-"#,
-        );
-        let line = "/test/menu";
-        let h = hover_at(&data, line, 2).unwrap();
-        assert!(
-            h.contents.value.contains("**Type:** Directory"),
-            "empty type should fallback to Directory"
-        );
-    }
-
-    // ── Property hover ────────────────────────────────────────────
-
-    #[test]
-    fn test_hover_property_name() {
-        let data = synthetic_data();
-        // Full doc is a single line command where property "address" appears
-        let line = "/ip/address add address=1.1.1.1";
-        // Position of second "address" (property name)
-        let prop_start = line.find("add ").unwrap() + 4; // start of "address=..."
-        let h = compute_hover(&data, line, prop_start + 2, line, 0).expect("should hover property");
-        assert!(h.contents.value.contains("**address**"));
-        assert!(h.contents.value.contains("ipPrefix"));
-    }
-
-    #[test]
-    fn test_hover_property_with_empty_type() {
-        let data = synthetic_data();
-        let line = "/ip/address add no-type-prop=value";
-        let prop_start = line.find("no-type-prop").unwrap();
-        let h = compute_hover(&data, line, prop_start + 1, line, 0)
-            .expect("should hover empty-type prop");
-        assert!(h.contents.value.contains("no-type-prop"));
-        assert!(h.contents.value.contains("any"));
-    }
-
-    #[test]
-    fn test_hover_property_wrong_menu_returns_none() {
-        let data = synthetic_data();
-        // "chain" is not a property of /ip/address, so hovering over "chain" there should be None
-        let line = "/ip/address add chain=input";
-        let prop_start = line.find("chain").unwrap();
-        let h = compute_hover(&data, line, prop_start + 1, line, 0);
-        // Not a property of /ip/address, not a verb, not a menu -> None
-        assert!(h.is_none());
-    }
-
-    #[test]
-    fn test_hover_property_multiline() {
-        let data = synthetic_data();
-        // RouterOS allows properties on next line (continuation)
-        let doc = "/ip/address add\naddress=1.1.1.1";
-        let lines: Vec<&str> = doc.lines().collect();
-        let line2 = lines[1]; // "address=1.1.1.1"
-        // Cursor_line = 1, character inside "address"
-        let h =
-            compute_hover(&data, line2, 2, doc, 1).expect("multiline property hover should work");
-        assert!(h.contents.value.contains("**address**"));
-    }
-
-    #[test]
-    fn test_hover_property_includes_description_text() {
-        let data = synthetic_data();
-        let line = "/ip/address add address=1.1.1.1";
-        let prop_pos = line.rfind("address=").unwrap() + 2;
-        let h = compute_hover(&data, line, prop_pos, line, 0).expect("property hover");
-        assert!(h.contents.value.contains("**address**"));
-        assert!(h.contents.value.contains("Type: `ipPrefix`"));
-        assert!(
-            h.contents.value.contains("IP address"),
-            "hover must include the description text, got: {}",
-            h.contents.value
-        );
-    }
-
-    #[test]
-    fn test_hover_property_without_description_has_no_trailing_gap() {
-        // /ip/address interface has no description in this fixture.
-        let data = synthetic_data();
-        let line = "/ip/address add interface=ether1";
-        let prop_pos = line.find("interface").unwrap();
-        let h = compute_hover(&data, line, prop_pos, line, 0).expect("property hover");
-        // Type line present, no description section appended.
-        assert!(h.contents.value.contains("Type: `iface_enum`"));
-        assert_eq!(
-            h.contents.value.matches('\n').count(),
-            2,
-            "exactly header+type lines when no description"
-        );
-    }
-
-    #[test]
-    fn test_hover_property_shows_embedded_enum_values() {
-        let data = MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/demo/enum"
-type = "Directory"
-[[menus.arguments]]
-name = "mode"
-type = "enum (on | of..."
-enum_values = ["on", "off", "auto"]
-"#,
-        );
-        let line = "/demo/enum set mode=on";
-        let pos = line.find("mode").unwrap() + 1;
-        let h = compute_hover(&data, line, pos, line, 0).expect("enum property hover");
-        assert!(
-            h.contents.value.contains("Values: on | off | auto"),
-            "complete embedded members shown even with truncated display type: {}",
-            h.contents.value
-        );
-    }
-
-    // ── Flag hover ────────────────────────────────────────────────
-
-    #[test]
-    fn test_hover_flag() {
-        let data = synthetic_data();
-        let line = "/ip/address add X";
-        let flag_pos = line.find('X').unwrap();
-        let h = compute_hover(&data, line, flag_pos, line, 0).expect("should hover flag X");
-        assert!(h.contents.value.contains("**X**"));
-        assert!(h.contents.value.contains("disabled"));
-    }
-
-    #[test]
-    fn test_hover_flag_empty_description() {
-        let data = synthetic_data();
-        let line = "/ip/address add D";
-        let flag_pos = line.find('D').unwrap();
-        let h = compute_hover(&data, line, flag_pos, line, 0).expect("should hover flag D");
-        assert!(h.contents.value.contains("**D**"));
-    }
-
-    // ── Verb hover ─────────────────────────────────────────────────
-
-    #[test]
-    fn test_hover_verb_add() {
-        let data = synthetic_data();
-        let line = "/ip/address add";
-        // Use rfind to get the verb's "add", not the "add" inside "address"
-        let verb_pos = line.rfind("add").unwrap() + 1;
-        let h = compute_hover(&data, line, verb_pos, line, 0).expect("should hover verb add");
-        assert!(h.contents.value.contains("**add**"));
-        assert!(h.contents.value.contains("Standard RouterOS command"));
-    }
-
-    #[test]
-    fn test_hover_verb_print_without_menu() {
-        let data = synthetic_data();
-        // Hovering over "print" alone (no menu) should still return verb hover
-        // But context path is empty, so property check fails, then verb check succeeds
-        let line = "print";
-        let h = hover_at(&data, line, 2).expect("should hover verb print even without menu");
-        assert!(h.contents.value.contains("print"));
-    }
-
-    #[test]
-    fn test_hover_verb_case_sensitive() {
-        let data = synthetic_data();
-        // Verbs are now case-insensitive (RouterOS is case-insensitive for commands)
-        let line = "/ip/address Add"; // capital A
-        let h = hover_at(&data, line, line.find("Add").unwrap() + 1);
-        assert!(
-            h.is_some(),
-            "verb hover is now case-insensitive — 'Add' should resolve, got None"
-        );
-        assert!(h.unwrap().contents.value.contains("Add"));
-    }
-
-    #[test]
-    fn test_hover_verb_case_insensitive() {
-        let data = synthetic_data();
-        for (line, word) in [
-            ("/ip/address Add", "Add"),
-            ("/ip/address PRINT", "PRINT"),
-            ("/ip/firewall/filter Disable", "Disable"),
-        ] {
-            let pos = line.find(word).unwrap() + 1;
-            let h = hover_at(&data, line, pos)
-                .unwrap_or_else(|| panic!("case-insensitive verb '{word}' should hover"));
-            assert!(
-                h.contents.value.contains(word),
-                "hover for '{word}' must contain original casing, got: {}",
-                h.contents.value
-            );
-            assert!(h.contents.value.contains("Standard RouterOS command"));
-        }
-    }
-
-    // ── Not found / edge cases ────────────────────────────────────
-
-    #[test]
-    fn test_hover_empty_line_returns_none() {
-        let data = synthetic_data();
-        let line = "";
-        assert!(hover_at(&data, line, 0).is_none());
-    }
-
-    #[test]
-    fn test_hover_whitespace_returns_none() {
-        let data = synthetic_data();
-        let line = "   ";
-        assert!(hover_at(&data, line, 1).is_none());
-    }
-
-    #[test]
-    fn test_hover_on_space_between_tokens_returns_menu() {
-        let data = synthetic_data();
-        let line = "/ip/address add";
-        // Space at 11 (between "/ip/address" and "add") – hover logic includes preceding word
-        let h = hover_at(&data, line, 11).expect("space after menu should hover menu");
-        assert!(h.contents.value.contains("/ip/address"));
-    }
-
-    #[test]
-    fn test_hover_on_leading_space_returns_none() {
-        let data = synthetic_data();
-        let line = "   /ip/address";
-        // Leading spaces: position 0 is space, word empty
-        assert!(hover_at(&data, line, 0).is_none());
-        assert!(hover_at(&data, line, 1).is_none());
-    }
-
-    #[test]
-    fn test_hover_unknown_word_returns_none() {
-        let data = synthetic_data();
-        let line = "/ip/address add unknownprop";
-        let pos = line.find("unknownprop").unwrap() + 2;
-        assert!(hover_at(&data, line, pos).is_none());
-    }
-
-    #[test]
-    fn test_hover_character_beyond_line_clamped() {
-        let data = synthetic_data();
-        let line = "/ip/address";
-        // Character 100 is clamped to end, word still "/ip/address"
-        let h = compute_hover(&data, line, 100, line, 0)
-            .expect("should still hover when char beyond line");
-        assert!(h.contents.value.contains("/ip/address"));
-    }
-
-    #[test]
-    fn test_hover_unicode_boundary_safe() {
-        let data = synthetic_data();
-        // RSC is ASCII, but test robustness with multi-byte char in doc (even if not valid RSC)
-        let line = "/ip/address add comment=\"héllo\"";
-        // Character offset inside multi-byte — floor_char_boundary should keep it safe
-        let h = hover_at(&data, line, 5);
-        // Should not panic
-        assert!(h.is_some() || h.is_none());
-    }
-
-    // ── Real data sanity ──────────────────────────────────────────
-
-    #[test]
-    fn test_hover_real_menu() {
-        let data = MenuData::load();
-        let line = "/ip/firewall/filter";
-        let h = hover_at(&data, line, 5).expect("real /ip/firewall/filter should hover");
-        assert!(h.contents.value.contains("/ip/firewall/filter"));
-    }
-
-    #[test]
-    fn test_hover_real_property() {
-        let data = MenuData::load();
-        let line = "/ip/address add address=1.1.1.1";
-        let _pos = line.find("address").unwrap() + 2; // first "address" is inside path, but word is "/ip/address" there
-        // Use second occurrence: the property name after "add "
-        let prop_pos = line.rfind("address=").unwrap() + 2;
-        let h = compute_hover(&data, line, prop_pos, line, 0).expect("real property hover");
-        assert!(h.contents.value.contains("address"));
-    }
-
-    #[test]
-    fn test_hover_colon_put() {
-        let data = synthetic_data();
-        let line = ":put hello";
-        let h = hover_at(&data, line, 2).expect(":put should hover");
-        assert!(h.contents.value.contains(":put"));
-        assert!(h.contents.value.contains("console"));
-    }
-
-    #[test]
-    fn test_hover_colon_foreach() {
-        let data = synthetic_data();
-        let line = ":foreach i in=[find] do={ :put $i }";
-        let pos = line.find("foreach").unwrap() + 1;
-        let h = hover_at(&data, line, pos).expect(":foreach should hover");
-        assert!(h.contents.value.contains(":foreach"));
-    }
-
-    #[test]
-    fn test_hover_colon_unknown_fallback() {
-        let data = synthetic_data();
-        let line = ":delay 1s";
-        let pos = line.find("delay").unwrap() + 1;
-        let h = hover_at(&data, line, pos).expect("unknown :keyword gets fallback");
-        assert!(h.contents.value.contains(":delay"));
-        assert!(h.contents.value.contains("Script command"));
-    }
-}
-
-#[cfg(test)]
-mod extra_coverage {
-    use super::*;
-    use crate::menus::MenuData;
-
-    fn synth() -> MenuData {
-        MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/ip/address"
-type = "Directory"
-[[menus.arguments]]
-name = "address"
-type = "ipPrefix"
-description = "IP address"
-[[menus.arguments]]
-name = "interface"
-type = "iface_enum"
-[[menus.flags]]
-name = "X"
-description = "disabled"
-[[menus.flags]]
-name = "D"
-description = ""
-[[menus]]
-path = "/ip/firewall/filter"
-type = "Directory"
-[[menus.arguments]]
-name = "chain"
-type = "enum (input | forward | output)"
-[[menus.arguments]]
-name = "action"
-type = "enum (accept | drop | reject)"
-"#,
-        )
-    }
-
-    fn hover_at(data: &MenuData, line: &str, character: usize) -> Option<Hover> {
-        compute_hover(data, line, character, line, 0)
-    }
-
-    // ── Menu path with type+args+flags ─────────────────────────────────
-
-    #[test]
-    fn test_hover_menu_shows_type_args_flags() {
-        let data = synth();
-        let line = "/ip/address";
-        let h = hover_at(&data, line, 4).expect("menu hover");
-        assert!(h.contents.value.contains("### /ip/address"));
-        assert!(h.contents.value.contains("**Type:** Directory"));
-        assert!(h.contents.value.contains("**Arguments:**"));
-        assert!(h.contents.value.contains("address: ipPrefix"));
-        assert!(h.contents.value.contains("interface: iface_enum"));
-        assert!(h.contents.value.contains("**Flags:**"));
-        assert!(h.contents.value.contains("X — disabled"));
-        // Flag D with empty description should still appear
-        assert!(h.contents.value.contains("D —"));
-        assert_eq!(h.contents.kind, "markdown");
-    }
-
-    #[test]
-    fn test_hover_menu_shows_correct_type_for_custom() {
-        let data = MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/tool/ping"
-type = "Command"
-"#,
-        );
-        let h = hover_at(&data, "/tool/ping", 2).unwrap();
-        assert!(h.contents.value.contains("**Type:** Command"));
-    }
-
-    #[test]
-    fn test_hover_menu_without_args_no_arguments_section() {
-        let data = MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/empty/menu"
-type = "Directory"
-"#,
-        );
-        let h = hover_at(&data, "/empty/menu", 2).unwrap();
-        assert!(!h.contents.value.contains("Arguments:"));
-        assert!(!h.contents.value.contains("Flags:"));
-    }
-
-    // ── Property type ──────────────────────────────────────────────────
-
-    #[test]
-    fn test_hover_property_shows_type() {
-        let data = synth();
-        let line = "/ip/address add address=1.1.1.1";
-        let pos = line.rfind("address=").unwrap() + 2;
-        let h = compute_hover(&data, line, pos, line, 0).expect("property hover");
-        assert!(h.contents.value.contains("**address**"));
-        assert!(h.contents.value.contains("ipPrefix"));
-        assert_eq!(h.contents.kind, "markdown");
-    }
-
-    #[test]
-    fn test_hover_property_shows_enum_type() {
-        let data = synth();
-        let line = "/ip/firewall/filter add chain=input";
-        let pos = line.find("chain").unwrap() + 2;
-        let h = compute_hover(&data, line, pos, line, 0).expect("enum prop hover");
-        assert!(h.contents.value.contains("**chain**"));
-        assert!(h.contents.value.contains("enum"));
-    }
-
-    #[test]
-    fn test_hover_property_for_each_arg_type() {
-        let data = synth();
-        let cases = [
-            ("/ip/address add address=1.1.1.1/24", "address", "ipPrefix"),
-            (
-                "/ip/address add interface=ether1",
-                "interface",
-                "iface_enum",
-            ),
-            ("/ip/firewall/filter add chain=input", "chain", "enum"),
-        ];
-        for (line, prop, typ_substr) in cases {
-            let pos = line.find(prop).unwrap() + 1;
-            // Need to ensure we hover over property name, not path: use second occurrence if line contains "/ip/address"
-            let doc = line;
-            let prop_pos = if doc.matches(prop).count() > 1 {
-                doc.rfind(&format!("{}=", prop)).unwrap() + 1
-            } else {
-                pos
-            };
-            let h = compute_hover(&data, doc, prop_pos, doc, 0).expect("prop hover");
-            assert!(h.contents.value.contains(prop));
-            assert!(
-                h.contents.value.contains(typ_substr),
-                "expected {typ_substr} in {}",
-                h.contents.value
-            );
-        }
-    }
-
-    #[test]
-    fn test_hover_property_wrong_menu_returns_none() {
-        let data = synth();
-        // chain is not a property of /ip/address
-        let line = "/ip/address add chain=input";
-        let pos = line.find("chain").unwrap() + 1;
-        assert!(hover_at(&data, line, pos).is_none());
-    }
-
-    #[test]
-    fn test_hover_flag_shows_description() {
-        let data = synth();
-        let line = "/ip/address add X";
-        let pos = line.find('X').unwrap();
-        let h = hover_at(&data, line, pos).unwrap();
-        assert!(h.contents.value.contains("**X**"));
-        assert!(h.contents.value.contains("disabled"));
-    }
-
-    // ── Verb hover ─────────────────────────────────────────────────────
-
-    #[test]
-    fn test_hover_verb_shows_standard_message() {
-        let data = synth();
-        let line = "/ip/address add";
-        let pos = line.rfind("add").unwrap() + 1;
-        let h = hover_at(&data, line, pos).expect("verb hover");
-        assert!(h.contents.value.contains("**add**"));
-        assert!(h.contents.value.contains("Standard RouterOS command"));
-    }
-
-    #[test]
-    fn test_hover_verb_all_standard_verbs() {
-        let data = synth();
-        for verb in MenuData::STANDARD_VERBS {
-            let line = format!("/ip/address {verb}");
-            let pos = line.find(verb).unwrap() + 1;
-            let h = hover_at(&data, &line, pos);
-            assert!(h.is_some(), "verb {verb} should hover");
-            assert!(h.unwrap().contents.value.contains(verb));
-        }
-    }
-
-    #[test]
-    fn test_hover_verb_without_menu_also_works() {
-        let data = synth();
-        let h = hover_at(&data, "print", 2).expect("bare verb");
-        assert!(h.contents.value.contains("print"));
-    }
-
-    // ── Unknown word returns None ──────────────────────────────────────
-
-    #[test]
-    fn test_hover_unknown_word_returns_none() {
-        let data = synth();
-        let line = "/ip/address add unknownprop=foo";
-        let pos = line.find("unknownprop").unwrap() + 2;
-        assert!(hover_at(&data, line, pos).is_none());
-    }
-
-    #[test]
-    fn test_hover_unknown_menu_returns_none() {
-        let data = synth();
-        let line = "/unknown/menu";
-        assert!(hover_at(&data, line, 4).is_none());
-    }
-
-    #[test]
-    fn test_hover_random_word_returns_none() {
-        let data = synth();
-        let line = "/ip/address add address=1.1.1.1";
-        // Hover over value part which is not a known word (should be none)
-        let pos = line.find("1.1.1.1").unwrap() + 2;
-        assert!(hover_at(&data, line, pos).is_none());
-    }
-
-    #[test]
-    fn test_hover_empty_word_returns_none() {
-        let data = synth();
-        assert!(hover_at(&data, "", 0).is_none());
-        assert!(hover_at(&data, "   ", 1).is_none());
-        assert!(hover_at(&data, "/ip/address add", 11).is_some()); // space after menu -> hovers menu, not none
-        // But leading space yields none
-        assert!(hover_at(&data, "   /ip/address", 0).is_none());
-    }
-
-    #[test]
-    fn test_hover_on_equals_sign_returns_none_or_property() {
-        let data = synth();
-        let line = "/ip/address add address=1.1.1.1";
-        let eq_pos = line.find('=').unwrap();
-        // Word extraction at '=': find_word_start looks backwards, includes "address", word_end stops at "="
-        // So hovering at "=" will extract "address" -> should hover property
-        let h = hover_at(&data, line, eq_pos);
-        // Could be property hover or None depending on word extraction; either is acceptable if not panicking
-        let _ = h;
-        // Ensure no panic and deterministic
-        assert!(
-            hover_at(&data, line, eq_pos).is_none()
-                || hover_at(&data, line, eq_pos)
-                    .unwrap()
-                    .contents
-                    .value
-                    .contains("address")
-        );
-    }
-
-    #[test]
-    fn test_hover_multiline_property_still_works() {
-        let data = synth();
-        let doc = "/ip/address add\ninterface=ether1";
-        let lines: Vec<&str> = doc.lines().collect();
-        let l1 = lines[1];
-        let h = compute_hover(&data, l1, 2, doc, 1).expect("multiline");
-        assert!(h.contents.value.contains("interface"));
-    }
-
-    #[test]
-    fn test_hover_real_data_menu_and_property() {
-        let data = MenuData::load();
-        let line = "/ip/firewall/filter";
-        let h = hover_at(&data, line, 5).expect("real menu");
-        assert!(h.contents.value.contains("**Type:**"));
-        let line2 = "/ip/address add address=1.1.1.1";
-        let pos = line2.rfind("address=").unwrap() + 1;
-        let h2 = compute_hover(&data, line2, pos, line2, 0).expect("real prop");
-        assert!(h2.contents.value.contains("address"));
-    }
-
-    #[test]
-    fn test_hover_menu_shows_read_only() {
-        let data = MenuData::from_toml_str(
-            r#"
-[[menus]]
-path = "/demo/ro"
-type = "Directory"
-[[menus.arguments]]
-name = "name"
-type = "string"
-[[menus.flags]]
-name = "X"
-description = "disabled"
-[[menus.read_only]]
-name = "creation-time"
-type = "string"
-description = "when created"
-[[menus.read_only]]
-name = "dynamic-id"
-type = "string"
-description = ""
-"#,
-        );
-        let h = hover_at(&data, "/demo/ro", 2).expect("menu hover with read-only");
-        assert!(h.contents.value.contains("**Arguments:**"));
-        assert!(h.contents.value.contains("**Flags:**"));
-        assert!(h.contents.value.contains("**Read-only:**"));
-        assert!(h.contents.value.contains("creation-time — when created"));
-        // Empty description fallback: "name — " (same as flags)
-        assert!(h.contents.value.contains("dynamic-id —"));
-        assert_eq!(h.contents.kind, "markdown");
-    }
-
-    #[test]
-    fn test_hover_menu_without_read_only_no_section() {
-        let data = synth();
-        // synth has no read_only, so section must be absent
-        let h = hover_at(&data, "/ip/address", 2).expect("menu hover");
-        assert!(!h.contents.value.contains("Read-only:"));
-    }
 }
