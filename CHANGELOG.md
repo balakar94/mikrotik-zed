@@ -4,6 +4,16 @@
 
 ### Added
 
+- **LSP completion (`lsp/src/completion.rs`)**: deterministic relevance ranking — `sortText` tiers (`0!live_` device truth < required < optional < verb < submenu < enum < common-hint < placeholder < flag < typo-fallback < snippet) with exact/prefix/substring quality inside each tier; truncation at `MAX_COMPLETION_ITEMS=200` is relevance-ordered. Typed-prefix `filterText` plus `textEdit` replacement shadows for values and submenus (`chain=in` + `input` no longer yields `ininput`). Curated `chain=input|forward|output` common hints (`common value — verify on device`); device-dependent types stay silent without live data.
+- **LSP hover/signature (`lsp/src/hover.rs`, `lsp/src/signature.rs`, `lsp/src/text_util.rs`)**: shared text helpers (markdown/label/glossary previously triplicated). Menu hover capped at 12 required-first properties with a `(+N more)` footer and required badges; property hover gains context (`in \`/path verb\``) and example lines; 15-verb glossary and 15 colon builtins. Signature filters already-typed pairs, collapses long enums, advances `activeParameter`, and names the verb role. Upstream markdown sanitized, label/detail budgets enforced with offsets intact.
+- **LSP diagnostics (`lsp/src/diagnostics.rs`, `lsp/src/menus.rs`, `lsp/src/suggest.rs`)**: Hint-only typed validators (`invalid-bool/num/time/mac/ip/ubit-value`), silent on empty/truncated/dynamic values; `non-unsettable-property` hint (consumes `ArgEntry.unset`) and `read-only-write` notice. Per-publish suggestion budget (100): large unknown-heavy documents publish in ~1.5s instead of stalling past 10s, same codes/severities minus the suffix.
+- **LSP structure (`lsp/src/symbols.rs`, `lsp/src/navigation.rs`, `lsp/src/folding.rs`)**: collapsed `(×N)` outline symbols with `comment=`/distinguishing-prop detail; `$var` indexed inside double-quoted strings; folding/symbols caps enforced and sorted.
+- **Live TLS (`lsp/src/live.rs`, `scripts/`)**: `MIKROTIK_FINGERPRINT=sha256:<hex>` / `MIKROTIK_CA_FILE` (+ `--fingerprint`/`--ca-file` flags) with fail-closed pin verification; resolve-then-revalidate DNS on every fetch; `/rest/` path boundary; bounded CA loading (256 KiB + negative cache).
+- **Tests (`lsp/src/tests/`, `lsp/tests/`)**: white-box suite normalized to `<module>_<aspect>.rs` (96 files, ≤300 soft cap, shared fixtures); new framing-chaos and perf-smoke E2E targets; tasks mirror gate; weekly release perf CI (`.github/workflows/perf.yml`).
+- **Zed tasks (`languages/rsc/tasks.json`, `.zed/tasks.json`)**: workflow order check → deploy → verify; Validate retargeted to a real local preflight; no secrets in task env.
+
+### Changed
+
 - **LSP diagnostics (`lsp/src/diagnostics.rs`, `lsp/src/caps.rs`)**: `MAX_DIAGNOSTICS=2000` bound on total semantic diagnostics per publish — `compute_diagnostics` now truncates before the syntax extend, and the `truncated` hint covers the count-only case. Previously a single logical line carrying tens of thousands of distinct unknown keys yielded one heap `Diagnostic` per key.
 
 ### Changed
@@ -13,11 +23,19 @@
 - **Caps registry (`lsp/src/caps.rs`)**: indexed `MAX_CONCURRENT_FETCHES=2` and `MAX_DIAGNOSTICS=2000` in the central table, per the "every limit discoverable from ONE place" policy.
 - **LSP internals**: removed dead `build_base_url` wrapper (all callers use `build_base_url_with_allow`), unused test helper `cfg_with_no_loopback`, and write-only `LineContext.last_token` field; fixed stale "Uses `build_base_url`" doc references.
 - **Docs**: grammar corpus `Simple array` slow-parse warning documented as expected CLI timing noise (`.agents/skills/qa-ci-release.md`); README credential sections now state settings-provided secrets are ignored with a warning.
+- **Diagnostics severity (`lsp/src/diagnostics.rs`)**: `missing-required` Information → Warning and `invalid-enum-value` Hint → Warning (both break `/import`); `Did you mean …?` appended to typo messages; syntax cap gets an explicit `truncated` footer.
+- **Settings trust (`lsp/src/live.rs`, `lsp/src/server.rs`)**: transport-security keys and settings `host`/`user` redirects are ignored by default unless `RSC_LS_ALLOW_SETTINGS_TRANSPORT=1` (env always wins), with loud WARNs. **Behavior change**: live targets configured only via workspace settings stop applying; set the host via env or opt in explicitly.
+- **Legacy HTTP shim (`lsp/src/live.rs`)**: silent `port 80 + SSL=0 → http` downgrade is off by default (matches the Python companions); opt back in with `RSC_LS_LEGACY_HTTP_SHIM=1`. Use `MIKROTIK_HTTP=1` for plain HTTP.
+- **Live cache (`lsp/src/server.rs`)**: `didChange` no longer wipes device snapshots (TTL 60s / negative 15s govern); invalidation only on `didClose`, connection-identity change (now including pin/CA), and `rsc.live.refresh`.
 - **LSP startup banner (`lsp/src/main.rs`, `lsp/src/logging.rs`, `lsp/src/menus.rs`)**: Zed-only 4-line banner — start time (UTC) + pid + log level, dataset provenance (`RouterOS` version, menus, src hash), live status, encoding + effective TLS (WARN when insecure); every line carries a monotonic `[T+…s]` tag. No ANSI colors (Zed shows server stderr as plain text).
 
 ### Fixed
 
 - **LSP live security (`lsp/src/live.rs`)**: `MIKROTIK_PASS` (and `pass`/`password`) in workspace settings is now ignored with a warning — env/keychain is the sole password source. Previously a secret in `.zed/settings.json` (a committable file) was silently ingested. **Behavior change**: live auth configured only via settings stops working; move the password to the environment/keychain.
+- **Validator false positive (`lsp/src/diagnostics.rs`)**: space-separated `ubit` values (`rates=1Mbps, 2Mbps`) no longer flag the whitespace-split remainder; only genuinely empty members (`,`, `a,,b`) hint.
+- **JSON parse errors (`lsp/src/server.rs`)**: malformed bodies answer `-32700 Parse error` (best-effort id echo) instead of hanging the client.
+- **Live-check urllib fallback (`scripts/mikrotik-live-check.py`)**: TLS context now travels on `HTTPSHandler` — `OpenerDirector.open()` has no `context` kwarg, so the no-`requests` path always failed with `TypeError`.
+- **Python test contracts (`tests/`)**: pins updated to the new behavior (live sort key `0!live_`, central `redact_secrets`, redirect-blocking mocks, fail-closed link-local); mocked `build_opener` transport for the urllib path.
 
 ## [0.5.5] - 2026-09-02
 
