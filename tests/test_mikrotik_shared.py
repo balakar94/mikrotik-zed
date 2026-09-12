@@ -12,7 +12,9 @@ import http.server
 import importlib.util
 import ipaddress
 import os
+import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -31,6 +33,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from _mikrotik_shared import (  # noqa: E402
     build_pinned_requests_session,
+    build_pinned_urllib_handlers,
     check_target,
     check_target_with_addrs,
     clamp_int,
@@ -49,6 +52,7 @@ from _mikrotik_shared import (  # noqa: E402
     spki_sha256,
     validate_host,
     validate_user,
+    verify_spki_pin_on_socket,
 )
 
 
@@ -769,6 +773,13 @@ class TestDeploySshResolveGate:
 # ── Pinned resolve-then-connect (Python TOCTOU closure) ───────────
 
 
+class _QuietHTTPServer(http.server.ThreadingHTTPServer):
+    """ThreadingHTTPServer that swallows client resets (pin-mismatch tests)."""
+
+    def handle_error(self, request, client_address):
+        pass
+
+
 @contextlib.contextmanager
 def _local_http_server():
     """Run a loopback HTTP server; yield ``(port, seen)``.
@@ -790,7 +801,7 @@ def _local_http_server():
         def log_message(self, *args):
             pass
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    server = _QuietHTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -924,3 +935,216 @@ class TestDeploySshPinnedSocket:
         assert calls["sock"] is sentinel
         # No --accept-host-key: the default (reject unknown) policy stands.
         assert "policy_set" not in calls
+
+
+# ── Same-connection SPKI pin verification ────────────────────────
+
+
+class _FakeTLSSocket:
+    """Minimal established-TLS-socket stand-in exposing getpeercert()."""
+
+    def __init__(self, der: bytes):
+        self._der = der
+
+    def getpeercert(self, binary_form=False):
+        return self._der if binary_form else {}
+
+
+class TestVerifySpkiPinOnSocketUnit:
+    def test_matching_pin_passes(self):
+        cert = _synthetic_cert(TestDerSpkiWalker.SPKI)
+        pin = spki_sha256(cert)
+        assert pin is not None
+        verify_spki_pin_on_socket(_FakeTLSSocket(cert), pin)  # must not raise
+
+    def test_wrong_pin_raises(self):
+        cert = _synthetic_cert(TestDerSpkiWalker.SPKI)
+        with pytest.raises(ssl.SSLError):
+            verify_spki_pin_on_socket(_FakeTLSSocket(cert), b"\x00" * 32)
+
+    def test_missing_cert_raises(self):
+        with pytest.raises(ssl.SSLError):
+            verify_spki_pin_on_socket(_FakeTLSSocket(b""), b"\x00" * 32)
+        with pytest.raises(ssl.SSLError):
+            verify_spki_pin_on_socket(None, b"\x00" * 32)
+
+    def test_none_pin_is_noop(self):
+        # No pin configured: even a missing socket is fine.
+        verify_spki_pin_on_socket(None, None)
+
+
+@contextlib.contextmanager
+def _local_https_server(tmp_path):
+    """Self-signed loopback HTTPS server; yield ``(port, seen, cert, pin)``.
+
+    ``seen`` accumulates ``(path, authorization)``. The cert is generated with
+    the ``openssl`` CLI (no Python crypto dependency); tests skip when the
+    binary is unavailable.
+    """
+    openssl = shutil.which("openssl")
+    if openssl is None:
+        pytest.skip("openssl not available to generate a self-signed test cert")
+    cert = tmp_path / "cert.pem"
+    key = tmp_path / "key.pem"
+    # Config file (rather than -subj/-addext) so both OpenSSL and LibreSSL
+    # accept it; the SAN lets the CA-file test keep hostname verification on.
+    cfg = tmp_path / "openssl.cnf"
+    cfg.write_text(
+        "[req]\n"
+        "distinguished_name = dn\n"
+        "x509_extensions = v3\n"
+        "prompt = no\n"
+        "\n"
+        "[dn]\n"
+        "CN = localhost\n"
+        "\n"
+        "[v3]\n"
+        "subjectAltName = DNS:localhost\n"
+        "basicConstraints = CA:TRUE\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [
+            openssl,
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-keyout",
+            str(key),
+            "-out",
+            str(cert),
+            "-days",
+            "1",
+            "-nodes",
+            "-config",
+            str(cfg),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    seen: list[tuple[str, str | None]] = []
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append((self.path, self.headers.get("Authorization")))
+            body = b"[]"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.load_cert_chain(str(cert), str(key))
+    server = _QuietHTTPServer(("127.0.0.1", 0), _Handler)
+    server.socket = server_ctx.wrap_socket(server.socket, server_side=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    pin = spki_sha256(ssl.PEM_cert_to_DER_cert(cert.read_text(encoding="utf-8")))
+    try:
+        yield server.server_address[1], seen, cert, pin
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+class TestPinnedTlsSameConnection:
+    """Integration proof that the pin is checked on the request connection.
+
+    A request only reaches the server when the pin matches, so the
+    ``seen`` log distinguishes "verified before send" from "sent then
+    rejected". Coverage limitation: this exercises the HTTP client paths; it
+    does not assert the exact wire ordering inside a third-party TLS stack.
+    """
+
+    def test_matching_pin_request_reaches_server(self, monkeypatch, tmp_path):
+        pytest.importorskip("requests")
+        with _local_https_server(tmp_path) as (port, seen, _cert, pin):
+            _disable_dns(monkeypatch)
+            session = build_pinned_requests_session(
+                "admin", "secret", ["127.0.0.1"], "", True, pin, "https"
+            )
+            try:
+                resp = session.get(
+                    f"https://localhost:{port}/rest/interface",
+                    timeout=5,
+                    allow_redirects=False,
+                )
+            finally:
+                session.close()
+            assert resp.status_code == 200
+            assert len(seen) == 1
+            assert seen[0][0] == "/rest/interface"
+            assert seen[0][1] and seen[0][1].startswith("Basic ")
+
+    def test_mismatched_pin_sends_no_request(self, monkeypatch, tmp_path):
+        requests = pytest.importorskip("requests")
+        with _local_https_server(tmp_path) as (port, seen, _cert, _pin):
+            _disable_dns(monkeypatch)
+            session = build_pinned_requests_session(
+                "admin", "secret", ["127.0.0.1"], "", True, b"\x00" * 32, "https"
+            )
+            try:
+                with pytest.raises(requests.exceptions.RequestException):
+                    session.get(
+                        f"https://localhost:{port}/rest/interface",
+                        timeout=5,
+                        allow_redirects=False,
+                    )
+            finally:
+                session.close()
+            assert seen == []
+
+    def test_ca_file_keeps_chain_and_requires_pin(self, monkeypatch, tmp_path):
+        requests = pytest.importorskip("requests")
+        with _local_https_server(tmp_path) as (port, seen, cert, pin):
+            _disable_dns(monkeypatch)
+            # Correct pin + custom CA chain + hostname match: succeeds.
+            session = build_pinned_requests_session(
+                "admin", "secret", ["127.0.0.1"], str(cert), True, pin, "https"
+            )
+            try:
+                resp = session.get(
+                    f"https://localhost:{port}/", timeout=5, allow_redirects=False
+                )
+            finally:
+                session.close()
+            assert resp.status_code == 200
+            assert len(seen) == 1
+            # Same CA file + wrong pin: chain validates, pin must still fail.
+            seen.clear()
+            session = build_pinned_requests_session(
+                "admin", "secret", ["127.0.0.1"], str(cert), True, b"\x00" * 32, "https"
+            )
+            try:
+                with pytest.raises(requests.exceptions.RequestException):
+                    session.get(
+                        f"https://localhost:{port}/", timeout=5, allow_redirects=False
+                    )
+            finally:
+                session.close()
+            assert seen == []
+
+    def test_urllib_fallback_verifies_pin_on_same_connection(self, tmp_path):
+        import urllib.error
+        import urllib.request
+
+        with _local_https_server(tmp_path) as (port, seen, _cert, pin):
+            def _open(pin_value):
+                ctx = ssl._create_unverified_context()
+                handlers = build_pinned_urllib_handlers(["127.0.0.1"], ctx, pin_value)
+                opener = urllib.request.build_opener(*handlers)
+                req = urllib.request.Request(f"https://localhost:{port}/", method="GET")
+                return opener.open(req, timeout=5)
+
+            with _open(pin) as resp:
+                assert resp.status == 200
+            assert len(seen) == 1
+            seen.clear()
+            with pytest.raises((urllib.error.URLError, OSError)):
+                _open(b"\x00" * 32)
+            assert seen == []

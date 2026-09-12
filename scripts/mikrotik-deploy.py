@@ -78,7 +78,6 @@ from _mikrotik_shared import (  # noqa: E402
     resolve_scheme,
     validate_host,
     validate_user,
-    verify_tls_pin,
 )
 
 # Optional dependencies - imported lazily
@@ -268,11 +267,9 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
     # This avoids file handling differences across versions.
     # Redirects are disabled on every call: 3xx fails closed, never followed.
     log(f"REST: uploading {len(content)} bytes to {host} as {user} (direct execute)")
-    if fingerprint is not None and scheme == "https":
-        pin_err = verify_tls_pin(host, port, fingerprint, ca_file, effective_timeout, ssl_verify)
-        if pin_err:
-            print(f"error: {redact_secrets(pin_err, password, user)}", file=sys.stderr)
-            sys.exit(4)
+    # The SPKI pin (when set) is verified inside the pinned HTTPS connection,
+    # on the same socket as the request and before the Authorization header is
+    # written — no separate handshake to race (see _mikrotik_shared).
     try:
         # Try direct execute. stream=True + _read_response_capped bounds the
         # body (an unbounded body read could OOM on a hostile/broken device).

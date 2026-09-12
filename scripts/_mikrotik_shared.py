@@ -55,6 +55,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import hmac
 import ipaddress
 import os
 import socket
@@ -728,7 +729,41 @@ def open_pinned_socket(
     raise OSError("no pinned addresses available")
 
 
-def build_pinned_requests_adapter(addrs: list[str]):
+def verify_spki_pin_on_socket(sock, pin: bytes | None) -> None:
+    """Verify an established TLS socket's leaf SPKI against ``pin``.
+
+    Raises ``ssl.SSLError`` on any mismatch or malformed/missing certificate
+    (fail-closed); ``pin=None`` is a no-op. This runs inside the connection's
+    ``connect()`` right after the TLS handshake and therefore BEFORE any HTTP
+    request bytes — including the Authorization header — are written.
+
+    Security: when only a pin is configured, the connection may skip CA-chain
+    and hostname verification. That is safe because OpenSSL still verifies the
+    handshake signature (TLS 1.3 ``CertificateVerify`` / TLS 1.2
+    ``ServerKeyExchange``) against the pinned leaf's public key, so an on-path
+    attacker replaying the public pinned certificate without its private key
+    cannot complete the handshake. This matches the Rust ``SpkiPinVerifier``
+    in ``lsp/src/live_fetch.rs``. A custom CA file must additionally be kept
+    on the connection (chain + hostname still verified).
+    """
+    if pin is None:
+        return
+    if sock is None:
+        raise ssl.SSLError("TLS pin check: no established socket")
+    try:
+        der = sock.getpeercert(binary_form=True)
+    except Exception as e:
+        raise ssl.SSLError(f"TLS pin check: peer certificate unavailable: {e}") from e
+    if not der:
+        raise ssl.SSLError("TLS pin check: no peer certificate")
+    digest = spki_sha256(bytes(der))
+    if digest is None:
+        raise ssl.SSLError("TLS pin check: could not parse peer SPKI")
+    if not hmac.compare_digest(digest, pin):
+        raise ssl.SSLError("TLS pin check: SPKI pin mismatch")
+
+
+def build_pinned_requests_adapter(addrs: list[str], pin: bytes | None = None):
     """Build a ``requests`` adapter that dials only the pre-validated IPs.
 
     ``urllib3``'s connection classes are subclassed so ``_new_conn()``
@@ -736,8 +771,11 @@ def build_pinned_requests_adapter(addrs: list[str]):
     (via :func:`open_pinned_socket`; no second DNS lookup). The pool still
     uses the original hostname, so the ``Host`` header and TLS SNI/name
     verification are unchanged (urllib3 wraps the pinned socket with
-    ``server_hostname=self.host``). Imported lazily so ``_mikrotik_shared``
-    keeps working without ``requests`` installed.
+    ``server_hostname=self.host``). When ``pin`` is set, the HTTPS connection
+    verifies it on that same socket immediately after the handshake (see
+    :func:`verify_spki_pin_on_socket`), before the request is written.
+    Imported lazily so ``_mikrotik_shared`` keeps working without ``requests``
+    installed.
     """
     import requests.adapters
     from urllib3.connection import HTTPConnection, HTTPSConnection
@@ -757,7 +795,10 @@ def build_pinned_requests_adapter(addrs: list[str]):
             )
 
     class _PinnedHTTPSConnection(_PinnedConnectMixin, HTTPSConnection):
-        pass
+        def connect(self):
+            super().connect()
+            # Same connection as the request, before any bytes are written.
+            verify_spki_pin_on_socket(getattr(self, "sock", None), pin)
 
     class _PinnedHTTPConnection(_PinnedConnectMixin, HTTPConnection):
         pass
@@ -801,9 +842,12 @@ def build_pinned_requests_session(
     Attaches HTTP Basic auth, disables environment proxies (a proxy would
     reroute the request around the pinned IP), and applies TLS verification:
     a custom CA bundle wins; otherwise ``ssl_verify``. When a SPKI ``pin`` is
-    configured for an ``https`` scheme, chain verification is required on the
-    pinned connection unless a custom CA file is supplied — the pin itself is
-    validated on that same connection by the pinned connection class.
+    configured for an ``https`` scheme and no CA file is supplied, chain and
+    hostname verification are relaxed (self-signed devices must connect) and
+    the pin is enforced on the request connection instead — safe because the
+    handshake signature is still verified; see
+    :func:`verify_spki_pin_on_socket`. A CA file keeps full chain + hostname
+    verification AND requires the pin.
     """
     import requests
 
@@ -812,25 +856,31 @@ def build_pinned_requests_session(
     session.trust_env = False
     session.proxies = {}
     session.auth = (user, password)
-    session.mount("http://", build_pinned_requests_adapter(addrs))
-    session.mount("https://", build_pinned_requests_adapter(addrs))
+    session.mount("http://", build_pinned_requests_adapter(addrs, pin=None))
+    session.mount("https://", build_pinned_requests_adapter(addrs, pin=pin))
     if pin is not None and scheme == "https":
-        # Pin set: never TLS-verify against the system roots only.
-        session.verify = ca_file if ca_file else True
+        # Pin-only: trust the SPKI pin checked on the request connection, not
+        # a chain the device may not have. With a CA file, keep full chain +
+        # hostname verification (the pin is checked on top).
+        session.verify = ca_file if ca_file else False
     else:
         session.verify = ca_file if ca_file else ssl_verify
     session.headers.update({"Content-Type": "application/json"})
     return session
 
 
-def build_pinned_urllib_handlers(addrs: list[str], context=None) -> list:
+def build_pinned_urllib_handlers(
+    addrs: list[str], context=None, pin: bytes | None = None
+) -> list:
     """Build ``urllib.request`` handlers pinning HTTP/HTTPS to ``addrs``.
 
     Used by the requests-less fallback in ``mikrotik-live-check.py`` so that
     path closes the same resolve-then-connect TOCTOU instead of re-resolving
     the hostname. ``context`` is the SSL context for HTTPS (ignored for plain
-    HTTP). The caller should also install ``ProxyHandler({})`` semantics —
-    this helper returns one — so no environment proxy reroutes the dial.
+    HTTP); when ``pin`` is set the HTTPS connection verifies it on the same
+    socket right after the handshake, before the request is written. The
+    helper returns ``ProxyHandler({})`` as well, so no environment proxy
+    reroutes the dial.
     """
     import http.client
     import urllib.request
@@ -849,6 +899,7 @@ def build_pinned_urllib_handlers(addrs: list[str], context=None) -> list:
             if self._tunnel_host:
                 self._tunnel()
             self.sock = context.wrap_socket(self.sock, server_hostname=self.host)
+            verify_spki_pin_on_socket(self.sock, pin)
 
     class _PinnedHTTPHandler(urllib.request.HTTPHandler):
         def http_open(self, req):
@@ -863,82 +914,6 @@ def build_pinned_urllib_handlers(addrs: list[str], context=None) -> list:
         _PinnedHTTPSHandler(),
         urllib.request.ProxyHandler({}),
     ]
-
-
-def verify_tls_pin(
-    host: str,
-    port: int,
-    pin: bytes,
-    ca_file: str = "",
-    timeout: int = 5,
-    ssl_verify: bool = True,
-) -> str | None:
-    """Verify a device TLS SPKI pin over a fresh handshake (no HTTP).
-
-    Opens a direct TLS connection to ``host:port``, extracts the leaf
-    certificate, and compares ``SHA256(SPKI)`` against ``pin``. Chain
-    validation follows ``ssl_verify``/``ca_file`` (custom CA bundle when
-    provided). Returns None on success, an error string on failure
-    (fail-closed: any network, validation, or pin mismatch is an error).
-    Never performs HTTP or follows redirects.
-
-    ``timeout`` must be a positive, already-clamped value (deploy 1..300,
-    live-check 1..30 via :func:`clamp_int`); values below 1 are floored to
-    1 defensively — a 0 timeout would flip the socket into non-blocking
-    mode and fail in confusing ways.
-
-    F1: DNS is re-resolved here and every returned IP is re-checked against
-    the SSRF deny policy fail-closed before connecting (``host`` passed only
-    lexical checks at startup; DNS may resolve differently now).
-    """
-    bare = host.strip()
-    if bare.startswith("[") and bare.endswith("]") and len(bare) >= 2:
-        bare = bare[1:-1]
-    if timeout < 1:
-        timeout = 1
-    # F1: resolve-then-revalidate before any socket: a hostname that passed
-    # lexical checks may still resolve to a denied address right now.
-    dns_err = resolve_and_check_host(host, port)
-    if dns_err:
-        return dns_err
-    try:
-        if ssl_verify or ca_file.strip():
-            ctx = ssl.create_default_context(cafile=(ca_file.strip() or None))
-            if not ssl_verify:
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-        else:
-            ctx = ssl._create_unverified_context()
-            ctx.check_hostname = False
-        raw_sock = socket.create_connection((bare, port), timeout=timeout)
-    except Exception as e:
-        return f"pin check connection failed: {e}"
-    try:
-        with ctx.wrap_socket(raw_sock, server_hostname=bare) as tls:
-            try:
-                der = tls.getpeercert(binary_form=True)
-            except Exception as e:
-                return f"pin check peer cert failed: {e}"
-            if not der:
-                return "pin check got no peer certificate"
-            digest = spki_sha256(bytes(der))
-            if digest is None:
-                return "pin check could not parse peer SPKI"
-            if digest != pin:
-                return "TLS SPKI pin mismatch"
-            return None
-    except ssl.SSLCertVerificationError as e:
-        return f"TLS certificate verification failed: {e}"
-    except Exception as e:
-        msg = str(e)
-        if "pin mismatch" in msg.lower() or "certificate" in msg.lower():
-            return msg
-        return f"pin check TLS failed: {e}"
-    finally:
-        try:
-            raw_sock.close()
-        except Exception:
-            pass
 
 
 def redact_secrets(text: str, password: str | None, user: str | None = None) -> str:
