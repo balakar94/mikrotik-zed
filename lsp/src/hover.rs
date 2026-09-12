@@ -9,19 +9,16 @@ use crate::menus::{MenuData, MenuEntry};
 // Shared text helpers live in `crate::text_util` (single owner); the
 // re-exports below keep historical `hover::` paths resolving for tests.
 pub(crate) use crate::text_util::{MAX_HOVER_PROPERTIES, sanitize_markdown_for_hover};
-use crate::text_util::{normalize_key, type_gloss, verb_role};
+use crate::text_util::{normalize_key, normalize_path, type_gloss, verb_role};
 
-/// Case-insensitive menu lookup: exact hit first, then a linear scan.
-/// RouterOS paths are case-insensitive; the dataset keys are lowercase.
+/// Case/separator-insensitive menu lookup.
+///
+/// RouterOS paths are case-insensitive and tolerate leading, trailing and
+/// repeated `/`; the dataset keys are lowercase and canonical, so the query
+/// passes through [`normalize_path`] (the original text stays in the hover
+/// card).
 fn find_menu<'a>(data: &'a MenuData, path: &str) -> Option<&'a MenuEntry> {
-    if let Some(m) = data.menu_by_path.get(path) {
-        return Some(m);
-    }
-    let needle = normalize_key(path);
-    data.menu_by_path
-        .iter()
-        .find(|(k, _)| normalize_key(k) == needle)
-        .map(|(_, v)| v)
+    data.menu_by_path.get(&normalize_path(path))
 }
 
 /// Example value line for the most common scalar types.

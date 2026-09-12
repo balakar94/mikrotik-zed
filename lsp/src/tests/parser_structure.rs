@@ -168,6 +168,23 @@ fn test_parse_line_mixed_case_path_and_properties() {
 }
 
 #[test]
+fn test_parse_line_normalizes_path_separators() {
+    // RouterOS consoles accept trailing and repeated `/` separators; the
+    // produced path carries one segment per real menu level.
+    let data = synthetic_data();
+    let trailing = parse_line(&data, "/ip/address/ print");
+    assert_eq!(trailing.path, "/ip/address");
+    assert_eq!(trailing.command.as_deref(), Some("print"));
+
+    let repeated = parse_line(&data, "/ip//address print");
+    assert_eq!(repeated.path, "/ip/address");
+
+    let leading = parse_line(&data, "//ip/address add");
+    assert_eq!(leading.path, "/ip/address");
+    assert_eq!(leading.command.as_deref(), Some("add"));
+}
+
+#[test]
 fn test_parse_line_no_path_command_only() {
     let data = synthetic_data();
     let ctx = parse_line(&data, "print");

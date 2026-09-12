@@ -299,7 +299,12 @@ fn menu_command_entry(
     span: diagnostics::Range,
 ) -> Option<MenuEntry> {
     let first = &tokens[0];
-    let mut path_parts: Vec<String> = vec![first.text.trim_start_matches('/').to_string()];
+    let mut path_parts: Vec<String> = first
+        .text
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_string)
+        .collect();
     let mut tail_end = first.end; // end offset of the last path segment
 
     let mut depth: u32 = 0;

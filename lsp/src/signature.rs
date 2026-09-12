@@ -189,7 +189,12 @@ pub(crate) fn resolve_verb_token(data: &MenuData, tokens: &[SpanToken]) -> Optio
             if crate::parser::split_trailing_verb(&tok.text, data).is_some() {
                 return Some(idx);
             }
-            path_parts.push(tok.text.trim_start_matches('/').to_string());
+            // Leading/trailing/repeated separators collapse to real segments.
+            for segment in tok.text.split('/') {
+                if !segment.is_empty() {
+                    path_parts.push(segment.to_string());
+                }
+            }
             depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
             continue;
         }

@@ -246,3 +246,23 @@ fn test_mixed_case_property_and_menu_resolve() {
         "got {diags:?}"
     );
 }
+
+#[test]
+fn test_trailing_and_repeated_slashes_are_not_unknown_menu() {
+    // Real console behavior: `/ip/address/` and `/ip//address` address the
+    // same menu as `/ip/address`.
+    let data = synthetic_data();
+    for doc in [
+        "/ip/address/ print",
+        "/ip//address print",
+        "//ip/address print",
+    ] {
+        let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("unknown-menu")),
+            "{doc} must resolve, got {diags:?}"
+        );
+    }
+}

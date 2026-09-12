@@ -625,7 +625,15 @@ pub fn parse_line(data: &MenuData, before_cursor: &str) -> LineContext {
         }
 
         if token.starts_with('/') {
-            path_parts.push(token.trim_start_matches('/').to_string());
+            // RouterOS accepts leading, trailing and repeated `/` separators,
+            // so split the token into non-empty segments: `/ip/address/` and
+            // `//ip//address` both yield one part per real segment. Casing is
+            // preserved for display; lookups fold it via `normalize_path`.
+            for segment in token.split('/') {
+                if !segment.is_empty() {
+                    path_parts.push(segment.to_string());
+                }
+            }
             depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
             continue;
         }

@@ -280,3 +280,21 @@ fn test_mixed_case_path_and_verb_yield_arg_completion() {
         upper.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn test_trailing_and_repeated_slashes_resolve_menu() {
+    let data = synthetic_data();
+    let repeated = compute_completions(&data, "/ip//address ");
+    let labels: Vec<&str> = repeated.iter().map(|i| i.label.as_str()).collect();
+    assert!(labels.contains(&"add"), "got {labels:?}");
+
+    let trailing = compute_completions(&data, "/ip/address/ ");
+    assert!(
+        trailing.iter().any(|i| i.label == "print"),
+        "trailing slash must still resolve the menu, got {:?}",
+        trailing
+            .iter()
+            .map(|i| i.label.as_str())
+            .collect::<Vec<_>>()
+    );
+}
