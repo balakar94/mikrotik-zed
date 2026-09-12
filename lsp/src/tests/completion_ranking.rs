@@ -87,6 +87,56 @@ fn test_golden_filter_chain_partial_open_quote_preserved() {
 }
 
 #[test]
+fn test_golden_filter_chain_partial_trailing_quote_preserved() {
+    let data = MenuData::load();
+    let line = "/ip/firewall/filter add chain=in\"";
+    let items = compute_completions(&data, line);
+    let item = items
+        .iter()
+        .find(|i| i.label == "input")
+        .expect("input offered for prefix in");
+    let edit = item.text_edit.as_ref().expect("value textEdit");
+    // The trailing closing quote survives; only `in` is replaced.
+    assert_eq!(
+        apply_edit(line, edit),
+        "/ip/firewall/filter add chain=input\""
+    );
+}
+
+#[test]
+fn test_golden_filter_action_both_quotes_preserved() {
+    let data = MenuData::load();
+    let line = "/ip/firewall/filter add action=\"acc\"";
+    let items = compute_completions(&data, line);
+    let item = items
+        .iter()
+        .find(|i| i.label == "accept")
+        .expect("accept offered for prefix acc");
+    let edit = item.text_edit.as_ref().expect("value textEdit");
+    // Both quotes stay; exactly the effective value text is replaced.
+    assert_eq!(
+        apply_edit(line, edit),
+        "/ip/firewall/filter add action=\"accept\""
+    );
+}
+
+#[test]
+fn test_golden_filter_action_empty_suffix_inserts_at_cursor() {
+    let data = MenuData::load();
+    let line = "/ip/firewall/filter add action=";
+    let items = compute_completions(&data, line);
+    let item = items
+        .iter()
+        .find(|i| i.label == "accept")
+        .expect("accept offered for empty value");
+    let edit = item.text_edit.as_ref().expect("value textEdit");
+    assert_eq!(
+        apply_edit(line, edit),
+        "/ip/firewall/filter add action=accept"
+    );
+}
+
+#[test]
 fn test_golden_filter_action_prefix_before_substring() {
     let data = MenuData::load();
     let line = "/ip/firewall/filter add action=ac";

@@ -738,16 +738,38 @@ pub(crate) fn partial_path_segment(text: &str) -> Option<(String, usize, usize)>
 ///
 /// The range covers exactly the effective suffix (a leading opening quote
 /// is preserved: `"in` → `"input`), so accepting `input` when `in` is typed
-/// replaces instead of appending (`ininput`). A finished value followed by
-/// whitespace, or an empty suffix, yields a zero-length insertion edit at
+/// replaces instead of appending (`ininput`). A trailing closing quote is
+/// left in place; an empty suffix yields a zero-length insertion edit at
 /// the cursor.
+///
+/// The range is derived from the suffix's ACTUAL byte position in the
+/// current line. Measuring it by a quote-trimmed length shifted `start` by
+/// one for a one-sided (`="in`, `=abc"`) or balanced (`="abc"`) quote and
+/// dropped a character, so compute the span from the line tail instead.
 fn attach_value_text_edit(items: &mut [CompletionItem], before_cursor: &str, typed_suffix: &str) {
     let line = current_line(before_cursor);
-    let effective = typed_suffix.trim_matches(|c| c == '"' || c == '\'');
-    let (start, end) = if effective.is_empty() {
+    let (start, end) = if typed_suffix.is_empty() || !line.ends_with(typed_suffix) {
+        // Nothing to replace: insert at the cursor.
         (line.len(), line.len())
     } else {
-        (line.len().saturating_sub(effective.len()), line.len())
+        let suffix_start = line.len() - typed_suffix.len();
+        // Preserve one leading opening quote.
+        let start = if typed_suffix.starts_with('"') || typed_suffix.starts_with('\'') {
+            suffix_start + 1
+        } else {
+            suffix_start
+        };
+        // Preserve a trailing closing quote when it closes a non-empty value.
+        let has_closing_quote = typed_suffix.len() >= 2
+            && (typed_suffix.ends_with('"') || typed_suffix.ends_with('\''));
+        let end = if has_closing_quote {
+            line.len() - 1
+        } else {
+            line.len()
+        };
+        // Defensive clamps: always a valid, ordered range inside the line.
+        let end = end.min(line.len());
+        (start.min(end), end)
     };
     for item in items.iter_mut() {
         let new_text = item
