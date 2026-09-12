@@ -95,6 +95,31 @@ fn test_single_line_semantic_count_capped_with_hint() {
 }
 
 #[test]
+fn test_semantic_cap_enforced_during_accumulation() {
+    // The semantic loop stops at MAX_DIAGNOSTICS as diagnostics are built
+    // (not merely truncated afterwards) and still emits the count footer.
+    let data = synthetic_data();
+    let mut doc = String::from("/ip/address add address=1.1.1.1/24 interface=ether1");
+    for i in 0..(MAX_DIAGNOSTICS + 500) {
+        doc.push_str(&format!(" unknownkey{i}=1"));
+    }
+    let diags = compute_diagnostics(&data, &doc, "file:///test.rsc");
+    let semantic: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code.as_deref() != Some("truncated"))
+        .collect();
+    assert_eq!(
+        semantic.len(),
+        MAX_DIAGNOSTICS,
+        "accumulation must stop exactly at the cap"
+    );
+    assert!(
+        diags.iter().any(|d| d.code.as_deref() == Some("truncated")),
+        "count truncation must still emit the footer"
+    );
+}
+
+#[test]
 fn test_incremental_edit_simulation() {
     let data = synthetic_data();
     // Simulate incremental edits: initial doc has error, then fix

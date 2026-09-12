@@ -187,7 +187,7 @@ pub fn compute_hover(
 
         if !menu.flags.is_empty() {
             md.push_str("\n\n**Flags:**");
-            for flag in &menu.flags {
+            for flag in menu.flags.iter().take(MAX_HOVER_PROPERTIES) {
                 let desc = if flag.description.is_empty() {
                     String::new()
                 } else {
@@ -195,17 +195,29 @@ pub fn compute_hover(
                 };
                 md.push_str(&format!("\n  {} — {}", flag.name, desc));
             }
+            if menu.flags.len() > MAX_HOVER_PROPERTIES {
+                md.push_str(&format!(
+                    "\n\n(+{} more — see completion)",
+                    menu.flags.len() - MAX_HOVER_PROPERTIES
+                ));
+            }
         }
 
         if !menu.read_only.is_empty() {
             md.push_str("\n\n**Read-only:**");
-            for ro in &menu.read_only {
+            for ro in menu.read_only.iter().take(MAX_HOVER_PROPERTIES) {
                 let desc = if ro.description.is_empty() {
                     String::new()
                 } else {
                     sanitize_markdown_for_hover(&ro.description)
                 };
                 md.push_str(&format!("\n  {} — {}", ro.name, desc));
+            }
+            if menu.read_only.len() > MAX_HOVER_PROPERTIES {
+                md.push_str(&format!(
+                    "\n\n(+{} more — see completion)",
+                    menu.read_only.len() - MAX_HOVER_PROPERTIES
+                ));
             }
         }
 
