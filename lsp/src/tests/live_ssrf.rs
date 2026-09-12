@@ -274,6 +274,55 @@ fn test_ssrf_ipv6_transition_and_ula_cgnat_policy() {
 }
 
 #[test]
+fn test_ssrf_ipv4_special_use_ranges_denied() {
+    // IPv4 special-use ranges that are never legitimate device targets are
+    // unconditional denials (the loopback opt-in must not relax them).
+    // Mirrors scripts/_mikrotik_shared.py::is_normalized_ssrf_denied.
+    for bad in [
+        "224.0.0.1",       // multicast floor
+        "239.255.255.255", // multicast ceiling
+        "240.0.0.0",       // reserved floor
+        "255.255.255.255", // broadcast inside 240.0.0.0/4
+        "192.0.0.1",       // IETF protocol assignments
+        "198.18.0.0",      // benchmarking floor
+        "198.19.255.255",  // benchmarking ceiling
+    ] {
+        assert!(
+            validate_host_with_allow(bad, false).is_err(),
+            "special-use range must be denied by default: {bad:?}"
+        );
+        assert!(
+            validate_host_with_allow(bad, true).is_err(),
+            "special-use range must stay denied with loopback allowed: {bad:?}"
+        );
+        assert!(
+            is_normalized_ssrf_denied(normalized_host_ip(bad).unwrap()),
+            "special-use range must hit the unconditional deny path: {bad:?}"
+        );
+    }
+    // Adjacent public ranges stay allowed and are not in the deny set.
+    for good in [
+        "223.255.255.255", // below multicast
+        "198.17.255.255",  // below benchmarking
+        "198.20.0.0",      // above benchmarking
+        "192.0.1.1",       // above 192.0.0.0/24
+    ] {
+        assert!(
+            validate_host_with_allow(good, false).is_ok(),
+            "adjacent public range must stay allowed: {good:?}"
+        );
+        assert!(
+            !is_normalized_ssrf_denied(normalized_host_ip(good).unwrap()),
+            "adjacent public range must not be in the deny set: {good:?}"
+        );
+    }
+    // CGNAT remains loopback-gated private, not an unconditional denial.
+    assert!(!is_normalized_ssrf_denied(
+        normalized_host_ip("100.64.0.1").unwrap()
+    ));
+}
+
+#[test]
 fn test_legitimate_hosts_still_accepted() {
     // No regression for normal hosts: public DNS names, public IPv4/IPv6,
     // and private hosts when explicitly allowed.

@@ -41,9 +41,11 @@ Usage notes:
 - Host range checks run against the normalized IP (see
   ``normalized_host_ip``): decimal (``2130706433``), hex (``0x7f000001``),
   octal (``0177.0.0.1``), short (``127.1``), IPv4-mapped IPv6
-  (``::ffff:127.0.0.1``), whole ``169.254.0.0/16``, and IPv6 ``fe80::/10``
-  are all denied fail-closed. Non-canonical numeric literals are rejected
-  even when the normalized address would otherwise be allowed.
+  (``::ffff:127.0.0.1``), whole ``169.254.0.0/16``, IPv6 ``fe80::/10``,
+  multicast ``224.0.0.0/4``, reserved ``240.0.0.0/4``, ``192.0.0.0/24``,
+  and benchmarking ``198.18.0.0/15`` are all denied fail-closed.
+  Non-canonical numeric literals are rejected even when the normalized
+  address would otherwise be allowed.
 - ``MIKROTIK_PASS`` never appears in logs: use ``redact_secrets`` on any
   error text that could echo credentials (including base64 ``user:pass``).
   Matching is by substring and over-redacts by design (fail-safe:
@@ -343,6 +345,14 @@ def is_normalized_ssrf_denied(addr: ipaddress.IPv4Address | ipaddress.IPv6Addres
     IPv4 first so ``[::ffff:a9fe:a9fe]`` (metadata IP) is denied as
     link-local; where a transition prefix carries an extractable embedded
     IPv4, the IPv4 deny/private policy is re-run on it as well.
+
+    IPv4 special-use ranges that are never legitimate device targets are
+    unconditional denials too (the loopback opt-in does not relax them):
+    multicast ``224.0.0.0/4``, reserved ``240.0.0.0/4``, IETF protocol
+    assignments ``192.0.0.0/24``, and benchmarking ``198.18.0.0/15``.
+    ``100.64.0.0/10`` (CGNAT) and ULA ``fc00::/7`` stay loopback-gated
+    private (see :func:`is_normalized_loopback_or_private`), not
+    unconditional.
     """
     if isinstance(addr, ipaddress.IPv6Address):
         mapped = addr.ipv4_mapped
@@ -374,6 +384,22 @@ def is_normalized_ssrf_denied(addr: ipaddress.IPv4Address | ipaddress.IPv6Addres
         return True
     try:
         if addr in ipaddress.IPv4Network("169.254.0.0/16"):
+            return True
+    except Exception:
+        pass
+    # IPv4 special-use ranges that are never legitimate device targets
+    # (unconditional; the loopback opt-in does not relax them): multicast
+    # 224.0.0.0/4, reserved 240.0.0.0/4, IETF protocol assignments
+    # 192.0.0.0/24, and benchmarking 198.18.0.0/15. CGNAT 100.64.0.0/10 and
+    # ULA fc00::/7 stay loopback-gated private (is_normalized_loopback_or_private).
+    if addr.is_multicast:
+        return True
+    try:
+        if addr in ipaddress.IPv4Network("240.0.0.0/4"):
+            return True
+        if addr in ipaddress.IPv4Network("192.0.0.0/24"):
+            return True
+        if addr in ipaddress.IPv4Network("198.18.0.0/15"):
             return True
     except Exception:
         pass
@@ -425,10 +451,12 @@ def validate_host(host: str) -> str | None:
     DNS: exact ``169.254.169.254``, ``metadata.google.internal``,
     ``metadata.google``, ``metadata.goog``, ``0.0.0.0``, ``::``
     (case-insensitive, bracket-tolerant), whole ``169.254.0.0/16`` for IPv4
-    literals, IPv6 ``fe80::/10`` link-local, the NAT64/Teredo/6to4 transition
-    prefixes (``64:ff9b::/96``, ``2001::/32``, ``2002::/16``), IPv4-mapped
-    IPv6 unmapping, and non-canonical numeric literals (decimal/hex/octal/
-    short, including the FQDN-root trailing-dot form such as
+    literals, IPv6 ``fe80::/10`` link-local, multicast ``224.0.0.0/4``,
+    reserved ``240.0.0.0/4``, ``192.0.0.0/24``, benchmarking
+    ``198.18.0.0/15``, the NAT64/Teredo/6to4 transition prefixes
+    (``64:ff9b::/96``, ``2001::/32``, ``2002::/16``), IPv4-mapped IPv6
+    unmapping, and non-canonical numeric literals (decimal/hex/octal/short,
+    including the FQDN-root trailing-dot form such as
     ``169.254.169.254.``) rejected fail-closed via normalization (see
     ``normalized_host_ip``).
 

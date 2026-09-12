@@ -43,6 +43,7 @@ from _mikrotik_shared import (  # noqa: E402
     format_host_for_url,
     is_ipv6_transition_prefix,
     is_normalized_loopback_or_private,
+    is_normalized_ssrf_denied,
     open_pinned_socket,
     parse_fingerprint,
     redact_secrets,
@@ -187,6 +188,33 @@ class TestValidateHostSsrfDenylist:
         assert validate_host("169.253.1.1") is None
         assert validate_host("192.168.88.1") is None
         assert validate_host("router.local") is None
+
+    def test_ipv4_special_use_ranges_denied(self):
+        # Unconditional denials, mirroring Rust
+        # is_normalized_ssrf_denied: multicast 224.0.0.0/4, reserved
+        # 240.0.0.0/4, IETF protocol assignments 192.0.0.0/24, benchmarking
+        # 198.18.0.0/15.
+        for bad in [
+            "224.0.0.1",  # multicast floor
+            "239.255.255.255",  # multicast ceiling
+            "240.0.0.0",  # reserved floor
+            "255.255.255.255",  # broadcast
+            "192.0.0.1",  # IETF protocol assignments
+            "198.18.0.0",  # benchmarking floor
+            "198.19.255.255",  # benchmarking ceiling
+        ]:
+            assert validate_host(bad) is not None, f"should deny {bad!r}"
+            assert is_normalized_ssrf_denied(ipaddress.ip_address(bad)), bad
+
+    def test_ipv4_special_use_adjacent_public_allowed(self):
+        for good in [
+            "223.255.255.255",  # below multicast
+            "198.17.255.255",  # below benchmarking
+            "198.20.0.0",  # above benchmarking
+            "192.0.1.1",  # above 192.0.0.0/24
+        ]:
+            assert validate_host(good) is None, f"should allow {good!r}"
+            assert not is_normalized_ssrf_denied(ipaddress.ip_address(good)), good
 
     def test_lexical_only_no_dns(self):
         # Hostnames that merely contain a denied string are not denied.
@@ -635,6 +663,8 @@ class TestResolveAndCheckHost:
         assert resolve_and_check_host("::", 443) is not None
         assert resolve_and_check_host("fe80::1", 443) is not None
         assert resolve_and_check_host("[::ffff:a9fe:a9fe]", 443) is not None
+        assert resolve_and_check_host("224.0.0.1", 443) is not None
+        assert resolve_and_check_host("198.18.0.1", 443) is not None
 
     def test_empty_host(self):
         assert resolve_and_check_host("", 443) == "empty host"
@@ -721,6 +751,10 @@ class TestRustParity:
         "2002::/16",
         "fc00::/7",
         "100.64.0.0/10",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+        "192.0.0.0/24",
+        "198.18.0.0/15",
     )
 
     def test_denylist_literals_match_rust(self):

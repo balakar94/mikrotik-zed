@@ -298,6 +298,13 @@ pub(crate) fn is_non_canonical_numeric_host(host: &str) -> bool {
 /// before the check so `[::ffff:a9fe:a9fe]` (metadata IP) is denied as
 /// link-local; where a transition prefix carries an extractable embedded
 /// IPv4, the IPv4 deny/private policy is re-run on it as well.
+///
+/// IPv4 special-use ranges that are never legitimate device targets are
+/// unconditional denials too (loopback opt-in does not relax them):
+/// multicast `224.0.0.0/4`, reserved `240.0.0.0/4`, IETF protocol
+/// assignments `192.0.0.0/24`, and benchmarking `198.18.0.0/15`.
+/// `100.64.0.0/10` (CGNAT) and ULA `fc00::/7` stay loopback-gated private
+/// (see `is_normalized_loopback_or_private`), not unconditional.
 pub(crate) fn is_normalized_ssrf_denied(addr: std::net::IpAddr) -> bool {
     match addr {
         std::net::IpAddr::V4(v4) => {
@@ -306,6 +313,22 @@ pub(crate) fn is_normalized_ssrf_denied(addr: std::net::IpAddr) -> bool {
                 return true;
             }
             if v4.is_unspecified() {
+                return true;
+            }
+            // Multicast 224.0.0.0/4.
+            if v4.is_multicast() {
+                return true;
+            }
+            // Reserved 240.0.0.0/4 (also covers the 255.255.255.255 broadcast).
+            if o[0] >= 240 {
+                return true;
+            }
+            // IETF protocol assignments 192.0.0.0/24.
+            if o[0] == 192 && o[1] == 0 && o[2] == 0 {
+                return true;
+            }
+            // Benchmarking 198.18.0.0/15 (198.18.0.0 - 198.19.255.255).
+            if o[0] == 198 && (o[1] == 18 || o[1] == 19) {
                 return true;
             }
             false
@@ -582,9 +605,10 @@ pub fn validate_host_with_allow(host: &str, allow_loopback: bool) -> Result<(), 
 /// - no null bytes, no control chars
 /// - no URI delimiters that would alter URL parsing (`@`, `?`, `#`, ` `, `%`)
 /// - SSRF denials for whole `169.254.0.0/16`, IPv6 `fe80::/10`, unspecified,
-///   the NAT64/Teredo/6to4 transition prefixes (`64:ff9b::/96`, `2001::/32`,
-///   `2002::/16`), and `metadata.google.internal` (lexical plus
-///   WHATWG-normalized checks)
+///   multicast `224.0.0.0/4`, reserved `240.0.0.0/4`, `192.0.0.0/24`,
+///   benchmarking `198.18.0.0/15`, the NAT64/Teredo/6to4 transition prefixes
+///   (`64:ff9b::/96`, `2001::/32`, `2002::/16`), and
+///   `metadata.google.internal` (lexical plus WHATWG-normalized checks)
 /// - non-canonical numeric literals rejected fail-closed
 /// - loopback/private denied unless `RSC_LS_LIVE_ALLOW_LOOPBACK=1` (via
 ///   `is_loopback_or_private` against the normalized IP with IPv4-mapped
