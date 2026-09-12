@@ -9,6 +9,7 @@
 - **Live SSRF (`lsp/src/live_net.rs`, `scripts/_mikrotik_shared.py`)**: trailing-dot hostnames, NAT64/Teredo/6to4 and IPv4 special-use ranges (multicast, reserved, `192.0.0.0/24`, benchmarking) are denied; ULA/CGNAT are loopback-gated; validated DNS addresses are pinned for Rust and both Python transports (no resolve-then-connect TOCTOU); `MIKROTIK_FINGERPRINT` is verified on the request TLS connection before credentials are sent.
 - **Deploy transport (`scripts/mikrotik-deploy.py`, `scripts/mikrotik-live-check.py`)**: device response bodies are redacted and size-capped; the workspace-settings `port` requires the transport opt-in.
 - **WASM shim (`src/cache.rs`, `src/platform.rs`, `src/lib.rs`)**: bounded cached-binary and `.verified` marker reads; release download URLs pinned to repo/tag/asset.
+- **WASM shim download race (`src/lib.rs`, `src/platform.rs`)**: auto-downloads land in a unique temp file and are `std::fs::rename`d onto the canonical versioned path only after SHA-256 verification, so a concurrent reader or spawn never observes a partially written binary. Symlinked cache paths are refused (and unlinked) instead of being hashed or spawned.
 
 ### Fixed
 
