@@ -1593,8 +1593,16 @@ impl LogicalLine {
     /// belongs to the segment it closes (backward bias) so the range never
     /// spills across the `\` onto the next line. A zero-length range resolves
     /// both endpoints backward, keeping it at the end of the preceding
-    /// segment instead of inverting or jumping lines.
+    /// segment instead of inverting or jumping lines. Endpoints are floored
+    /// to char boundaries before any comparison, so mid-character offsets can
+    /// never produce an inverted range.
     pub(crate) fn map_range(&self, start: usize, end: usize) -> Range {
+        // Floor BEFORE comparing/clamping. `map_pos_with_bias` floors each
+        // endpoint internally, but two offsets inside the same multi-byte
+        // character would otherwise compare unequal here (e.g. bytes 1 and 2
+        // inside `é`), apply opposite biases, and invert the range.
+        let start = crate::floor_char_boundary(&self.text, start);
+        let end = crate::floor_char_boundary(&self.text, end);
         let end = end.max(start);
         if start == end {
             // `map_pos` is exactly the backward-bias point mapping.

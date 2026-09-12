@@ -207,6 +207,21 @@ fn test_map_range_mid_segment_unchanged() {
     assert_eq!((r.end.line, r.end.character), (1, 3));
 }
 
+#[test]
+fn test_map_range_non_char_boundary_offsets_do_not_invert() {
+    // `aé` occupies bytes 0..3, with the segment boundary at byte 1 (before
+    // `é`) and `é` spanning bytes 1..3. Offsets 1 and 2 must be floored to
+    // char boundaries BEFORE the zero-length/bias comparison: with raw
+    // comparison, start=1 biases forward onto line 1 while end=2 floors back
+    // onto line 0, inverting the range.
+    let ll = build_logical_lines(&["a\\", "é"]);
+    assert_eq!(ll.len(), 1);
+    assert_eq!(ll[0].text(), "aé");
+    let r = ll[0].map_range(1, 2);
+    assert_eq!((r.start.line, r.start.character), (0, 1));
+    assert_eq!((r.end.line, r.end.character), (0, 1));
+}
+
 // ── Token-position ranges ────────────────────────────────────────────────
 
 fn demo_menu_data() -> MenuData {
