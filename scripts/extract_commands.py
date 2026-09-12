@@ -260,6 +260,84 @@ def _extract_sub_menu_paths(line: str) -> list[str]:
     return paths
 
 
+def _deepest_common_ancestor(paths: list[str]) -> str | None:
+    """Return the deepest CLI path that is an ancestor of every `paths` entry.
+
+    Topic pages that carry no `**Sub-menu:**` line still document exactly one
+    menu; its children's `**Sub-menu:**` paths (e.g. `/ip/dhcp-server/lease`
+    and `/ip/dhcp-server/network`) reveal it as their shared parent
+    (`/ip/dhcp-server`). Sibling menus with no shared child
+    (`/ip/address`, `/ip/route`) yield their root (`/ip`); callers apply the
+    depth/membership guard because a bare root is not itself a menu. Fewer
+    than two paths always yields None: a single path is its own ancestor,
+    never a shared context.
+    """
+    if len(paths) < 2:
+        return None
+    split = [p.strip("/").split("/") for p in paths]
+    common: list[str] = []
+    for segments in zip(*split):
+        if len(set(segments)) == 1:
+            common.append(segments[0])
+        else:
+            break
+    if not common:
+        return None
+    return "/" + "/".join(common)
+
+
+def _page_sub_menu_context(lines: list[str]) -> list[tuple[str, list[str]]]:
+    """Return per-line `(page_title, sub_menu_paths)` for the enclosing H2 page.
+
+    A "page" begins at each `## ` heading and runs to the next one; headings
+    inside fenced code blocks are ignored so comment-looking `##` lines cannot
+    split a page. Every line of a page carries the same tuple: its normalized
+    title and its distinct sub-menu paths across the *whole* page, because a
+    property table often precedes the sub-menu links that describe it. Used
+    only as a fallback when no `**Sub-menu:**` line is active for a table.
+    """
+    starts = [0]
+    in_fence = False
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+        elif not in_fence and re.match(r"^## ", line):
+            starts.append(i)
+
+    context: list[tuple[str, list[str]]] = [("", []) for _ in lines]
+    for pos, start in enumerate(starts):
+        end = starts[pos + 1] if pos + 1 < len(starts) else len(lines)
+        title = _normalize_heading_text(lines[start]) or ""
+        paths: list[str] = []
+        for line in lines[start:end]:
+            for path in _extract_sub_menu_paths(line):
+                if path not in paths:
+                    paths.append(path)
+        for i in range(start, end):
+            context[i] = (title, paths.copy())
+    return context
+
+
+# H2 headings upstream uses as *sections within* a topic page rather than as
+# page titles (a known heading-level quirk: `### Network` is followed by
+# `## Properties`). The page context fallback skips them: their shared
+# ancestor may be a broad container while the table actually documents one
+# child (e.g. `/system/resource/cpu` under a `## Properties` fragment), so
+# attaching to the ancestor would be a guess.
+_MD_PROPERTY_SECTION_TITLE_RE = re.compile(r"\bpropert(y|ies)\b", re.IGNORECASE)
+
+
+def _is_property_section_title(title: str) -> bool:
+    """True when an H2 `title` is a property-section fragment, not a page.
+
+    Guards the page-context fallback against `## Properties` /
+    `## Read-only properties` headings that upstream nests under a real menu
+    page. Such a fragment's sub-menu links describe its *siblings*, not a
+    shared parent, so its common ancestor must never be attached.
+    """
+    return bool(_MD_PROPERTY_SECTION_TITLE_RE.search(title))
+
+
 def _parse_markdown_type(remainder: str) -> tuple[str, bool]:
     """Parse `(type; Default: ...)` from a cell remainder.
 
@@ -323,6 +401,8 @@ def _collect_markdown_table(
     header_cells: list[str],
     rows: list[str],
     paths: list[str],
+    page_title: str,
+    page_context: list[str],
     heading: str,
     line_no: int,
     md_tables: list[dict],
@@ -334,8 +414,13 @@ def _collect_markdown_table(
     Property sections (heading contains `propert`) contribute to `md_tables`
     keyed by their associated menu paths. Command sections are skipped. A
     `print parameters` parameter table contributes to `print_rows` (captured
-    later as the universal `/print` command). Unrelated parameter tables and
-    sections without a `**Sub-menu:**` association are ignored.
+    later as the universal `/print` command). Unrelated parameter tables are
+    ignored.
+
+    When no `**Sub-menu:**` association is active, the table is still stashed
+    with its `page_context` (the H2 page's distinct sub-menu paths). The merge
+    phase resolves exactly one shared ancestor from that context, or warns
+    instead of guessing.
     """
     low = heading.lower()
     first = header_cells[0].strip().lower()
@@ -388,6 +473,14 @@ def _collect_markdown_table(
         parsed_rows.append(parsed)
 
     if not paths:
+        if parsed_rows:
+            md_tables.append({
+                "paths": [],
+                "context": list(page_context),
+                "page_title": page_title,
+                "rows": parsed_rows,
+                "line_no": line_no,
+            })
         return
     if not parsed_rows:
         warnings.append(
@@ -396,6 +489,37 @@ def _collect_markdown_table(
         )
         return
     md_tables.append({"paths": list(paths), "rows": parsed_rows})
+
+
+def _resolve_page_context(
+    table: dict, known_paths: set[str], warnings: list[str]
+) -> list[str]:
+    """Resolve a table's page context to exactly one known menu path, or [].
+
+    Conservative fallback for genuine topic pages without `**Sub-menu:**`: the
+    shared ancestor of the page's sub-menu paths identifies the documented
+    menu only when the page is a real page title (not a `## Properties`
+    fragment), the ancestor is unambiguous (at least two children, via
+    `_deepest_common_ancestor`), at least two segments deep (the root is never
+    a menu), and present in the parsed ArgTable menus. Anything softer is left
+    unassociated, with a warning so upstream drift stays visible.
+    """
+    context = table.get("context") or []
+    title = table.get("page_title", "")
+    candidate = _deepest_common_ancestor(context)
+    if (
+        candidate
+        and candidate.count("/") >= 2
+        and candidate in known_paths
+        and not _is_property_section_title(title)
+    ):
+        return [candidate]
+    if context:
+        warnings.append(
+            f"markdown property table near line {table['line_no']} has page context "
+            f"{', '.join(context)} but no unambiguous menu; skipped"
+        )
+    return []
 
 
 def _merge_markdown_rows(menu: dict, rows: list[dict], known_paths: set[str]) -> int:
@@ -541,6 +665,10 @@ def parse_llms_full(filepath: str) -> list[dict]:
     pending_row: list[str] | None = None
 
     lines = content.split("\n")
+    # Per-line H2-page context (sub-menu paths) for tables that have no active
+    # `**Sub-menu:**` association of their own. Computed once because a page's
+    # sub-menu links often appear *after* the property table they describe.
+    page_context = _page_sub_menu_context(lines)
 
     for i, line in enumerate(lines):
         # Finish a multi-line <ArgTableRow> before anything else: the buffered
@@ -654,9 +782,10 @@ def parse_llms_full(filepath: str) -> list[dict]:
                         rows.append(lines[end])
                     end += 1
                 md_skip_until = end - 1
+                page_title, page_paths = page_context[i]
                 _collect_markdown_table(
-                    cells, rows, effective_paths, current_heading, i + 1,
-                    md_tables, print_rows, warnings,
+                    cells, rows, effective_paths, page_title, page_paths,
+                    current_heading, i + 1, md_tables, print_rows, warnings,
                 )
             continue
 
@@ -674,7 +803,12 @@ def parse_llms_full(filepath: str) -> list[dict]:
             by_path.setdefault(menu["path"], []).append(menu)
         merged = 0
         for table in md_tables:
-            for path in table["paths"]:
+            paths = table["paths"]
+            if not paths:
+                paths = _resolve_page_context(table, known_paths, warnings)
+                if not paths:
+                    continue
+            for path in paths:
                 for menu in by_path.get(path, []):
                     merged += _merge_markdown_rows(menu, table["rows"], known_paths)
         if merged:

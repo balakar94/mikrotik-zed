@@ -2081,6 +2081,102 @@ class TestMarkdownPropertyTables:
         assert "comment" not in names
         assert "disabled" not in names
 
+    def test_page_context_shared_ancestor_resolves_without_sub_menu(self):
+        # A page with no `**Sub-menu:**` still documents one menu: the shared
+        # parent of the child sub-menus it links to. The property table may
+        # precede those links, so the whole page is the context.
+        content = (
+            "## ip/dhcp-server \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="add-dns-entries" typ="bool"></ArgTableRow>\n'
+            "</ArgTable>\n"
+            "\n"
+            "## DHCP Server\n"
+            "\n"
+            "### DHCP Server Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **add-dns-entries** (*yes \\| no*) | Creates dynamic DNS records |\n"
+            "\n"
+            "### Leases\n"
+            "\n"
+            "**Sub-menu:** `/ip/dhcp-server/lease`\n"
+            "\n"
+            "### Network\n"
+            "\n"
+            "**Sub-menu:** `/ip/dhcp-server/network`\n"
+        )
+        menu = next(m for m in self._parse(content) if m["path"] == "/ip/dhcp-server")
+        argument = next(a for a in menu["arguments"] if a["name"] == "add-dns-entries")
+        assert argument["description"] == "Creates dynamic DNS records"
+
+    def test_property_section_fragment_context_is_never_attached(self, capsys):
+        # `## Properties` is a fragment of the preceding page, not a page of
+        # its own; its sub-menus are siblings, so the shared ancestor must
+        # never become the table's parent (a wrong attach would overwrite the
+        # real CPU child's rows).
+        content = (
+            "## system/resource \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **load** (*percent*) | CPU usage in percent |\n"
+            "\n"
+            "### IRQ\n"
+            "\n"
+            "**Sub-menu:** `/system/resource/irq`\n"
+            "\n"
+            "### Hardware\n"
+            "\n"
+            "**Sub-menu:** `/system/resource/hardware`\n"
+        )
+        menu = next(m for m in self._parse(content) if m["path"] == "/system/resource")
+        assert "load" not in {a["name"] for a in menu["arguments"]}
+        assert "no unambiguous menu" in capsys.readouterr().err
+
+    def test_single_child_page_context_warns_and_skips(self, capsys):
+        # One sub-menu is not enough to identify the page's own menu: it could
+        # be the child itself, so the table is left unattached with a warning.
+        content = (
+            "## ip/dhcp-server \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## DHCP Server\n"
+            "\n"
+            "### DHCP Server Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **add-dns-entries** (*yes \\| no*) | Creates dynamic DNS records |\n"
+            "\n"
+            "### Network\n"
+            "\n"
+            "**Sub-menu:** `/ip/dhcp-server/network`\n"
+        )
+        menu = next(m for m in self._parse(content) if m["path"] == "/ip/dhcp-server")
+        assert "add-dns-entries" not in {a["name"] for a in menu["arguments"]}
+        assert "no unambiguous menu" in capsys.readouterr().err
+
+    def test_deepest_common_ancestor(self):
+        from extract_commands import _deepest_common_ancestor
+
+        assert _deepest_common_ancestor(
+            ["/ip/dhcp-server/lease", "/ip/dhcp-server/network"]
+        ) == "/ip/dhcp-server"
+        # Siblings share only their root; the caller rejects it by depth.
+        assert _deepest_common_ancestor(["/ip/address", "/ip/route"]) == "/ip"
+        assert _deepest_common_ancestor(["/ip/address"]) is None
+        assert _deepest_common_ancestor(["/ip/address", "/ipv6/address"]) is None
+
 
 class TestMultiLineArgTableRow:
     """`typ=` spanning a newline must be captured, not silently dropped."""
