@@ -171,10 +171,10 @@ impl zed::Extension for RscExtension {
                         "[mikrotik-zed] found asset in latest release {}: {}",
                         release.version, asset.name
                     );
-                    // Only trust API-supplied URLs inside this repo's own
-                    // release namespace; anything else falls back to the
-                    // self-constructed URL below.
-                    download_url = platform::pinned_release_url(&asset.download_url);
+                    // Only trust API-supplied URLs that are exactly this
+                    // repo's download URL for the selected asset; anything
+                    // else falls back to the URL constructed below.
+                    download_url = platform::pinned_release_url(&asset.download_url, &asset_name);
                     break;
                 }
             }
@@ -195,7 +195,10 @@ impl zed::Extension for RscExtension {
                 for asset in &release.assets {
                     if asset.name == asset_name {
                         eprintln!("[mikrotik-zed] found asset in tag {tag}: {}", asset.name);
-                        download_url = platform::pinned_release_url(&asset.download_url);
+                        // The tag is known on this path, so build the URL
+                        // from pinned constants instead of trusting the
+                        // API-supplied download_url at all.
+                        download_url = Some(platform::pinned_asset_url(&tag, &asset_name));
                         break;
                     }
                 }
