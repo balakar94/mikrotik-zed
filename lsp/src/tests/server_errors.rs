@@ -148,3 +148,73 @@ fn test_completion_property_text_edit_replaces_partial_name() {
     assert_eq!(edit["range"]["start"]["character"], expected_start);
     assert_eq!(edit["range"]["end"]["character"], doc.len() as u64);
 }
+
+#[test]
+fn test_completion_partial_path_segment_text_edit_segment_only() {
+    // `/ip/addr` must offer `address` with a textEdit replacing ONLY the
+    // typed `addr` (not the `/ip/` prefix), so accepting yields `/ip/address`.
+    let mut server = Server::new(synthetic_data());
+    let doc = "/ip/addr";
+    let open = serde_json::json!({
+        "params": {"textDocument": {"uri": "file:///seg.rsc", "text": doc}}
+    });
+    server.handle_message("textDocument/didOpen", &open);
+    let comp = serde_json::json!({
+        "id": 2,
+        "params": {
+            "textDocument": {"uri": "file:///seg.rsc"},
+            "position": {"line": 0, "character": doc.len()}
+        }
+    });
+    let resp = server
+        .handle_message("textDocument/completion", &comp)
+        .expect("completion must be answered");
+    let items = resp["result"]["items"].as_array().unwrap();
+    let addr = items
+        .iter()
+        .find(|i| i["label"] == "address")
+        .expect("partial segment 'addr' must suggest 'address'");
+    let edit = addr["textEdit"]
+        .as_object()
+        .expect("partial-segment item must carry a replacing textEdit");
+    assert_eq!(edit["range"]["start"]["line"], 0);
+    assert_eq!(edit["range"]["end"]["line"], 0);
+    assert_eq!(edit["range"]["start"]["character"], 4); // after "/ip/"
+    assert_eq!(edit["range"]["end"]["character"], doc.len() as u64);
+    assert_eq!(edit["newText"], "address");
+}
+
+#[test]
+fn test_completion_partial_path_segment_maps_continuation_to_physical_line() {
+    // A `/`-continued logical join places the partial path token on physical
+    // line 1. The server must map the segment edit there, never to line 0.
+    let mut server = Server::new(synthetic_data());
+    let doc = "/ip\\\n/addr";
+    let open = serde_json::json!({
+        "params": {"textDocument": {"uri": "file:///segcont.rsc", "text": doc}}
+    });
+    server.handle_message("textDocument/didOpen", &open);
+    let comp = serde_json::json!({
+        "id": 3,
+        "params": {
+            "textDocument": {"uri": "file:///segcont.rsc"},
+            "position": {"line": 1, "character": 5}
+        }
+    });
+    let resp = server
+        .handle_message("textDocument/completion", &comp)
+        .expect("completion must be answered");
+    let items = resp["result"]["items"].as_array().unwrap();
+    let addr = items
+        .iter()
+        .find(|i| i["label"] == "address")
+        .expect("partial segment 'addr' must suggest 'address'");
+    let edit = addr["textEdit"]
+        .as_object()
+        .expect("partial-segment item must carry a replacing textEdit");
+    assert_eq!(edit["range"]["start"]["line"], 1, "maps to physical line 1");
+    assert_eq!(edit["range"]["end"]["line"], 1);
+    assert_eq!(edit["range"]["start"]["character"], 1); // after the leading "/"
+    assert_eq!(edit["range"]["end"]["character"], 5);
+    assert_eq!(edit["newText"], "address");
+}

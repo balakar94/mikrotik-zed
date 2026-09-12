@@ -39,12 +39,14 @@ impl Suggestion {
 ///
 /// Rejects non-file schemes (e.g., `untitled://`, `http://`) and
 /// suspicious file URIs containing path traversal (`..` as an exact path
-/// segment), null bytes, control characters, or invalid percent-encoding
-/// (which could hide traversal). Valid percent-encodings (`%[0-9a-fA-F]{2}`)
-/// are decoded and re-validated so `file:///a%20b.rsc` is accepted while
-/// `file:///%2e%2e/etc/passwd` is still rejected after decoding.
-/// `file:///home/user/my..file.rsc` is intentionally allowed — only a
-/// segment exactly equal to `..` is treated as traversal.
+/// segment), null bytes, control characters, backslashes (Windows-style
+/// separators such as `%5c`, which could hide traversal from the
+/// `/`-segment check), or invalid percent-encoding (which could hide
+/// traversal). Valid percent-encodings (`%[0-9a-fA-F]{2}`) are decoded as
+/// UTF-8 and re-validated so `file:///a%20b.rsc` and `file:///caf%C3%A9.rsc`
+/// are accepted while `file:///%2e%2e/etc/passwd` is still rejected after
+/// decoding. `file:///home/user/my..file.rsc` is intentionally allowed —
+/// only a segment exactly equal to `..` is treated as traversal.
 pub(crate) fn is_valid_file_uri(uri: &str) -> bool {
     if !uri.starts_with("file://") {
         return false;
@@ -57,8 +59,8 @@ pub(crate) fn is_valid_file_uri(uri: &str) -> bool {
         return false;
     }
     // Percent-decode the path part after `file://`; reject bare `%` or
-    // invalid `%XX` sequences. Valid encodings are decoded to their byte
-    // value and then re-validated for traversal/control/null.
+    // invalid `%XX` sequences. Valid encodings are decoded to their UTF-8
+    // bytes and then re-validated for traversal/control/null.
     let after_scheme = &uri["file://".len()..];
     let decoded = match percent_decode(after_scheme) {
         Some(d) => d,
@@ -68,6 +70,12 @@ pub(crate) fn is_valid_file_uri(uri: &str) -> bool {
         return false;
     }
     if decoded.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    // A backslash is a Windows path separator; accepting it would let
+    // `%5c..%5c` slip past the `/`-segment traversal check below. RFC 8089
+    // file URIs use `/`, so rejecting it is both safe and standards-aligned.
+    if decoded.contains('\\') {
         return false;
     }
     // Path traversal: only reject when `..` appears as an exact segment
@@ -81,30 +89,48 @@ pub(crate) fn is_valid_file_uri(uri: &str) -> bool {
     true
 }
 
-/// Decode percent-encoded sequences `%[0-9a-fA-F]{2}` in `input`.
+/// Decode percent-encoded sequences `%[0-9a-fA-F]{2}` in `input` as UTF-8.
 ///
 /// Returns `None` if `input` contains a bare `%`, an incomplete trailing
-/// `%`, or a `%` not followed by two hex digits. Valid sequences are
-/// replaced by the decoded byte (as `char`). This is a pure function with
-/// no allocation beyond the output string.
-fn percent_decode(input: &str) -> Option<String> {
-    let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '%' {
-            let hi = chars.next()?;
-            let lo = chars.next()?;
-            if !hi.is_ascii_hexdigit() || !lo.is_ascii_hexdigit() {
+/// `%`, a `%` not followed by two hex digits, or when the decoded byte
+/// sequence is not valid UTF-8 (e.g. a lone continuation byte from
+/// `%C3`). Non-escaped characters are copied byte-for-byte, so a `&str`
+/// input keeps its own UTF-8 validity. Bytes are decoded before the
+/// string is rebuilt, so a multi-byte percent-encoded code point
+/// (`%C3%A9` → `é`) is reconstructed as one character instead of two
+/// Latin-1 ones.
+pub(crate) fn percent_decode(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            // Need both hex digits; a trailing `%` or `%X` is incomplete.
+            if i + 2 >= bytes.len() {
                 return None;
             }
-            let hex = format!("{hi}{lo}");
-            let byte = u8::from_str_radix(&hex, 16).ok()?;
-            out.push(byte as char);
+            let hi = hex_digit(bytes[i + 1])?;
+            let lo = hex_digit(bytes[i + 2])?;
+            out.push((hi << 4) | lo);
+            i += 3;
         } else {
-            out.push(c);
+            out.push(bytes[i]);
+            i += 1;
         }
     }
-    Some(out)
+    // Validate the assembled bytes as UTF-8; this rejects lone/incomplete
+    // multi-byte escapes without silently substituting replacement chars.
+    String::from_utf8(out).ok()
+}
+
+/// Numeric value of one ASCII hex digit (`0-9`, `a-f`, `A-F`).
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// LSP 3.17 exit semantics: the server must exit with status 0 when the

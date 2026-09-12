@@ -681,13 +681,16 @@ impl Server {
                 // supports it). If computing the range fails we leave `textEdit`
                 // as `None` and the client falls back to insertion at cursor.
                 //
-                // Three cases are handled (per spec, at least these):
+                // Four cases are handled (per spec, at least these):
                 // - value completions after `=`: range covers the typed suffix
                 //   after `=` (excluding a leading opening quote so `"in` → `input`
                 //   preserves the quote as `"input`);
                 // - sub-menu / verb completions before a verb: when the cursor
                 //   sits inside a partial token that prefixes a child name, range
-                //   covers that token so `addr` → `address`.
+                //   covers that token so `addr` → `address`;
+                // - partial menu-path segment completions (`/ip/addr`): range
+                //   covers only the typed final segment so `addr` → `address`
+                //   while the already-typed `/ip/` prefix is preserved.
                 // - property / flag completions after a verb (kinds 5/14): the
                 //   same partial-name span as the sub-menu case, so `inter` →
                 //   `interface=…` replaces instead of appending. Span guards
@@ -979,6 +982,46 @@ impl Server {
                                             Some((line_idx, s_byte, line_idx, e_byte));
                                         typed_lower = Some(lower);
                                     }
+                                }
+                            }
+                        }
+                        // Partial menu-path segment (`/ip/addr`): the
+                        // completion layer offers the parent's matching child
+                        // menu and replaces ONLY the typed final segment. Map
+                        // that segment span from the logical join (preferred,
+                        // continuation-aware) or the physical cursor line so
+                        // the segment-only edit never reaches the wire with a
+                        // line-0 guess.
+                        if submenu_range_phys.is_none() {
+                            if let (Some(ll), Some(cursor_logical)) = (covering, cursor_logical_opt)
+                            {
+                                let logical_text = ll.text();
+                                let cursor_logical_clamped = cursor_logical.min(logical_text.len());
+                                let cursor_logical_clamped = crate::encoding::floor_char_boundary(
+                                    logical_text,
+                                    cursor_logical_clamped,
+                                );
+                                let logical_prefix = &logical_text[..cursor_logical_clamped];
+                                if let Some((typed, s, e)) =
+                                    completion::partial_path_segment(logical_prefix)
+                                {
+                                    let range = ll.map_range(s, e);
+                                    submenu_range_phys = Some((
+                                        range.start.line as usize,
+                                        range.start.character as usize,
+                                        range.end.line as usize,
+                                        range.end.character as usize,
+                                    ));
+                                    typed_lower = Some(typed.to_ascii_lowercase());
+                                }
+                            }
+                            if submenu_range_phys.is_none() {
+                                let prefix_line = &line_text[..char_byte.min(line_text.len())];
+                                if let Some((typed, s, e)) =
+                                    completion::partial_path_segment(prefix_line)
+                                {
+                                    submenu_range_phys = Some((line_idx, s, line_idx, e));
+                                    typed_lower = Some(typed.to_ascii_lowercase());
                                 }
                             }
                         }
