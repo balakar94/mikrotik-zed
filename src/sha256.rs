@@ -35,9 +35,9 @@ pub(crate) const FILE_HASH_CHUNK_BYTES: usize = 32 * 1024;
 
 /// Incremental SHA-256 hasher (FIPS 180-4).
 ///
-/// The one-shot [`sha256_hex`] is a thin wrapper over this; file
-/// verification ([`sha256_file_hex`]) feeds chunks through it so a
-/// 64 MiB artifact never sits wholly in WASM linear memory.
+/// File verification ([`sha256_file_hex`]) feeds chunks through this so a
+/// 64 MiB artifact never sits wholly in WASM linear memory; the one-shot
+/// `sha256_hex` (test-only) is a thin wrapper over it.
 pub(crate) struct Sha256 {
     state: [u32; 8],
     /// Partial block carried between `update` calls (fewer than 64 bytes).
@@ -154,9 +154,12 @@ pub(crate) fn sha256_file_hex(path: &str, cap_bytes: u64) -> Result<String, File
 
 /// Computes the SHA-256 digest of `data` as lowercase hex (64 characters).
 ///
-/// One-shot convenience over [`Sha256`]: callers hashing in-memory buffers
-/// use this; callers hashing files use streaming [`sha256_file_hex`] so a
-/// large artifact never sits wholly in WASM linear memory.
+/// One-shot convenience over [`Sha256`], compiled only for tests (production
+/// callers hash files with streaming [`sha256_file_hex`] so a large artifact
+/// never sits wholly in WASM linear memory). Keeping the simple reference
+/// implementation under test guards the streaming path against primitive
+/// regressions.
+#[cfg(test)]
 pub(crate) fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
@@ -233,7 +236,7 @@ pub(crate) fn parse_digest_companion(content: &str) -> Result<String, String> {
 
 /// Compares two digest strings after trimming surrounding whitespace and
 /// ignoring hex case. Both sides are expected to come from validated sources
-/// ([`parse_digest_companion`] and [`sha256_hex`] respectively).
+/// ([`parse_digest_companion`] and the streaming file hash respectively).
 pub(crate) fn digests_match(expected: &str, actual: &str) -> bool {
     expected.trim().eq_ignore_ascii_case(actual.trim())
 }

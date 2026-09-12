@@ -27,6 +27,11 @@ const MARKER_SUFFIX: &str = ".verified";
 /// Exact length of a SHA-256 digest rendered as hex.
 const DIGEST_HEX_LEN: usize = 64;
 
+/// Largest marker file ever read: one digest plus an optional trailing
+/// newline. Bounds the read so a hostile or corrupt file at the marker path
+/// cannot force an unbounded allocation.
+const MAX_MARKER_BYTES: u64 = (DIGEST_HEX_LEN + 1) as u64;
+
 /// Path of the integrity marker that certifies `stored_name`.
 pub(crate) fn marker_path(stored_name: &str) -> String {
     format!("{stored_name}{MARKER_SUFFIX}")
@@ -35,9 +40,10 @@ pub(crate) fn marker_path(stored_name: &str) -> String {
 /// Writes the integrity marker for `stored_name` as exactly
 /// `<64-char lowercase sha256 hex>\n`.
 ///
-/// `digest_hex` must already be the normalized digest produced by
-/// [`crate::sha256::sha256_hex`]; the strict validation below guarantees a
-/// marker is never persisted that [`read_marker_digest`] would reject.
+/// `digest_hex` must already be the normalized digest produced by the
+/// SHA-256 helper ([`crate::sha256::sha256_file_hex`]); the strict validation
+/// below guarantees a marker is never persisted that
+/// [`read_marker_digest`] would reject.
 ///
 /// Failing here must fail closed: the caller removes both the binary and the
 /// marker rather than keeping a cache entry it could not certify.
@@ -65,7 +71,24 @@ pub(crate) fn write_marker(stored_name: &str, digest_hex: &str) -> std::result::
 /// non-hex characters, or trailing junk. Uppercase hex is tolerated on read
 /// (comparison downstream is case-insensitive) but is never written.
 pub(crate) fn read_marker_digest(stored_name: &str) -> Option<String> {
-    let raw = std::fs::read_to_string(marker_path(stored_name)).ok()?;
+    read_marker_file(&marker_path(stored_name))
+}
+
+/// Bounded reader for a marker file; see [`read_marker_digest`].
+fn read_marker_file(path: &str) -> Option<String> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(path).ok()?;
+    // Read at most one byte past the cap: `read_to_string` on an
+    // unauthenticated local file would otherwise allocate its full length.
+    let mut limited = file.take(MAX_MARKER_BYTES + 1);
+    let mut raw = String::new();
+    if limited.read_to_string(&mut raw).is_err() {
+        return None;
+    }
+    if raw.len() as u64 > MAX_MARKER_BYTES {
+        return None;
+    }
     parse_marker_content(&raw)
 }
 
@@ -100,8 +123,12 @@ pub(crate) fn integrity_problem(stored_name: &str) -> Option<String> {
 /// Core integrity check with an injectable size cap (tests shrink it to stay
 /// practical; production always passes [`MAX_VERIFIED_BINARY_BYTES`]).
 ///
-/// OOM hardening: the metadata size gate is checked BEFORE any allocation
-/// (std::fs::read) so an oversized file never reaches heap allocation.
+/// OOM hardening: the cap is enforced *during* a streaming hash
+/// ([`sha256::sha256_file_hex`]) rather than around a whole-file
+/// `std::fs::read`. A metadata pre-check alone is TOCTOU-unsafe: a file that
+/// grows between `metadata()` and `read()` would still be allocated in full.
+/// Streaming bounds peak heap regardless of concurrent writers; a torn or
+/// swapped read simply hashes to a different digest and triggers self-healing.
 fn integrity_problem_with_cap(stored_name: &str, max_bytes: u64) -> Option<String> {
     let Some(expected) = read_marker_digest(stored_name) else {
         return Some(format!(
@@ -109,29 +136,17 @@ fn integrity_problem_with_cap(stored_name: &str, max_bytes: u64) -> Option<Strin
             marker_path(stored_name)
         ));
     };
-    // Pre-read size gate — check metadata.len() BEFORE std::fs::read to avoid
-    // allocating up to the verification cap for a hostile oversized file.
-    let size = match std::fs::metadata(stored_name) {
-        Ok(meta) => meta.len(),
-        Err(e) => return Some(format!("cached binary {stored_name} is unreadable: {e}")),
-    };
-    if size > max_bytes {
-        return Some(format!(
-            "cached binary {stored_name} is {size} bytes, above the {max_bytes}-byte verification cap"
-        ));
-    }
-    // Stat-then-read can race with a concurrent writer; the hash verdict below
-    // is what finally decides, so a torn read merely reports a mismatch and
-    // triggers self-healing.
-    let bytes = match std::fs::read(stored_name) {
-        Ok(bytes) => bytes,
-        Err(e) => {
+    let actual = match sha256::sha256_file_hex(stored_name, max_bytes) {
+        Ok(digest) => digest,
+        Err(sha256::FileHashError::TooLarge(observed)) => {
             return Some(format!(
-                "cached binary {stored_name} could not be read for hashing: {e}"
+                "cached binary {stored_name} has {observed}+ bytes, above the {max_bytes}-byte verification cap"
             ));
         }
+        Err(sha256::FileHashError::Io(e)) => {
+            return Some(format!("cached binary {stored_name} is unreadable: {e}"));
+        }
     };
-    let actual = sha256::sha256_hex(&bytes);
     if !sha256::digests_match(&expected, &actual) {
         return Some(format!(
             "cached binary {stored_name} hashes to {}… but its marker records {}…",
@@ -262,6 +277,17 @@ mod tests {
     }
 
     #[test]
+    fn oversized_marker_file_reads_as_none() {
+        let bin = CachedFile(temp_path("huge-marker"));
+        bin.write(BYTES_A);
+        // A marker far larger than any valid digest (e.g. an HTML error page
+        // or a hostile file) must be rejected without an unbounded read.
+        std::fs::write(marker_path(&bin.0), "a".repeat(10_000)).unwrap();
+        assert_eq!(read_marker_digest(&bin.0), None);
+        assert!(!cached_binary_is_intact(&bin.0));
+    }
+
+    #[test]
     fn tampered_bytes_fail_the_gate_and_reason_hides_full_hashes() {
         let bin = CachedFile(temp_path("tamper"));
         bin.write(BYTES_A);
@@ -300,11 +326,34 @@ mod tests {
         let problem =
             integrity_problem_with_cap(&bin.0, 8).expect("tiny cap must flag the oversized file");
         assert!(
-            problem.contains("bytes"),
+            problem.contains("bytes") && problem.contains("cap"),
             "unexpected reason wording: {problem}"
         );
 
         // The production cap accepts the same small file.
+        assert_eq!(integrity_problem(&bin.0), None);
+    }
+
+    #[test]
+    fn cap_is_enforced_across_streaming_chunks() {
+        // A multi-chunk file (well past the 32 KiB streaming chunk) with a cap
+        // between one and two chunks: the streaming hash must abort at the cap
+        // instead of buffering the whole file. If hashing regressed to a
+        // whole-file read, this still passes byte-wise but the memory bound
+        // would be lost; the assertion pins the fail-closed verdict and the
+        // bounded-read reason.
+        let bin = CachedFile(temp_path("multi-chunk"));
+        let bytes: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+        bin.write(&bytes);
+        write_marker(&bin.0, &digest_of(&bytes)).unwrap();
+
+        let problem = integrity_problem_with_cap(&bin.0, 40 * 1024)
+            .expect("100 KiB file must exceed a 40 KiB cap");
+        assert!(
+            problem.contains("above the") && problem.contains("verification cap"),
+            "unexpected reason wording: {problem}"
+        );
+        // The same bytes pass at the production cap.
         assert_eq!(integrity_problem(&bin.0), None);
     }
 }
