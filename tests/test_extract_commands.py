@@ -1924,6 +1924,169 @@ class TestMarkdownPropertyTables:
         assert by_name["validate-server-duid"]["type"] == "yes | no"
         assert by_name["digest"]["description"] == "Hash"
 
+    def test_bold_wraps_whole_type_clause_with_escaped_pipe(self):
+        # Upstream misplaces the closing `**` so it wraps the whole
+        # `(type; Default: ...)` clause: the escaped pipe inside the type
+        # must survive cell splitting and the name/type must parse instead
+        # of being warned as an unknown row.
+        content = (
+            "## ipv6/dhcp-server \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## DHCPv6 Server\n"
+            "\n"
+            "**Sub-menu:** `/ipv6/dhcp-server`\n"
+            "\n"
+            "### Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **prefix-pool (*enum \\| static-only*; Default: static-only)** | Prefix pool |\n"
+        )
+        menu = self._parse(content)[0]
+        arg = next(a for a in menu["arguments"] if a["name"] == "prefix-pool")
+        assert arg["type"] == "enum | static-only"
+        assert arg["description"] == "Prefix pool"
+
+    def test_titlecase_readonly_rows_enrich_known_properties(self):
+        # Upstream capitalises read-only labels (`Container`, `Local`,
+        # `Remote`) for /ip/service although the CLI exposes them lowercase.
+        # They must enrich the known read-only rows, not warn or duplicate.
+        content = (
+            "## ip/service \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            '<ArgTable c1="Read-only Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="container" typ="enum () { :0 }"></ArgTableRow>\n'
+            '<ArgTableRow arg="local" typ="ip6Addr"></ArgTableRow>\n'
+            '<ArgTableRow arg="remote" typ="composite { ip: ip6Addr }"></ArgTableRow>\n'
+            "</ArgTable>\n"
+            "\n"
+            "## Services\n"
+            "\n"
+            "**Sub-menu:** `/ip/service`\n"
+            "\n"
+            "### Read-only properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **Container** | Name of the container listening on the port |\n"
+            "| **Local** | Router local address used for the connection |\n"
+            "| **Remote** | Remote address that established the connection |\n"
+        )
+        menu = self._parse(content)[0]
+        read_only = {r["name"]: r for r in menu["read_only"]}
+        assert set(read_only) == {"container", "local", "remote"}
+        assert read_only["container"]["description"] == "Name of the container listening on the port"
+        assert read_only["local"]["description"] == "Router local address used for the connection"
+        assert read_only["remote"]["description"] == "Remote address that established the connection"
+        assert menu["arguments"] == [], "TitleCase labels must stay read-only"
+
+    def test_titlecase_readonly_row_without_known_name_is_not_invented(self):
+        content = (
+            "## ip/service \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## Services\n"
+            "\n"
+            "**Sub-menu:** `/ip/service`\n"
+            "\n"
+            "### Read-only properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **Container** | Name of the container listening on the port |\n"
+        )
+        menu = self._parse(content)[0]
+        assert menu["read_only"] == []
+        assert menu["arguments"] == []
+
+    def test_fragment_prefers_last_subsection_over_page_children(self):
+        # Regression for the /tool/traffic-generator/stats table: the
+        # fragment's page links stream/port/raw (whose shared ancestor is
+        # /tool/traffic-generator/stats), but the nearest explicit context is
+        # the latency-distribution subsection it actually documents.
+        content = (
+            "## tool/traffic-generator/stats \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## tool/traffic-generator/stats/latency-distribution \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            '<ArgTable c1="Read-only Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="latency" typ="string"></ArgTableRow>\n'
+            '<ArgTableRow arg="count" typ="num"></ArgTableRow>\n'
+            "</ArgTable>\n"
+            "\n"
+            "## Stats\n"
+            "\n"
+            "**Sub-menu:** `/tool/traffic-generator/stats`\n"
+            "\n"
+            "### Latency Distribution\n"
+            "\n"
+            "**Sub-menu:** `/tool/traffic-generator/stats/latency-distribution`\n"
+            "\n"
+            "## Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **count** (*integer*) | Number of packets in the current latency range |\n"
+            "| **latency** (*string*) | latency range |\n"
+            "\n"
+            "### Stream Stats\n"
+            "\n"
+            "**Sub-menu:** `/tool/traffic-generator/stats/stream`\n"
+            "\n"
+            "### Port Stats\n"
+            "\n"
+            "**Sub-menu:** `/tool/traffic-generator/stats/port`\n"
+        )
+        menus = {m["path"]: m for m in self._parse(content)}
+        latency = {r["name"]: r for r in menus["/tool/traffic-generator/stats/latency-distribution"]["read_only"]}
+        assert latency["count"]["description"] == "Number of packets in the current latency range"
+        assert latency["latency"]["description"] == "latency range"
+        assert "count" not in {
+            a["name"] for a in menus["/tool/traffic-generator/stats"].get("arguments", [])
+        }
+
+    def test_fragment_prefers_nearest_network_over_alert_page_context(self):
+        # Regression for the /ip/dhcp-server/network table: the fragment's
+        # own page links /ip/dhcp-server/alert, but the nearest explicit
+        # context is the Network subsection.
+        content = (
+            "## ip/dhcp-server/network \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="address" typ="ipAddr"></ArgTableRow>\n'
+            "</ArgTable>\n"
+            "\n"
+            "## DHCP Server\n"
+            "\n"
+            "### Network\n"
+            "\n"
+            "**Sub-menu:** `/ip/dhcp-server/network`\n"
+            "\n"
+            "## Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **address** (*IP/netmask*) | The network DHCP server(s) will lease addresses from |\n"
+            "\n"
+            "### Alert\n"
+            "\n"
+            "**Sub-menu:** `/ip/dhcp-server/alert`\n"
+        )
+        menus = {m["path"]: m for m in self._parse(content)}
+        network = next(m for m in menus["/ip/dhcp-server/network"]["arguments"] if m["name"] == "address")
+        assert network["description"] == "The network DHCP server(s) will lease addresses from"
+
     def test_type_column_tables_use_the_description_column(self):
         content = (
             "## container \n"
@@ -2155,15 +2318,27 @@ class TestMarkdownPropertyTables:
         argument = next(a for a in menu["arguments"] if a["name"] == "add-dns-entries")
         assert argument["description"] == "Creates dynamic DNS records"
 
-    def test_property_section_fragment_context_is_never_attached(self, capsys):
-        # `## Properties` is a fragment of the preceding page, not a page of
-        # its own; its sub-menus are siblings, so the shared ancestor must
-        # never become the table's parent (a wrong attach would overwrite the
-        # real CPU child's rows).
+    def test_property_section_fragment_uses_nearest_explicit_context(self, capsys):
+        # `## Properties` is a fragment of the page above it, not a page of
+        # its own; its owning menu is the nearest preceding explicit context
+        # (`### CPU`), never the broad shared page ancestor
+        # (`/system/resource`), which would misplace the CPU rows.
         content = (
+            "## system/resource/cpu \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            '<ArgTable c1="Read-only Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="load" typ="percent">Short</ArgTableRow>\n'
+            "</ArgTable>\n"
+            "\n"
             "## system/resource \n"
             "\n"
             "**Type:** Directory\n"
+            "\n"
+            "### CPU\n"
+            "\n"
+            "**Sub-menu:** `/system/resource/cpu`\n"
             "\n"
             "## Properties\n"
             "\n"
@@ -2179,9 +2354,61 @@ class TestMarkdownPropertyTables:
             "\n"
             "**Sub-menu:** `/system/resource/hardware`\n"
         )
-        menu = next(m for m in self._parse(content) if m["path"] == "/system/resource")
-        assert "load" not in {a["name"] for a in menu["arguments"]}
-        assert "no unambiguous menu" in capsys.readouterr().err
+        menus = {m["path"]: m for m in self._parse(content)}
+        cpu = menus["/system/resource/cpu"]
+        load = next(r for r in cpu["read_only"] if r["name"] == "load")
+        assert load["description"] == "CPU usage in percent"
+        # The fragment's rows must not land on the page ancestor.
+        assert "load" not in {a["name"] for a in menus["/system/resource"].get("arguments", [])}
+        assert "skipped" not in capsys.readouterr().err
+
+    def test_property_section_fragment_ambiguous_context_warns(self, capsys):
+        # A shared-property `**Sub-menu:**` lists several menus: the fragment
+        # cannot be attributed to one, so it stays unattached with a warning.
+        content = (
+            "## interface/bridge/filter \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "### Shared\n"
+            "\n"
+            "**Sub-menu:** `/interface/bridge/filter, /interface/bridge/nat`\n"
+            "\n"
+            "## Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **action** (*accept \\| drop*) | Rule action |\n"
+        )
+        menus = {m["path"]: m for m in self._parse(content)}
+        assert "action" not in {a["name"] for a in menus["/interface/bridge/filter"].get("arguments", [])}
+        assert "no single known menu for its property-section fragment" in capsys.readouterr().err
+
+    def test_property_section_fragment_stale_context_warns(self, capsys):
+        # A context more than one H2 page behind is stale and must not be
+        # reused across an unrelated page.
+        content = (
+            "## ip/address \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## Overview\n"
+            "\n"
+            "Prose page with no menu context of its own.\n"
+            "\n"
+            "## Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **foo** (*string*) | Not attributable |\n"
+            "\n"
+            "### Child\n"
+            "\n"
+            "**Sub-menu:** `/ip/address/child`\n"
+        )
+        menus = {m["path"]: m for m in self._parse(content)}
+        assert "foo" not in {a["name"] for a in menus["/ip/address"].get("arguments", [])}
+        assert "skipped" in capsys.readouterr().err
 
     def test_single_child_page_context_warns_and_skips(self, capsys):
         # One sub-menu is not enough to identify the page's own menu: it could

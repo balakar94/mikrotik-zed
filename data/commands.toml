@@ -2,7 +2,7 @@
 # Auto-generated from llms-full.txt
 # Covers: /app, /beep, /blink, /caps-man, /certificate, /console, /container, /disk, /dude, /environment, /file, /import, … (1078 menus)
 # RouterOS version: 7.23.2
-# Generated: 2026-09-12T15:46:19.319901Z
+# Generated: 2026-09-12T16:12:37.921173Z
 # Source hash (sha256[:16]): a25b13ef01b09646
 # overrides_applied = 1 (data/overrides.toml)
 # generics_applied = 1944 (comment/disabled universal; place-before/copy-from ordered-only)
@@ -24,59 +24,67 @@ type = "s"
 description = "Application installed from a custom app store"
 [[menus.arguments]]
 name = "container-command-lines"
-type = ""
-description = "Specifies the command-line argument(s) to pass to the application when starting the container"
+type = "string"
+description = "Specifies the command-line argument(s) to pass to the application when starting the container."
 [[menus.arguments]]
 name = "auto-update"
-type = ""
-description = "Enables or disables automatic updating when a new container image version is available"
+type = "yes | no"
+description = "Enables or disables automatic updating when a new container image version is available."
 [[menus.arguments]]
 name = "use-https"
-type = ""
-description = "Uses HTTPS for the application URL. This option will not work on devices that do not support cloud services"
+type = "yes | no"
+description = "Uses HTTPS for the application URL. This option will not work on devices that do not support cloud services."
 [[menus.arguments]]
 name = "network"
-type = ""
-description = "Specifies which network the container will use: internal (behind NAT), lan (on the LAN network), or default (varies per application)"
+type = "default | lan | internal"
+description = "Specifies which network the container will use: internal (behind NAT), lan (on the LAN network), or default (varies per application; can be internal or lan)."
 [[menus.arguments]]
 name = "network-pvid"
 type = ""
 description = "Sets the Port VLAN ID (PVID) for the container's virtual Ethernet interface in the bridge"
 [[menus.arguments]]
 name = "network-outgoing-access"
-type = ""
-description = "Allows network outgoing access for the specific container app. When set to no, a mangle drop rule is created"
+type = "yes | no"
+description = "Allows network outgoing access for the specific container app, when set to no, a mangle drop rule is created."
 [[menus.arguments]]
 name = "firewall-redirects"
-type = ""
-description = "Configures port redirection from the host device to the container"
+type = "string"
+description = "Configures port redirection from the host device to the container."
 [[menus.arguments]]
 name = "yaml"
-type = ""
-description = "Provides the YAML composition for the application. See the documentation for configuration examples"
+type = "string"
+description = "Provides the YAML composition for the application. See the documentation for configuration examples."
 [[menus.arguments]]
 name = "required-mounts"
-type = ""
-description = "Mount directories required for the container to start. Format: [dir-on-host]:[dir-in-app]"
+type = "string"
+description = "Mount directories required for the container to start. This property is configurable only after adding the YAML configuration. Compose format:[dir-on-host]:[dir-in-app]"
 [[menus.arguments]]
 name = "extra-mounts"
-type = ""
-description = "Specifies additional mount points to attach to the container"
+type = "string"
+description = "Specifies additional mount points to attach to the container."
 [[menus.arguments]]
 name = "environment"
-type = ""
-description = "Defines environment variables to be available to the running application. Specify as a list of key-value pair(s)"
+type = "string"
+description = "Defines environment variables to be available to the running application. Specify as a list of key-value pair(s)."
 [[menus.arguments]]
 name = "secrets"
 type = ""
 [[menus.arguments]]
 name = "required-hw-devices"
-type = ""
-description = "Hardware devices that must be present on the host for the container to start. Format: [host-hw-device]:[device-in-app]"
+type = "string"
+description = "Hardware devices that must be present on the host for the container to start. This property is configurable only after adding the YAML configuration. Compose format:[host-hw-device]:[device-in-app]"
 [[menus.arguments]]
 name = "devices"
-type = ""
-description = "Specifies additional hardware devices to pass through to the container application"
+type = "string"
+description = "Specifies additional hardware devices to pass through to the container application."
+[[menus.arguments]]
+name = "check-certificate"
+type = "yes | no"
+description = "Verifies the registry certificate against the router’s certificate store before pulling the container image."
+[[menus.arguments]]
+name = "pvid"
+type = "integer"
+description = "Sets the Port VLAN ID (PVID) for the container's virtual Ethernet interface in the bridge."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -2873,9 +2881,11 @@ type = "unhealthy"
 [[menus.arguments]]
 name = "file"
 type = "file"
+description = "A container \\tar.gz tarball if the container is imported from a file"
 [[menus.arguments]]
 name = "remote-image"
 type = "string"
+description = "the container image name to be installed if an external registry is used (configured under /container/config/set registry-url=...)"
 [[menus.arguments]]
 name = "ignore-remote-image-change"
 type = "bool"
@@ -2891,6 +2901,7 @@ type = "bool"
 [[menus.arguments]]
 name = "interface"
 type = "multi { interface: iface_enum }"
+description = "veth interface to be used with the container"
 required = true
 [[menus.arguments]]
 name = "env"
@@ -2901,9 +2912,11 @@ type = "multi { envlist: enum }"
 [[menus.arguments]]
 name = "entrypoint"
 type = "multi { cmd: string }"
+description = "An ENTRYPOINT allows you to specify an executable to run when starting the container. Example: /bin/sh"
 [[menus.arguments]]
 name = "cmd"
 type = "multi { cmd: string }"
+description = "The main purpose of a CMD is to provide defaults for an executing container. These defaults can include an executable, or they can omit the executable, in which case you must specify an ENTRYPOINT instruction as well."
 [[menus.arguments]]
 name = "shell"
 type = "multi { cmd: string }"
@@ -2911,83 +2924,109 @@ type = "multi { cmd: string }"
 name = "stop-signal"
 type = "enum (1-SIGHUP | 2-SIGINT | 3-SIGQUIT | 4-SIGILL | 5-SIGTRAP | 6-SIGABTR | 7-SIGBUS | 8-SIGFPE | 9-SIGKILL | 10-SIGUSR1 | 11-SIGSEGV | 12-SIGUSR2 ...)"
 enum_values = ["1-SIGHUP", "2-SIGINT", "3-SIGQUIT", "4-SIGILL", "5-SIGTRAP", "6-SIGABTR", "7-SIGBUS", "8-SIGFPE", "9-SIGKILL", "10-SIGUSR1", "11-SIGSEGV", "12-SIGUSR2", "13-SIGPIPE", "14-SIGALRM", "15-SIGTERM", "16-SIGSTKFLT", "17-SIGCHLD", "18-SIGCONT", "19-SIGSTOP", "20-SIGTSTP", "21-SIGTTIN", "22-SIGTTOU", "23-SIGURG", "24-SIGXCPU", "25-SIGXFSZ", "26-SIGVTALRM", "27-SIGPROF", "28-SIGWINCH", "29-SIGIO", "30-SIGPWR", "31-SIGSYS"]
+description = "defines which Linux signal is sent to terminate the container if it is still running after 10 seconds. Different signals may allow graceful shutdown, immediate termination, or trigger application-specific actions"
 [[menus.arguments]]
 name = "stop-time"
 type = "time"
+description = "Time limit for the container to stop gracefully before the stop-signal is sent."
 [[menus.arguments]]
 name = "root-dir"
 type = "file"
+description = "used to save container store outside main memory"
 [[menus.arguments]]
 name = "layer-dir"
 type = "file"
+description = "Directory for storing container image layers, used for shared layer storage between containers."
 [[menus.arguments]]
 name = "mount"
 type = "object { src-dst-mode: composite { src: file , dst-mode: composite { dst: string , mode: enum (rw | ro | rw,noexec | ro,noexec) } } }"
 enum_values = ["rw", "ro", "rw,noexec", "ro,noexec"]
+description = "specify a directory to be used as a mount"
 [[menus.arguments]]
 name = "tmpfs"
 type = "object { dst-size-mode: composite { dst: string , size-mode: composite { size: num , mode: string } } }"
+description = "Temporary filesystem mount points for the container. Format: size@dir, e.g., 64M@/tmp."
 [[menus.arguments]]
 name = "mountlists"
 type = "multi { mountlist: enum }"
+description = "mounts from /container/mounts/ sub-menu to be used with this container"
 [[menus.arguments]]
 name = "shm-size"
 type = "num"
+description = "Size of the /dev/shm shared memory filesystem in bytes for the container."
 [[menus.arguments]]
 name = "dns"
 type = "multi { dns-server-ip: address (flags=46) }"
+description = "If the container needs different DNS, it can be configured here"
 [[menus.arguments]]
 name = "default-dns"
 type = "multi { dns-server-ip: address (flags=46) }"
+description = "Default DNS servers inherited from the system /ip/dns configuration."
 [[menus.arguments]]
 name = "hostname"
 type = "string"
+description = "Assigning a hostname to a container helps in identifying and managing the container more easily"
 [[menus.arguments]]
 name = "domain-name"
 type = "string"
+description = "Sets the container's domain name"
 [[menus.arguments]]
 name = "workdir"
 type = "string"
+description = "the working directory for cmd entrypoint"
 [[menus.arguments]]
 name = "logging"
 type = "bool"
+description = "if set to yes, all container-generated output will be shown in the RouterOS log"
 [[menus.arguments]]
 name = "start-on-boot"
 type = "bool"
+description = "if set to yes, the container will be started automatically on device start-up."
 [[menus.arguments]]
 name = "stop-on-unhealthy"
 type = "bool"
+description = "If set to yes, the container will be automatically stopped when the healthcheck status becomes unhealthy."
 [[menus.arguments]]
 name = "restart-policy"
 type = "enum (no | on-failure | always)"
 enum_values = ["no", "on-failure", "always"]
+description = "Defines the restart policy for the container: no (never restart), on-failure (restart only on non-zero exit code), or always (always restart)."
 [[menus.arguments]]
 name = "restart-max-count"
 type = "num"
+description = "Maximum number of restart attempts allowed within the restart-interval time frame."
 [[menus.arguments]]
 name = "restart-interval"
 type = "time"
+description = "Specify an interval at which Container will be restarted on Container failure. Example: 10s"
 [[menus.arguments]]
 name = "user"
 type = "string"
+description = "sets the user and group the container process runs as before execution."
 [[menus.arguments]]
 name = "cpu-list"
 type = "multi { cpu: enum }"
+description = "specifies which CPU cores the container is allowed to run on"
 [[menus.arguments]]
 name = "memory-high"
 type = "num"
+description = "\"Soft\" RAM usage limit in bytes for a specific container. If usage goes over the high boundary, the processes are throttled and put under reclaim pressure."
 [[menus.arguments]]
 name = "memory-max"
 type = "num"
+description = "Max RAM usage limit in bytes per container (The container process will be terminated if the memory-max value is smaller than the container memory-current) starting 7.23, this parameter cannot be set lower than 1MB, to avoid a situation where the container is terminated too early in the startup process"
 [[menus.arguments]]
 name = "swap-max"
 type = "num"
+description = "Maximum amount of swap space (in bytes) that the container may use. Requires swap to be enabled on the device (see Swap space)."
 [[menus.arguments]]
 name = "devices"
 type = "object { dst-size-mode: composite { device: enum , container-dev-name: string } }"
+description = "passes through a physical device to the container"
 [[menus.arguments]]
 name = "hosts"
 type = "object { host-entry: composite { host-name: string , host-addr: address (flags=46) } }"
+description = "Custom hostname-to-IP address mappings for the container. Format: host=ip."
 [[menus.arguments]]
 name = "healthcheck-cmd"
 type = "multi { healthcheck-cmd: string }"
@@ -3009,6 +3048,10 @@ type = "num"
 [[menus.arguments]]
 name = "healthcheck-status"
 type = "string"
+[[menus.arguments]]
+name = "envlist"
+type = "string"
+description = "List of environmental variables (configured under /container/envs ) to be used with the container"
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -3423,12 +3466,14 @@ type = "enum ()"
 [[menus.arguments]]
 name = "mount-point-template"
 type = "string"
+description = "Sets the mounting point for the file system. It is possible to set the mount point as the following parameters based on the disk: [slot] (default) - sets the mount point as the slot name.[model] - sets the mount point as the device's model name.[serial] - sets the mount point as the device serial[fw-version] - sets the mount point as the device's firmware version.[fs-label] - sets the mount point as the device's file system label.[fs-uuid] - sets the mount point as the device's UUID[fs] - sets the mount point as the device's file system /disk/set nvme1 mount-point-template=\"[model]\" Additionally, it is possible to combine multiple variables to create a single mount point: /disk/set nvme1 mount-point-template=\"[model]-[fs]\""
 [[menus.arguments]]
 name = "mount-filesystem"
 type = "bool"
 [[menus.arguments]]
 name = "mount-read-only"
 type = "bool"
+description = "Sets the mounted disk in read only mode when set to yes."
 [[menus.arguments]]
 name = "compress"
 type = "bool"
@@ -22876,6 +22921,7 @@ enum_values = ["auto"]
 name = "scan-list"
 type = "object { entry: alt { default: enum (default) { default:0 } , range: super { range-start: num , [range-end] -num , [range-step] [ :num] } , name: e..."
 enum_values = ["default"]
+description = "The default value is all channels from selected band that are supported by card and allowed by the country and frequency-mode settings (this list can be seen in info. For default scan list in 5ghz band channels are taken with 20MHz step, in 5ghz-turbo band - with 40MHz step, for all other bands - with 5MHz step. If scan-list is specified manually, then all matching channels are taken. (Example: scan-list=default,5200-5245,2412-2427 - This will use the default value of scan list for current band, and add to it supported frequencies from 5200-5245 or 2412-2427 range.) In WinBox or Webfig, enter each frequency or range of frequencies as a separate scan-list entry; a comma-separated list is not supported there. The scan-list also supports a step, where you can manually specify the scan step. Example: scan-list=5500-5600:20 will generate such scan-list values 5500,5520,5540,5560,5580,5600"
 [[menus.arguments]]
 name = "wireless-protocol"
 type = "enum (unspecified | any | 802.11 | nstreme | nv2 | nv2-nstreme-802.11 | nv2-nstreme) { unspecified:0, any:1, 802.11:2, nstreme:3, nv2:4, nv2-nstre...)"
@@ -27781,6 +27827,7 @@ description = "The specified string will be used to construct Option 82 instead 
 [[menus.arguments]]
 name = "local-address-as-src-ip"
 type = "bool"
+description = "Use local address as source address for Discover/Request packets sent to the DHCP server"
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -27980,17 +28027,21 @@ description = "invalid"
 [[menus.arguments]]
 name = "interface"
 type = "iface_enum"
+description = "Interface, on which to run rogue DHCP server finder."
 required = true
 [[menus.arguments]]
 name = "valid-server"
 type = "multi { mac-address: macAddr }"
+description = "List of MAC addresses of valid DHCP servers."
 [[menus.arguments]]
 name = "on-alert"
 type = "alt { script: string }"
+description = "Script to run when an unknown DHCP server is detected."
 [[menus.arguments]]
 name = "alert-timeout"
 type = "alt { symbolic-names: enum (none) { none:0 } , time-interval: time }"
 enum_values = ["none"]
+description = "Time after which the alert will be forgotten. If after that time the same server is detected, a new alert will be generated. If set to none, timeout will never expire."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -28268,49 +28319,60 @@ description = "dynamic"
 [[menus.arguments]]
 name = "address"
 type = "composite { address: ipAddr , netmask: num [ .. 32] }"
+description = "The network DHCP server(s) will lease addresses from"
 [[menus.arguments]]
 name = "gateway"
 type = "multi { address: ipAddr }"
+description = "The default gateway to be used by DHCP Client."
 [[menus.arguments]]
 name = "netmask"
 type = "num"
+description = "The actual network mask is to be used by the DHCP client. If set to '0' - netmask from network address will be used."
 [[menus.arguments]]
 name = "dns-server"
 type = "alt { server: multi { address: ipAddr } }"
+description = "DNS servers that will be passed to DHCP clients. Two comma-separated DNS servers can be specified to be used by the DHCP client as primary and secondary DNS servers By default, if there are no DNS servers configured, then the router dynamic DNS Servers from IP>DNS will be passed to DHCP clients, if there are no dynamic DNS servers configured, the router static DNS servers from IP>DNS will be passed to DHCP clients."
 [[menus.arguments]]
 name = "dns-none"
 type = "bool"
-description = "no servers will be sent to client"
+description = "If set, then DHCP Server will not pass DNS servers configured on the router to the DHCP clients."
 [[menus.arguments]]
 name = "wins-server"
 type = "multi { address: ipAddr }"
+description = "The Windows DHCP client will use these as the default WINS servers. Two comma-separated WINS servers can be specified to be used by the DHCP client as primary and secondary WINS servers"
 [[menus.arguments]]
 name = "ntp-server"
 type = "alt { server: multi { address: ipAddr } }"
+description = "The DHCP client will use these as the default NTP servers. Two comma-separated NTP servers can be specified to be used by the DHCP client as primary and secondary NTP servers"
 [[menus.arguments]]
 name = "ntp-none"
 type = "bool"
-description = "no servers will be sent to client"
+description = "If set, then DHCP Server will not pass NTP servers configured on the router to the DHCP clients."
 [[menus.arguments]]
 name = "caps-manager"
 type = "multi { address: ipAddr }"
+description = "A comma-separated list of IP addresses for one or more CAPsMAN system managers. DHCP Option 138 (capwap) will be used."
 [[menus.arguments]]
 name = "domain"
 type = "string"
+description = "The DHCP client will use this as the 'DNS domain' setting for the network adapter."
 [[menus.arguments]]
 name = "next-server"
 type = "ipAddr"
-description = "siaddr for next bootstrap step"
+description = "The IP address of the next server to use in bootstrap."
 [[menus.arguments]]
 name = "boot-file-name"
 type = "string"
+description = "Boot filename"
 [[menus.arguments]]
 name = "dhcp-option"
 type = "multi { array-id, option: enum }"
+description = "Add additional DHCP options from the option list."
 [[menus.arguments]]
 name = "dhcp-option-set"
 type = "enum (none)"
 enum_values = ["none"]
+description = "Add an additional set of DHCP options."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -32520,6 +32582,7 @@ description = "rate-limited"
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Name of the Kid's profile"
 [[menus.arguments]]
 name = "sun"
 type = "multi { time: composite { start: time [0 .. 86400] , end: time [0 .. 86400] } }"
@@ -32544,6 +32607,7 @@ type = "multi { time: composite { start: time [0 .. 86400] , end: time [0 .. 864
 [[menus.arguments]]
 name = "rate-limit"
 type = "string"
+description = "The maximum available data rate for flow"
 [[menus.arguments]]
 name = "tur-sun"
 type = "multi { time: composite { start: time [0 .. 86400] , end: time [0 .. 86400] } }"
@@ -33866,6 +33930,7 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "container"
 type = "enum () { :0 }"
+description = "Name of the container listening on the port"
 [[menus.read_only]]
 name = "netns"
 type = "num"
@@ -33879,9 +33944,11 @@ type = "enum ()"
 [[menus.read_only]]
 name = "local"
 type = "ip6Addr"
+description = "Router local address used for the connection"
 [[menus.read_only]]
 name = "remote"
 type = "composite { ip: ip6Addr , port: num }"
+description = "Remote address that established the connection to the service"
 
 [[menus]]
 path = "/ip/service/webserver"
@@ -35274,7 +35341,7 @@ description = "The time that a client may use the assigned address. The client w
 [[menus.arguments]]
 name = "rapid-commit"
 type = "bool"
-description = "Append Rapid Commit option to use two packet Solicit-Reply exchange"
+description = "Enables a two-message exchange (Solicit and Reply) for quicker client configuration by skipping the standard four-message process."
 [[menus.arguments]]
 name = "use-radius"
 type = "enum (no | yes | accounting)"
@@ -35451,27 +35518,36 @@ type = "enum (none)"
 [[menus.read_only]]
 name = "status"
 type = "enum (waiting | offered | bound)"
+description = "Three status values are possible:waiting - Shown for static bindings if it is not used. For dynamic bindings this status is shown if it was used previously. The server will wait 10 minutes to allow an old client to get this binding, otherwise binding will be cleared and prefix will be offered to other clients.offered - if a solicit message was received, and the server responded with advertise a message, but the request was not received. During this state client has 2 minutes to get this binding, otherwise, it is freed or changes status to waiting for static bindings.bound - currently bound."
 [[menus.read_only]]
 name = "expires-after"
 type = "time"
+description = "The time period after which binding expires."
 [[menus.read_only]]
 name = "last-seen"
 type = "alt { symbolic-names: enum (never | sometime) { never:0xffffffff, sometime:0xfffffffe } , time: time }"
+description = "Time period since the client was last seen."
 [[menus.read_only]]
 name = "client-address"
 type = "ip6Addr"
 [[menus.read_only]]
 name = "reconfigure-key"
 type = "string"
+description = "Reconfiguration authentication key"
 [[menus.read_only]]
 name = "reconfigure-last-sent"
 type = "string"
+description = "Count of sent Reconfigure (forcerenew) messages"
 [[menus.read_only]]
 name = "reconfigure-status"
 type = "string"
 [[menus.read_only]]
 name = "fqdn"
 type = "string"
+[[menus.read_only]]
+name = "dynamic"
+type = "yes | no"
+description = "Whether an item is dynamically created."
 
 [[menus]]
 path = "/ipv6/dhcp-server/binding/make-static"
@@ -39034,34 +39110,42 @@ description = "inactive"
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Name of the port."
 [[menus.arguments]]
 name = "baud-rate"
 type = "enum (auto | 50 | 75 | 110 | 134 | 150 | 200 | 300 | 600 | 1200 | 1800 | 2400 | 4800 | 9600 | 19200 | 38400 | 57600 | 115200 | 230400 | 460800 | 5...)"
 enum_values = ["auto", "50", "75", "110", "134", "150", "200", "300", "600", "1200", "1800", "2400", "4800", "9600", "19200", "38400", "57600", "115200", "230400", "460800", "500000", "576000", "921600", "1000000", "1152000", "1500000", "2000000", "2500000", "3000000", "3500000", "4000000"]
+description = "Baud rate (speed) used by the port. If set to auto, then RouterOS tries to detect baud rate automatically."
 [[menus.arguments]]
 name = "data-bits"
 type = "enum (7 | 8) { 7:0, 8:1 }"
 enum_values = ["7", "8"]
+description = "The number of data bits in each character.7 - true ASCII8 - any data (matches the size of a byte)"
 [[menus.arguments]]
 name = "parity"
 type = "enum (none | odd | even) { none:0, odd:1, even:2 }"
 enum_values = ["none", "odd", "even"]
+description = "Error detection method. If enabled, an extra bit is sent to detect the communication errors. In most cases parity is set to none and errors are handled by the communication protocol."
 [[menus.arguments]]
 name = "stop-bits"
 type = "enum (1 | 2) { 1:1, 2:2 }"
 enum_values = ["1", "2"]
+description = "Stop bits sent after each character. Electronic devices usually use 1 stop bit."
 [[menus.arguments]]
 name = "flow-control"
 type = "enum (xon-xoff | hardware | none) { xon-xoff:0, hardware:1, none:2 }"
 enum_values = ["xon-xoff", "hardware", "none"]
+description = "Method of flow control to pause and resume the transmission of data."
 [[menus.arguments]]
 name = "rts"
 type = "enum (off | on)"
 enum_values = ["off", "on"]
+description = "Whether to enable RS-232 RTS signal circuit used by flow control."
 [[menus.arguments]]
 name = "dtr"
 type = "enum (off | on)"
 enum_values = ["off", "on"]
+description = "Whether to enable RS-232 DTR signal circuit used by flow control."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -39081,15 +39165,21 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "used-by"
 type = "string"
+description = "Shows who is currently using port and channel (#). For example, by default Serial0 is used by serial-console."
 [[menus.read_only]]
 name = "device"
 type = "string"
 [[menus.read_only]]
 name = "channels"
 type = "num"
+description = "Number of channels supported by the port."
 [[menus.read_only]]
 name = "line-state"
 type = "multi { array-id, line: enum (dtr | rts | cts | dcd | ri | dsr) { dtr:1, rts:2, cts:5, dcd:6, ri:7, dsr:8 } }"
+[[menus.read_only]]
+name = "inactive"
+type = "yes | no"
+description = "Shows current port state, inactive=yes - device to which the port was previously connected, but currently is not present"
 
 [[menus]]
 path = "/port/remote-access"
@@ -39117,15 +39207,18 @@ description = "logging-active"
 [[menus.arguments]]
 name = "port"
 type = "enum"
+description = "Name of the port from the Port list."
 [[menus.arguments]]
 name = "channel"
 type = "num"
+description = "Port channel that will be used. If the port has only one channel then the channel number should always be 0."
 [[menus.arguments]]
 name = "remote-addresses"
 type = "object { peer-spec: super { addr0: address (flags=46/) , [addr1] [ -address (flags=46)] , [port] [ @num] } }"
 [[menus.arguments]]
 name = "local-address"
 type = "alt { ipv4: ipAddr , ipv6: ip6Addr }"
+description = "IP address used as source address."
 [[menus.arguments]]
 name = "ip-port"
 type = "num"
@@ -39133,9 +39226,19 @@ type = "num"
 name = "protocol"
 type = "enum (tcp-server | rfc2217 | tcp-client | udp) { tcp-server:0, rfc2217:1, tcp-client:2, udp:3 }"
 enum_values = ["tcp-server", "rfc2217", "tcp-client", "udp"]
+description = "RFC 2217 defines a protocol to transfer data from/to a serial device over TCP. If set to raw, then data is sent to serial as is."
 [[menus.arguments]]
 name = "log-file"
 type = "string"
+description = "Name of the file, where communication will be logged. By default logging is disabled."
+[[menus.arguments]]
+name = "allowed-addresses"
+type = "IP address range"
+description = "Range of IP addresses allowed to access port remotely."
+[[menus.arguments]]
+name = "tcp-port"
+type = "integer [0..65535]"
+description = "TCP port on which to listen for incoming connections."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -39177,18 +39280,22 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "use-radius"
 type = "bool"
+description = "Enable user authentication via RADIUS. If an entry in the local secret database is not found, then the client will be authenticated via RADIUS."
 [[menus.arguments]]
 name = "accounting"
 type = "bool"
+description = "Enable RADIUS accounting"
 [[menus.arguments]]
 name = "use-circuit-id-in-nas-port-id"
 type = "bool"
 [[menus.arguments]]
 name = "interim-update"
 type = "time"
+description = "Interim-Update time interval"
 [[menus.arguments]]
 name = "enable-ipv6-accounting"
 type = "bool"
+description = "Enable IPv6 separate accounting. PPP service counts Layer2, IPv4 and IPv6 data all together when reporting network usage statistics to the RADIUS server by default. If it is required to differentiate between IPv4 and IPv6 traffic, then this option can be enabled. Prerequisites for it to work are that the prefix must be assigned to the client through PPP service and also rate-limit must be provided. Dynamically created queue statistics will be used as counters for IPv6 data, which then will be included in accounting packets as separate IPv6 statistics attributes. This will not work for prefixes assigned by a dynamically created DHCPv6 server due to the provided prefix pool or PPP/Profile configuration. Then prefix assignment is handled by DHCP service, not PPP, thus accounting can not be managed by PPP service."
 
 [[menus]]
 path = "/ppp/active"
@@ -39197,6 +39304,14 @@ type = "Directory"
 name = "R"
 type = "radius"
 description = "radius"
+[[menus.arguments]]
+name = "bytes"
+type = "integer"
+description = "Number of bytes transferred through this connection. The first figure represents the amount of transmitted traffic from the router's point of view, while the second one shows the amount of received traffic."
+[[menus.arguments]]
+name = "packets"
+type = "integer/integer"
+description = "Number of packets transferred through this connection. The first figure represents the amount of transmitted traffic from the router's point of view, while the second one shows the amount of received traffic"
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -39216,30 +39331,39 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "name"
 type = "string"
+description = "User name supplied at the authentication stage"
 [[menus.read_only]]
 name = "service"
 type = "enum (any | async | pptp | pppoe | l2tp | ovpn | sstp) { any:0, async:1, pptp:2, pppoe:3, l2tp:5, ovpn:6, sstp:7 }"
+description = "Type of service the user is using."
 [[menus.read_only]]
 name = "caller-id"
 type = "string"
+description = "For PPTP and L2TP it is the IP address the client connected from. For PPPoE, it is the MAC address the client connected from."
 [[menus.read_only]]
 name = "address"
 type = "ipAddr"
+description = "The IP address the client got from the server"
 [[menus.read_only]]
 name = "uptime"
 type = "time"
+description = "User's uptime"
 [[menus.read_only]]
 name = "encoding"
 type = "string"
+description = "Shows encryption and encoding (separated with '/' if asymmetric) being used in this connection"
 [[menus.read_only]]
 name = "session-id"
 type = "num"
+description = "Shows the unique client identifier."
 [[menus.read_only]]
 name = "limit-bytes-in"
 type = "num"
+description = "The maximum number of bytes the user is allowed to send to the router."
 [[menus.read_only]]
 name = "limit-bytes-out"
 type = "num"
+description = "The maximum number of bytes the user is allowed to send to the client."
 
 [[menus]]
 path = "/ppp/l2tp-secret"
@@ -39456,41 +39580,52 @@ description = "disabled"
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Name used for authentication"
 required = true
 [[menus.arguments]]
 name = "service"
 type = "enum (any | async | pptp | pppoe | l2tp | ovpn | sstp) { any:0, async:1, pptp:2, pppoe:3, l2tp:5, ovpn:6, sstp:7 }"
 enum_values = ["any", "async", "pptp", "pppoe", "l2tp", "ovpn", "sstp"]
+description = "Specifies the services that a particular user will be able to use."
 [[menus.arguments]]
 name = "caller-id"
 type = "string"
+description = "For PPTP and L2TP it is the IP address a client must connect from. For PPPoE it is the MAC address (written in CAPITAL letters) a client must connect from. For ISDN it is the caller's number (that may or may not be provided by the operator) the client may dial in from"
 [[menus.arguments]]
 name = "password"
 type = "string"
+description = "Password used for authentication"
 [[menus.arguments]]
 name = "profile"
 type = "enum"
+description = "Which user profile to use"
 [[menus.arguments]]
 name = "local-address"
 type = "super { address: ipAddr }"
+description = "IP address that will be set locally on the ppp interface."
 [[menus.arguments]]
 name = "remote-address"
 type = "super { remote-address: ipAddr }"
+description = "IP address that will be assigned to the remote ppp interface."
 [[menus.arguments]]
 name = "routes"
 type = "string"
+description = "Routes that appear on the server when the client is connected. The route format is: dst-address gateway metric (for example, 10.1.0.0/ 24 10.0.0.1 1). Other syntax is not acceptable since it can be represented incorrectly. Several routes may be specified and separated with commas. This parameter will be ignored for OpenVPN."
 [[menus.arguments]]
 name = "ipv6-routes"
 type = "string"
 [[menus.arguments]]
 name = "remote-ipv6-prefix"
 type = "super { remote-prefix: ip6Prefix }"
+description = "IPv6 prefix assigned to the ppp client. Prefix is added to ND prefix list enabling stateless address auto-configuration on the ppp interface."
 [[menus.arguments]]
 name = "limit-bytes-in"
 type = "num"
+description = "The maximum amount of bytes for a session that the client can upload."
 [[menus.arguments]]
 name = "limit-bytes-out"
 type = "num"
+description = "The maximum amount of bytes for a session that the client can download."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -47007,14 +47142,17 @@ type = "default"
 name = "type"
 type = "enum (interface-status | interface-receive | interface-transmit | interface-activity | wireless-signal-strength | wireless-status | modem-signal |...)"
 enum_values = ["interface-status", "interface-receive", "interface-transmit", "interface-activity", "wireless-signal-strength", "wireless-status", "modem-signal", "modem-technology", "flash-access", "interface-speed", "interface-speed-1G", "interface-speed-25G", "interface-speed-2.5G", "interface-speed-100G", "poe-out", "ap-cap", "on", "off", "fan-fault", "poe-fault", "gps-valid", "align-left", "align-right", "align-up", "align-down"]
+description = "Type of the status:align-down - light the led if the w60g device needs to be aligned downwards for the best signal qualityalign-left - light the led if the w60g device needs to be aligned to the leftalign-right - light the led if the w60g device needs to be aligned to the rightalign-up - light the led if the w60g device needs to be aligned upwardsap-cap - blink on CAP initializing with CAPsMAN, steady on once connectedfan-fault - light the led when any of the device's controlled fans stop workingflash-access - blink the led on flash accessinterface-activity - blink the led on interface (traffic) activityinterface-receive - blink the led on interface received trafficinterface-speed - light the led when interface works in 10Gbit rateinterface-speed-1G - light the led when interface works in 1Gbit rateinterface-speed-25G - light the led when interface works in 25Gbit rateinterface-speed-100G - light the led when interface works in 100Gbit rateinterface-status - light the led on interface status changeinterface-transmit - blink the led on interface transmitted trafficmodem-signal - blink the led on 3G modem signal (either USB or miniPCIe)modem-technology - turns on LEDs in order of modem technology generation: GSM; 3G; LTE; single led turns on only when LTE is active.off - turn off the ledon - turn on the ledpoe-fault - light the led when PoE out budget is close to the maximum supported limitpoe-out - light the led when interface PoE out turns onwireless-signal-strength - light the leds displaying wireless signal (requires more than one led)wireless-status - light the led on wireless status change."
 required = true
 [[menus.arguments]]
 name = "leds"
 type = "object { led: enum }"
+description = "List of led names used for a status report. For example, wireless signal strength will require more than one led."
 required = true
 [[menus.arguments]]
 name = "interface"
 type = "object { iface: iface_enum }"
+description = "Name of the interface which will be used for led status. Applicable only if type is interface specific."
 [[menus.arguments]]
 name = "modem-signal-threshold"
 type = "num"
@@ -47023,6 +47161,10 @@ description = "RSSI threshold"
 name = "color"
 type = "alt { color-name: enum (none | red | orange | yellow | green-yellow | green | green-cyan | cyan | blue-cyan | blue | blue-magenta | magenta | red-m..."
 enum_values = ["none", "red", "orange", "yellow", "green-yellow", "green", "green-cyan", "cyan", "blue-cyan", "blue", "blue-magenta", "magenta", "red-magenta"]
+[[menus.arguments]]
+name = "modem-signal-treshold"
+type = "integer [-113..-51]"
+description = "Applicable if a type is modem-signal"
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -48081,15 +48223,19 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "cpu"
 type = "string"
+description = "Identification number of the CPU whose usage is shown."
 [[menus.read_only]]
 name = "load"
 type = "num"
+description = "CPU usage in percent"
 [[menus.read_only]]
 name = "irq"
 type = "num"
+description = "IRQ usage in percent"
 [[menus.read_only]]
 name = "disk"
 type = "num"
+description = "Disk usage in percent"
 
 [[menus]]
 path = "/system/resource/hardware"
@@ -49080,30 +49226,42 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "watch-address"
 type = "alt { ip: ipAddr , ipv6: composite { address: ip6Addr , interface: [ iface_enum] } }"
+description = "The system will reboot, in case 6 sequential pings to the given IP address fail. If set to none, this feature is disabled. By default, the router will reboot every 6 minutes if the watch-address is set and not reachable."
 [[menus.arguments]]
 name = "watchdog-timer"
 type = "bool"
+description = "Whether to reboot if a system is unresponsive for a minute."
 [[menus.arguments]]
 name = "ping-start-after-boot"
 type = "time"
 [[menus.arguments]]
 name = "ping-timeout"
 type = "time"
+description = "Specifies the time interval in which the device will be pinged 6 times (after \"no-ping-delay\")."
 [[menus.arguments]]
 name = "automatic-supout"
 type = "bool"
+description = "When software failure happens, a file named \"autosupout.rif\" is generated automatically. The previous \"autosupout.rif\" file is renamed to \"autosupout.old.rif\"."
 [[menus.arguments]]
 name = "auto-send-supout"
 type = "bool"
+description = "After the support output file is automatically generated, it can be sent by email."
 [[menus.arguments]]
 name = "send-email-to"
 type = "string"
+description = "The e-mail address to send the support output file to."
 [[menus.arguments]]
 name = "send-email-from"
 type = "string"
+description = "The e-mail address to send the support output file from. If not set, the value set in /tool/e-mail is used."
 [[menus.arguments]]
 name = "send-smtp-server"
 type = "alt { ipv4: ipAddr , fqdn: string }"
+description = "SMTP server address to send the support output file through. If not set, the value set in /tool/e-mail is used."
+[[menus.arguments]]
+name = "no-ping-delay"
+type = "time"
+description = "Specifies how long it will wait before trying to reach the watch-address."
 
 [[menus]]
 path = "/task"
@@ -49489,24 +49647,31 @@ type = "Command"
 [[menus.arguments]]
 name = "dns-server"
 type = "ipAddr"
+description = "DNS server to send updates to."
 [[menus.arguments]]
 name = "zone"
 type = "string"
+description = "DNS zone where to update the domain name."
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Name to attach to the IP address."
 [[menus.arguments]]
 name = "address"
 type = "multi { addr: ipAddr }"
+description = "Defines the IP address associated with the domain name."
 [[menus.arguments]]
 name = "key-name"
 type = "string"
+description = "Authorization key name (like a username) to access the server."
 [[menus.arguments]]
 name = "key"
 type = "string"
+description = "Authorization key to access the server."
 [[menus.arguments]]
 name = "ttl"
 type = "num"
+description = "Time to live for the item (in seconds)."
 
 [[menus]]
 path = "/tool/e-mail"
@@ -52132,15 +52297,19 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "latency"
 type = "string"
+description = "latency range"
 [[menus.read_only]]
 name = "count"
 type = "num"
+description = "Number of packets in the current latency range"
 [[menus.read_only]]
 name = "share"
 type = "num"
+description = "Percentage of packets falling in this latency range."
 [[menus.read_only]]
 name = "graph"
 type = "meter"
+description = "graphical representation of share"
 
 [[menus]]
 path = "/tool/traffic-generator/stats/port"
@@ -52801,59 +52970,77 @@ type = "Directory"
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Unique name of the limitation."
 required = true
 [[menus.arguments]]
 name = "download-limit"
 type = "num"
+description = "The total amount of traffic a user can download in Bytes."
 [[menus.arguments]]
 name = "upload-limit"
 type = "num"
+description = "The total amount of traffic a user can upload in Bytes."
 [[menus.arguments]]
 name = "transfer-limit"
 type = "num"
+description = "The total amount of aggregated (download+upload) traffic in Bytes."
 [[menus.arguments]]
 name = "uptime-limit"
 type = "time"
+description = "The total amount of uptime during which a user can stay active."
 [[menus.arguments]]
 name = "reset-counters-start-time"
 type = "date"
+description = "Static date and time value from which reset-counters-interval is calculated."
 [[menus.arguments]]
 name = "reset-counters-interval"
 type = "alt { constant: enum (disabled | hourly | daily | weekly | monthly) , reset-counters-interval: time }"
 enum_values = ["disabled", "hourly", "daily", "weekly", "monthly"]
+description = "The interval from reset-counters-start-time when all associated user statistics are cleared."
 [[menus.arguments]]
 name = "rate-limit-rx"
 type = "num"
+description = "Part of MT-Rate-Limit RADIUS attribute. Refer to Queues#SimpleQueue."
 [[menus.arguments]]
 name = "rate-limit-tx"
 type = "num"
+description = "Part of MT-Rate-Limit RADIUS attribute. Refer to Queues#SimpleQueue."
 [[menus.arguments]]
 name = "rate-limit-burst-rx"
 type = "num"
+description = "Part of MT-Rate-Limit RADIUS attribute. Refer to Queues#SimpleQueue."
 [[menus.arguments]]
 name = "rate-limit-burst-tx"
 type = "num"
+description = "Part of MT-Rate-Limit RADIUS attribute. Refer to Queues#SimpleQueue."
 [[menus.arguments]]
 name = "rate-limit-burst-threshold-rx"
 type = "num"
+description = "Part of MT-Rate-Limit RADIUS attribute. Refer to Queues#SimpleQueue."
 [[menus.arguments]]
 name = "rate-limit-burst-threshold-tx"
 type = "num"
+description = "Part of MT-Rate-Limit RADIUS attribute. Refer to Queues#SimpleQueue."
 [[menus.arguments]]
 name = "rate-limit-burst-time-rx"
 type = "time"
+description = "Part of MT-Rate-Limit RADIUS attribute. Refer to Queues#SimpleQueue."
 [[menus.arguments]]
 name = "rate-limit-burst-time-tx"
 type = "time"
+description = "Part of MT-Rate-Limit RADIUS attribute. Refer to Queues#SimpleQueue."
 [[menus.arguments]]
 name = "rate-limit-min-rx"
 type = "num"
+description = "Part of MT-Rate-Limit RADIUS attribute. Refer to Queues#SimpleQueue."
 [[menus.arguments]]
 name = "rate-limit-min-tx"
 type = "num"
+description = "Part of MT-Rate-Limit RADIUS attribute. Refer to Queues#SimpleQueue."
 [[menus.arguments]]
 name = "rate-limit-priority"
 type = "num"
+description = "Part of MT-Rate-Limit RADIUS attribute. Refer to Queues#SimpleQueue."
 [[menus.arguments]]
 name = "comment"
 type = "string"
