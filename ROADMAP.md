@@ -13,22 +13,24 @@ Volatile facts (pinned grammar `rev`, MSRV, coverage counts) are not duplicated
 See [docs/publishing-runbook.md](docs/publishing-runbook.md) for release mechanics.
 This roadmap is intentionally coarse; details live in issues and PRs.
 
-## Now — 0.5.x Stabilization
+## Now — 0.6.x Stabilization
 
 Focus is correctness, hardening, and release hygiene before any feature expansion.
+
+- **0.6.0 — shipped 2026-09-12** (tag `v0.6.0`): audit hardening pass — input-boundary panics, real SPKI handshake-signature verification, SSRF denylist/pinning in Rust and the Python companions (plus operator deny prefixes and IPv4-compatible IPv6), deploy redaction/size caps, bounded diagnostics/suggestion/syntax memory, case-insensitive menu handling, UTF-8 `file://` URIs, grammar value parsing (URLs, colon scalars, block parameters, quoted variables; 29/30 real exports clean), extraction fidelity without silent drops, and a deterministic live-settings fuzz suite. See [CHANGELOG.md](CHANGELOG.md) `[0.6.0]`.
 
 - **0.5.2 — shipped 2026-08-27** (tag `v0.5.2`): stability and docs sync — deduplicated wifi args, flag type emission, hover fallback, version docs clarified (snapshot 7.23.2), upstream sync.
 - **0.5.1 prerelease — shipped 2026-08-26** (tag `v0.5.1`): published as a prerelease GitHub Release with all six platform binaries + SHA-256 companions + `extension.wasm`. Registry submission is deferred until the marketplace review window; see [docs/publishing-runbook.md](docs/publishing-runbook.md).
 - **0.5.4 — shipped 2026-08-30** (tag `v0.5.4`): live fetch-path dedup, pipeline escaping/sanitization hardening (`file://` URIs, custom resource paths, streaming caps), CI supply-chain gating (`cargo-audit`, toolchain unification).
 - **0.5.5 — shipped 2026-09-03** (tag `v0.5.5`): `textDocument/rename` for script variables, bounded per-document parse cache, live host-validation hardening (WHATWG-normalized host, `169.254.0.0/16` + `fe80::/10` deny, zero redirects), per-asset `*.sha256` + `SHA256SUMS` with postflight self-verification, upstream re-sync 7.23.2 (1077 menus), grammar pin `24bcf71`.
-- **Staged (unreleased, `feat/lsp-quality-pass`)**: relevance-ranked completion (`0!live_` tiers + `textEdit`), hover/signature dedup via `text_util`, typed validators + `SuggestBudget`, symbols/navigation/folding hardening, privileged-settings default-deny + legacy shim off, SSRF/TLS parity in companions, honest Zed tasks, normalized `lsp/src/tests/<module>_<aspect>` suite + chaos/perf E2E, weekly perf budgets. Merge risks are the behavior changes (severity promotions, settings-transport ignore, shim off, `didChange` cache semantics). See [CHANGELOG.md](CHANGELOG.md) `[Unreleased]`.
+- **Shipped in 0.5.6 (`feat/lsp-quality-pass`)**: relevance-ranked completion (`0!live_` tiers + `textEdit`), hover/signature dedup via `text_util`, typed validators + `SuggestBudget`, symbols/navigation/folding hardening, privileged-settings default-deny + legacy shim off, SSRF/TLS parity in companions, honest Zed tasks, normalized `lsp/src/tests/<module>_<aspect>` suite + chaos/perf E2E, weekly perf budgets. See [CHANGELOG.md](CHANGELOG.md) `[0.5.6]`.
 - **0.5.3 — shipped 2026-08-28** (tag `v0.5.3`): live enrichment + hardened connection system for production — non-blocking hydrator (stale-while-revalidate, 2s coalescing), 15s negative-cache circuit breaker, real `MIKROTIK_SSL=0` rustls insecure verifier with `OnceLock` agent reuse, robust `url`-crate URL building + IPv6 bracketing + SSRF denial (`169.254.169.254`/`metadata`), multi-host `MIKROTIK_HOST="a,b,c"` (`LIVE_MAX_HOSTS=4`), generic dispatcher via `RSC_LS_LIVE_RESOURCES` (`LIVE_CUSTOM_RESOURCES_MAX=8`), `rsc.live.refresh`/`status` commands + `workspace/didChangeConfiguration` hot-reload, structured observability, and real health check `scripts/mikrotik-live-check.py` (mirrors `LiveConfig`, `languages/rsc/tasks.json` + `.zed/tasks.json` now 6 tasks, 2 live).
 - **Shim cache integrity / download verification** (`feat/shim-download-verification`, Phase 1 in `src/cache.rs` / `src/verify.rs`): versioned layout `rsc-ls-<version>` (`.exe` on Windows), `.verified` marker, re-hash on reuse, clean abort on mismatch.
 - **Grammar token and highlight fixes** in prerelease: `mac_address` / `duration`, `$1` positional, `boolean_literal` / `array_access` precedence, `highlights.scm` corrections (`feat/multiline-string-grammar`, `feat/highlight-field-colors`) — mirrored to `grammars/rsc/queries/` and covered by corpus `79/79`.
 - **LSP framing / diagnostics hardening:** bounded `MAX_HEADER_SIZE`, `SyntaxFinding` deferred materialization for backslash continuations, `didChange` batch handling, duplicate `id` detection.
 - **CI / extraction hygiene:** `make validate` gates `commands.toml` idempotency, `make sync-check` guards upstream drift, release builds use `cargo --locked`.
 
-No new user-visible LSP features are targeted in 0.5.x beyond what is already staged.
+No new user-visible LSP features are targeted in 0.6.x beyond what is already staged.
 Patch releases during this phase are prerelease-gated and registry-deferred until binaries are live.
 
 ## Next — 0.6.0

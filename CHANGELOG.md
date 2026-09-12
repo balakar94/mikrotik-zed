@@ -2,11 +2,13 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-12
+
 ### Security
 
 - **LSP input boundaries (`lsp/src/server_proto.rs`, `lsp/src/live_config.rs`)**: malformed JSON-RPC with a multi-byte character after `"id"` and a workspace-settings fingerprint whose `sha256:` prefix boundary falls inside a multi-byte character no longer abort the server.
 - **Live TLS (`lsp/src/live_fetch.rs`)**: the SPKI pin verifier now verifies the TLS handshake signature against the pinned leaf instead of asserting it, closing a certificate-replay MITM against `MIKROTIK_FINGERPRINT`.
-- **Live SSRF (`lsp/src/live_net.rs`, `scripts/_mikrotik_shared.py`)**: trailing-dot hostnames, NAT64/Teredo/6to4 and IPv4 special-use ranges (multicast, reserved, `192.0.0.0/24`, benchmarking) are denied; ULA/CGNAT are loopback-gated; validated DNS addresses are pinned for Rust and both Python transports (no resolve-then-connect TOCTOU); `MIKROTIK_FINGERPRINT` is verified on the request TLS connection before credentials are sent.
+- **Live SSRF (`lsp/src/live_net.rs`, `scripts/_mikrotik_shared.py`)**: trailing-dot hostnames, IPv4-compatible `::/96`, NAT64/Teredo/6to4 and IPv4 special-use ranges (multicast, reserved, `192.0.0.0/24`, benchmarking) are denied; ULA/CGNAT are loopback-gated; validated DNS addresses are pinned for Rust and both Python transports (no resolve-then-connect TOCTOU); `MIKROTIK_FINGERPRINT` is verified on the request TLS connection before credentials are sent.
 - **Live SSRF deny list (`lsp/src/live_net.rs`, `lsp/src/live_config.rs`, `lsp/src/caps.rs`, `scripts/_mikrotik_shared.py`)**: env-only `RSC_LS_LIVE_DENY_PREFIXES` adds operator-defined IPv4/IPv6 address/CIDR deny prefixes (network-specific NAT64/RFC 6052 prefixes, internal ranges) checked FIRST and regardless of `RSC_LS_LIVE_ALLOW_LOOPBACK`; capped at 32 entries / 2 KiB with invalid entries ignored and warned. No workspace-settings overlay.
 - **Deploy transport (`scripts/mikrotik-deploy.py`, `scripts/mikrotik-live-check.py`)**: device response bodies are redacted and size-capped; the workspace-settings `port` requires the transport opt-in.
 - **WASM shim (`src/cache.rs`, `src/platform.rs`, `src/lib.rs`)**: bounded cached-binary and `.verified` marker reads; release download URLs pinned to repo/tag/asset.
@@ -20,12 +22,14 @@
 - **Data pipeline (`scripts/extract_commands.py`)**: markdown property tables and multi-line `<ArgTableRow>` rows; page-context association and `## Properties` fragments resolved to their nearest menu; escaped-pipe type clauses and TitleCase read-only labels parse; generation fails on non-canonical menu paths. Extraction warns only for genuinely unattributable property tables.
 - **Extraction fidelity (`scripts/extract_commands.py`, `data/commands.toml`)**: markdown property tables with no `**Sub-menu:**` and no resolvable page ancestor were dropped silently. They now resolve additively when every parsed row is already documented on exactly one known menu (row-overlap fallback), and every unresolved genuine property table emits a warning instead of vanishing; property tables whose rows all fail to parse warn too. An unescaped pipe in a type cell (`(*yes | no*; Default: ...)`) no longer leaks a type fragment as the description. Menu count stays `1077`, with no path, property-name or override/canonical-path change.
 - **LSP signature/completion ranges (`lsp/src/signature.rs`, `lsp/src/completion.rs`, `lsp/src/server.rs`, `lsp/src/diagnostics.rs`)**: signature `activeParameter` never exceeds the emitted parameters; value `textEdit` ranges preserve surrounding quotes on the wire; logical ranges keep endpoints on their physical line at `\` continuation boundaries and no longer invert on non-boundary offsets.
+- **LSP completion across continuations (`lsp/src/completion.rs`, `lsp/src/server.rs`)**: a partial menu path split by a `\` continuation now completes (e.g. `/ip/rou\` + `te/che` → `check`) with a segment-only edit mapped to the correct physical line; single-line behavior is unchanged.
 
 ### Added
 
 - **Grammar value parsing (`grammars/rsc/grammar.js`)**: URL values, colon-containing scalars, block-valued parameters and quoted variable references — real-export parse rate 11/30 → 29/30 clean.
 - **Syntax highlighting (`languages/rsc/highlights.scm`)**: `(url)` and `(mixed_value)` captures; grammar pinned at `1e61ad4`.
 - **LSP completion (`lsp/src/completion.rs`)**: action (`Command`) children in partial menu-path completion (`/ip/route/che` → `check`); the ASCII-only identifier subset is documented and pinned.
+- **Test coverage (`lsp/src/tests/live_settings_fuzz.rs`, `lsp/tests/e2e.rs`)**: deterministic property/fuzz tests over the live-settings string surface, plus continuation-split completion E2E.
 
 ### Changed
 
@@ -216,7 +220,8 @@ Baseline release tagged `v0.5.0`. Changes since `v0.4.0`:
 - `extension.toml` kept to schema-known keys only.
 - Local `TODO.md` ignored.
 
-[Unreleased]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.6...HEAD
+[Unreleased]: https://github.com/balakar94/mikrotik-zed/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.6...v0.6.0
 [0.5.6]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.3...v0.5.5
 [0.5.3]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.2...v0.5.3
