@@ -160,6 +160,28 @@ fn test_ca_bundle_missing_and_oversize_fail_closed() {
     let _ = std::fs::remove_file(&big);
 }
 
+#[cfg(unix)]
+#[test]
+fn test_ca_bundle_symlink_to_oversize_fails_closed() {
+    // The symlink's own `len()` is the target path length (small), so the
+    // metadata pre-check passes; the read-time `take(cap + 1)` must still
+    // reject the oversize target rather than reading it unbounded.
+    let dir = std::env::temp_dir().join("rsc-ls-ca-symlink-test");
+    let _ = std::fs::create_dir_all(&dir);
+    let target = dir.join("huge-ca.pem");
+    std::fs::write(&target, vec![b'A'; (MAX_CA_FILE_BYTES + 1) as usize]).unwrap();
+    let link = dir.join("link-ca.pem");
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let link_key = link.to_string_lossy().to_string();
+    assert!(
+        read_ca_bundle(&link_key).is_none(),
+        "symlinked oversize CA must fail closed"
+    );
+    let _ = std::fs::remove_file(&link);
+    let _ = std::fs::remove_file(&target);
+}
+
 #[test]
 fn test_network_error_redaction_at_live_boundary() {
     // F6: password + Basic material never survives into a stored error.

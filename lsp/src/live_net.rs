@@ -9,6 +9,7 @@ use crate::live_config::{CustomResource, LiveConfig};
 use crate::live_fetch::parse_pem_certs;
 use crate::logging::{log_debug, log_warn, sanitize_for_log};
 use std::collections::HashSet;
+use std::io::Read;
 use std::sync::{Mutex, OnceLock};
 
 // ── Minimal SHA256 + SPKI extraction (no new deps) ───────────────────────
@@ -703,6 +704,8 @@ fn mark_bad_ca(key: String) {
 /// - Warns (once per path) when the file is a symlink.
 /// - Returns `None` fail-closed on missing/unreadable/oversize/undecodable
 ///   input; callers fall back to the default verifier (never insecure).
+/// - The size cap is enforced again at read time (`take(cap + 1)`) so a
+///   swapped symlink or a special file cannot force an unbounded read.
 pub(crate) fn read_ca_bundle(ca_file: &str) -> Option<String> {
     if ca_file.trim().is_empty() {
         return None;
@@ -753,7 +756,19 @@ pub(crate) fn read_ca_bundle(ca_file: &str) -> Option<String> {
     if meta.len() > MAX_CA_FILE_BYTES {
         return fail("exceeds 256KiB cap");
     }
-    let bytes = std::fs::read(raw_path).ok()?;
+    // Hard cap at read time: `symlink_metadata` is TOCTOU-racy (a symlink can
+    // be swapped after the size check) and a special file (`/dev/zero`, FIFO)
+    // has no meaningful `len()`. `take(limit + 1)` bounds the read and detects
+    // overflow in a single pass; anything over the cap fails closed.
+    let mut file = match std::fs::File::open(raw_path) {
+        Ok(f) => f,
+        Err(_) => return None,
+    };
+    let mut bytes = Vec::new();
+    let mut limited = (&mut file).take(MAX_CA_FILE_BYTES + 1);
+    if limited.read_to_end(&mut bytes).is_err() {
+        return None;
+    }
     if bytes.len() as u64 > MAX_CA_FILE_BYTES {
         return fail("exceeds 256KiB cap");
     }
