@@ -241,8 +241,10 @@ fn build_agent_for_config(config: &LiveConfig, timeout: Duration) -> ureq::Agent
 ///
 /// Chain validation is replaced by the pin check (TOFU-style pinning, no new
 /// dependency on a roots bundle). Any mismatch or malformed cert fails the
-/// handshake fail-closed. Signatures are asserted because authenticity is
-/// bound to the pin itself.
+/// handshake fail-closed. The TLS `CertificateVerify`/`ServerKeyExchange`
+/// signature is still verified against the presented leaf's public key using
+/// ring's signature algorithms, so an on-path attacker who replays the public
+/// pinned certificate without its private key cannot complete the handshake.
 #[derive(Debug)]
 struct SpkiPinVerifier {
     pin: [u8; 32],
@@ -269,20 +271,32 @@ impl rustls::client::danger::ServerCertVerifier for SpkiPinVerifier {
 
     fn verify_tls12_signature(
         &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        let provider = rustls::crypto::ring::default_provider();
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &provider.signature_verification_algorithms,
+        )
     }
 
     fn verify_tls13_signature(
         &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        let provider = rustls::crypto::ring::default_provider();
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &provider.signature_verification_algorithms,
+        )
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
@@ -307,6 +321,28 @@ fn build_pinned_agent(timeout: Duration, pin: [u8; 32]) -> Option<ureq::Agent> {
             .redirects(0)
             .tls_config(Arc::new(tls_config))
             .build(),
+    )
+}
+
+/// Test-only entry point to the pinned verifier's handshake-signature checks.
+///
+/// The pin value is irrelevant to signature verification, so a zero pin is
+/// used. Returns the TLS 1.2 and TLS 1.3 results so tests can assert that a
+/// bogus signature fails closed instead of being asserted.
+#[cfg(test)]
+pub(crate) fn verify_pinned_handshake_signatures_for_test(
+    cert: &rustls::pki_types::CertificateDer<'_>,
+    dss: &rustls::DigitallySignedStruct,
+) -> (
+    Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>,
+    Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>,
+) {
+    use rustls::client::danger::ServerCertVerifier;
+    let verifier = SpkiPinVerifier { pin: [0u8; 32] };
+    let message = b"live-tls-test-message";
+    (
+        verifier.verify_tls12_signature(message, cert, dss),
+        verifier.verify_tls13_signature(message, cert, dss),
     )
 }
 

@@ -187,3 +187,32 @@ fn test_spki_extract_rejects_malformed() {
     ];
     assert_eq!(digest, expected);
 }
+
+#[test]
+fn test_spki_pin_verifier_rejects_bogus_handshake_signature() {
+    // Build a `DigitallySignedStruct` with an obviously bogus signature.
+    // Wire encoding: u16 scheme || u16 signature length || signature bytes.
+    use rustls::internal::msgs::codec::{Codec, Reader};
+    let mut encoded = Vec::new();
+    let scheme = rustls::SignatureScheme::RSA_PSS_SHA256;
+    encoded.extend_from_slice(&u16::from(scheme).to_be_bytes());
+    let bogus_signature = [0xde, 0xad, 0xbe, 0xef];
+    encoded.extend_from_slice(&(bogus_signature.len() as u16).to_be_bytes());
+    encoded.extend_from_slice(&bogus_signature);
+    let dss = rustls::DigitallySignedStruct::read(&mut Reader::init(&encoded))
+        .expect("hand-crafted DigitallySignedStruct must decode");
+
+    // Garbage leaf: verifying the signature against its public key must fail
+    // closed. The vulnerable verifier asserted it and returned Ok.
+    let cert = rustls::pki_types::CertificateDer::from(vec![0x30, 0x00]);
+    let (tls12, tls13) =
+        crate::live_fetch::verify_pinned_handshake_signatures_for_test(&cert, &dss);
+    assert!(
+        tls12.is_err(),
+        "TLS 1.2 handshake signature must not be asserted without verification"
+    );
+    assert!(
+        tls13.is_err(),
+        "TLS 1.3 handshake signature must not be asserted without verification"
+    );
+}
