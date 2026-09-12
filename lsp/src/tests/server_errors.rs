@@ -218,3 +218,55 @@ fn test_completion_partial_path_segment_maps_continuation_to_physical_line() {
     assert_eq!(edit["range"]["end"]["character"], 5);
     assert_eq!(edit["newText"], "address");
 }
+
+#[test]
+fn test_completion_multiline_never_emits_line_zero_shadow() {
+    // The completion layer builds value/sub-menu/verb `textEdit`s with a
+    // line-0 range; the server must remap them to the cursor's physical line
+    // or drop them. A leaked line-0 range carries characters measured
+    // against the joined LOGICAL line, so they exceed the physical line.
+    let mut server = Server::new(synthetic_data());
+    let doc = "/ip/firewall/filter add chain=input \\\naction=acc";
+    let open = serde_json::json!({
+        "params": {"textDocument": {"uri": "file:///multi_edit.rsc", "text": doc}}
+    });
+    server.handle_message("textDocument/didOpen", &open);
+    // Cursor on continuation line 1 after "action=acc".
+    let comp = serde_json::json!({
+        "id": 4,
+        "params": {
+            "textDocument": {"uri": "file:///multi_edit.rsc"},
+            "position": {"line": 1, "character": "action=acc".len()}
+        }
+    });
+    let resp = server
+        .handle_message("textDocument/completion", &comp)
+        .expect("completion must be answered");
+    let items = resp["result"]["items"].as_array().unwrap();
+    let lines: Vec<&str> = doc.lines().collect();
+    let mut edits = 0;
+    for item in items {
+        let Some(te) = item.get("textEdit") else {
+            continue;
+        };
+        let sl = te["range"]["start"]["line"].as_u64().unwrap() as usize;
+        let sc = te["range"]["start"]["character"].as_u64().unwrap() as usize;
+        let el = te["range"]["end"]["line"].as_u64().unwrap() as usize;
+        let ec = te["range"]["end"]["character"].as_u64().unwrap() as usize;
+        assert!(
+            sl < lines.len() && el < lines.len(),
+            "range in bounds: {te}"
+        );
+        assert!(sc <= lines[sl].len(), "start char in line: {te}");
+        assert!(ec <= lines[el].len(), "end char in line: {te}");
+        assert!(
+            sl != 0 || el != 0 || sc <= lines[0].len(),
+            "line-0 shadow leaked to the wire: {te}"
+        );
+        edits += 1;
+    }
+    assert!(
+        edits > 0,
+        "fixture must exercise at least one remapped edit"
+    );
+}
