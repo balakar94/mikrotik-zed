@@ -36,6 +36,7 @@ Check first: `python scripts/mikrotik-live-check.py --dry-run`, then without
 | `MIKROTIK_CA_FILE` | — | custom CA bundle path (wins over boolean flag) |
 | `RSC_LS_LIVE_RESOURCES` | — | JSON array max 8, `{"property","path","field"}` custom resources |
 | `RSC_LS_LIVE_ALLOW_LOOPBACK` | off | `=1` allows loopback/private hosts (tests/local only) |
+| `RSC_LS_LIVE_DENY_PREFIXES` | — | comma-separated IPv4/IPv6 addresses or CIDR prefixes always denied (max 32; env-only) |
 
 Deploy shares the same `MIKROTIK_*` semantics with different defaults
 (timeout 60, SSH support) — see [device-deploy.md](device-deploy.md).
@@ -63,6 +64,15 @@ Host validation + SSRF denial run before any request (`169.254.169.254`
 denied; loopback/private denied without the allow-loopback flag).
 Shared with deploy/live-check via `scripts/_mikrotik_shared.py`.
 
+`RSC_LS_LIVE_DENY_PREFIXES` extends the built-in policy with an
+operator-defined deny list: comma-separated IPv4/IPv6 addresses or CIDR
+prefixes (e.g. a network-specific NAT64/RFC 6052 prefix such as
+`64:ff9b:1::/48`, or an internal range). Entries are checked **before**
+the built-in policy and apply regardless of
+`RSC_LS_LIVE_ALLOW_LOOPBACK`. Invalid entries and entries past the caps
+(32 entries, 2 KiB raw) are ignored with a warning; the list is env-only
+and never read from workspace settings.
+
 ## Caps
 
 | Cap | Value |
@@ -76,6 +86,8 @@ Shared with deploy/live-check via `scripts/_mikrotik_shared.py`.
 | coalesce window / max blocking | 2 s (`LIVE_FETCH_BLOCKING_TIMEOUT_SECS`) |
 | `LIVE_CUSTOM_RESOURCES_MAX` | 8 custom resources |
 | `LIVE_MAX_HOSTS` | 4 hosts (primary hydrated) |
+| `MAX_LIVE_DENY_PREFIXES` | 32 operator deny prefixes |
+| `MAX_LIVE_DENY_PREFIXES_BYTES` | 2 KiB raw deny-prefix env value |
 | fetch-thread semaphore | 2 (`live.rs`) |
 
 Invalidation: `didChange` never clears; `didClose`, `LiveConfig` change,

@@ -82,11 +82,14 @@ Disabled by default. Enable with `RSC_LS_LIVE=1` or `MIKROTIK_LIVE=1` + `MIKROTI
 | `LIVE_NEGATIVE_TTL_SECS` | 15s | Negative cache after failed fetch (retry gate) |
 | `LIVE_MAX_HOSTS` | 4 | Cap on comma-separated `MIKROTIK_HOST` (primary hydrates) |
 | `LIVE_CUSTOM_RESOURCES_MAX` | 8 | Cap on `RSC_LS_LIVE_RESOURCES` JSON array |
+| `MAX_LIVE_DENY_PREFIXES` / `MAX_LIVE_DENY_PREFIXES_BYTES` | 32 / 2 KiB | Caps on `RSC_LS_LIVE_DENY_PREFIXES` operator SSRF deny list |
 | `MAX_LIVE_ITEMS` / `MAX_LIVE_VALUE_LEN` / `MAX_LIVE_RESPONSE_BYTES` / `MAX_CACHE_ENTRIES` | 500 / 64 / 512 KiB / 16 | Response and cache bounds |
 
 **Behavior:** `get_cached_or_fetch_background` serves fresh hits; miss/stale triggers `trigger_background_fetch` (coalesced within 2s) → `fetch_resource` on thread. URL via `url` crate + `build_rest_url` (validates host, rejects SSRF, brackets bare `fe80::` via `format_host_for_url`). TLS: `build_insecure_agent` installs rustls `ServerCertVerifier` (`NoCertificateVerification`) when `MIKROTIK_SSL=0`, else default verifier. `ureq::Agent` cached by `(timeout, ssl_verify)`.
 
 **Custom resources:** `RSC_LS_LIVE_RESOURCES` JSON array (max 8), each `{"property","path","field"}` — `path` must start `/rest`, `property`/`field` `<=64` chars. Example: `[{"property":"my-prop","path":"/rest/interface","field":"name"}]` augments `property=` value completions.
+
+**SSRF deny list:** `RSC_LS_LIVE_DENY_PREFIXES` (env-only) is a comma-separated IPv4/IPv6 address/CIDR list always denied (network-specific NAT64/RFC 6052 prefixes, internal ranges), checked before the built-in policy and regardless of `RSC_LS_LIVE_ALLOW_LOOPBACK`; capped at `MAX_LIVE_DENY_PREFIXES=32` / `MAX_LIVE_DENY_PREFIXES_BYTES=2048`, invalid entries ignored with a warning. The companion scripts honor the same list.
 
 **Hot-reload:** `workspace/didChangeConfiguration` merges `rsc.live` / `mikrotik` / `MIKROTIK_*` via `LiveConfig::apply_settings_value`; `workspace/executeCommand` `rsc.live.refresh` / `rsc.live.status` for cache control.
 

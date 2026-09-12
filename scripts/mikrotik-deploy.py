@@ -19,6 +19,9 @@ Env vars (all can be overridden by CLI flags, mirrored in lsp/src/live_config.rs
   MIKROTIK_ACCEPT_HOST_KEY - "1" to trust unknown SSH host keys (TOFU; deploy SSH only)
   MIKROTIK_FINGERPRINT - SPKI SHA256 pin for REST TLS (format sha256:<hex>)
   MIKROTIK_CA_FILE - custom CA bundle path for REST TLS
+  RSC_LS_LIVE_DENY_PREFIXES - comma-separated IPv4/IPv6 addresses or CIDR
+                               prefixes always denied by the SSRF target check
+                               (max 32 entries; env-only)
 
 Import success caveat: HTTP 200 or SSH exit code 0 does NOT guarantee the
 import succeeded. /import output is additionally scanned for high-confidence

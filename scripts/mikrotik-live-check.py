@@ -15,6 +15,10 @@ Env vars (mirrored in scripts/mikrotik-deploy.py and lsp/src/live_config.rs):
   MIKROTIK_TIMEOUT - per-request timeout seconds (1..30, default: 5 for live)
   MIKROTIK_FINGERPRINT - SPKI SHA256 pin (format sha256:<hex>)
   MIKROTIK_CA_FILE - custom CA bundle path
+  RSC_LS_LIVE_DENY_PREFIXES - comma-separated IPv4/IPv6 addresses or CIDR
+                               prefixes always denied by the SSRF policy
+                               (network-specific NAT64/RFC 6052 prefixes,
+                               internal ranges; max 32 entries; env-only)
 
 The check performs a real authenticated GET to /rest/interface and reports
 item count. It never prints the password. Dry-run mode shows what would be
