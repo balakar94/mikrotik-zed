@@ -907,10 +907,14 @@ fn get_sub_menu_completion_items(
 ///
 /// Offered only when the canonical path is NOT a known menu but its parent
 /// IS: the parent prefix is already typed, so the child name is the whole
-/// insert text and the `textEdit` replaces just the typed segment. Ranked
-/// exactly like a sub-menu (`RankTier::Submenu`). An unknown parent (or one
-/// without a child index) yields an empty set, so no standard verbs are
-/// advertised for junk input. Case-insensitive, like every RouterOS name.
+/// insert text and the `textEdit` replaces just the typed segment. Directory
+/// children rank exactly like a sub-menu (`RankTier::Submenu`, kind CLASS),
+/// while `Command` children (action commands such as `/ip/route/check`) rank
+/// like verbs (`RankTier::Verb`, kind FUNCTION, detail "action command") so
+/// `/ip/route/che` offers `check` with the same tier it gets once the menu
+/// is complete. An unknown parent (or one without a child index) yields an
+/// empty set, so no standard verbs are advertised for junk input.
+/// Case-insensitive, like every RouterOS name.
 fn get_partial_segment_completion_items(
     data: &MenuData,
     path: &str,
@@ -929,15 +933,28 @@ fn get_partial_segment_completion_items(
     match data.child_names_by_parent.get(&parent_key) {
         Some(children) => children
             .iter()
-            .filter(|c| c.menu_type == "Directory" || c.menu_type == "Settings Directory")
+            .filter(|c| {
+                c.menu_type == "Directory"
+                    || c.menu_type == "Settings Directory"
+                    || c.menu_type == "Command"
+            })
             .filter(|c| normalize_key(&c.name).starts_with(&typed_lower))
             .map(|c| {
-                let mut item = CompletionItem::new(c.name.clone(), kind::CLASS);
-                item.detail = Some(sanitize_detail_text(&format!("sub-menu — {}", c.path)));
-                item.insert_text = Some(c.name.clone());
-                item.insert_text_format = Some(1);
-                item.sort_text = Some(rank(RankTier::Submenu, &c.name, typed_segment));
-                item
+                if c.menu_type == "Command" {
+                    let mut item = CompletionItem::new(c.name.clone(), kind::FUNCTION);
+                    item.detail = Some("action command".to_string());
+                    item.insert_text = Some(c.name.clone());
+                    item.insert_text_format = Some(1);
+                    item.sort_text = Some(rank(RankTier::Verb, &c.name, typed_segment));
+                    item
+                } else {
+                    let mut item = CompletionItem::new(c.name.clone(), kind::CLASS);
+                    item.detail = Some(sanitize_detail_text(&format!("sub-menu — {}", c.path)));
+                    item.insert_text = Some(c.name.clone());
+                    item.insert_text_format = Some(1);
+                    item.sort_text = Some(rank(RankTier::Submenu, &c.name, typed_segment));
+                    item
+                }
             })
             .collect(),
         None => Vec::new(),
