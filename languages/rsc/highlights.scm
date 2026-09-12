@@ -127,6 +127,12 @@
 ; ── Strings ────────────────────────────────────────────────────
 (string) @string
 
+; ── URLs ───────────────────────────────────────────────────────
+(url) @string.special
+
+; ── Mixed scalars (time, classifier, client-id, account) ───────
+(mixed_value) @number
+
 ; ── Numbers ─────────────────────────────────────────────────────
 (number) @number
 
