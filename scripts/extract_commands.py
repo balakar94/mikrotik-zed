@@ -43,6 +43,44 @@ _MAX_COVERED_ROOTS = 12
 # Explicit deny list — empty for complete coverage. Keep as set for future use.
 _DENY_ROOTS: set[str] = set()
 
+# ── Markdown property-table parsing ───────────────────────────────────────
+# Upstream ships the same menu surface in two shapes:
+#   1. CLI-reference pages: HTML-like <ArgTable>/<ArgTableRow> blocks.
+#   2. Topic pages: GitHub pipe tables
+#      (`| **name** (*type*; Default: ...) | description |`), tied to a
+#      menu by a `**Sub-menu:** \`/path\`` line (or a CLI-path heading).
+# The extractor historically read only (1), a latent blind spot: documented
+# rows such as `!comments` were absent and richer DHCPv6 descriptions were
+# dropped. The constants/helpers below parse (2) conservatively and merge it
+# additively into the ArgTable-derived menus.
+#
+# Only property sections are merged. Command tables ("Menu specific
+# commands"), print filters, and unrelated sections (e.g. certificate
+# export/import parameter tables) are ignored, per the "do not invent
+# entries" rule; the universal `print` command is captured separately.
+_MD_PROPERTY_HEADER = "property"          # first header cell of a property table
+_MD_PARAMETER_HEADER = "parameter"        # first header cell of a parameter table
+_MD_PROPERTY_HEADING = "propert"          # heading marker: property section
+_MD_COMMAND_HEADING = "command"           # heading marker: command section (skip)
+_MD_PRINT_HEADING = "print parameter"     # heading of the common print-command table
+_MD_TABLE_SEP_RE = re.compile(r"^\|[\s:|-]+\|?\s*$")
+_MD_SUB_MENU_RE = re.compile(r"^\*\*Sub-menu:\*\*\s*(.+)$")
+# First cell `**name** (rest)`, tolerating 2-4 bold markers and no space.
+_MD_NAME_RE = re.compile(r"^\*{2,4}\s*([^*]+?)\s*\*{2,4}\s*(.*)$", re.DOTALL)
+# Property names are single RouterOS-style tokens: lowercase alphanumerics
+# plus `! _ . -` (e.g. `802.3-sap`, `!comments`, `use-peer-dns`). Anything
+# else (grouped alternatives, sub-table labels, TitleCase status columns) is
+# not a property name and is skipped.
+_MD_VALID_NAME_RE = re.compile(r"^[a-z0-9!][a-z0-9!._-]*$")
+# Standard RouterOS verbs that a few docs pages list inside "Properties"
+# tables (e.g. /system/resource/irq/rps lists disable/edit/enable/reset).
+# They are commands, not properties. Mirrors MenuData::STANDARD_VERBS in
+# lsp/src/menus.rs, minus `comment`, which is a genuine property name.
+_MD_COMMAND_NAMES: frozenset[str] = frozenset({
+    "add", "remove", "set", "get", "print", "enable", "disable", "find",
+    "move", "export", "import", "edit", "reset", "force-update",
+})
+
 
 def should_include(menu_path: str) -> bool:
     """Check if a menu path should be included — COMPLETE coverage.
@@ -168,26 +206,370 @@ def extract_enum_values(typ: str) -> list[str]:
     return [part.strip() for part in m.group(1).split("|") if part.strip()]
 
 
+def _split_markdown_cells(line: str) -> list[str]:
+    """Split one pipe-table line into cells, honouring `\\|` escapes.
+
+    Markdown escapes literal pipes inside cells with a backslash (the type
+    column uses them heavily, e.g. `*yes \\| no*`). Surrounding pipes are
+    dropped; the escape is restored as a literal `|` after splitting.
+    """
+    text = line.strip()
+    if text.startswith("|"):
+        text = text[1:]
+    if text.endswith("|"):
+        text = text[:-1]
+    text = text.replace("\\|", "\x00")
+    return [cell.strip().replace("\x00", "|") for cell in text.split("|")]
+
+
+def _clean_markdown_text(text: str) -> str:
+    """Flatten a table cell to plain text for the TOML description field.
+
+    Unescapes HTML entities, unwraps markdown links to their label, drops
+    emphasis/backtick markers, and collapses whitespace. Leading/trailing
+    spaces are removed so empty cells stay empty.
+    """
+    text = html.unescape(text)
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = text.replace("**", "").replace("*", "").replace("`", "")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _extract_sub_menu_paths(line: str) -> list[str]:
+    """Return every CLI path listed on a `**Sub-menu:**` line.
+
+    Handles one-or-more backticked paths separated by commas (some pages
+    document a shared property set for several menus, e.g.
+    `/interface/bridge/filter, /interface/bridge/nat`). Unknown shapes and
+    empty tokens are dropped.
+    """
+    match = _MD_SUB_MENU_RE.match(line.strip())
+    if not match:
+        return []
+    paths: list[str] = []
+    for token in re.findall(r"`([^`]+)`", match.group(1)):
+        for part in token.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if not part.startswith("/"):
+                part = "/" + part
+            inner = part.lstrip("/")
+            if inner and " " not in part and _CLI_PATH_RE.match(inner):
+                paths.append(part)
+    return paths
+
+
+def _parse_markdown_type(remainder: str) -> tuple[str, bool]:
+    """Parse `(type; Default: ...)` from a cell remainder.
+
+    Returns `(type, read_only)`. The default clause is stripped, markdown
+    emphasis removed, and the `read-only` marker (when present) both reported
+    and removed from the type. Malformed captures that still contain
+    parentheses are discarded rather than shipped.
+    """
+    match = re.search(r"\(([^()]*)\)", remainder)
+    if not match:
+        return "", False
+    inner = match.group(1)
+    inner = re.split(r"[;,]?\s*[Dd]efault\s*:", inner, maxsplit=1)[0]
+    inner = inner.replace("*", "").replace("`", "").strip()
+    read_only = inner.lower().startswith("read-only")
+    if read_only:
+        inner = inner[len("read-only"):].lstrip(";: ").strip()
+    if "(" in inner or ")" in inner:
+        inner = ""
+    return inner, read_only
+
+
+def _parse_markdown_property_row(
+    cells: list[str], desc_idx: int, type_idx: int | None
+) -> dict | None:
+    """Parse one pipe-table row into a property entry, or None.
+
+    Returns `{name, type, read_only, description}`. The name must match
+    `_MD_VALID_NAME_RE`; rows that are grouped alternatives, sub-table labels
+    or prose are rejected (None), never invented as properties.
+    """
+    if not cells:
+        return None
+    name_match = _MD_NAME_RE.match(cells[0].strip())
+    if not name_match:
+        return None
+    name = name_match.group(1).strip()
+    if not _MD_VALID_NAME_RE.match(name):
+        return None
+    remainder = name_match.group(2)
+    read_only = False
+    typ = ""
+    if type_idx is not None and 0 <= type_idx < len(cells):
+        typ = _clean_markdown_text(cells[type_idx])
+        if "(" in typ or ")" in typ:
+            typ = ""
+    if not typ:
+        typ, read_only = _parse_markdown_type(remainder)
+    else:
+        read_only = _parse_markdown_type(remainder)[1]
+    description = _clean_markdown_text(cells[desc_idx]) if 0 <= desc_idx < len(cells) else ""
+    return {
+        "name": name,
+        "type": typ,
+        "read_only": read_only,
+        "description": description,
+    }
+
+
+def _collect_markdown_table(
+    header_cells: list[str],
+    rows: list[str],
+    paths: list[str],
+    heading: str,
+    line_no: int,
+    md_tables: list[dict],
+    print_rows: list[dict],
+    warnings: list[str],
+) -> None:
+    """Classify one pipe table and stash its rows for later merging.
+
+    Property sections (heading contains `propert`) contribute to `md_tables`
+    keyed by their associated menu paths. Command sections are skipped. A
+    `print parameters` parameter table contributes to `print_rows` (captured
+    later as the universal `/print` command). Unrelated parameter tables and
+    sections without a `**Sub-menu:**` association are ignored.
+    """
+    low = heading.lower()
+    first = header_cells[0].strip().lower()
+    header = [cell.strip().lower() for cell in header_cells]
+    type_idx = header.index("type") if "type" in header else None
+    if "description" in header:
+        desc_idx = header.index("description")
+    else:
+        desc_idx = 1 if len(header_cells) > 1 else 0
+
+    if first == _MD_PARAMETER_HEADER:
+        if _MD_PRINT_HEADING not in low:
+            return
+        for raw in rows:
+            parsed = _parse_markdown_property_row(_split_markdown_cells(raw), desc_idx, type_idx)
+            if parsed is not None:
+                print_rows.append({
+                    "name": parsed["name"],
+                    "type": parsed["type"],
+                    "description": parsed["description"],
+                })
+        return
+
+    if _MD_COMMAND_HEADING in low or _MD_PROPERTY_HEADING not in low:
+        return
+
+    section = "read_only" if (
+        "read-only" in low or "read only" in low or "readonly" in low
+    ) else "arguments"
+    parsed_rows: list[dict] = []
+    for raw in rows:
+        cells = _split_markdown_cells(raw)
+        parsed = _parse_markdown_property_row(cells, desc_idx, type_idx)
+        if parsed is None:
+            # Only rows whose bold marker is malformed count as an unknown
+            # row kind; grouped alternatives (`**a | b**`), TitleCase status
+            # columns and sub-table labels are deliberately not properties.
+            malformed = (
+                cells
+                and cells[0].strip().startswith("*")
+                and _MD_NAME_RE.match(cells[0].strip()) is None
+            )
+            if malformed:
+                warnings.append(
+                    f"unknown markdown property row near line {line_no}: {raw.strip()[:60]!r}"
+                )
+            continue
+        row_section = "read_only" if (parsed["read_only"] or section == "read_only") else "arguments"
+        parsed["section"] = row_section
+        parsed_rows.append(parsed)
+
+    if not paths:
+        return
+    if not parsed_rows:
+        warnings.append(
+            f"property table near line {line_no} for {', '.join(paths)} yielded no rows "
+            f"(heading {heading!r}); upstream shape may have drifted"
+        )
+        return
+    md_tables.append({"paths": list(paths), "rows": parsed_rows})
+
+
+def _merge_markdown_rows(menu: dict, rows: list[dict], known_paths: set[str]) -> int:
+    """Merge markdown rows into one menu; return the number of rows added.
+
+    Never duplicates an existing name in any section; for an existing entry
+    the richer (non-empty/longer) description and a type fill an empty one.
+    Sub-menu links (`port`, `status`) and documented command verbs are not
+    properties and are skipped.
+    """
+    existing: dict[str, tuple[str, dict]] = {}
+    for section in ("arguments", "flags", "read_only"):
+        for entry in menu.get(section, []) or []:
+            existing.setdefault(entry.get("name", ""), (section, entry))
+
+    added = 0
+    for row in rows:
+        name = row["name"]
+        target = row.get("section", "arguments")
+        if name in existing:
+            entry = existing[name][1]
+            description = row.get("description", "")
+            if description and (
+                not entry.get("description") or len(description) > len(entry["description"])
+            ):
+                entry["description"] = description
+            if row.get("type") and not entry.get("type"):
+                entry["type"] = row["type"]
+            continue
+        # Generic add-item properties are owned by GENERIC_ITEM_PROPS and
+        # injected later; adding a markdown row here (often with an empty
+        # description) would shadow the generic text.
+        if name in GENERIC_NAMES:
+            continue
+        # A child menu with this name is a sub-menu link, not a property.
+        if f"{menu['path']}/{name}" in known_paths:
+            continue
+        if name in _MD_COMMAND_NAMES:
+            continue
+        entry = {
+            "name": name,
+            "type": row.get("type", ""),
+            "required": False,
+            "unset": False,
+            "description": row.get("description", ""),
+        }
+        menu.setdefault(target, []).append(entry)
+        existing[name] = (target, entry)
+        added += 1
+    return added
+
+
+def _append_argtable_row(
+    text: str, current_menu: dict | None, current_section: str | None
+) -> None:
+    """Parse one `<ArgTableRow>` block (possibly multi-line) and append it.
+
+    `text` may span several physical lines so attributes whose quoted value
+    contains a newline (e.g. `typ="multi { array-id, option: enum\\n }"`) are
+    captured intact instead of being dropped. Anonymous rows are skipped.
+    """
+    if current_menu is None:
+        return
+    arg_match = re.search(r'arg="([^"]+)"', text)
+    if arg_match is None or not arg_match.group(1):
+        return
+    typ_match = re.search(r'typ="([^"]*)"', text)
+    mandatory_match = re.search(r'mandatory="1"', text)
+    unset_match = re.search(r'unset="1"', text)
+    desc_match = re.search(r">([^<]*)</ArgTableRow", text)
+    description = html.unescape(desc_match.group(1).strip()) if desc_match else ""
+    entry = {
+        "name": arg_match.group(1),
+        "type": typ_match.group(1) if typ_match else "",
+        "required": bool(mandatory_match),
+        "unset": bool(unset_match),
+        "description": description,
+    }
+    enum_values = extract_enum_values(entry["type"])
+    if enum_values:
+        entry["enum_values"] = enum_values
+    if current_section == "flags":
+        current_menu["flags"].append(entry)
+    elif current_section == "arguments":
+        current_menu["arguments"].append(entry)
+    elif current_section == "readonly":
+        current_menu["read_only"].append(entry)
+
+
+def _build_print_command(print_rows: list[dict]) -> dict:
+    """Build the synthetic `/print` Command from the common print table.
+
+    `print` is a verb, not a menu, so its documented parameters (including
+    the `!comments` filter) have no ArgTable home. Recording them once on a
+    `/print` Command keeps completion/diagnostics aware of them without
+    injecting 17 print rows into every menu's hover card. The parameters are
+    bare tokens, so they are stored as flags (print-output modifiers).
+    """
+    menu = {"path": "/print", "type": "Command", "flags": [], "arguments": [], "read_only": []}
+    for row in print_rows:
+        menu["flags"].append({
+            "name": row["name"],
+            "type": row.get("type", ""),
+            "required": False,
+            "unset": False,
+            "description": row.get("description", ""),
+        })
+    return menu
+
+
 def parse_llms_full(filepath: str) -> list[dict]:
-    """Parse llms-full.txt and extract menu entries."""
+    """Parse llms-full.txt and extract menu entries.
+
+    Reads both table shapes upstream ships:
+      - `<ArgTable>`/`<ArgTableRow>` CLI-reference blocks (authoritative for
+        menu paths, flags, arguments and read-only rows);
+      - GitHub pipe tables on topic pages, tied to a menu by a
+        `**Sub-menu:** \\`/path\\`` line or a CLI-path heading.
+
+    Markdown rows are merged additively after the scan: a non-empty ArgTable
+    type is never overwritten, an empty one is filled, and the richer
+    description wins (see `_merge_markdown_rows`). Multi-line
+    `<ArgTableRow ...>` openings (attributes whose quoted value spans a
+    newline) are buffered until the tag closes.
+    """
     with open(filepath, "r", encoding="utf-8") as f:
         content = f.read()
 
-    menus = []
+    menus: list[dict] = []
     current_menu = None
     current_section = None  # "flags", "arguments", or "readonly"
     in_argtable = False
+    warnings: list[str] = []
+
+    # Markdown association state: the page heading drives which section a
+    # pipe table belongs to, while `**Sub-menu:**` / path headings drive the
+    # target menu(s).
+    effective_paths: list[str] = []
+    current_heading = ""
+    md_tables: list[dict] = []
+    print_rows: list[dict] = []
+    md_skip_until = -1
+    pending_row: list[str] | None = None
 
     lines = content.split("\n")
 
     for i, line in enumerate(lines):
-        # Detect menu path from ##, ###, or #### headings containing "/"
+        # Finish a multi-line <ArgTableRow> before anything else: the buffered
+        # block may otherwise contain heading-looking attribute text.
+        if pending_row is not None:
+            pending_row.append(line)
+            if "</ArgTableRow>" in line:
+                _append_argtable_row("\n".join(pending_row), current_menu, current_section)
+                pending_row = None
+            continue
+
+        # Pipe-table body rows are consumed by their header's collection pass.
+        if i <= md_skip_until:
+            continue
+
+        # Track the current heading text (pipe-table classification) and, for
+        # topic pages, the menu path association. A `##` heading always starts
+        # a new page; `###`/`####` subsections keep the enclosing association.
+        heading_text = _normalize_heading_text(line)
         heading_path = _extract_heading_path(line)
-        # Root pages are titled WITHOUT a leading slash upstream ("## user").
-        # They open only a PENDING menu: a **Type:** line must confirm them
-        # before the next heading of any level (see needs_type below), which
-        # keeps lowercase prose subheadings ("balance-xor") out.
         bare_root = _extract_bare_cli_root(line) if heading_path is None else None
+        if heading_text is not None:
+            current_heading = heading_text
+            if heading_path is not None:
+                effective_paths = ["/" + heading_path.lstrip("/")]
+            elif bare_root is not None:
+                effective_paths = []
+            elif line.startswith("## "):
+                effective_paths = []
 
         if heading_path is not None or bare_root is not None:
             # Save previous menu if it exists and qualifies for inclusion
@@ -196,7 +578,7 @@ def parse_llms_full(filepath: str) -> list[dict]:
 
             new_path = heading_path if heading_path is not None else bare_root
             current_menu = {
-                "path": "/" + new_path,  # Add leading /
+                "path": "/" + new_path.lstrip("/"),  # Add leading / (once)
                 "type": "Directory",
                 "flags": [],
                 "arguments": [],
@@ -209,6 +591,11 @@ def parse_llms_full(filepath: str) -> list[dict]:
             current_section = None
             in_argtable = False
             continue
+
+        # `**Sub-menu:**` switches the markdown association for its page.
+        sub_paths = _extract_sub_menu_paths(line)
+        if sub_paths:
+            effective_paths = sub_paths
 
         # Detect Type
         type_match = re.match(r"^\*\*Type:\*\*\s+(.+)", line)
@@ -227,43 +614,11 @@ def parse_llms_full(filepath: str) -> list[dict]:
 
         # Detect ArgTableRow (before ArgTable, since <ArgTableRow contains <ArgTable)
         if in_argtable and current_menu and "<ArgTableRow" in line:
-            arg_match = re.search(r'arg="([^"]+)"', line)
-
-            # Anonymous row (no arg attribute or empty name): skip entirely
-            # instead of emitting entries with an empty identifier.
-            if arg_match is None or not arg_match.group(1):
-                continue
-
-            typ_match = re.search(r'typ="([^"]*)"', line)
-            mandatory_match = re.search(r'mandatory="1"', line)
-            unset_match = re.search(r'unset="1"', line)
-
-            # Extract description (text between > and </ArgTableRow>)
-            desc_match = re.search(r">([^<]*)</ArgTableRow", line)
-            description = html.unescape(desc_match.group(1).strip()) if desc_match else ""
-
-            entry = {
-                "name": arg_match.group(1),
-                "type": typ_match.group(1) if typ_match else "",
-                "required": bool(mandatory_match),
-                "unset": bool(unset_match),
-                "description": description,
-            }
-
-            # Preserve enum members from the RAW type string. The `type`
-            # field is truncated by clean_type() at emit time, which would
-            # otherwise make downstream enum parsing lose members (or fail
-            # entirely on the trailing "..." of long enums).
-            enum_values = extract_enum_values(entry["type"])
-            if enum_values:
-                entry["enum_values"] = enum_values
-
-            if current_section == "flags":
-                current_menu["flags"].append(entry)
-            elif current_section == "arguments":
-                current_menu["arguments"].append(entry)
-            elif current_section == "readonly":
-                current_menu["read_only"].append(entry)
+            if "</ArgTableRow>" in line:
+                _append_argtable_row(line, current_menu, current_section)
+            else:
+                # Attributes span a newline: buffer until the tag closes.
+                pending_row = [line]
             continue
 
         # Detect ArgTable start
@@ -277,11 +632,64 @@ def parse_llms_full(filepath: str) -> list[dict]:
                 current_section = "arguments"
             elif c1 is not None and "Read-only" in c1:
                 current_section = "readonly"
+            else:
+                # Unknown column kind: ignore its rows (never guess a section)
+                # but make the drift visible instead of silent.
+                current_section = None
+                if c1 is not None:
+                    where = current_menu["path"] if current_menu else "<no menu>"
+                    warnings.append(
+                        f"unknown ArgTable c1={c1!r} near line {i + 1} ({where}); rows ignored"
+                    )
             continue
 
-    # Save last menu
+        # Markdown pipe table: property and parameter headers start a table.
+        if line.lstrip().startswith("|") and not _MD_TABLE_SEP_RE.match(line):
+            cells = _split_markdown_cells(line)
+            if cells and cells[0].strip().lower() in (_MD_PROPERTY_HEADER, _MD_PARAMETER_HEADER):
+                end = i + 1
+                rows: list[str] = []
+                while end < len(lines) and lines[end].startswith("|"):
+                    if not _MD_TABLE_SEP_RE.match(lines[end]):
+                        rows.append(lines[end])
+                    end += 1
+                md_skip_until = end - 1
+                _collect_markdown_table(
+                    cells, rows, effective_paths, current_heading, i + 1,
+                    md_tables, print_rows, warnings,
+                )
+            continue
+
+    # EOF: flush a dangling multi-line row and the last menu.
+    if pending_row is not None:
+        _append_argtable_row("\n".join(pending_row), current_menu, current_section)
     if _is_includable_menu(current_menu):
         menus.append(current_menu)
+
+    # Additive merge of markdown rows into the ArgTable-derived menus.
+    if md_tables:
+        known_paths = {m["path"] for m in menus}
+        by_path: dict[str, list[dict]] = {}
+        for menu in menus:
+            by_path.setdefault(menu["path"], []).append(menu)
+        merged = 0
+        for table in md_tables:
+            for path in table["paths"]:
+                for menu in by_path.get(path, []):
+                    merged += _merge_markdown_rows(menu, table["rows"], known_paths)
+        if merged:
+            print(
+                f"info: merged {merged} markdown property row(s) from topic pages.",
+                file=sys.stderr,
+            )
+
+    # `print` is a verb, not a menu: record its documented common parameters
+    # (including `!comments`) once as a synthetic Command entry.
+    if print_rows:
+        menus.append(_build_print_command(print_rows))
+
+    for warning in warnings:
+        print(f"warning: {warning}", file=sys.stderr)
 
     return menus
 

@@ -1742,3 +1742,419 @@ class TestGenericItemProps:
         menus = [self._menu("/ip/route", [{"name": "gateway", "type": "ipAddr"}])]
         assert apply_overrides(menus, [dict(subsumed)]) == 1
         assert "fully subsumed" in capsys.readouterr().err
+
+
+class TestMarkdownPropertyTables:
+    """Topic-page pipe tables merge into the ArgTable-derived menus.
+
+    Upstream documents the same properties twice: CLI-reference pages use
+    <ArgTable>, topic pages use GitHub pipe tables tied to a menu by a
+    `**Sub-menu:**` line. The markdown pass is additive: it never duplicates
+    a name, keeps a non-empty ArgTable type, and prefers the richer
+    description.
+    """
+
+    def _write_temp(self, content: str) -> str:
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+        tmp.write(content)
+        tmp.flush()
+        tmp.close()
+        return tmp.name
+
+    def _parse(self, content: str):
+        path = self._write_temp(content)
+        try:
+            return parse_llms_full(path)
+        finally:
+            os.unlink(path)
+
+    BASIC = (
+        "## ip/address \n"
+        "\n"
+        "**Type:** Directory\n"
+        "\n"
+        '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+        '<ArgTableRow arg="address" typ="ipPrefix"></ArgTableRow>\n'
+        "</ArgTable>\n"
+        "\n"
+        "## Address topic\n"
+        "\n"
+        "**Sub-menu:** `/ip/address`\n"
+        "\n"
+        "### Properties\n"
+        "\n"
+        "| Property | Description |\n"
+        "| :-- | :-- |\n"
+        "| **address** (*string*; Default: ) | Richer address description |\n"
+        "| **network** (*ipAddr*; Default: ) | Network address |\n"
+        "\n"
+        "### Read-only properties\n"
+        "\n"
+        "| Property | Description |\n"
+        "| :-- | :-- |\n"
+        "| **actual-interface** (*iface_enum*) | Actual interface |\n"
+    )
+
+    def test_merges_new_arguments_and_read_only_rows(self):
+        menu = self._parse(self.BASIC)[0]
+        arguments = {a["name"]: a for a in menu["arguments"]}
+        assert arguments["network"]["type"] == "ipAddr"
+        assert arguments["network"]["description"] == "Network address"
+        assert [r["name"] for r in menu["read_only"]] == ["actual-interface"]
+
+    def test_existing_argument_not_duplicated_and_type_kept(self):
+        menu = self._parse(self.BASIC)[0]
+        addresses = [a for a in menu["arguments"] if a["name"] == "address"]
+        assert len(addresses) == 1, "markdown must never duplicate an existing argument"
+        # ArgTable type is authoritative; markdown only enriches the description.
+        assert addresses[0]["type"] == "ipPrefix"
+        assert addresses[0]["description"] == "Richer address description"
+
+    def test_richer_description_replaces_shorter_existing_one(self):
+        content = (
+            "## ip/address \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="address" typ="ipPrefix">Short</ArgTableRow>\n'
+            "</ArgTable>\n"
+            "\n"
+            "## Address topic\n"
+            "\n"
+            "**Sub-menu:** `/ip/address`\n"
+            "\n"
+            "### Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **address** (*string*; Default: ) | A much richer description of the address |\n"
+        )
+        menu = self._parse(content)[0]
+        assert menu["arguments"][0]["description"] == "A much richer description of the address"
+
+    def test_markdown_type_fills_empty_argtable_type(self):
+        content = (
+            "## ip/route \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="gateway"></ArgTableRow>\n'
+            "</ArgTable>\n"
+            "\n"
+            "## Route topic\n"
+            "\n"
+            "**Sub-menu:** `/ip/route`\n"
+            "\n"
+            "### Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **gateway** (*ipAddr*; Default: ) | Gateway |\n"
+        )
+        menu = self._parse(content)[0]
+        assert menu["arguments"][0]["type"] == "ipAddr"
+
+    def test_type_variants_no_space_and_no_semicolon_before_default(self):
+        content = (
+            "## ip/address \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## Address topic\n"
+            "\n"
+            "**Sub-menu:** `/ip/address`\n"
+            "\n"
+            "### Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **custom-duid**(*hex string*) | Custom DUID |\n"
+            "| **days-valid** (*days* Default: **365**) | Validity |\n"
+            "| **digest** (*md5 \\| sha1* Default: **sha256**) | Hash |\n"
+            "| ****validate-server-duid**** (*yes \\| no*; Default: **yes**) | Validate |\n"
+        )
+        menu = self._parse(content)[0]
+        by_name = {a["name"]: a for a in menu["arguments"]}
+        assert by_name["custom-duid"]["type"] == "hex string"
+        assert by_name["days-valid"]["type"] == "days"
+        assert by_name["digest"]["type"] == "md5 | sha1"
+        assert by_name["validate-server-duid"]["type"] == "yes | no"
+        assert by_name["digest"]["description"] == "Hash"
+
+    def test_type_column_tables_use_the_description_column(self):
+        content = (
+            "## container \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## Container topic\n"
+            "\n"
+            "**Sub-menu:** `/container`\n"
+            "\n"
+            "### Properties\n"
+            "\n"
+            "| Property | Type | Default | Description |\n"
+            "| :-- | :-- | :-- | :-- |\n"
+            "| **auto-update** | *yes* &#124; *no* | *no* | Automatic updates |\n"
+        )
+        menu = self._parse(content)[0]
+        arg = menu["arguments"][0]
+        assert arg["name"] == "auto-update"
+        assert arg["type"] == "yes | no"
+        assert arg["description"] == "Automatic updates"
+
+    def test_command_sections_and_unrelated_tables_are_skipped(self):
+        content = (
+            "## certificate \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## Certificates\n"
+            "\n"
+            "**Sub-menu:** `/certificate`\n"
+            "\n"
+            "### Export Certificate\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **export-passphrase** (*string*) | Export secret |\n"
+            "\n"
+            "### Menu specific commands\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **release** (*numbers*) | Release it |\n"
+        )
+        menu = self._parse(content)[0]
+        # Neither a command section nor an unrelated (non-property) heading
+        # may inject rows into the menu.
+        assert "export-passphrase" not in {a["name"] for a in menu["arguments"]}
+        assert "release" not in {a["name"] for a in menu["arguments"]}
+
+    def test_grouped_alternatives_and_titlecase_rows_are_skipped(self):
+        content = (
+            "## ip/service \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## Services\n"
+            "\n"
+            "**Sub-menu:** `/ip/service`\n"
+            "\n"
+            "### Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **static-key-0 \\| static-key-1** (*hex*) | Grouped |\n"
+            "| **Container** | Status column |\n"
+            "| **address** (*IP*) | Real property |\n"
+        )
+        menu = self._parse(content)[0]
+        names = {a["name"] for a in menu["arguments"]}
+        assert names == {"address"}
+
+    def test_sub_menu_link_is_not_added_as_property(self):
+        content = (
+            "## system/ptp \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## system/ptp/port \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## PTP\n"
+            "\n"
+            "**Sub-menu:** `/system/ptp`\n"
+            "\n"
+            "### Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **port** | Sub-menu reference |\n"
+            "| **name** (*string*) | Real property |\n"
+        )
+        menu = next(m for m in self._parse(content) if m["path"] == "/system/ptp")
+        names = {a["name"] for a in menu["arguments"]}
+        assert "name" in names
+        assert "port" not in names, "a child menu must not be recorded as a property"
+
+    def test_multiple_sub_menu_paths_share_the_table(self):
+        content = (
+            "## interface/bridge/filter \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## interface/bridge/nat \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## Bridge firewall\n"
+            "\n"
+            "**Sub-menu:** `/interface/bridge/filter, /interface/bridge/nat`\n"
+            "\n"
+            "### Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **action** (*accept \\| drop*) | Rule action |\n"
+        )
+        menus = {m["path"]: m for m in self._parse(content)}
+        for path in ("/interface/bridge/filter", "/interface/bridge/nat"):
+            assert "action" in {a["name"] for a in menus[path]["arguments"]}
+
+    def test_print_parameters_become_a_print_command(self):
+        content = (
+            "### Common commands\n"
+            "\n"
+            "#### print parameters\n"
+            "\n"
+            "| Parameter | Description | Example |\n"
+            "| :-- | :-- | :-- |\n"
+            "| **append** | | |\n"
+            "| **!comments** | Returns entries without comments | `/ip route print !comments` |\n"
+        )
+        menus = {m["path"]: m for m in self._parse(content)}
+        assert "/print" in menus
+        print_menu = menus["/print"]
+        assert print_menu["type"] == "Command"
+        flags = {f["name"]: f for f in print_menu["flags"]}
+        assert "!comments" in flags
+        assert flags["!comments"]["description"] == "Returns entries without comments"
+
+    def test_property_table_without_rows_warns(self, capsys):
+        content = (
+            "## ip/address \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## Address topic\n"
+            "\n"
+            "**Sub-menu:** `/ip/address`\n"
+            "\n"
+            "### Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| not a property | ignored |\n"
+        )
+        self._parse(content)
+        assert "yielded no rows" in capsys.readouterr().err
+
+    def test_unknown_argtable_c1_warns(self, capsys):
+        content = (
+            "## ip/address \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            '<ArgTable c1="Mystery" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="foo" typ="string">x</ArgTableRow>\n'
+            "</ArgTable>\n"
+        )
+        menus = self._parse(content)
+        assert menus[0]["arguments"] == []
+        assert "unknown ArgTable c1" in capsys.readouterr().err
+
+    def test_empty_generic_markdown_rows_do_not_shadow_generics(self):
+        # `comment`/`disabled` are injected by GENERIC_ITEM_PROPS at emit
+        # time; an empty markdown row must not block that richer text.
+        content = (
+            "## ip/route \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## Route topic\n"
+            "\n"
+            "**Sub-menu:** `/ip/route`\n"
+            "\n"
+            "### Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **comment** (*string*) | |\n"
+            "| **disabled** (*yes \\| no*) | |\n"
+        )
+        menu = self._parse(content)[0]
+        names = {a["name"] for a in menu["arguments"]}
+        assert "comment" not in names
+        assert "disabled" not in names
+
+
+class TestMultiLineArgTableRow:
+    """`typ=` spanning a newline must be captured, not silently dropped."""
+
+    def _write_temp(self, content: str) -> str:
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+        tmp.write(content)
+        tmp.flush()
+        tmp.close()
+        return tmp.name
+
+    def test_multiline_type_without_description(self):
+        content = (
+            "## ipv6/dhcp-client \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="dhcp-options" typ="multi { array-id, option: enum\n'
+            ' }"></ArgTableRow>\n'
+            "</ArgTable>\n"
+        )
+        path = self._write_temp(content)
+        try:
+            arg = parse_llms_full(path)[0]["arguments"][0]
+        finally:
+            os.unlink(path)
+        assert arg["name"] == "dhcp-options"
+        assert "multi" in arg["type"]
+        assert "option: enum" in arg["type"]
+
+    def test_multiline_type_with_description_on_continuation(self):
+        content = (
+            "## ipv6/dhcp-relay \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="dhcp-options" typ="multi { array-id, option: enum\n'
+            '}">Options added to Relay-Forward messages</ArgTableRow>\n'
+            "</ArgTable>\n"
+        )
+        path = self._write_temp(content)
+        try:
+            arg = parse_llms_full(path)[0]["arguments"][0]
+        finally:
+            os.unlink(path)
+        assert arg["description"] == "Options added to Relay-Forward messages"
+        assert arg["type"].startswith("multi")
+
+    def test_multiline_type_flows_into_generated_toml(self):
+        import tomllib
+
+        content = (
+            "## ipv6/dhcp-client \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="dhcp-options" typ="multi { array-id, option: enum\n'
+            ' }"></ArgTableRow>\n'
+            "</ArgTable>\n"
+        )
+        path = self._write_temp(content)
+        try:
+            menus = parse_llms_full(path)
+        finally:
+            os.unlink(path)
+        parsed = tomllib.loads(generate_toml(finalize_menus(menus)))
+        arg = next(
+            a
+            for m in parsed["menus"]
+            if m["path"] == "/ipv6/dhcp-client"
+            for a in m["arguments"]
+            if a["name"] == "dhcp-options"
+        )
+        assert arg["type"] == "multi { array-id, option: enum }"

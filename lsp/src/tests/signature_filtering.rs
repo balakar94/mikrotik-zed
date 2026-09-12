@@ -236,19 +236,24 @@ type = "Directory"
 
 #[test]
 fn test_real_data_ip_address_signature() {
-    // Real embedded table: /ip/address has `interface` required, `address`
-    // untyped. Required-first ordering must hold on live data too.
+    // Real embedded table: /ip/address marks BOTH `address` and `interface`
+    // mandatory. Required-first ordering must hold on live data too, and the
+    // `address` multi-line type must survive extraction (it previously came
+    // out empty because the attribute spanned a newline).
     let data = MenuData::load();
     let line = "/ip/address add ";
     let help = help_for(&data, "/ip/address", line, line.len()).expect("real menu");
     let sig = &help.signatures[0];
     let first = &sig.label[sig.parameters[0].label[0]..sig.parameters[0].label[1]];
-    assert_eq!(first, "interface=iface_enum", "required property leads");
+    assert_eq!(
+        first, "address=composite { address: ipAddr , netmask: [ num [ .. 32]] }",
+        "required property leads"
+    );
     assert!(sig.label.starts_with("/ip/address add "));
     assert!(
         sig.parameters[0]
             .documentation
-            .starts_with("(required) iface_enum")
+            .starts_with("(required) composite")
     );
 }
 
