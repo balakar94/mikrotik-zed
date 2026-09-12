@@ -2,8 +2,8 @@
 # Auto-generated from llms-full.txt
 # Covers: /app, /beep, /blink, /caps-man, /certificate, /console, /container, /disk, /dude, /environment, /file, /import, … (1077 menus)
 # RouterOS version: 7.23.2
-# Generated: 2026-09-09T18:17:44.138312Z
-# Source hash (sha256[:16]): 9a01f82965c2e388
+# Generated: 2026-09-12T13:58:16.967702Z
+# Source hash (sha256[:16]): a25b13ef01b09646
 # overrides_applied = 1 (data/overrides.toml)
 # generics_applied = 1944 (comment/disabled universal; place-before/copy-from ordered-only)
 
