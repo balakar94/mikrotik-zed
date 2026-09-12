@@ -57,6 +57,20 @@ pub(crate) const DIAGNOSTIC_SOURCE: &str = "rsc-ls";
 /// The response payload stays bounded (at most ten findings plus one hint).
 pub(crate) const MAX_SYNTAX_DIAGNOSTICS: usize = 10;
 
+/// Max chars of raw user text embedded in one diagnostic message.
+///
+/// Values and keys come straight from the document, so an invalid enum
+/// value or menu path can be hundreds of kilobytes. Every message
+/// interpolation goes through [`bounded_user_text`] so one diagnostic can
+/// never carry the whole token.
+pub(crate) const MAX_DIAG_TEXT_CHARS: usize = 120;
+
+/// Char-boundary-safe truncation of user text before it is interpolated
+/// into a diagnostic message (trailing `…` marks the cut).
+fn bounded_user_text(s: &str) -> String {
+    crate::text_util::truncate_chars(s, MAX_DIAG_TEXT_CHARS)
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct Position {
     pub line: u32,
@@ -124,7 +138,9 @@ impl TypedHint {
     fn message(&self, key: &str, raw_value: &str) -> String {
         let shown = raw_value.trim().trim_matches('"').trim_matches('\'').trim();
         format!(
-            "Invalid value '{shown}' for '{key}' (expected {})",
+            "Invalid value '{}' for '{}' (expected {})",
+            bounded_user_text(shown),
+            bounded_user_text(key),
             self.expected
         )
     }
@@ -574,7 +590,10 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                     severity: Some(severity::WARNING),
                     code: Some("unknown-menu".to_string()),
                     source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                    message: with_suggestion(format!("Unknown menu '{}'", ctx.path), suggestion),
+                    message: with_suggestion(
+                        format!("Unknown menu '{}'", bounded_user_text(&ctx.path)),
+                        suggestion,
+                    ),
                 });
                 // If menu unknown, don't emit further property diagnostics for this line
                 // to avoid cascading false positives.
@@ -681,7 +700,11 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                 code: Some("unknown-command".to_string()),
                 source: Some(DIAGNOSTIC_SOURCE.to_string()),
                 message: with_suggestion(
-                    format!("Unknown command '{}' for '{}'", cmd, ctx.path),
+                    format!(
+                        "Unknown command '{}' for '{}'",
+                        bounded_user_text(cmd),
+                        bounded_user_text(&ctx.path)
+                    ),
                     suggestion,
                 ),
             });
@@ -745,7 +768,11 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                         code: Some("unknown-property".to_string()),
                         source: Some(DIAGNOSTIC_SOURCE.to_string()),
                         message: with_suggestion(
-                            format!("Unknown property '{}' for '{}'", &line[s..e], ctx.path),
+                            format!(
+                                "Unknown property '{}' for '{}'",
+                                bounded_user_text(&line[s..e]),
+                                bounded_user_text(&ctx.path)
+                            ),
                             suggestion,
                         ),
                     });
@@ -780,8 +807,8 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                             message: format!(
                                 "Missing required property '{}' for '{} {}'",
                                 arg.name,
-                                ctx.path,
-                                ctx.command.as_deref().unwrap_or("")
+                                bounded_user_text(&ctx.path),
+                                bounded_user_text(ctx.command.as_deref().unwrap_or(""))
                             ),
                         });
                     }
@@ -843,8 +870,8 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                                 message: with_suggestion(
                                     format!(
                                         "Invalid value '{}' for '{}' (expected one of: {})",
-                                        val,
-                                        key_display,
+                                        bounded_user_text(val),
+                                        bounded_user_text(key_display),
                                         allowed_vals.join(" | ")
                                     ),
                                     suggestion,
@@ -941,7 +968,8 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                                 source: Some(DIAGNOSTIC_SOURCE.to_string()),
                                 message: format!(
                                     "Property '{}' cannot be unset (unsettable: no) for '{}'",
-                                    text, ctx.path
+                                    bounded_user_text(text),
+                                    bounded_user_text(&ctx.path)
                                 ),
                             });
                         }
@@ -971,8 +999,9 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                             code: Some("non-unsettable-property".to_string()),
                             source: Some(DIAGNOSTIC_SOURCE.to_string()),
                             message: format!(
-                                "Property '{target}' cannot be unset (unsettable: no) for '{}'",
-                                ctx.path
+                                "Property '{}' cannot be unset (unsettable: no) for '{}'",
+                                bounded_user_text(&target),
+                                bounded_user_text(&ctx.path)
                             ),
                         });
                     }
@@ -1001,8 +1030,8 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                             source: Some(DIAGNOSTIC_SOURCE.to_string()),
                             message: format!(
                                 "Property '{}' is read-only and cannot be set with '{}' (output column only)",
-                                &line[s..e],
-                                ctx.command.as_deref().unwrap_or("")
+                                bounded_user_text(&line[s..e]),
+                                bounded_user_text(ctx.command.as_deref().unwrap_or(""))
                             ),
                         });
                     }

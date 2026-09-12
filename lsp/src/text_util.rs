@@ -295,7 +295,10 @@ fn collapse_newlines(s: &str) -> String {
 }
 
 /// Truncate to `max` chars at a char boundary, appending `…` when cut.
-fn truncate_chars(s: &str, max: usize) -> String {
+///
+/// Shared by the display-budget sanitizers and by diagnostics, which cap
+/// raw user text before embedding it in a message.
+pub(crate) fn truncate_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
