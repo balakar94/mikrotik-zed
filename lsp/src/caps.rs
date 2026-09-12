@@ -43,6 +43,7 @@
 // | `LIVE_MAX_HOSTS`                  | 4              | caps.rs         | Multi-host cap (only primary hydrated)                         |
 // | `LIVE_CUSTOM_RESOURCES_MAX`       | 8              | caps.rs         | Custom live resources via env JSON                             |
 // | `MAX_CONCURRENT_FETCHES`          | 2              | live.rs         | fetch-thread semaphore                                         |
+// | `MAX_PINNED_AGENT_CACHE_ENTRIES`  | 8              | caps.rs         | Pinned ureq-agent cache bound (keyed by address set)           |
 // | `MAX_SYNTAX_DIAGNOSTICS`          | 10             | diagnostics.rs  | Unclosed/unmatched brace+quote diagnostics per publish         |
 // | `MAX_DIAG_TEXT_CHARS`             | 120            | diagnostics.rs  | Raw user text embedded in one diagnostic message               |
 // | `MAX_SYMBOLS`                     | 5000           | symbols.rs      | Document symbols per doc                                       |
@@ -166,3 +167,11 @@ pub(crate) const LIVE_MAX_HOSTS: usize = 4;
 ///
 /// Bounds parsing of the JSON env var to avoid unbounded allocation.
 pub(crate) const LIVE_CUSTOM_RESOURCES_MAX: usize = 8;
+
+/// Maximum number of pinned `ureq::Agent`s retained in the agent cache.
+///
+/// The cache key includes the validated address vector, so a hostile or
+/// churning resolver could otherwise grow the map without bound. Eight
+/// entries preserve agent reuse for the common case while capping memory;
+/// the least-recently-used entry is evicted on overflow.
+pub(crate) const MAX_PINNED_AGENT_CACHE_ENTRIES: usize = 8;

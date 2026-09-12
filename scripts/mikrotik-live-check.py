@@ -47,7 +47,9 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from _mikrotik_shared import (  # noqa: E402
-    check_target,
+    build_pinned_requests_session,
+    build_pinned_urllib_handlers,
+    check_target_with_addrs,
     clamp_int,
     env_int,
     format_host_for_url,
@@ -56,7 +58,6 @@ from _mikrotik_shared import (  # noqa: E402
     resolve_scheme,
     validate_host,
     validate_user,
-    verify_tls_pin,
 )
 
 # Optional requests - fallback to urllib
@@ -212,9 +213,10 @@ def main() -> None:
 
     # F1: lexical + resolve-then-revalidate before any credential use (fail
     # fast, no prompt when DNS already refuses). Lexical checks ran at
-    # startup; DNS may resolve differently now. verify_tls_pin re-checks on
-    # its own handshake when a pin is set.
-    target_err = check_target(host, port)
+    # startup; DNS may resolve differently now. The validated addresses are
+    # retained and pinned into the HTTP connection so no second DNS lookup
+    # can be rebound (TOCTOU closed).
+    target_err, addrs = check_target_with_addrs(host, port)
     if target_err:
         msg = target_err
         print(f"error: {msg}", file=sys.stderr)
@@ -251,18 +253,10 @@ def main() -> None:
 
     try:
         if HAS_REQUESTS:
-            session = requests.Session()  # type: ignore[union-attr]
-            session.auth = (user, password)
-            # Custom CA bundle wins over the boolean flag; a pin still
-            # enforces SPKI matching on top (verified below pre-parse).
-            # F3: when a pin is configured, the HTTP connection itself must
-            # verify (the pin check runs on a SEPARATE handshake — TOCTOU).
-            # Never CERT_NONE with Authorization when a pin is set.
-            if fingerprint is not None and scheme == "https":
-                session.verify = ca_file if ca_file else True
-            else:
-                session.verify = ca_file if ca_file else ssl_verify
-            session.headers.update({"Content-Type": "application/json"})
+            # Pinned to the addresses validated above (no second DNS lookup).
+            session = build_pinned_requests_session(
+                user, password, addrs, ca_file, ssl_verify, fingerprint, scheme
+            )
             # Streamed read with byte cap — prevents OOM on unbounded responses
             # (same 512 KiB limit as caps.rs MAX_LIVE_RESPONSE_BYTES).
             # Redirects are disabled: 3xx is a fail-closed error, never followed.
@@ -293,16 +287,9 @@ def main() -> None:
                 else:
                     print(f"Live FAIL: {msg} status={status}")
                 sys.exit(4)
-            if fingerprint is not None and scheme == "https":
-                pin_err = verify_tls_pin(host, port, fingerprint, ca_file, timeout, ssl_verify)
-                if pin_err:
-                    msg = redact_secrets(pin_err, password, user)
-                    print(f"error: {msg}", file=sys.stderr)
-                    if args.json:
-                        print(json.dumps({"ok": False, "error": msg, "host": host, "url": url}))
-                    else:
-                        print(f"Live FAIL: {msg}")
-                    sys.exit(4)
+            # The SPKI pin (when set) is verified inside the pinned HTTPS
+            # connection, on the same socket and before the Authorization
+            # header is written — no separate handshake to race.
             # Incremental streaming read — abort if exceeds MAX_BYTES
             content_chunks: list[bytes] = []
             total = 0
@@ -407,10 +394,12 @@ def main() -> None:
             b64 = base64.b64encode(creds).decode("ascii")
             req.add_header("Authorization", f"Basic {b64}")
             req.add_header("Content-Type", "application/json")
-            # SSL context (custom CA bundle wins; pin verified below pre-parse).
-            # F3: when a pin is configured, never CERT_NONE on the
-            # Authorization-carrying connection (TOCTOU between the pin
-            # handshake and this HTTP connection). Force verification.
+            # SSL context: a custom CA bundle wins. Pin-only (a pin with no
+            # CA file) relaxes chain/hostname — self-signed devices must
+            # connect and the pin binds the peer on this same connection
+            # before the request (incl. Authorization) is written. With a CA
+            # file, full chain + hostname verification stays and the pin is
+            # checked on top.
             pin_enforced = fingerprint is not None and scheme == "https"
             ctx = None
             if scheme == "https":
@@ -419,27 +408,23 @@ def main() -> None:
                     if not ssl_verify and not pin_enforced:
                         ctx.check_hostname = False
                         ctx.verify_mode = ssl.CERT_NONE
-                elif not ssl_verify and not pin_enforced:
-                    ctx = ssl._create_unverified_context()
                 elif pin_enforced:
+                    ctx = ssl._create_unverified_context()
+                elif not ssl_verify:
+                    ctx = ssl._create_unverified_context()
+                else:
                     ctx = ssl.create_default_context()
+            # Pinned to the addresses validated above (no second DNS lookup).
+            # The helper also installs ProxyHandler({}) so no environment
+            # proxy can reroute the dial.
             handlers: list = [_NoRedirect]
-            if ctx is not None:
-                # OpenerDirector.open has no `context` kwarg; the context
-                # travels on the HTTPSHandler instead.
-                handlers.append(urllib.request.HTTPSHandler(context=ctx))
+            handlers.extend(
+                build_pinned_urllib_handlers(
+                    addrs, ctx, fingerprint if pin_enforced else None
+                )
+            )
             opener = urllib.request.build_opener(*handlers)
             try:
-                if fingerprint is not None and scheme == "https":
-                    pin_err = verify_tls_pin(host, port, fingerprint, ca_file, timeout, ssl_verify)
-                    if pin_err:
-                        msg = redact_secrets(pin_err, password, user)
-                        print(f"error: {msg}", file=sys.stderr)
-                        if args.json:
-                            print(json.dumps({"ok": False, "error": msg, "host": host, "url": url}))
-                        else:
-                            print(f"Live FAIL: {msg}")
-                        sys.exit(4)
                 with opener.open(req, timeout=timeout) as r:
                     status = r.status
                     # urllib does not support stream iteration like requests; still cap via limit

@@ -7,11 +7,17 @@ plus a CLI smoke test (--help / --dry-run) that also proves the scripts'
 import bootstrap works when run as `python scripts/<name>.py`.
 """
 
+import contextlib
+import http.server
 import importlib.util
 import ipaddress
 import os
+import shutil
+import socket
+import ssl
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -26,7 +32,10 @@ LIVE_CHECK_PY = SCRIPTS / "mikrotik-live-check.py"
 sys.path.insert(0, str(SCRIPTS))
 
 from _mikrotik_shared import (  # noqa: E402
+    build_pinned_requests_session,
+    build_pinned_urllib_handlers,
     check_target,
+    check_target_with_addrs,
     clamp_int,
     embedded_ipv4,
     env_int,
@@ -34,13 +43,17 @@ from _mikrotik_shared import (  # noqa: E402
     format_host_for_url,
     is_ipv6_transition_prefix,
     is_normalized_loopback_or_private,
+    is_normalized_ssrf_denied,
+    open_pinned_socket,
     parse_fingerprint,
     redact_secrets,
     resolve_and_check_host,
+    resolve_host_addrs,
     resolve_scheme,
     spki_sha256,
     validate_host,
     validate_user,
+    verify_spki_pin_on_socket,
 )
 
 
@@ -175,6 +188,33 @@ class TestValidateHostSsrfDenylist:
         assert validate_host("169.253.1.1") is None
         assert validate_host("192.168.88.1") is None
         assert validate_host("router.local") is None
+
+    def test_ipv4_special_use_ranges_denied(self):
+        # Unconditional denials, mirroring Rust
+        # is_normalized_ssrf_denied: multicast 224.0.0.0/4, reserved
+        # 240.0.0.0/4, IETF protocol assignments 192.0.0.0/24, benchmarking
+        # 198.18.0.0/15.
+        for bad in [
+            "224.0.0.1",  # multicast floor
+            "239.255.255.255",  # multicast ceiling
+            "240.0.0.0",  # reserved floor
+            "255.255.255.255",  # broadcast
+            "192.0.0.1",  # IETF protocol assignments
+            "198.18.0.0",  # benchmarking floor
+            "198.19.255.255",  # benchmarking ceiling
+        ]:
+            assert validate_host(bad) is not None, f"should deny {bad!r}"
+            assert is_normalized_ssrf_denied(ipaddress.ip_address(bad)), bad
+
+    def test_ipv4_special_use_adjacent_public_allowed(self):
+        for good in [
+            "223.255.255.255",  # below multicast
+            "198.17.255.255",  # below benchmarking
+            "198.20.0.0",  # above benchmarking
+            "192.0.1.1",  # above 192.0.0.0/24
+        ]:
+            assert validate_host(good) is None, f"should allow {good!r}"
+            assert not is_normalized_ssrf_denied(ipaddress.ip_address(good)), good
 
     def test_lexical_only_no_dns(self):
         # Hostnames that merely contain a denied string are not denied.
@@ -623,6 +663,8 @@ class TestResolveAndCheckHost:
         assert resolve_and_check_host("::", 443) is not None
         assert resolve_and_check_host("fe80::1", 443) is not None
         assert resolve_and_check_host("[::ffff:a9fe:a9fe]", 443) is not None
+        assert resolve_and_check_host("224.0.0.1", 443) is not None
+        assert resolve_and_check_host("198.18.0.1", 443) is not None
 
     def test_empty_host(self):
         assert resolve_and_check_host("", 443) == "empty host"
@@ -709,6 +751,10 @@ class TestRustParity:
         "2002::/16",
         "fc00::/7",
         "100.64.0.0/10",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+        "192.0.0.0/24",
+        "198.18.0.0/15",
     )
 
     def test_denylist_literals_match_rust(self):
@@ -756,3 +802,383 @@ class TestDeploySshResolveGate:
     def test_ssh_dry_run_denied_host_still_exit_2(self):
         result = self._run_ssh("169.254.169.254", dry_run=True)
         assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+
+# ── Pinned resolve-then-connect (Python TOCTOU closure) ───────────
+
+
+class _QuietHTTPServer(http.server.ThreadingHTTPServer):
+    """ThreadingHTTPServer that swallows client resets (pin-mismatch tests)."""
+
+    def handle_error(self, request, client_address):
+        pass
+
+
+@contextlib.contextmanager
+def _local_http_server():
+    """Run a loopback HTTP server; yield ``(port, seen)``.
+
+    ``seen`` accumulates ``(path, host_header)`` for each GET, so tests can
+    prove the request reached the pinned server and kept the original Host.
+    """
+    seen: list[tuple[str, str]] = []
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append((self.path, self.headers.get("Host", "")))
+            body = b"[]"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = _QuietHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1], seen
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _disable_dns(monkeypatch):
+    """Make every DNS lookup fail, so any success proves no re-resolution."""
+
+    def _boom(*args, **kwargs):
+        raise socket.gaierror("DNS disabled by test")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _boom)
+
+
+class TestPinnedResolution:
+    def test_resolve_host_addrs_returns_validated_ips(self):
+        err, addrs = resolve_host_addrs("127.0.0.1", 443)
+        assert err is None
+        assert addrs == ["127.0.0.1"]
+
+    def test_resolve_host_addrs_fail_closed(self):
+        err, addrs = resolve_host_addrs("169.254.169.254", 443)
+        assert err is not None and addrs == []
+
+    def test_check_target_with_addrs_denies_lexically(self):
+        err, addrs = check_target_with_addrs("169.254.169.254", 443)
+        assert err is not None and addrs == []
+
+    def test_check_target_compat_wrapper_unchanged(self):
+        assert check_target("169.254.169.254", 443) is not None
+        assert check_target("127.0.0.1", 443) is None
+
+
+class TestOpenPinnedSocket:
+    def test_connects_to_validated_ip_without_dns(self, monkeypatch):
+        with _local_http_server() as (port, _seen):
+            _disable_dns(monkeypatch)
+            sock = open_pinned_socket(["127.0.0.1"], port, 5)
+            try:
+                peer = sock.getpeername()
+                assert peer[0] in ("127.0.0.1", "::ffff:127.0.0.1")
+            finally:
+                sock.close()
+
+    def test_all_addresses_fail_raises(self):
+        with pytest.raises(OSError):
+            open_pinned_socket(["127.0.0.1"], 1, 1)
+
+
+class TestPinnedRequestsSession:
+    def test_request_dials_pinned_ip_despite_unresolvable_host(self, monkeypatch):
+        pytest.importorskip("requests")
+        with _local_http_server() as (port, seen):
+            _disable_dns(monkeypatch)
+            session = build_pinned_requests_session(
+                "admin", "secret", ["127.0.0.1"], "", True
+            )
+            try:
+                resp = session.get(
+                    f"http://does-not-resolve.invalid:{port}/rest/interface",
+                    timeout=5,
+                    allow_redirects=False,
+                )
+            finally:
+                session.close()
+            assert resp.status_code == 200
+            # Reached the pinned loopback server, with the original Host header.
+            assert seen == [("/rest/interface", f"does-not-resolve.invalid:{port}")]
+
+    def test_pinned_adapter_disables_env_proxies(self):
+        pytest.importorskip("requests")
+        session = build_pinned_requests_session(
+            "admin", "secret", ["127.0.0.1"], "", True
+        )
+        try:
+            assert session.trust_env is False
+            assert session.proxies == {}
+        finally:
+            session.close()
+
+
+class TestDeploySshPinnedSocket:
+    def test_ssh_connect_passes_pinned_socket_and_original_hostname(self, monkeypatch):
+        mod = _load_deploy_module()
+        calls: dict = {}
+        sentinel = object()
+
+        class _FakeClient:
+            def load_system_host_keys(self):
+                pass
+
+            def set_missing_host_key_policy(self, policy):
+                calls["policy_set"] = True
+
+            def connect(self, **kwargs):
+                calls.update(kwargs)
+                # Stop before SFTP/exec: SystemExit is BaseException, so the
+                # method's `except Exception` does not swallow it.
+                raise SystemExit(7)
+
+        class _FakeParamiko:
+            SSHClient = _FakeClient
+
+            @staticmethod
+            def AutoAddPolicy():
+                return object()
+
+        def _fake_open(addrs, port, timeout, *args, **kwargs):
+            calls["pinned_args"] = (list(addrs), port, timeout)
+            return sentinel
+
+        monkeypatch.setattr(mod, "paramiko", _FakeParamiko)
+        monkeypatch.setattr(mod, "HAS_PARAMIKO", True)
+        monkeypatch.setattr(
+            mod, "check_target_with_addrs", lambda host, port: (None, ["127.0.0.1"])
+        )
+        monkeypatch.setattr(mod, "open_pinned_socket", _fake_open)
+
+        with pytest.raises(SystemExit) as exc:
+            mod.deploy_via_ssh(
+                "127.0.0.1", "admin", "pw", 2222, "/system identity print\n", "x.rsc", False, False
+            )
+        assert exc.value.code == 7
+        assert calls["pinned_args"] == (["127.0.0.1"], 2222, 15)
+        assert calls["hostname"] == "127.0.0.1"
+        assert calls["sock"] is sentinel
+        # No --accept-host-key: the default (reject unknown) policy stands.
+        assert "policy_set" not in calls
+
+
+# ── Same-connection SPKI pin verification ────────────────────────
+
+
+class _FakeTLSSocket:
+    """Minimal established-TLS-socket stand-in exposing getpeercert()."""
+
+    def __init__(self, der: bytes):
+        self._der = der
+
+    def getpeercert(self, binary_form=False):
+        return self._der if binary_form else {}
+
+
+class TestVerifySpkiPinOnSocketUnit:
+    def test_matching_pin_passes(self):
+        cert = _synthetic_cert(TestDerSpkiWalker.SPKI)
+        pin = spki_sha256(cert)
+        assert pin is not None
+        verify_spki_pin_on_socket(_FakeTLSSocket(cert), pin)  # must not raise
+
+    def test_wrong_pin_raises(self):
+        cert = _synthetic_cert(TestDerSpkiWalker.SPKI)
+        with pytest.raises(ssl.SSLError):
+            verify_spki_pin_on_socket(_FakeTLSSocket(cert), b"\x00" * 32)
+
+    def test_missing_cert_raises(self):
+        with pytest.raises(ssl.SSLError):
+            verify_spki_pin_on_socket(_FakeTLSSocket(b""), b"\x00" * 32)
+        with pytest.raises(ssl.SSLError):
+            verify_spki_pin_on_socket(None, b"\x00" * 32)
+
+    def test_none_pin_is_noop(self):
+        # No pin configured: even a missing socket is fine.
+        verify_spki_pin_on_socket(None, None)
+
+
+@contextlib.contextmanager
+def _local_https_server(tmp_path):
+    """Self-signed loopback HTTPS server; yield ``(port, seen, cert, pin)``.
+
+    ``seen`` accumulates ``(path, authorization)``. The cert is generated with
+    the ``openssl`` CLI (no Python crypto dependency); tests skip when the
+    binary is unavailable.
+    """
+    openssl = shutil.which("openssl")
+    if openssl is None:
+        pytest.skip("openssl not available to generate a self-signed test cert")
+    cert = tmp_path / "cert.pem"
+    key = tmp_path / "key.pem"
+    # Config file (rather than -subj/-addext) so both OpenSSL and LibreSSL
+    # accept it; the SAN lets the CA-file test keep hostname verification on.
+    cfg = tmp_path / "openssl.cnf"
+    cfg.write_text(
+        "[req]\n"
+        "distinguished_name = dn\n"
+        "x509_extensions = v3\n"
+        "prompt = no\n"
+        "\n"
+        "[dn]\n"
+        "CN = localhost\n"
+        "\n"
+        "[v3]\n"
+        "subjectAltName = DNS:localhost\n"
+        "basicConstraints = CA:TRUE\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [
+            openssl,
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-keyout",
+            str(key),
+            "-out",
+            str(cert),
+            "-days",
+            "1",
+            "-nodes",
+            "-config",
+            str(cfg),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    seen: list[tuple[str, str | None]] = []
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append((self.path, self.headers.get("Authorization")))
+            body = b"[]"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.load_cert_chain(str(cert), str(key))
+    server = _QuietHTTPServer(("127.0.0.1", 0), _Handler)
+    server.socket = server_ctx.wrap_socket(server.socket, server_side=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    pin = spki_sha256(ssl.PEM_cert_to_DER_cert(cert.read_text(encoding="utf-8")))
+    try:
+        yield server.server_address[1], seen, cert, pin
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+class TestPinnedTlsSameConnection:
+    """Integration proof that the pin is checked on the request connection.
+
+    A request only reaches the server when the pin matches, so the
+    ``seen`` log distinguishes "verified before send" from "sent then
+    rejected". Coverage limitation: this exercises the HTTP client paths; it
+    does not assert the exact wire ordering inside a third-party TLS stack.
+    """
+
+    def test_matching_pin_request_reaches_server(self, monkeypatch, tmp_path):
+        pytest.importorskip("requests")
+        with _local_https_server(tmp_path) as (port, seen, _cert, pin):
+            _disable_dns(monkeypatch)
+            session = build_pinned_requests_session(
+                "admin", "secret", ["127.0.0.1"], "", True, pin, "https"
+            )
+            try:
+                resp = session.get(
+                    f"https://localhost:{port}/rest/interface",
+                    timeout=5,
+                    allow_redirects=False,
+                )
+            finally:
+                session.close()
+            assert resp.status_code == 200
+            assert len(seen) == 1
+            assert seen[0][0] == "/rest/interface"
+            assert seen[0][1] and seen[0][1].startswith("Basic ")
+
+    def test_mismatched_pin_sends_no_request(self, monkeypatch, tmp_path):
+        requests = pytest.importorskip("requests")
+        with _local_https_server(tmp_path) as (port, seen, _cert, _pin):
+            _disable_dns(monkeypatch)
+            session = build_pinned_requests_session(
+                "admin", "secret", ["127.0.0.1"], "", True, b"\x00" * 32, "https"
+            )
+            try:
+                with pytest.raises(requests.exceptions.RequestException):
+                    session.get(
+                        f"https://localhost:{port}/rest/interface",
+                        timeout=5,
+                        allow_redirects=False,
+                    )
+            finally:
+                session.close()
+            assert seen == []
+
+    def test_ca_file_keeps_chain_and_requires_pin(self, monkeypatch, tmp_path):
+        requests = pytest.importorskip("requests")
+        with _local_https_server(tmp_path) as (port, seen, cert, pin):
+            _disable_dns(monkeypatch)
+            # Correct pin + custom CA chain + hostname match: succeeds.
+            session = build_pinned_requests_session(
+                "admin", "secret", ["127.0.0.1"], str(cert), True, pin, "https"
+            )
+            try:
+                resp = session.get(
+                    f"https://localhost:{port}/", timeout=5, allow_redirects=False
+                )
+            finally:
+                session.close()
+            assert resp.status_code == 200
+            assert len(seen) == 1
+            # Same CA file + wrong pin: chain validates, pin must still fail.
+            seen.clear()
+            session = build_pinned_requests_session(
+                "admin", "secret", ["127.0.0.1"], str(cert), True, b"\x00" * 32, "https"
+            )
+            try:
+                with pytest.raises(requests.exceptions.RequestException):
+                    session.get(
+                        f"https://localhost:{port}/", timeout=5, allow_redirects=False
+                    )
+            finally:
+                session.close()
+            assert seen == []
+
+    def test_urllib_fallback_verifies_pin_on_same_connection(self, tmp_path):
+        import urllib.error
+        import urllib.request
+
+        with _local_https_server(tmp_path) as (port, seen, _cert, pin):
+            def _open(pin_value):
+                ctx = ssl._create_unverified_context()
+                handlers = build_pinned_urllib_handlers(["127.0.0.1"], ctx, pin_value)
+                opener = urllib.request.build_opener(*handlers)
+                req = urllib.request.Request(f"https://localhost:{port}/", method="GET")
+                return opener.open(req, timeout=5)
+
+            with _open(pin) as resp:
+                assert resp.status == 200
+            assert len(seen) == 1
+            seen.clear()
+            with pytest.raises((urllib.error.URLError, OSError)):
+                _open(b"\x00" * 32)
+            assert seen == []

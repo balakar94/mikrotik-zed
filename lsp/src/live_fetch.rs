@@ -4,7 +4,7 @@
 //
 // Split from `live.rs`; re-exported there, `crate::live::…` paths unchanged.
 
-use crate::caps::{MAX_LIVE_ITEMS, MAX_LIVE_RESPONSE_BYTES};
+use crate::caps::{MAX_LIVE_ITEMS, MAX_LIVE_RESPONSE_BYTES, MAX_PINNED_AGENT_CACHE_ENTRIES};
 use crate::live_cache::{ResourceKind, sanitize_resource_values};
 use crate::live_config::{CustomResource, LiveConfig};
 use crate::live_net::{
@@ -120,11 +120,20 @@ pub(crate) fn get_cached_agent(timeout: Duration, ssl_verify: bool) -> ureq::Age
 /// Pin-aware agent cache key: timeout + effective verify + pin + CA path +
 /// the validated address set. Including the addresses means an agent built
 /// for one validated resolution is never reused after DNS changes.
+type PinnedAgentCacheKey = (u64, bool, Option<[u8; 32]>, String, Vec<SocketAddr>);
+
+/// Bounded LRU cache of pinned agents. Values carry the last-use time so the
+/// least-recently-used entry can be evicted when
+/// `MAX_PINNED_AGENT_CACHE_ENTRIES` is exceeded (a churning resolver would
+/// otherwise grow the key space without bound).
+static PINNED_CACHE: OnceLock<Mutex<HashMap<PinnedAgentCacheKey, (Instant, ureq::Agent)>>> =
+    OnceLock::new();
+
 fn agent_cache_key_for_config(
     config: &LiveConfig,
     timeout: Duration,
     addrs: &[SocketAddr],
-) -> (u64, bool, Option<[u8; 32]>, String, Vec<SocketAddr>) {
+) -> PinnedAgentCacheKey {
     (
         timeout.as_secs(),
         config.ssl_verify_effective(),
@@ -156,17 +165,15 @@ pub(crate) fn get_cached_agent_for_config(
     timeout: Duration,
     addrs: &[SocketAddr],
 ) -> ureq::Agent {
-    type PinnedAgentCacheKey = (u64, bool, Option<[u8; 32]>, String, Vec<SocketAddr>);
-    static PINNED_CACHE: OnceLock<Mutex<HashMap<PinnedAgentCacheKey, ureq::Agent>>> =
-        OnceLock::new();
     let cache = PINNED_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let key = agent_cache_key_for_config(config, timeout, addrs);
     {
-        let guard = cache.lock().unwrap_or_else(|e| {
+        let mut guard = cache.lock().unwrap_or_else(|e| {
             log_warn!("agent cache lock poisoned, recovering");
             e.into_inner()
         });
-        if let Some(agent) = guard.get(&key) {
+        if let Some((last_used, agent)) = guard.get_mut(&key) {
+            *last_used = Instant::now();
             log_debug!(
                 "live agent reuse timeout={}s ssl_verify_effective={} pin_set={} ca_set={} addrs={}",
                 key.0,
@@ -184,9 +191,31 @@ pub(crate) fn get_cached_agent_for_config(
             log_warn!("agent cache lock poisoned, recovering");
             e.into_inner()
         });
-        guard.insert(key, agent.clone());
+        // Evict the least-recently-used entry when the bound is reached.
+        if guard.len() >= MAX_PINNED_AGENT_CACHE_ENTRIES
+            && let Some(oldest_key) = guard
+                .iter()
+                .min_by_key(|(_, (last_used, _))| *last_used)
+                .map(|(k, _)| k.clone())
+        {
+            guard.remove(&oldest_key);
+            log_debug!(
+                "live pinned agent cache evicted oldest key at cap {MAX_PINNED_AGENT_CACHE_ENTRIES}"
+            );
+        }
+        guard.insert(key, (Instant::now(), agent.clone()));
     }
     agent
+}
+
+/// Test-only: number of entries currently held in the pinned agent cache.
+#[cfg(test)]
+pub(crate) fn pinned_agent_cache_len_for_test() -> usize {
+    PINNED_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map(|g| g.len())
+        .unwrap_or(0)
 }
 
 /// A builder with the mandatory timeout + no-redirects defaults.

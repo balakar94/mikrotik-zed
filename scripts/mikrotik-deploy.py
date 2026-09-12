@@ -34,6 +34,14 @@ before any network access, including ``--dry-run`` (validated first, then
 previewed). Denied hosts exit 2 with no connection attempted. IPv6 hosts
 are formatted with ``format_host_for_url`` before URL construction.
 
+After the lexical gate, the pre-credential phase resolves the host exactly
+once (``check_target_with_addrs``) and dials only the validated IPs: the
+REST session pins them into a custom urllib3 connection class and SSH hands
+a pre-connected socket to paramiko (``hostname`` stays the original for
+known_hosts). No second DNS lookup can be rebound, closing the
+resolve-then-connect TOCTOU. Transport itself stays HTTPS unless ``--http``
+is explicit; ``--no-ssl-verify`` never changes the scheme.
+
 Usage:
   python scripts/mikrotik-deploy.py path/to/file.rsc
   python scripts/mikrotik-deploy.py path/to/file.rsc --host 192.168.88.1 --user admin --dry-run
@@ -59,16 +67,17 @@ import urllib.parse
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from _mikrotik_shared import (  # noqa: E402
-    check_target,
+    build_pinned_requests_session,
+    check_target_with_addrs,
     clamp_int,
     env_int,
     format_host_for_url,
+    open_pinned_socket,
     parse_fingerprint,
     redact_secrets,
     resolve_scheme,
     validate_host,
     validate_user,
-    verify_tls_pin,
 )
 
 # Optional dependencies - imported lazily
@@ -240,26 +249,17 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
     base = f"{scheme}://{host_for_url}:{port}"
     # F1: lexical + resolve-then-revalidate before Authorization is sent:
     # lexical checks ran at startup, DNS may resolve differently now. Fail
-    # closed. (verify_tls_pin re-checks again on its own handshake when a
-    # pin is set.)
-    target_err = check_target(host, port)
+    # closed. The validated addresses are pinned into the session adapter, so
+    # the Authorization-carrying connection dials exactly those IPs with no
+    # second DNS lookup.
+    target_err, addrs = check_target_with_addrs(host, port)
     if target_err:
         print(f"error: {target_err}", file=sys.stderr)
         sys.exit(4)
 
-    session = requests.Session()
-    session.auth = (user, password)
-    # Custom CA bundle wins over the boolean flag; a pin enforces SPKI
-    # matching on top (verified pre-write below).
-    # F3: when a pin is configured, the HTTP connection itself must verify.
-    # The pin check above runs on a SEPARATE handshake (TOCTOU), so leaving
-    # CERT_NONE on the Authorization-carrying session would let a MITM
-    # between the two connections go unnoticed. Never CERT_NONE with a pin.
-    if fingerprint is not None and scheme == "https":
-        session.verify = ca_file if ca_file else True
-    else:
-        session.verify = ca_file if ca_file else ssl_verify
-    session.headers.update({"Content-Type": "application/json"})
+    session = build_pinned_requests_session(
+        user, password, addrs, ca_file, ssl_verify, fingerprint, scheme
+    )
 
     # 1) Upload file content via /rest/file - RouterOS expects multipart or raw?
     # Fallback: use /rest/execute to run script directly without file
@@ -267,11 +267,9 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
     # This avoids file handling differences across versions.
     # Redirects are disabled on every call: 3xx fails closed, never followed.
     log(f"REST: uploading {len(content)} bytes to {host} as {user} (direct execute)")
-    if fingerprint is not None and scheme == "https":
-        pin_err = verify_tls_pin(host, port, fingerprint, ca_file, effective_timeout, ssl_verify)
-        if pin_err:
-            print(f"error: {redact_secrets(pin_err, password, user)}", file=sys.stderr)
-            sys.exit(4)
+    # The SPKI pin (when set) is verified inside the pinned HTTPS connection,
+    # on the same socket as the request and before the Authorization header is
+    # written — no separate handshake to race (see _mikrotik_shared).
     try:
         # Try direct execute. stream=True + _read_response_capped bounds the
         # body (an unbounded body read could OOM on a hostile/broken device).
@@ -344,7 +342,7 @@ def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str,
     # F1: lexical + resolve-then-revalidate before the password goes over
     # the wire — same pre-credential phase as REST. Dry-run already
     # returned above, so previews never touch the network.
-    target_err = check_target(host, port)
+    target_err, addrs = check_target_with_addrs(host, port)
     if target_err:
         print(f"error: {target_err}", file=sys.stderr)
         sys.exit(4)
@@ -356,11 +354,22 @@ def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str,
     if accept_host_key:
         log("SSH: --accept-host-key active: unknown host keys will be trusted (MITM risk)")
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    pinned_sock = None
     try:
+        # Dial the already-validated IP directly and hand the socket to
+        # paramiko; `hostname` stays the original hostname so known_hosts
+        # lookup (and the --accept-host-key policy) is unchanged. This closes
+        # the resolve-then-connect TOCTOU: no second DNS resolution happens.
         # SSH connect timeout stays at a fixed 15s (independent of --timeout,
         # which only bounds the remote /import poll below).
-        client.connect(hostname=host, port=port, username=user, password=password, look_for_keys=False, allow_agent=False, timeout=15)
+        pinned_sock = open_pinned_socket(addrs, port, 15)
+        client.connect(hostname=host, sock=pinned_sock, username=user, password=password, look_for_keys=False, allow_agent=False, timeout=15)
     except Exception as e:
+        if pinned_sock is not None:
+            try:
+                pinned_sock.close()
+            except OSError:
+                pass
         print(redact_secrets(f"error: SSH connect failed: {e}", password, user), file=sys.stderr)
         if not accept_host_key:
             print(

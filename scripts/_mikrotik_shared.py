@@ -27,18 +27,25 @@ Usage notes:
   Rust side keeps an opt-in ``RSC_LS_LEGACY_HTTP_SHIM=1`` fallback via
   ``resolve_scheme_with_legacy``; the scripts have no such fallback by
   design).
-- ``check_target`` composes the lexical check (``validate_host``) with the
-  DNS-time re-check (``resolve_and_check_host``) for the pre-credential
-  phase. Dry-run paths must keep calling only the lexical ``validate_host``
-  so previews never touch the network.
+- ``check_target_with_addrs`` composes the lexical check (``validate_host``)
+  with the DNS-time re-check (``resolve_host_addrs``) for the
+  pre-credential phase and returns the validated IP strings. Callers dial
+  exactly those addresses via :func:`open_pinned_socket` (SSH) or
+  :func:`build_pinned_requests_adapter` / :func:`build_pinned_urllib_handlers`
+  (HTTP/S), so no second DNS lookup can be rebound (resolve-then-connect
+  TOCTOU closed). ``check_target`` is the error-string-only wrapper.
+  Dry-run paths must keep calling only the lexical ``validate_host`` so
+  previews never touch the network.
 - ``clamp_int`` is the single timeout clamp: callers pass their own bounds
   (deploy 1..300, live-check 1..30).
 - Host range checks run against the normalized IP (see
   ``normalized_host_ip``): decimal (``2130706433``), hex (``0x7f000001``),
   octal (``0177.0.0.1``), short (``127.1``), IPv4-mapped IPv6
-  (``::ffff:127.0.0.1``), whole ``169.254.0.0/16``, and IPv6 ``fe80::/10``
-  are all denied fail-closed. Non-canonical numeric literals are rejected
-  even when the normalized address would otherwise be allowed.
+  (``::ffff:127.0.0.1``), whole ``169.254.0.0/16``, IPv6 ``fe80::/10``,
+  multicast ``224.0.0.0/4``, reserved ``240.0.0.0/4``, ``192.0.0.0/24``,
+  and benchmarking ``198.18.0.0/15`` are all denied fail-closed.
+  Non-canonical numeric literals are rejected even when the normalized
+  address would otherwise be allowed.
 - ``MIKROTIK_PASS`` never appears in logs: use ``redact_secrets`` on any
   error text that could echo credentials (including base64 ``user:pass``).
   Matching is by substring and over-redacts by design (fail-safe:
@@ -50,6 +57,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import hmac
 import ipaddress
 import os
 import socket
@@ -337,6 +345,14 @@ def is_normalized_ssrf_denied(addr: ipaddress.IPv4Address | ipaddress.IPv6Addres
     IPv4 first so ``[::ffff:a9fe:a9fe]`` (metadata IP) is denied as
     link-local; where a transition prefix carries an extractable embedded
     IPv4, the IPv4 deny/private policy is re-run on it as well.
+
+    IPv4 special-use ranges that are never legitimate device targets are
+    unconditional denials too (the loopback opt-in does not relax them):
+    multicast ``224.0.0.0/4``, reserved ``240.0.0.0/4``, IETF protocol
+    assignments ``192.0.0.0/24``, and benchmarking ``198.18.0.0/15``.
+    ``100.64.0.0/10`` (CGNAT) and ULA ``fc00::/7`` stay loopback-gated
+    private (see :func:`is_normalized_loopback_or_private`), not
+    unconditional.
     """
     if isinstance(addr, ipaddress.IPv6Address):
         mapped = addr.ipv4_mapped
@@ -368,6 +384,22 @@ def is_normalized_ssrf_denied(addr: ipaddress.IPv4Address | ipaddress.IPv6Addres
         return True
     try:
         if addr in ipaddress.IPv4Network("169.254.0.0/16"):
+            return True
+    except Exception:
+        pass
+    # IPv4 special-use ranges that are never legitimate device targets
+    # (unconditional; the loopback opt-in does not relax them): multicast
+    # 224.0.0.0/4, reserved 240.0.0.0/4, IETF protocol assignments
+    # 192.0.0.0/24, and benchmarking 198.18.0.0/15. CGNAT 100.64.0.0/10 and
+    # ULA fc00::/7 stay loopback-gated private (is_normalized_loopback_or_private).
+    if addr.is_multicast:
+        return True
+    try:
+        if addr in ipaddress.IPv4Network("240.0.0.0/4"):
+            return True
+        if addr in ipaddress.IPv4Network("192.0.0.0/24"):
+            return True
+        if addr in ipaddress.IPv4Network("198.18.0.0/15"):
             return True
     except Exception:
         pass
@@ -419,10 +451,12 @@ def validate_host(host: str) -> str | None:
     DNS: exact ``169.254.169.254``, ``metadata.google.internal``,
     ``metadata.google``, ``metadata.goog``, ``0.0.0.0``, ``::``
     (case-insensitive, bracket-tolerant), whole ``169.254.0.0/16`` for IPv4
-    literals, IPv6 ``fe80::/10`` link-local, the NAT64/Teredo/6to4 transition
-    prefixes (``64:ff9b::/96``, ``2001::/32``, ``2002::/16``), IPv4-mapped
-    IPv6 unmapping, and non-canonical numeric literals (decimal/hex/octal/
-    short, including the FQDN-root trailing-dot form such as
+    literals, IPv6 ``fe80::/10`` link-local, multicast ``224.0.0.0/4``,
+    reserved ``240.0.0.0/4``, ``192.0.0.0/24``, benchmarking
+    ``198.18.0.0/15``, the NAT64/Teredo/6to4 transition prefixes
+    (``64:ff9b::/96``, ``2001::/32``, ``2002::/16``), IPv4-mapped IPv6
+    unmapping, and non-canonical numeric literals (decimal/hex/octal/short,
+    including the FQDN-root trailing-dot form such as
     ``169.254.169.254.``) rejected fail-closed via normalization (see
     ``normalized_host_ip``).
 
@@ -588,7 +622,7 @@ def spki_sha256(cert_der: bytes) -> bytes | None:
     return hashlib.sha256(spki).digest()
 
 
-def resolve_and_check_host(host: str, port: int) -> str | None:
+def resolve_host_addrs(host: str, port: int) -> tuple[str | None, list[str]]:
     """Resolve ``host`` and re-run the SSRF deny policy on every IP (F1).
 
     ``validate_host`` runs lexical + normalized-literal checks at startup,
@@ -599,140 +633,315 @@ def resolve_and_check_host(host: str, port: int) -> str | None:
     unspecified, IPv4-mapped equivalents). Private/loopback ranges stay
     ALLOWED (routers live on LAN, mirroring :func:`validate_host`).
 
-    Returns None when every resolved IP passes, else an error string
-    (fail-closed: resolution failure, empty results, unparseable IPs, and
-    any denied IP all refuse the connection before credentials are sent).
-    Never sends credentials itself.
-
-    Residual TOCTOU (Python-only; the Rust LSP closes this): this check
-    resolves, but ``requests``/``paramiko`` resolve again at connect time, so
-    a DNS rebind between the two lookups is still possible here. The Rust side
-    pins the validated addresses into the HTTP agent resolver
-    (``PinnedAddrs``); doing the same in Python would need a custom
-    urllib3 resolver/connection pool for ``requests`` and a pre-resolved-IP
-    socket for ``paramiko``. Not implemented today.
+    Returns ``(None, ip_strings)`` when every resolved IP passes, else
+    ``(error, [])`` (fail-closed: resolution failure, empty results,
+    unparseable IPs, and any denied IP all refuse the connection before
+    credentials are sent). The returned IP strings are the exact addresses a
+    pinned connection must dial; callers must NOT re-resolve them. This is
+    the single resolution point that closes the Python resolve-then-connect
+    TOCTOU: the address checked here is the address dialed by
+    :func:`open_pinned_socket` / the pinned ``requests`` adapter.
     """
     bare = (host or "").strip()
     if bare.startswith("[") and bare.endswith("]") and len(bare) >= 2:
         bare = bare[1:-1]
     if not bare:
-        return "empty host"
+        return "empty host", []
     try:
         infos = socket.getaddrinfo(bare, port, type=socket.SOCK_STREAM)
     except socket.gaierror as e:
-        return f"dns resolution failed: {e}"
+        return f"dns resolution failed: {e}", []
     except Exception as e:
-        return f"dns resolution failed: {e}"
+        return f"dns resolution failed: {e}", []
     if not infos:
-        return "dns resolution returned no addresses"
+        return "dns resolution returned no addresses", []
+    ips: list[str] = []
     for info in infos:
         try:
             ip_str = info[4][0]
         except (IndexError, TypeError):
-            return "dns resolution returned malformed address"
+            return "dns resolution returned malformed address", []
         try:
             addr = ipaddress.ip_address(ip_str)
         except ValueError:
-            return f"unparseable resolved IP {ip_str!r}"
+            return f"unparseable resolved IP {ip_str!r}", []
         if is_normalized_ssrf_denied(addr):
-            return f"resolved IP denied: {ip_str}"
-    return None
+            return f"resolved IP denied: {ip_str}", []
+        if ip_str not in ips:
+            ips.append(ip_str)
+    return None, ips
+
+
+def resolve_and_check_host(host: str, port: int) -> str | None:
+    """Error string for a denied/failed resolution, else None.
+
+    Thin compatibility wrapper over :func:`resolve_host_addrs`; callers that
+    need the validated addresses must use :func:`resolve_host_addrs` /
+    :func:`check_target_with_addrs` directly.
+    """
+    err, _ = resolve_host_addrs(host, port)
+    return err
+
+
+def check_target_with_addrs(host: str, port: int) -> tuple[str | None, list[str]]:
+    """Lexical + DNS-time target check returning the validated IP strings.
+
+    Composes :func:`validate_host` (lexical + normalized-literal SSRF
+    checks, no DNS) with :func:`resolve_host_addrs` (DNS re-check). Returns
+    ``(None, addrs)`` when the target passes, else the error and no
+    addresses. The caller must dial exactly these addresses (e.g. via
+    :func:`open_pinned_socket` or a pinned ``requests`` adapter) so the
+    resolve-then-connect TOCTOU is closed.
+    """
+    err = validate_host(host)
+    if err:
+        return err, []
+    return resolve_host_addrs(host, port)
 
 
 def check_target(host: str, port: int) -> str | None:
     """Lexical + DNS-time target check for the pre-credential phase.
 
-    Composes :func:`validate_host` (lexical + normalized-literal SSRF
-    checks, no DNS) with :func:`resolve_and_check_host` (re-resolves via
-    ``getaddrinfo`` and denies when ANY returned IP is unconditionally
-    SSRF-denied). Returns None when the target passes both, else an error
-    string (fail-closed before credentials are used).
-
+    Error-string compatibility wrapper over :func:`check_target_with_addrs`.
     Callers keep a lexical-only ``validate_host`` gate at startup (exit-code
     semantics differ per script); this runs at the pre-credential point
     where DNS must be re-checked. Dry-run paths must NOT call this —
     previews stay network-free.
     """
-    err = validate_host(host)
-    if err:
-        return err
-    return resolve_and_check_host(host, port)
+    err, _ = check_target_with_addrs(host, port)
+    return err
 
 
-def verify_tls_pin(
-    host: str,
+def open_pinned_socket(
+    addrs: list[str],
     port: int,
-    pin: bytes,
-    ca_file: str = "",
-    timeout: int = 5,
-    ssl_verify: bool = True,
-) -> str | None:
-    """Verify a device TLS SPKI pin over a fresh handshake (no HTTP).
+    timeout: float | None,
+    source_address: str | None = None,
+    socket_options=None,
+) -> socket.socket:
+    """Connect to the first reachable pre-validated ``addrs`` entry.
 
-    Opens a direct TLS connection to ``host:port``, extracts the leaf
-    certificate, and compares ``SHA256(SPKI)`` against ``pin``. Chain
-    validation follows ``ssl_verify``/``ca_file`` (custom CA bundle when
-    provided). Returns None on success, an error string on failure
-    (fail-closed: any network, validation, or pin mismatch is an error).
-    Never performs HTTP or follows redirects.
-
-    ``timeout`` must be a positive, already-clamped value (deploy 1..300,
-    live-check 1..30 via :func:`clamp_int`); values below 1 are floored to
-    1 defensively — a 0 timeout would flip the socket into non-blocking
-    mode and fail in confusing ways.
-
-    F1: DNS is re-resolved here and every returned IP is re-checked against
-    the SSRF deny policy fail-closed before connecting (``host`` passed only
-    lexical checks at startup; DNS may resolve differently now).
+    Every entry is an IP literal produced by :func:`resolve_host_addrs`, so
+    no DNS lookup happens here — the address validated at check time is the
+    address dialed (the resolve-then-connect TOCTOU is closed). Addresses are
+    tried in resolver order (preserving dual-stack preference); the first
+    successful connect wins. Raises the last ``OSError`` when all fail.
     """
-    bare = host.strip()
-    if bare.startswith("[") and bare.endswith("]") and len(bare) >= 2:
-        bare = bare[1:-1]
-    if timeout < 1:
-        timeout = 1
-    # F1: resolve-then-revalidate before any socket: a hostname that passed
-    # lexical checks may still resolve to a denied address right now.
-    dns_err = resolve_and_check_host(host, port)
-    if dns_err:
-        return dns_err
-    try:
-        if ssl_verify or ca_file.strip():
-            ctx = ssl.create_default_context(cafile=(ca_file.strip() or None))
-            if not ssl_verify:
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-        else:
-            ctx = ssl._create_unverified_context()
-            ctx.check_hostname = False
-        raw_sock = socket.create_connection((bare, port), timeout=timeout)
-    except Exception as e:
-        return f"pin check connection failed: {e}"
-    try:
-        with ctx.wrap_socket(raw_sock, server_hostname=bare) as tls:
-            try:
-                der = tls.getpeercert(binary_form=True)
-            except Exception as e:
-                return f"pin check peer cert failed: {e}"
-            if not der:
-                return "pin check got no peer certificate"
-            digest = spki_sha256(bytes(der))
-            if digest is None:
-                return "pin check could not parse peer SPKI"
-            if digest != pin:
-                return "TLS SPKI pin mismatch"
-            return None
-    except ssl.SSLCertVerificationError as e:
-        return f"TLS certificate verification failed: {e}"
-    except Exception as e:
-        msg = str(e)
-        if "pin mismatch" in msg.lower() or "certificate" in msg.lower():
-            return msg
-        return f"pin check TLS failed: {e}"
-    finally:
+    last_err: OSError | None = None
+    for raw in addrs:
         try:
-            raw_sock.close()
-        except Exception:
-            pass
+            addr = ipaddress.ip_address(raw)
+        except ValueError as e:
+            last_err = OSError(f"invalid pinned address {raw!r}: {e}")
+            continue
+        family = socket.AF_INET6 if addr.version == 6 else socket.AF_INET
+        sock: socket.socket | None = None
+        try:
+            sock = socket.socket(family, socket.SOCK_STREAM)
+            for opt in socket_options or ():
+                sock.setsockopt(*opt)
+            if source_address:
+                sock.bind((source_address, 0))
+            sock.settimeout(timeout)
+            sock.connect((raw, port))
+            return sock
+        except OSError as e:
+            last_err = e
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+    if last_err is not None:
+        raise last_err
+    raise OSError("no pinned addresses available")
+
+
+def verify_spki_pin_on_socket(sock, pin: bytes | None) -> None:
+    """Verify an established TLS socket's leaf SPKI against ``pin``.
+
+    Raises ``ssl.SSLError`` on any mismatch or malformed/missing certificate
+    (fail-closed); ``pin=None`` is a no-op. This runs inside the connection's
+    ``connect()`` right after the TLS handshake and therefore BEFORE any HTTP
+    request bytes — including the Authorization header — are written.
+
+    Security: when only a pin is configured, the connection may skip CA-chain
+    and hostname verification. That is safe because OpenSSL still verifies the
+    handshake signature (TLS 1.3 ``CertificateVerify`` / TLS 1.2
+    ``ServerKeyExchange``) against the pinned leaf's public key, so an on-path
+    attacker replaying the public pinned certificate without its private key
+    cannot complete the handshake. This matches the Rust ``SpkiPinVerifier``
+    in ``lsp/src/live_fetch.rs``. A custom CA file must additionally be kept
+    on the connection (chain + hostname still verified).
+    """
+    if pin is None:
+        return
+    if sock is None:
+        raise ssl.SSLError("TLS pin check: no established socket")
+    try:
+        der = sock.getpeercert(binary_form=True)
+    except Exception as e:
+        raise ssl.SSLError(f"TLS pin check: peer certificate unavailable: {e}") from e
+    if not der:
+        raise ssl.SSLError("TLS pin check: no peer certificate")
+    digest = spki_sha256(bytes(der))
+    if digest is None:
+        raise ssl.SSLError("TLS pin check: could not parse peer SPKI")
+    if not hmac.compare_digest(digest, pin):
+        raise ssl.SSLError("TLS pin check: SPKI pin mismatch")
+
+
+def build_pinned_requests_adapter(addrs: list[str], pin: bytes | None = None):
+    """Build a ``requests`` adapter that dials only the pre-validated IPs.
+
+    ``urllib3``'s connection classes are subclassed so ``_new_conn()``
+    returns a socket to a pinned address from :func:`resolve_host_addrs`
+    (via :func:`open_pinned_socket`; no second DNS lookup). The pool still
+    uses the original hostname, so the ``Host`` header and TLS SNI/name
+    verification are unchanged (urllib3 wraps the pinned socket with
+    ``server_hostname=self.host``). When ``pin`` is set, the HTTPS connection
+    verifies it on that same socket immediately after the handshake (see
+    :func:`verify_spki_pin_on_socket`), before the request is written.
+    Imported lazily so ``_mikrotik_shared`` keeps working without ``requests``
+    installed.
+    """
+    import requests.adapters
+    from urllib3.connection import HTTPConnection, HTTPSConnection
+    from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
+    from urllib3.poolmanager import PoolManager
+
+    pinned = tuple(addrs)
+
+    class _PinnedConnectMixin:
+        def _new_conn(self):
+            return open_pinned_socket(
+                list(pinned),
+                self.port,
+                self.timeout,
+                source_address=getattr(self, "source_address", None),
+                socket_options=getattr(self, "socket_options", None),
+            )
+
+    class _PinnedHTTPSConnection(_PinnedConnectMixin, HTTPSConnection):
+        def connect(self):
+            super().connect()
+            # Same connection as the request, before any bytes are written.
+            verify_spki_pin_on_socket(getattr(self, "sock", None), pin)
+
+    class _PinnedHTTPConnection(_PinnedConnectMixin, HTTPConnection):
+        pass
+
+    class _PinnedHTTPConnectionPool(HTTPConnectionPool):
+        ConnectionCls = _PinnedHTTPConnection
+
+    class _PinnedHTTPSConnectionPool(HTTPSConnectionPool):
+        ConnectionCls = _PinnedHTTPSConnection
+
+    class _PinnedPoolManager(PoolManager):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            # Locally override the pool classes so every scheme uses the
+            # pinned connection; set on the instance (urllib3 2.x).
+            self.pool_classes_by_scheme = {
+                "http": _PinnedHTTPConnectionPool,
+                "https": _PinnedHTTPSConnectionPool,
+            }
+
+    class _PinnedHTTPAdapter(requests.adapters.HTTPAdapter):
+        def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+            self.poolmanager = _PinnedPoolManager(
+                num_pools=connections, maxsize=maxsize, block=block, **pool_kwargs
+            )
+
+    return _PinnedHTTPAdapter()
+
+
+def build_pinned_requests_session(
+    user: str,
+    password: str,
+    addrs: list[str],
+    ca_file: str,
+    ssl_verify: bool,
+    pin: bytes | None = None,
+    scheme: str = "https",
+):
+    """Build a ``requests.Session`` pinned to the pre-validated ``addrs``.
+
+    Attaches HTTP Basic auth, disables environment proxies (a proxy would
+    reroute the request around the pinned IP), and applies TLS verification:
+    a custom CA bundle wins; otherwise ``ssl_verify``. When a SPKI ``pin`` is
+    configured for an ``https`` scheme and no CA file is supplied, chain and
+    hostname verification are relaxed (self-signed devices must connect) and
+    the pin is enforced on the request connection instead — safe because the
+    handshake signature is still verified; see
+    :func:`verify_spki_pin_on_socket`. A CA file keeps full chain + hostname
+    verification AND requires the pin.
+    """
+    import requests
+
+    session = requests.Session()
+    # Never let env proxies/`.netrc` reroute a pinned connection.
+    session.trust_env = False
+    session.proxies = {}
+    session.auth = (user, password)
+    session.mount("http://", build_pinned_requests_adapter(addrs, pin=None))
+    session.mount("https://", build_pinned_requests_adapter(addrs, pin=pin))
+    if pin is not None and scheme == "https":
+        # Pin-only: trust the SPKI pin checked on the request connection, not
+        # a chain the device may not have. With a CA file, keep full chain +
+        # hostname verification (the pin is checked on top).
+        session.verify = ca_file if ca_file else False
+    else:
+        session.verify = ca_file if ca_file else ssl_verify
+    session.headers.update({"Content-Type": "application/json"})
+    return session
+
+
+def build_pinned_urllib_handlers(
+    addrs: list[str], context=None, pin: bytes | None = None
+) -> list:
+    """Build ``urllib.request`` handlers pinning HTTP/HTTPS to ``addrs``.
+
+    Used by the requests-less fallback in ``mikrotik-live-check.py`` so that
+    path closes the same resolve-then-connect TOCTOU instead of re-resolving
+    the hostname. ``context`` is the SSL context for HTTPS (ignored for plain
+    HTTP); when ``pin`` is set the HTTPS connection verifies it on the same
+    socket right after the handshake, before the request is written. The
+    helper returns ``ProxyHandler({})`` as well, so no environment proxy
+    reroutes the dial.
+    """
+    import http.client
+    import urllib.request
+
+    pinned = tuple(addrs)
+
+    class _PinnedHTTPConnection(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = open_pinned_socket(list(pinned), self.port, self.timeout)
+            if self._tunnel_host:
+                self._tunnel()
+
+    class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+        def connect(self):
+            self.sock = open_pinned_socket(list(pinned), self.port, self.timeout)
+            if self._tunnel_host:
+                self._tunnel()
+            self.sock = context.wrap_socket(self.sock, server_hostname=self.host)
+            verify_spki_pin_on_socket(self.sock, pin)
+
+    class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+        def http_open(self, req):
+            return self.do_open(_PinnedHTTPConnection, req)
+
+    class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            return self.do_open(_PinnedHTTPSConnection, req)
+
+    return [
+        _PinnedHTTPHandler(),
+        _PinnedHTTPSHandler(),
+        urllib.request.ProxyHandler({}),
+    ]
 
 
 def redact_secrets(text: str, password: str | None, user: str | None = None) -> str:
