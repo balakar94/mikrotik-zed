@@ -37,6 +37,11 @@ from extract_commands import (
     canonical_menu_path_error,
     validate_menu_paths,
     MenuPathError,
+    analyze_markdown_tables,
+    _new_markdown_stats,
+    _menu_property_names,
+    _resolve_by_row_overlap,
+    _row_description_index,
 )
 
 
@@ -2535,3 +2540,269 @@ class TestMultiLineArgTableRow:
             if a["name"] == "dhcp-options"
         )
         assert arg["type"] == "multi { array-id, option: enum }"
+
+
+class TestMarkdownRowOverlapAssociation:
+    """Pathless property tables fall back to row-name overlap.
+
+    A topic page with no `**Sub-menu:**` line and no resolvable page ancestor
+    used to drop its property table silently. When every parsed row is already
+    documented on exactly one known menu, that menu is unambiguously implied,
+    so the table is merged additively (descriptions/types only, never new
+    names). Ambiguous or too-thin overlap stays skipped WITH a warning.
+    """
+
+    def _write_temp(self, content: str) -> str:
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+        tmp.write(content)
+        tmp.flush()
+        tmp.close()
+        return tmp.name
+
+    def _parse(self, content: str):
+        path = self._write_temp(content)
+        try:
+            return parse_llms_full(path)
+        finally:
+            os.unlink(path)
+
+    def test_unique_row_overlap_resolves_and_enriches(self, capsys):
+        content = (
+            "## ip/firewall/connection/tracking \n"
+            "\n"
+            "**Type:** Settings Directory\n"
+            "\n"
+            '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="enabled" typ="bool"></ArgTableRow>\n'
+            '<ArgTableRow arg="loose-tcp-tracking" typ="bool"></ArgTableRow>\n'
+            "</ArgTable>\n"
+            "\n"
+            "## Connection tracking settings\n"
+            "\n"
+            "#### Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **enabled** (*yes \\| no \\| auto*) | Enables connection tracking |\n"
+            "| **loose-tcp-tracking** (*yes \\| no*) | Loose TCP tracking |\n"
+        )
+        menu = next(
+            m for m in self._parse(content)
+            if m["path"] == "/ip/firewall/connection/tracking"
+        )
+        by_name = {a["name"]: a for a in menu["arguments"]}
+        assert by_name["enabled"]["description"] == "Enables connection tracking"
+        assert by_name["loose-tcp-tracking"]["description"] == "Loose TCP tracking"
+        assert "warning:" not in capsys.readouterr().err
+
+    def test_overlap_matching_multiple_menus_stays_skipped(self, capsys):
+        # Two menus document the same two rows, so neither is unambiguously
+        # implied: the table must not be attached and must warn.
+        content = (
+            "## ip/one \n\n**Type:** Directory\n\n"
+            '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="alpha" typ="string"></ArgTableRow>\n'
+            '<ArgTableRow arg="beta" typ="string"></ArgTableRow>\n'
+            "</ArgTable>\n\n"
+            "## ip/two \n\n**Type:** Directory\n\n"
+            '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="alpha" typ="string"></ArgTableRow>\n'
+            '<ArgTableRow arg="beta" typ="string"></ArgTableRow>\n'
+            "</ArgTable>\n\n"
+            "## Shared topic\n\n#### Properties\n\n"
+            "| Property | Description |\n| :-- | :-- |\n"
+            "| **alpha** (*string*) | A |\n"
+            "| **beta** (*string*) | B |\n"
+        )
+        menus = {m["path"]: m for m in self._parse(content)}
+        for path in ("/ip/one", "/ip/two"):
+            names = {a["name"] for a in menus[path].get("arguments", [])}
+            assert "alpha" in names and "beta" in names  # ArgTable rows only
+        assert "no unambiguous row-overlap menu" in capsys.readouterr().err
+
+    def test_single_row_overlap_is_too_thin_to_resolve(self, capsys):
+        # One row can coincide with a broad common name; the minimum-row guard
+        # keeps such tables unresolved and warns instead of guessing.
+        content = (
+            "## ip/one \n\n**Type:** Directory\n\n"
+            '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="only-prop" typ="string"></ArgTableRow>\n'
+            "</ArgTable>\n\n"
+            "## One topic\n\n#### Properties\n\n"
+            "| Property | Description |\n| :-- | :-- |\n"
+            "| **only-prop** (*string*) | Only property |\n"
+        )
+        menu = next(m for m in self._parse(content) if m["path"] == "/ip/one")
+        only_prop = next(a for a in menu["arguments"] if a["name"] == "only-prop")
+        assert only_prop["description"] == "", "1-row table must not be trusted"
+        assert "no unambiguous row-overlap menu" in capsys.readouterr().err
+
+    def test_no_overlap_warns_instead_of_dropping_silently(self, capsys):
+        # Previously this path returned [] with no warning at all. The rows
+        # belong to no known menu, so the skip must stay visible.
+        content = (
+            "## ip/address \n\n**Type:** Directory\n\n"
+            "## Address topic\n\n#### Properties\n\n"
+            "| Property | Description |\n| :-- | :-- |\n"
+            "| **brand-new-alpha** (*string*) | A |\n"
+            "| **brand-new-beta** (*string*) | B |\n"
+        )
+        menu = next(m for m in self._parse(content) if m["path"] == "/ip/address")
+        names = {a["name"] for a in menu.get("arguments", [])}
+        assert "brand-new-alpha" not in names
+        err = capsys.readouterr().err
+        assert "no unambiguous row-overlap menu" in err and "skipped" in err
+
+    def test_helpers_require_an_exact_single_subset(self):
+        table = {"rows": [{"name": "a"}, {"name": "b"}]}
+        assert _resolve_by_row_overlap(table, {"/x": {"a", "b"}, "/y": {"a"}}) == "/x"
+        assert _resolve_by_row_overlap(table, {"/x": {"a", "b"}, "/y": {"a", "b", "c"}}) is None
+        # Fewer than the minimum row count never resolves.
+        thin = {"rows": [{"name": "a"}]}
+        assert _resolve_by_row_overlap(thin, {"/x": {"a"}}) is None
+
+
+class TestMarkdownRowParsing:
+    """Malformed upstream rows keep their real description."""
+
+    def _write_temp(self, content: str) -> str:
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+        tmp.write(content)
+        tmp.flush()
+        tmp.close()
+        return tmp.name
+
+    def test_unescaped_pipe_does_not_leak_type_fragment_as_description(self):
+        # Upstream writes `(*yes | no*; Default: ...)` without escaping the
+        # pipe, so the row splits into more cells than the header. The trailing
+        # cell is the description; the header index would yield `no; Default`.
+        content = (
+            "## ip/firewall/connection/tracking \n"
+            "\n"
+            "**Type:** Settings Directory\n"
+            "\n"
+            "**Sub-menu:** `/ip/firewall/connection/tracking`\n"
+            "\n"
+            "### Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **loose-tcp-tracking** (*yes | no*; Default: **yes**) | In case the first SYN is missed it is ESTABLISHED |\n"
+        )
+        path = self._write_temp(content)
+        try:
+            menu = parse_llms_full(path)[0]
+        finally:
+            os.unlink(path)
+        arg = next(a for a in menu["arguments"] if a["name"] == "loose-tcp-tracking")
+        assert arg["description"] == "In case the first SYN is missed it is ESTABLISHED"
+
+    def test_row_description_index_tolerates_extra_cells(self):
+        assert _row_description_index(["a", "b"], 2, 1) == 1
+        assert _row_description_index(["a", "b", "c"], 2, 1) == 2
+        assert _row_description_index(["a", "b", "c", "d"], 2, 1) == 3
+
+
+class TestMarkdownTableAccounting:
+    """Every genuine property table is either merged or warned, never silent."""
+
+    LLMS_FULL = Path(__file__).resolve().parents[1] / "llms-full.txt"
+
+    def _write_temp(self, content: str) -> str:
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+        tmp.write(content)
+        tmp.flush()
+        tmp.close()
+        return tmp.name
+
+    def test_stats_classify_every_table_kind(self):
+        content = (
+            # with-submenu property table (merged directly)
+            "## ip/address \n\n**Type:** Directory\n\n"
+            "**Sub-menu:** `/ip/address`\n\n### Properties\n\n"
+            "| Property | Description |\n| :-- | :-- |\n"
+            "| **address** (*ipPrefix*) | Address |\n\n"
+            # pathless property table resolved by row overlap
+            "## ip/route \n\n**Type:** Directory\n\n"
+            '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="gateway" typ="ipAddr"></ArgTableRow>\n'
+            '<ArgTableRow arg="distance" typ="num"></ArgTableRow>\n'
+            "</ArgTable>\n\n"
+            "## Route topic\n\n### Properties\n\n"
+            "| Property | Description |\n| :-- | :-- |\n"
+            "| **gateway** (*ipAddr*) | Gateway |\n"
+            "| **distance** (*num*) | Distance |\n\n"
+            # pathless property table with no matching menu (warned)
+            "## ip/arp \n\n**Type:** Directory\n\n"
+            "## ARP topic\n\n### Properties\n\n"
+            "| Property | Description |\n| :-- | :-- |\n"
+            "| **brand-new-alpha** (*string*) | A |\n"
+            "| **brand-new-beta** (*string*) | B |\n\n"
+            # common print-parameter table (recognized, never emitted)
+            "### print parameters\n\n"
+            "| Parameter | Description |\n| :-- | :-- |\n"
+            "| **append** | |\n\n"
+            # command table (deliberately ignored)
+            "### Menu specific commands\n\n"
+            "| Property | Description |\n| :-- | :-- |\n"
+            "| **release** (*numbers*) | Release |\n"
+        )
+        path = self._write_temp(content)
+        try:
+            menus, stats = analyze_markdown_tables(path)
+        finally:
+            os.unlink(path)
+
+        assert stats["tables_total"] == 5
+        assert stats["property_tables"] == 3
+        assert stats["property_with_submenu"] == 1
+        assert stats["property_no_context"] == 2
+        assert stats["property_no_rows"] == 0
+        assert stats["property_resolved"] == 1
+        assert stats["property_skipped"] == 1
+        assert stats["print_parameter_tables"] == 1
+        assert stats["non_property_tables"] == 1
+        # The no-silent-drop invariant: every stashed pathless table is either
+        # resolved or skipped-with-warning.
+        assert stats["property_no_context"] == (
+            stats["property_resolved"] + stats["property_skipped"]
+        )
+        # The overlap target is /ip/route; the print table never becomes a menu.
+        assert "/print" not in {m["path"] for m in menus}
+
+    def test_new_stats_dict_is_zeroed(self):
+        stats = _new_markdown_stats()
+        assert set(stats) == {
+            "tables_total", "print_parameter_tables", "other_parameter_tables",
+            "non_property_tables", "property_tables", "property_with_submenu",
+            "property_no_context", "property_no_rows", "property_resolved",
+            "property_skipped", "rows_processed", "rows_merged",
+        }
+        assert all(v == 0 for v in stats.values())
+
+    def test_menu_property_names_unions_duplicate_paths(self):
+        menus = [
+            {"path": "/ip/a", "arguments": [{"name": "x"}]},
+            {"path": "/ip/a", "read_only": [{"name": "y"}]},
+            {"path": "/ip/b", "flags": [{"name": "X"}]},
+        ]
+        names = _menu_property_names(menus)
+        assert names["/ip/a"] == {"x", "y"}
+        assert names["/ip/b"] == {"X"}
+
+    @pytest.mark.skipif(
+        not LLMS_FULL.exists(), reason="llms-full.txt not synced (make sync)"
+    )
+    def test_real_dataset_has_no_silently_dropped_property_table(self):
+        menus, stats = analyze_markdown_tables(str(self.LLMS_FULL))
+        assert menus, "expected a non-empty parse of the synced upstream docs"
+        assert stats["property_tables"] == (
+            stats["property_with_submenu"]
+            + stats["property_no_context"]
+            + stats["property_no_rows"]
+        )
+        assert stats["property_no_context"] == (
+            stats["property_resolved"] + stats["property_skipped"]
+        )
+        assert stats["property_tables"] > 100
+        assert stats["non_property_tables"] > 0
