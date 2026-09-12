@@ -80,6 +80,27 @@ fn test_transport_downgrades_allowed_with_opt_in() {
 }
 
 #[test]
+fn test_settings_port_requires_transport_opt_in() {
+    // The port is the endpoint credentials are sent to: a settings change
+    // must require RSC_LS_ALLOW_SETTINGS_TRANSPORT=1 (env always wins).
+    let mut cfg = secure_base_cfg();
+    assert_eq!(cfg.port, 443);
+    let settings = serde_json::json!({"rsc": {"live": {"port": 8443}}});
+    LiveConfig::apply_settings_value_with_transport(&mut cfg, &settings, false);
+    assert_eq!(
+        cfg.port, 443,
+        "settings port must be ignored without transport opt-in"
+    );
+    // Same value is a no-op and needs no opt-in.
+    let same = serde_json::json!({"rsc": {"live": {"port": 443}}});
+    LiveConfig::apply_settings_value_with_transport(&mut cfg, &same, false);
+    assert_eq!(cfg.port, 443);
+    // With the opt-in the overlay applies.
+    LiveConfig::apply_settings_value_with_transport(&mut cfg, &settings, true);
+    assert_eq!(cfg.port, 8443, "settings port must apply with opt-in");
+}
+
+#[test]
 fn test_transport_hardening_allowed_without_opt_in() {
     // Hardening direction (verify on, http off, loopback off) stays allowed.
     let mut cfg = LiveConfig::from_env_with(|k| match k {
