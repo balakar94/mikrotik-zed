@@ -7,11 +7,15 @@ plus a CLI smoke test (--help / --dry-run) that also proves the scripts'
 import bootstrap works when run as `python scripts/<name>.py`.
 """
 
+import contextlib
+import http.server
 import importlib.util
 import ipaddress
 import os
+import socket
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -26,7 +30,9 @@ LIVE_CHECK_PY = SCRIPTS / "mikrotik-live-check.py"
 sys.path.insert(0, str(SCRIPTS))
 
 from _mikrotik_shared import (  # noqa: E402
+    build_pinned_requests_session,
     check_target,
+    check_target_with_addrs,
     clamp_int,
     embedded_ipv4,
     env_int,
@@ -34,9 +40,11 @@ from _mikrotik_shared import (  # noqa: E402
     format_host_for_url,
     is_ipv6_transition_prefix,
     is_normalized_loopback_or_private,
+    open_pinned_socket,
     parse_fingerprint,
     redact_secrets,
     resolve_and_check_host,
+    resolve_host_addrs,
     resolve_scheme,
     spki_sha256,
     validate_host,
@@ -756,3 +764,163 @@ class TestDeploySshResolveGate:
     def test_ssh_dry_run_denied_host_still_exit_2(self):
         result = self._run_ssh("169.254.169.254", dry_run=True)
         assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+
+# ── Pinned resolve-then-connect (Python TOCTOU closure) ───────────
+
+
+@contextlib.contextmanager
+def _local_http_server():
+    """Run a loopback HTTP server; yield ``(port, seen)``.
+
+    ``seen`` accumulates ``(path, host_header)`` for each GET, so tests can
+    prove the request reached the pinned server and kept the original Host.
+    """
+    seen: list[tuple[str, str]] = []
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append((self.path, self.headers.get("Host", "")))
+            body = b"[]"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1], seen
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _disable_dns(monkeypatch):
+    """Make every DNS lookup fail, so any success proves no re-resolution."""
+
+    def _boom(*args, **kwargs):
+        raise socket.gaierror("DNS disabled by test")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _boom)
+
+
+class TestPinnedResolution:
+    def test_resolve_host_addrs_returns_validated_ips(self):
+        err, addrs = resolve_host_addrs("127.0.0.1", 443)
+        assert err is None
+        assert addrs == ["127.0.0.1"]
+
+    def test_resolve_host_addrs_fail_closed(self):
+        err, addrs = resolve_host_addrs("169.254.169.254", 443)
+        assert err is not None and addrs == []
+
+    def test_check_target_with_addrs_denies_lexically(self):
+        err, addrs = check_target_with_addrs("169.254.169.254", 443)
+        assert err is not None and addrs == []
+
+    def test_check_target_compat_wrapper_unchanged(self):
+        assert check_target("169.254.169.254", 443) is not None
+        assert check_target("127.0.0.1", 443) is None
+
+
+class TestOpenPinnedSocket:
+    def test_connects_to_validated_ip_without_dns(self, monkeypatch):
+        with _local_http_server() as (port, _seen):
+            _disable_dns(monkeypatch)
+            sock = open_pinned_socket(["127.0.0.1"], port, 5)
+            try:
+                peer = sock.getpeername()
+                assert peer[0] in ("127.0.0.1", "::ffff:127.0.0.1")
+            finally:
+                sock.close()
+
+    def test_all_addresses_fail_raises(self):
+        with pytest.raises(OSError):
+            open_pinned_socket(["127.0.0.1"], 1, 1)
+
+
+class TestPinnedRequestsSession:
+    def test_request_dials_pinned_ip_despite_unresolvable_host(self, monkeypatch):
+        pytest.importorskip("requests")
+        with _local_http_server() as (port, seen):
+            _disable_dns(monkeypatch)
+            session = build_pinned_requests_session(
+                "admin", "secret", ["127.0.0.1"], "", True
+            )
+            try:
+                resp = session.get(
+                    f"http://does-not-resolve.invalid:{port}/rest/interface",
+                    timeout=5,
+                    allow_redirects=False,
+                )
+            finally:
+                session.close()
+            assert resp.status_code == 200
+            # Reached the pinned loopback server, with the original Host header.
+            assert seen == [("/rest/interface", f"does-not-resolve.invalid:{port}")]
+
+    def test_pinned_adapter_disables_env_proxies(self):
+        pytest.importorskip("requests")
+        session = build_pinned_requests_session(
+            "admin", "secret", ["127.0.0.1"], "", True
+        )
+        try:
+            assert session.trust_env is False
+            assert session.proxies == {}
+        finally:
+            session.close()
+
+
+class TestDeploySshPinnedSocket:
+    def test_ssh_connect_passes_pinned_socket_and_original_hostname(self, monkeypatch):
+        mod = _load_deploy_module()
+        calls: dict = {}
+        sentinel = object()
+
+        class _FakeClient:
+            def load_system_host_keys(self):
+                pass
+
+            def set_missing_host_key_policy(self, policy):
+                calls["policy_set"] = True
+
+            def connect(self, **kwargs):
+                calls.update(kwargs)
+                # Stop before SFTP/exec: SystemExit is BaseException, so the
+                # method's `except Exception` does not swallow it.
+                raise SystemExit(7)
+
+        class _FakeParamiko:
+            SSHClient = _FakeClient
+
+            @staticmethod
+            def AutoAddPolicy():
+                return object()
+
+        def _fake_open(addrs, port, timeout, *args, **kwargs):
+            calls["pinned_args"] = (list(addrs), port, timeout)
+            return sentinel
+
+        monkeypatch.setattr(mod, "paramiko", _FakeParamiko)
+        monkeypatch.setattr(mod, "HAS_PARAMIKO", True)
+        monkeypatch.setattr(
+            mod, "check_target_with_addrs", lambda host, port: (None, ["127.0.0.1"])
+        )
+        monkeypatch.setattr(mod, "open_pinned_socket", _fake_open)
+
+        with pytest.raises(SystemExit) as exc:
+            mod.deploy_via_ssh(
+                "127.0.0.1", "admin", "pw", 2222, "/system identity print\n", "x.rsc", False, False
+            )
+        assert exc.value.code == 7
+        assert calls["pinned_args"] == (["127.0.0.1"], 2222, 15)
+        assert calls["hostname"] == "127.0.0.1"
+        assert calls["sock"] is sentinel
+        # No --accept-host-key: the default (reject unknown) policy stands.
+        assert "policy_set" not in calls

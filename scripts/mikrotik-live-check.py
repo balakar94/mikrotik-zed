@@ -47,7 +47,9 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from _mikrotik_shared import (  # noqa: E402
-    check_target,
+    build_pinned_requests_session,
+    build_pinned_urllib_handlers,
+    check_target_with_addrs,
     clamp_int,
     env_int,
     format_host_for_url,
@@ -212,9 +214,10 @@ def main() -> None:
 
     # F1: lexical + resolve-then-revalidate before any credential use (fail
     # fast, no prompt when DNS already refuses). Lexical checks ran at
-    # startup; DNS may resolve differently now. verify_tls_pin re-checks on
-    # its own handshake when a pin is set.
-    target_err = check_target(host, port)
+    # startup; DNS may resolve differently now. The validated addresses are
+    # retained and pinned into the HTTP connection so no second DNS lookup
+    # can be rebound (TOCTOU closed).
+    target_err, addrs = check_target_with_addrs(host, port)
     if target_err:
         msg = target_err
         print(f"error: {msg}", file=sys.stderr)
@@ -251,18 +254,10 @@ def main() -> None:
 
     try:
         if HAS_REQUESTS:
-            session = requests.Session()  # type: ignore[union-attr]
-            session.auth = (user, password)
-            # Custom CA bundle wins over the boolean flag; a pin still
-            # enforces SPKI matching on top (verified below pre-parse).
-            # F3: when a pin is configured, the HTTP connection itself must
-            # verify (the pin check runs on a SEPARATE handshake — TOCTOU).
-            # Never CERT_NONE with Authorization when a pin is set.
-            if fingerprint is not None and scheme == "https":
-                session.verify = ca_file if ca_file else True
-            else:
-                session.verify = ca_file if ca_file else ssl_verify
-            session.headers.update({"Content-Type": "application/json"})
+            # Pinned to the addresses validated above (no second DNS lookup).
+            session = build_pinned_requests_session(
+                user, password, addrs, ca_file, ssl_verify, fingerprint, scheme
+            )
             # Streamed read with byte cap — prevents OOM on unbounded responses
             # (same 512 KiB limit as caps.rs MAX_LIVE_RESPONSE_BYTES).
             # Redirects are disabled: 3xx is a fail-closed error, never followed.
@@ -423,11 +418,11 @@ def main() -> None:
                     ctx = ssl._create_unverified_context()
                 elif pin_enforced:
                     ctx = ssl.create_default_context()
+            # Pinned to the addresses validated above (no second DNS lookup).
+            # The helper also installs ProxyHandler({}) so no environment
+            # proxy can reroute the dial.
             handlers: list = [_NoRedirect]
-            if ctx is not None:
-                # OpenerDirector.open has no `context` kwarg; the context
-                # travels on the HTTPSHandler instead.
-                handlers.append(urllib.request.HTTPSHandler(context=ctx))
+            handlers.extend(build_pinned_urllib_handlers(addrs, ctx))
             opener = urllib.request.build_opener(*handlers)
             try:
                 if fingerprint is not None and scheme == "https":
