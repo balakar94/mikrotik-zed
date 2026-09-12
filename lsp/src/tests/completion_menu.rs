@@ -350,6 +350,73 @@ fn test_partial_path_with_unknown_parent_is_empty() {
 }
 
 #[test]
+fn test_partial_path_segment_includes_command_child() {
+    // `/ip/route/che` is not a known menu, but its parent `/ip/route` is and
+    // has the Command child `check`: the action command must be offered with
+    // the same verb tier it gets once the menu is complete, replacing only
+    // the typed final segment.
+    let data = synthetic_data();
+    let line = "/ip/route/che";
+    let items = compute_completions(&data, line);
+    let check = items
+        .iter()
+        .find(|i| i.label == "check")
+        .expect("partial segment 'che' must suggest the check action command");
+    assert_eq!(check.kind, Some(kind::FUNCTION));
+    assert_eq!(check.detail.as_deref(), Some("action command"));
+    assert_eq!(check.insert_text.as_deref(), Some("check"));
+    // Verb tier (2), prefix match (1), normalized label.
+    assert_eq!(check.sort_text.as_deref(), Some("21_check"));
+    let edit = check.text_edit.as_ref().expect("segment textEdit");
+    assert_eq!(edit.range.start.character as usize, "/ip/route/".len());
+    assert_eq!(edit.range.end.character as usize, line.len());
+    assert_eq!(
+        format!(
+            "{}{}{}",
+            &line[..edit.range.start.character as usize],
+            edit.new_text,
+            &line[edit.range.end.character as usize..]
+        ),
+        "/ip/route/check"
+    );
+    // No standard verbs may leak onto an unknown path.
+    assert!(
+        !items
+            .iter()
+            .any(|i| MenuData::STANDARD_VERBS.contains(&i.label.as_str())),
+        "partial path must not advertise verbs, got {:?}",
+        items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_partial_path_segment_real_dataset_offers_ip_route_check() {
+    // Pin the real embedded dataset: `/ip/route/che` → `check` (verified
+    // present as a Command child in data/commands.toml), while a known path
+    // keeps its existing verb behaviour.
+    let data = MenuData::load();
+    assert!(
+        data.menu_by_path.contains_key("/ip/route/check"),
+        "dataset must carry the /ip/route/check action command"
+    );
+    let items = compute_completions(&data, "/ip/route/che");
+    let check = items
+        .iter()
+        .find(|i| i.label == "check")
+        .expect("real dataset must suggest check for /ip/route/che");
+    assert_eq!(check.kind, Some(kind::FUNCTION));
+    assert_eq!(check.detail.as_deref(), Some("action command"));
+    // A complete known path is unchanged: standard verbs, no `check` action
+    // command injected as a child (it is reached after the verb).
+    let known = compute_completions(&data, "/ip/route ");
+    let labels: Vec<&str> = known.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"add"),
+        "known menu keeps verbs: {labels:?}"
+    );
+}
+
+#[test]
 fn test_submenu_action_command_included_as_verb() {
     let data = synthetic_data();
     // /ip/route has child /ip/route/check of type Command

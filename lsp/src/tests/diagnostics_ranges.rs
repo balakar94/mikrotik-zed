@@ -224,6 +224,26 @@ fn test_continuation_range_maps_to_physical_lines() {
 }
 
 #[test]
+fn test_continuation_range_ending_at_boundary_stays_on_line() {
+    // The key `bogusprop` ends exactly at the continuation boundary: line 0
+    // is `/ip/address add bogusprop\` (25 logical bytes before the `\`) and
+    // line 1 supplies `=x`. The unknown-property range covers only the key,
+    // so its END sits on the boundary and must stay on physical line 0
+    // instead of spilling onto line 1's start.
+    let data = synth();
+    let doc = "/ip/address add bogusprop\\\n=x";
+    let diags = compute_diagnostics(&data, doc, "file:///a.rsc");
+    let d = diags
+        .iter()
+        .find(|d| d.code.as_deref() == Some("unknown-property"))
+        .expect("bogusprop must be flagged as an unknown property");
+    assert_eq!(d.range.start.line, 0);
+    assert_eq!(d.range.start.character, 16);
+    assert_eq!(d.range.end.line, 0, "range must not cross the continuation");
+    assert_eq!(d.range.end.character, 25);
+}
+
+#[test]
 fn test_escaped_backslash_not_continuation() {
     let data = synth();
     // Line 1 ends with an escaped backslash pair ("...with \\"): even run,

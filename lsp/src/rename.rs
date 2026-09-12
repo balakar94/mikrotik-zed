@@ -37,8 +37,10 @@ use crate::navigation;
 
 /// Bytes permitted in a rename target (v1 bare identifiers).
 ///
-/// Mirrors the navigation index rule (letters, digits, underscore; `-`
-/// excluded so arithmetic like `($count-1)` can never donate a name).
+/// ASCII-only by design, mirroring the navigation index: the grammar's
+/// identifier rule is ASCII (`[a-zA-Z_][a-zA-Z0-9_@]*`), so a multi-byte
+/// byte can never enter a name or an edit range. `-` is excluded so
+/// arithmetic like `($count-1)` can never donate a name.
 fn is_rename_ident_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }

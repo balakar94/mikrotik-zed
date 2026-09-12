@@ -712,6 +712,17 @@ impl Server {
                 // correctly while staying byte- and UTF-16-correct.
                 {
                     let line_text = current_line;
+                    // No pre-clear pass is needed: every completion-layer
+                    // `textEdit` shadow is overwritten by the mapping below.
+                    // The shadow carriers are a closed set — sub-menu / verb
+                    // (kinds 9/3), partial menu-path segment (kind 9) and value
+                    // (kind 12) — and each has a matching branch here whose
+                    // range is always produced (logical mapping or the
+                    // same-token physical fallback). Property / flag items
+                    // carry no shadow at all. A line-0 guess therefore cannot
+                    // reach the wire; if a new shadow-carrying kind is added,
+                    // extend the filters below in lockstep or the stale line-0
+                    // range will be serialized.
                     // Value vs non-value decision uses the same tolerant trimmed
                     // logic as `completion::match_context` — driven by the
                     // logical `before_cursor` (continuation-aware).
@@ -760,19 +771,18 @@ impl Server {
                                     {
                                         let pos = key_part.len();
                                         let suffix_part = &tok.text[pos + 1..];
-                                        let leading = if suffix_part.starts_with('"')
-                                            || suffix_part.starts_with('\'')
-                                        {
-                                            1
-                                        } else {
-                                            0
-                                        };
-                                        let log_start = tok.start + pos + 1 + leading;
+                                        // Same effective span the completion
+                                        // layer uses: preserve a leading
+                                        // opening quote and leave a trailing
+                                        // closing quote in place.
+                                        let (span_start, span_end) =
+                                            completion::value_replacement_span(suffix_part);
+                                        let base = tok.start + pos + 1;
                                         let (log_s, log_e) =
                                             if has_trailing_ws && trimmed_suffix.is_empty() {
                                                 (cursor_logical_clamped, cursor_logical_clamped)
                                             } else {
-                                                (log_start, cursor_logical_clamped)
+                                                (base + span_start, base + span_end)
                                             };
                                         let log_s = log_s.min(logical_text.len()).min(log_e);
                                         let log_e = log_e.min(logical_text.len());
@@ -817,19 +827,14 @@ impl Server {
                                     {
                                         let pos = key_part.len();
                                         let suffix_part = &tok.text[pos + 1..];
-                                        let leading = if suffix_part.starts_with('"')
-                                            || suffix_part.starts_with('\'')
-                                        {
-                                            1
-                                        } else {
-                                            0
-                                        };
-                                        let start = tok.start + pos + 1 + leading;
+                                        let (span_start, span_end) =
+                                            completion::value_replacement_span(suffix_part);
+                                        let base = tok.start + pos + 1;
                                         let (s, e) = if has_trailing_ws && trimmed_suffix.is_empty()
                                         {
                                             (char_byte, char_byte)
                                         } else {
-                                            (start, char_byte)
+                                            (base + span_start, base + span_end)
                                         };
                                         let s_clamped = s.min(line_text.len()).min(e);
                                         let e_clamped = e.min(line_text.len());

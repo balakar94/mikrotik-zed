@@ -180,3 +180,38 @@ fn test_signature_label_stays_within_budget() {
         assert!(seg.contains('='));
     }
 }
+
+#[test]
+fn test_active_parameter_never_exceeds_emitted_parameters() {
+    // The label budget can stop emitting parameters before the property list
+    // ends. `activeParameter` is computed against the FULL list, so without a
+    // clamp it can point past the last emitted parameter — an invalid LSP
+    // response. Long names + capped types push the total label over the
+    // budget while staying under MAX_SIGNATURE_PROPERTIES.
+    let mut toml = String::from("[[menus]]\npath = \"/big\"\ntype = \"Directory\"\n");
+    let long_type = "t".repeat(MAX_LABEL_TYPE_CHARS);
+    let mut target = String::new();
+    for i in 0..40 {
+        let name = format!("prop{i:02}{}", "n".repeat(48));
+        if i == 39 {
+            target = name.clone();
+        }
+        toml.push_str(&format!(
+            "[[menus.arguments]]\nname = \"{name}\"\ntype = \"{long_type}\"\n"
+        ));
+    }
+    let data = MenuData::from_toml_str(&toml);
+    let line = format!("/big add {target}");
+    let help = help_for(&data, "/big", &line, line.len()).expect("fixture has properties");
+    let emitted = help.signatures[0].parameters.len();
+    assert!(
+        emitted < 40,
+        "fixture must truncate the label before all 40 properties, emitted {emitted}"
+    );
+    if let Some(active) = help.active_parameter {
+        assert!(
+            (active as usize) < emitted,
+            "activeParameter {active} must be within the {emitted} emitted parameters"
+        );
+    }
+}

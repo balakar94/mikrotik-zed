@@ -81,9 +81,14 @@ pub(crate) struct VariableHit {
 
 /// Bytes permitted in a bare variable identifier (v1).
 ///
-/// RouterOS identifiers are letters, digits and underscores; `-` is
-/// deliberately excluded so arithmetic like `($count-1)` cannot glue a
-/// fake name onto a real usage.
+/// ASCII-only by design: the tree-sitter grammar defines identifiers as
+/// `/[a-zA-Z_][a-zA-Z0-9_@]*/`, so non-ASCII names are outside the language
+/// subset. A multi-byte UTF-8 lead byte never satisfies
+/// `is_ascii_alphanumeric`, so every scanned span ends on a char boundary —
+/// `$café` is tracked as the ASCII prefix `caf`, never as a corrupt
+/// multi-byte span. RouterOS identifiers are letters, digits and
+/// underscores; `-` is deliberately excluded so arithmetic like
+/// `($count-1)` cannot glue a fake name onto a real usage.
 fn is_ident_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }

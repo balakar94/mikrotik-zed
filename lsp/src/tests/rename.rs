@@ -105,3 +105,23 @@ fn test_rename_usage_without_declaration_still_renames_occurrences() {
     assert_eq!(edits.len(), 1);
     assert_eq!(edits[0]["newText"], "found");
 }
+
+#[test]
+fn test_rename_non_ascii_identifier_edits_ascii_prefix_only() {
+    // Intentional ASCII-only subset: `café` is tracked as `caf`, so every
+    // edit ends before the `é` lead byte and can never split a code point.
+    let doc = ":local café=1\n:put $café\n";
+    let result = rename(doc, 0, 8, "wan");
+    let edits = result["changes"][URI].as_array().expect("edits array");
+    assert_eq!(edits.len(), 2, "declaration + usage, got {result}");
+    for edit in edits {
+        assert_eq!(edit["newText"], "wan");
+        let start = edit["range"]["start"]["character"].as_u64().unwrap();
+        let end = edit["range"]["end"]["character"].as_u64().unwrap();
+        assert_eq!(
+            end - start,
+            3,
+            "edit must cover only the ASCII prefix `caf`: {edit}"
+        );
+    }
+}
