@@ -45,7 +45,16 @@ fn test_live_identity_changed_covers_pin_and_ca() {
 fn test_denied_reason_for_ip_vectors() {
     use std::net::IpAddr;
     // F1 test vectors: unconditional denials regardless of loopback flag.
-    for bad in ["169.254.169.254", "169.254.1.1", "fe80::1", "0.0.0.0", "::"] {
+    for bad in [
+        "169.254.169.254",
+        "169.254.1.1",
+        "fe80::1",
+        "0.0.0.0",
+        "::",
+        "::a9fe:a9fe", // IPv4-compatible metadata
+        "::7f00:1",    // IPv4-compatible loopback
+        "::8.8.8.8",   // IPv4-compatible public (deprecated form)
+    ] {
         let addr: IpAddr = bad.parse().unwrap();
         assert!(
             denied_reason_for_ip(addr, true).is_some(),
@@ -53,7 +62,8 @@ fn test_denied_reason_for_ip_vectors() {
         );
         assert!(denied_reason_for_ip(addr, false).is_some());
     }
-    // Loopback/private denied only without the flag.
+    // Loopback/private denied only without the flag. `::1` is the sole
+    // IPv4-compatible member that remains loopback-gated, not unconditional.
     for gated in ["127.0.0.1", "10.0.0.5", "192.168.1.1", "::1"] {
         let addr: IpAddr = gated.parse().unwrap();
         assert!(denied_reason_for_ip(addr, false).is_some());

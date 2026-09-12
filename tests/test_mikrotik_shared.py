@@ -263,6 +263,42 @@ class TestIpv6TransitionAndPrivateRanges:
             assert validate_host(bad) is not None, f"should deny {bad!r}"
             assert resolve_and_check_host(bad, 443) is not None
 
+    def test_ipv4_compatible_addresses_denied(self):
+        # IPv4-compatible ::/96 (deprecated) embeds an IPv4 in the low 32
+        # bits (::127.0.0.1 = ::7f00:1, ::a9fe:a9fe = 169.254.169.254) but
+        # `ipv4_mapped` only covers ::ffff:0:0/96. The whole range is denied
+        # unconditionally, including a public embedded address.
+        for bad in [
+            "::127.0.0.1",
+            "::169.254.169.254",
+            "::a9fe:a9fe",
+            "::8.8.8.8",
+            "::10.0.0.1",
+        ]:
+            assert is_normalized_ssrf_denied(ipaddress.ip_address(bad)), bad
+            assert validate_host(bad) is not None, f"should deny {bad!r}"
+            assert validate_host(f"[{bad}]") is not None, f"should deny [{bad}]"
+        # Bracketed routing through validate_host / normalization.
+        assert validate_host("[::a9fe:a9fe]") is not None
+        assert is_normalized_ssrf_denied(ipaddress.ip_address("::a9fe:a9fe"))
+        # ::1 stays loopback-gated by the private classifier, not denied
+        # unconditionally; :: stays unspecified.
+        assert not is_normalized_ssrf_denied(ipaddress.ip_address("::1"))
+        assert is_normalized_loopback_or_private(ipaddress.ip_address("::1"))
+        assert is_normalized_ssrf_denied(ipaddress.ip_address("::"))
+        # IPv4-mapped public stays allowed (not over-blocked)...
+        assert validate_host("[::ffff:8.8.8.8]") is None
+        assert not is_normalized_ssrf_denied(ipaddress.ip_address("::ffff:8.8.8.8"))
+        # ...mapped link-local metadata stays denied. Mapped RFC1918 stays
+        # ALLOWED here by design (the scripts have no loopback gate and
+        # routers legitimately live on the LAN).
+        assert validate_host("[::ffff:a9fe:a9fe]") is not None
+        assert validate_host("[::ffff:10.0.0.1]") is None
+        # Compatible form is also judged private (Rust parity).
+        assert is_normalized_loopback_or_private(ipaddress.ip_address("::127.0.0.1"))
+        assert is_normalized_loopback_or_private(ipaddress.ip_address("::10.0.0.1"))
+        assert not is_normalized_loopback_or_private(ipaddress.ip_address("::8.8.8.8"))
+
     def test_transition_prefix_helper_and_embedded_ipv4(self):
         assert is_ipv6_transition_prefix(ipaddress.ip_address("64:ff9b::a9fe:a9fe"))
         assert is_ipv6_transition_prefix(ipaddress.ip_address("2001::1"))
@@ -749,6 +785,7 @@ class TestRustParity:
         "64:ff9b::/96",
         "2001::/32",
         "2002::/16",
+        "::/96",
         "fc00::/7",
         "100.64.0.0/10",
         "224.0.0.0/4",
