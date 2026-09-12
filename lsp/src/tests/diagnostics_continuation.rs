@@ -138,18 +138,73 @@ fn test_logical_line_map_spans_join() {
     assert_eq!(joined, "/tool/fetch add url=\"abcdef\"");
     assert_eq!(ll[0].segments.len(), 2);
     // Segment 0 covers bytes 0..24 ("...\"abc"), segment 1 bytes 24..28
-    // ("def\""). A range from 'c' (byte 23, physical line 0) to 'd'
+    // ("def\""). A range from 'c' (byte 23, physical line 0) through 'd'
     // (byte 24, physical line 1) spans the join point.
-    let r = ll[0].map_range(23, 24);
+    let r = ll[0].map_range(23, 25);
     assert_eq!(r.start.line, 0);
     assert_eq!(r.start.character, 23);
     assert_eq!(r.end.line, 1);
-    assert_eq!(r.end.character, 0);
+    assert_eq!(r.end.character, 1);
     // Out-of-bounds offsets clamp defensively to the end of the text:
     // byte 28 lands at line 1, character 4.
     let clamped = ll[0].map_pos(joined.len() + 100);
     assert_eq!(clamped.line, 1);
     assert_eq!(clamped.character, 4);
+}
+
+// ── Continuation-boundary mapping ────────────────────────────────────────
+
+/// One logical line from two physical segments: line 0 covers bytes 0..24
+/// (`/tool/fetch add url="abc`), line 1 covers bytes 24..28 (`def"`).
+/// Byte 24 is the `\` continuation boundary.
+fn two_segment_line() -> Vec<LogicalLine> {
+    let ll = build_logical_lines(&["/tool/fetch add url=\"abc\\", "def\""]);
+    assert_eq!(ll.len(), 1);
+    ll
+}
+
+#[test]
+fn test_map_range_ending_at_boundary_stays_on_previous_line() {
+    let ll = two_segment_line();
+    // 23..24 covers only 'c' (byte 23). It must END on line 0 rather than
+    // jump across the backslash to the start of line 1.
+    let r = ll[0].map_range(23, 24);
+    assert_eq!((r.start.line, r.start.character), (0, 23));
+    assert_eq!((r.end.line, r.end.character), (0, 24));
+}
+
+#[test]
+fn test_map_range_both_endpoints_at_boundaries() {
+    let ll = two_segment_line();
+    // Start at the boundary (byte 24) OPENS line 1; end at the text end
+    // (byte 28) closes it. The result is a coherent single-line line-1
+    // range, never a dangling start at the end of line 0.
+    let r = ll[0].map_range(24, 28);
+    assert_eq!((r.start.line, r.start.character), (1, 0));
+    assert_eq!((r.end.line, r.end.character), (1, 4));
+}
+
+#[test]
+fn test_map_range_zero_length_at_boundary_keeps_boundary_end() {
+    let ll = two_segment_line();
+    // A zero-length point at the boundary resolves to the END of the
+    // preceding segment, matching `map_pos`, and stays zero-length rather
+    // than inverting across the join.
+    let r = ll[0].map_range(24, 24);
+    assert_eq!((r.start.line, r.start.character), (0, 24));
+    assert_eq!((r.end.line, r.end.character), (0, 24));
+    let p = ll[0].map_pos(24);
+    assert_eq!((p.line, p.character), (0, 24));
+}
+
+#[test]
+fn test_map_range_mid_segment_unchanged() {
+    let ll = two_segment_line();
+    // A normal range wholly inside segment 1 is untouched by the boundary
+    // rules.
+    let r = ll[0].map_range(25, 27);
+    assert_eq!((r.start.line, r.start.character), (1, 1));
+    assert_eq!((r.end.line, r.end.character), (1, 3));
 }
 
 // ── Token-position ranges ────────────────────────────────────────────────

@@ -165,3 +165,14 @@ fn test_usage_scan_stops_at_unquoted_comment() {
     let hits = index_of(doc);
     assert_eq!(summary(&hits), vec!["before:$@0".to_string()]);
 }
+
+#[test]
+fn test_non_ascii_identifier_is_indexed_as_ascii_prefix() {
+    // Intentional ASCII-only subset (grammar: [a-zA-Z_][a-zA-Z0-9_@]*):
+    // the multi-byte `é` is not an identifier byte, so `$café` indexes the
+    // ASCII prefix `caf` and every span ends on a char boundary.
+    let hits = index_of(":put $café\n");
+    assert_eq!(summary(&hits), vec!["caf:$@0".to_string()]);
+    assert_eq!((hits[0].start, hits[0].end), (6, 9));
+    assert_eq!(&":put $café"[hits[0].start..hits[0].end], "caf");
+}

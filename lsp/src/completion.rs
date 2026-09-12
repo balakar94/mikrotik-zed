@@ -738,16 +738,38 @@ pub(crate) fn partial_path_segment(text: &str) -> Option<(String, usize, usize)>
 ///
 /// The range covers exactly the effective suffix (a leading opening quote
 /// is preserved: `"in` → `"input`), so accepting `input` when `in` is typed
-/// replaces instead of appending (`ininput`). A finished value followed by
-/// whitespace, or an empty suffix, yields a zero-length insertion edit at
+/// replaces instead of appending (`ininput`). A trailing closing quote is
+/// left in place; an empty suffix yields a zero-length insertion edit at
 /// the cursor.
+///
+/// The range is derived from the suffix's ACTUAL byte position in the
+/// current line. Measuring it by a quote-trimmed length shifted `start` by
+/// one for a one-sided (`="in`, `=abc"`) or balanced (`="abc"`) quote and
+/// dropped a character, so compute the span from the line tail instead.
 fn attach_value_text_edit(items: &mut [CompletionItem], before_cursor: &str, typed_suffix: &str) {
     let line = current_line(before_cursor);
-    let effective = typed_suffix.trim_matches(|c| c == '"' || c == '\'');
-    let (start, end) = if effective.is_empty() {
+    let (start, end) = if typed_suffix.is_empty() || !line.ends_with(typed_suffix) {
+        // Nothing to replace: insert at the cursor.
         (line.len(), line.len())
     } else {
-        (line.len().saturating_sub(effective.len()), line.len())
+        let suffix_start = line.len() - typed_suffix.len();
+        // Preserve one leading opening quote.
+        let start = if typed_suffix.starts_with('"') || typed_suffix.starts_with('\'') {
+            suffix_start + 1
+        } else {
+            suffix_start
+        };
+        // Preserve a trailing closing quote when it closes a non-empty value.
+        let has_closing_quote = typed_suffix.len() >= 2
+            && (typed_suffix.ends_with('"') || typed_suffix.ends_with('\''));
+        let end = if has_closing_quote {
+            line.len() - 1
+        } else {
+            line.len()
+        };
+        // Defensive clamps: always a valid, ordered range inside the line.
+        let end = end.min(line.len());
+        (start.min(end), end)
     };
     for item in items.iter_mut() {
         let new_text = item
@@ -885,10 +907,14 @@ fn get_sub_menu_completion_items(
 ///
 /// Offered only when the canonical path is NOT a known menu but its parent
 /// IS: the parent prefix is already typed, so the child name is the whole
-/// insert text and the `textEdit` replaces just the typed segment. Ranked
-/// exactly like a sub-menu (`RankTier::Submenu`). An unknown parent (or one
-/// without a child index) yields an empty set, so no standard verbs are
-/// advertised for junk input. Case-insensitive, like every RouterOS name.
+/// insert text and the `textEdit` replaces just the typed segment. Directory
+/// children rank exactly like a sub-menu (`RankTier::Submenu`, kind CLASS),
+/// while `Command` children (action commands such as `/ip/route/check`) rank
+/// like verbs (`RankTier::Verb`, kind FUNCTION, detail "action command") so
+/// `/ip/route/che` offers `check` with the same tier it gets once the menu
+/// is complete. An unknown parent (or one without a child index) yields an
+/// empty set, so no standard verbs are advertised for junk input.
+/// Case-insensitive, like every RouterOS name.
 fn get_partial_segment_completion_items(
     data: &MenuData,
     path: &str,
@@ -907,15 +933,28 @@ fn get_partial_segment_completion_items(
     match data.child_names_by_parent.get(&parent_key) {
         Some(children) => children
             .iter()
-            .filter(|c| c.menu_type == "Directory" || c.menu_type == "Settings Directory")
+            .filter(|c| {
+                c.menu_type == "Directory"
+                    || c.menu_type == "Settings Directory"
+                    || c.menu_type == "Command"
+            })
             .filter(|c| normalize_key(&c.name).starts_with(&typed_lower))
             .map(|c| {
-                let mut item = CompletionItem::new(c.name.clone(), kind::CLASS);
-                item.detail = Some(sanitize_detail_text(&format!("sub-menu — {}", c.path)));
-                item.insert_text = Some(c.name.clone());
-                item.insert_text_format = Some(1);
-                item.sort_text = Some(rank(RankTier::Submenu, &c.name, typed_segment));
-                item
+                if c.menu_type == "Command" {
+                    let mut item = CompletionItem::new(c.name.clone(), kind::FUNCTION);
+                    item.detail = Some("action command".to_string());
+                    item.insert_text = Some(c.name.clone());
+                    item.insert_text_format = Some(1);
+                    item.sort_text = Some(rank(RankTier::Verb, &c.name, typed_segment));
+                    item
+                } else {
+                    let mut item = CompletionItem::new(c.name.clone(), kind::CLASS);
+                    item.detail = Some(sanitize_detail_text(&format!("sub-menu — {}", c.path)));
+                    item.insert_text = Some(c.name.clone());
+                    item.insert_text_format = Some(1);
+                    item.sort_text = Some(rank(RankTier::Submenu, &c.name, typed_segment));
+                    item
+                }
             })
             .collect(),
         None => Vec::new(),

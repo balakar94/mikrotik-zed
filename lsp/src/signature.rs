@@ -467,13 +467,19 @@ pub(crate) fn compute_signature_help(
             // to the next missing required property instead of re-highlighting
             // the finished one. No required missing ⇒ no highlight (the popup
             // still shows).
-            properties
-                .iter()
-                .position(|p| p.required)
-                .map(|idx| idx as u32)
+            properties.iter().position(|p| p.required)
         } else {
             detect_active_parameter(tokens, verb_token_idx, cursor_byte, &properties)
+                .map(|idx| idx as usize)
         };
+    // `parameters` is a PREFIX of `properties`: the label budget can stop
+    // appending before every property is emitted. An index measured against
+    // the full list would then be out of range on the wire, so clamp to the
+    // emitted prefix and fall back to no highlight instead. Truncation is
+    // rare (large menus) and the popup still lists what fit.
+    let active_parameter = active_parameter
+        .filter(|&idx| idx < parameters.len())
+        .map(|idx| idx as u32);
 
     Some(SignatureHelp {
         signatures: vec![SignatureInformation {

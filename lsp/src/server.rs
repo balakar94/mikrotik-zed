@@ -712,6 +712,18 @@ impl Server {
                 // correctly while staying byte- and UTF-16-correct.
                 {
                     let line_text = current_line;
+                    // Drop the completion layer's line-0 `textEdit` shadows
+                    // before remapping. The builders in `completion.rs` never
+                    // learn the cursor's physical line, so their ranges are
+                    // valid only as unit-test shadows; only the mapping below
+                    // knows the physical/logical join. Any shadow the mapping
+                    // cannot place must stay absent — a line-0 range measured
+                    // against the joined logical line would corrupt multi-line
+                    // documents. Single-line docs get an equivalent range
+                    // re-added by the same mapping, unchanged.
+                    for item in &mut items {
+                        item.text_edit = None;
+                    }
                     // Value vs non-value decision uses the same tolerant trimmed
                     // logic as `completion::match_context` — driven by the
                     // logical `before_cursor` (continuation-aware).
