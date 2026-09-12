@@ -8,8 +8,8 @@ use crate::caps::{MAX_LIVE_ITEMS, MAX_LIVE_RESPONSE_BYTES, MAX_PINNED_AGENT_CACH
 use crate::live_cache::{ResourceKind, sanitize_resource_values};
 use crate::live_config::{CustomResource, LiveConfig};
 use crate::live_net::{
-    LiveError, build_custom_rest_url, build_rest_url, read_ca_bundle, resolve_and_validate_host,
-    spki_sha256,
+    LiveError, build_custom_rest_url, build_rest_url, read_ca_bundle,
+    resolve_and_validate_host_with_denies, spki_sha256,
 };
 use crate::logging::{log_debug, log_info, log_warn, redact_secrets, sanitize_for_log};
 use std::collections::HashMap;
@@ -723,7 +723,12 @@ fn fetch_live_resource(
     // IP literals resolve locally without DNS traffic. The validated
     // addresses are then pinned into the agent resolver so `agent.get`
     // cannot re-resolve to a different (rebound) address.
-    let addrs = resolve_and_validate_host(&config.host, config.port, config.allow_loopback)?;
+    let addrs = resolve_and_validate_host_with_denies(
+        &config.host,
+        config.port,
+        config.allow_loopback,
+        &config.deny_prefixes,
+    )?;
     let timeout = Duration::from_secs(config.timeout_secs.clamp(1, 30));
     let agent = get_cached_agent_for_config(config, timeout, &addrs);
 

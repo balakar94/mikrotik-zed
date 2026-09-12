@@ -42,6 +42,8 @@
 // | `LIVE_NEGATIVE_TTL_SECS`          | 15 s           | caps.rs         | Negative cache TTL                                             |
 // | `LIVE_MAX_HOSTS`                  | 4              | caps.rs         | Multi-host cap (only primary hydrated)                         |
 // | `LIVE_CUSTOM_RESOURCES_MAX`       | 8              | caps.rs         | Custom live resources via env JSON                             |
+// | `MAX_LIVE_DENY_PREFIXES`          | 32             | caps.rs         | Operator SSRF deny prefixes (`RSC_LS_LIVE_DENY_PREFIXES`)      |
+// | `MAX_LIVE_DENY_PREFIXES_BYTES`    | 2048           | caps.rs         | Raw byte cap on the deny-prefix env value                      |
 // | `MAX_CONCURRENT_FETCHES`          | 2              | live.rs         | fetch-thread semaphore                                         |
 // | `MAX_PINNED_AGENT_CACHE_ENTRIES`  | 8              | caps.rs         | Pinned ureq-agent cache bound (keyed by address set)           |
 // | `MAX_SYNTAX_DIAGNOSTICS`          | 10             | diagnostics.rs  | Unclosed/unmatched brace+quote diagnostics per publish         |
@@ -167,6 +169,24 @@ pub(crate) const LIVE_MAX_HOSTS: usize = 4;
 ///
 /// Bounds parsing of the JSON env var to avoid unbounded allocation.
 pub(crate) const LIVE_CUSTOM_RESOURCES_MAX: usize = 8;
+
+/// Maximum number of operator-defined SSRF deny prefixes via
+/// `RSC_LS_LIVE_DENY_PREFIXES`.
+///
+/// The env value is a comma-separated list of IPv4/IPv6 addresses or CIDR
+/// prefixes the live SSRF policy must always deny, regardless of
+/// `RSC_LS_LIVE_ALLOW_LOOPBACK` (e.g. a network-specific NAT64/RFC 6052
+/// prefix or an internal range). Bounds the parse so a hostile or
+/// fat-fingered value cannot allocate unboundedly; extra entries are
+/// ignored with a WARN.
+pub(crate) const MAX_LIVE_DENY_PREFIXES: usize = 32;
+
+/// Raw byte cap on the `RSC_LS_LIVE_DENY_PREFIXES` env value.
+///
+/// Sized to hold `MAX_LIVE_DENY_PREFIXES` maximal IPv6 CIDR entries
+/// (a `/128` prefix is at most 47 bytes plus a comma), so a legitimate
+/// full list never truncates. Entries past the cap are ignored with a WARN.
+pub(crate) const MAX_LIVE_DENY_PREFIXES_BYTES: usize = 2 * 1024;
 
 /// Maximum number of pinned `ureq::Agent`s retained in the agent cache.
 ///

@@ -1,6 +1,7 @@
 // Enrichment triggers and SSRF bypass vectors.
 // Copied (not moved) from `lsp/src/live.rs`; the original block is
 // left untouched. `use super::*` is adapted to `use crate::live::*;` for the new location.
+use crate::caps::{MAX_LIVE_DENY_PREFIXES, MAX_LIVE_DENY_PREFIXES_BYTES};
 use crate::live::*;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -473,4 +474,134 @@ fn test_ssrf_shared_vector_table_denied() {
             "unconditional vector must stay denied with loopback allowed: {bad:?}"
         );
     }
+}
+
+// ── Operator deny prefixes (`RSC_LS_LIVE_DENY_PREFIXES`) ─────────────────
+//
+// The built-in policy cannot know a network-specific NAT64/RFC 6052 prefix
+// or another custom internal range. Operators list them explicitly; the
+// entries are checked before the built-in policy and never relaxed by the
+// loopback opt-in.
+
+#[test]
+fn test_deny_prefixes_match_v4_v6_and_mapped() {
+    let denies = parse_deny_prefixes(Some("64:ff9b:1::/48, 192.0.2.0/24, 198.51.100.7"));
+    assert_eq!(denies.len(), 3);
+
+    // v6 custom NAT64/RFC 6052-style prefix.
+    assert!(is_extra_deny_match(
+        "64:ff9b:1::a9fe:a9fe".parse().unwrap(),
+        &denies
+    ));
+    assert!(!is_extra_deny_match(
+        "64:ff9b:2::1".parse().unwrap(),
+        &denies
+    ));
+    // v4 CIDR (host bits ignored).
+    assert!(is_extra_deny_match("192.0.2.5".parse().unwrap(), &denies));
+    assert!(!is_extra_deny_match("192.0.3.5".parse().unwrap(), &denies));
+    // Bare address behaves as /32.
+    assert!(is_extra_deny_match(
+        "198.51.100.7".parse().unwrap(),
+        &denies
+    ));
+    assert!(!is_extra_deny_match(
+        "198.51.100.8".parse().unwrap(),
+        &denies
+    ));
+    // IPv4-mapped IPv6 candidate hits the v4 deny prefix.
+    assert!(is_extra_deny_match(
+        "::ffff:192.0.2.5".parse().unwrap(),
+        &denies
+    ));
+    // Non-matching public v4/v6 stays allowed.
+    assert!(!is_extra_deny_match("8.8.8.8".parse().unwrap(), &denies));
+    assert!(!is_extra_deny_match(
+        "2606:4700::1111".parse().unwrap(),
+        &denies
+    ));
+    // Empty list is a no-op.
+    assert!(!is_extra_deny_match("192.0.2.5".parse().unwrap(), &[]));
+}
+
+#[test]
+fn test_deny_prefixes_deny_before_loopback_allow() {
+    let denies = parse_deny_prefixes(Some("192.0.2.0/24,64:ff9b:1::/48"));
+    for ip in ["192.0.2.5", "64:ff9b:1::1"] {
+        let addr: std::net::IpAddr = ip.parse().unwrap();
+        for allow in [false, true] {
+            let reason = denied_reason_for_ip_with_denies(addr, allow, &denies);
+            assert!(reason.is_some(), "{ip} must be denied (allow={allow})");
+            assert!(
+                reason.unwrap().contains("RSC_LS_LIVE_DENY_PREFIXES"),
+                "reason names the operator list: {reason:?}"
+            );
+        }
+    }
+    // Config-time literal validation applies the custom deny too.
+    assert!(validate_host_with_policy("192.0.2.5", true, &denies).is_err());
+    assert!(validate_host_with_policy("192.0.2.5", false, &denies).is_err());
+    // Fetch-time resolve gate: denied for the literal, allowed without it.
+    assert!(resolve_and_validate_host_with_denies("192.0.2.5", 443, true, &denies).is_err());
+    assert!(resolve_and_validate_host_with_denies("192.0.2.5", 443, true, &[]).is_ok());
+    // Without the operator list these are public and allowed with loopback on.
+    assert!(validate_host_with_policy("192.0.2.5", true, &[]).is_ok());
+    assert!(denied_reason_for_ip_with_denies("192.0.2.5".parse().unwrap(), false, &[]).is_none());
+}
+
+#[test]
+fn test_deny_prefixes_invalid_entries_ignored_without_panic() {
+    // Invalid entries are dropped; valid ones survive. A multibyte/garbage
+    // entry must not panic (the parser never byte-slices an entry).
+    let denies = parse_deny_prefixes(Some(
+        "not-an-ip,192.0.2.0/33,2001:db8::/129,999.1.1.1,日本語/24,,1.2.3.4/x,10.0.0.0/8",
+    ));
+    assert_eq!(denies.len(), 1);
+    assert!(is_extra_deny_match("10.1.2.3".parse().unwrap(), &denies));
+    assert!(!is_extra_deny_match("11.1.2.3".parse().unwrap(), &denies));
+
+    // A /24 with host bits set is honored on its network bits.
+    let hostbits = parse_deny_prefixes(Some("1.2.3.4/24"));
+    assert_eq!(hostbits.len(), 1);
+    assert!(is_extra_deny_match("1.2.3.99".parse().unwrap(), &hostbits));
+
+    // Unset/empty => none; garbage-only input never panics.
+    assert!(parse_deny_prefixes(None).is_empty());
+    assert!(parse_deny_prefixes(Some("   ")).is_empty());
+    assert!(parse_deny_prefixes(Some("日本語,💥/128,//")).is_empty());
+}
+
+#[test]
+fn test_deny_prefixes_caps_enforced() {
+    // Count cap: 40 valid entries requested, first cap kept.
+    let raw: Vec<String> = (0..40).map(|i| format!("198.51.100.{i}/32")).collect();
+    let denies = parse_deny_prefixes(Some(&raw.join(",")));
+    assert_eq!(denies.len(), MAX_LIVE_DENY_PREFIXES);
+    assert!(is_extra_deny_match(
+        "198.51.100.0".parse().unwrap(),
+        &denies
+    ));
+
+    // Byte cap: an oversized first token is ignored (not parsed).
+    let huge = "1".repeat(MAX_LIVE_DENY_PREFIXES_BYTES + 64);
+    assert!(parse_deny_prefixes(Some(&huge)).is_empty());
+    // Entries before the oversized token survive; the rest are dropped.
+    let mixed = format!("10.0.0.0/8,{huge}");
+    let denies2 = parse_deny_prefixes(Some(&mixed));
+    assert_eq!(denies2.len(), 1);
+    assert!(is_extra_deny_match("10.1.1.1".parse().unwrap(), &denies2));
+}
+
+#[test]
+fn test_config_deny_prefixes_gate_activation() {
+    let mut m = HashMap::new();
+    m.insert("RSC_LS_LIVE", "1");
+    m.insert("MIKROTIK_HOST", "192.0.2.5");
+    m.insert("MIKROTIK_PASS", "p");
+    m.insert("RSC_LS_LIVE_DENY_PREFIXES", "192.0.2.0/24,64:ff9b:1::/48");
+    let cfg = cfg_with(m);
+    assert_eq!(cfg.deny_prefixes.len(), 2);
+    // The operator prefix blocks the target even though loopback is allowed
+    // (cfg_with injects RSC_LS_LIVE_ALLOW_LOOPBACK=1).
+    assert!(!cfg.is_active());
 }

@@ -272,4 +272,9 @@ fn test_live_connection_changed_predicate() {
     let mut ca_changed = base.clone();
     ca_changed.ca_file = "/tmp/ca.pem".to_string();
     assert!(live_connection_changed(&base, &ca_changed));
+    // Operator deny-list change invalidates entries fetched under the old
+    // SSRF policy (a newly-denied host must not keep serving cached data).
+    let mut deny_changed = base.clone();
+    deny_changed.deny_prefixes = crate::live::parse_deny_prefixes(Some("192.0.2.0/24"));
+    assert!(live_connection_changed(&base, &deny_changed));
 }
