@@ -2155,15 +2155,27 @@ class TestMarkdownPropertyTables:
         argument = next(a for a in menu["arguments"] if a["name"] == "add-dns-entries")
         assert argument["description"] == "Creates dynamic DNS records"
 
-    def test_property_section_fragment_context_is_never_attached(self, capsys):
-        # `## Properties` is a fragment of the preceding page, not a page of
-        # its own; its sub-menus are siblings, so the shared ancestor must
-        # never become the table's parent (a wrong attach would overwrite the
-        # real CPU child's rows).
+    def test_property_section_fragment_uses_nearest_explicit_context(self, capsys):
+        # `## Properties` is a fragment of the page above it, not a page of
+        # its own; its owning menu is the nearest preceding explicit context
+        # (`### CPU`), never the broad shared page ancestor
+        # (`/system/resource`), which would misplace the CPU rows.
         content = (
+            "## system/resource/cpu \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            '<ArgTable c1="Read-only Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="load" typ="percent">Short</ArgTableRow>\n'
+            "</ArgTable>\n"
+            "\n"
             "## system/resource \n"
             "\n"
             "**Type:** Directory\n"
+            "\n"
+            "### CPU\n"
+            "\n"
+            "**Sub-menu:** `/system/resource/cpu`\n"
             "\n"
             "## Properties\n"
             "\n"
@@ -2179,9 +2191,61 @@ class TestMarkdownPropertyTables:
             "\n"
             "**Sub-menu:** `/system/resource/hardware`\n"
         )
-        menu = next(m for m in self._parse(content) if m["path"] == "/system/resource")
-        assert "load" not in {a["name"] for a in menu["arguments"]}
-        assert "no unambiguous menu" in capsys.readouterr().err
+        menus = {m["path"]: m for m in self._parse(content)}
+        cpu = menus["/system/resource/cpu"]
+        load = next(r for r in cpu["read_only"] if r["name"] == "load")
+        assert load["description"] == "CPU usage in percent"
+        # The fragment's rows must not land on the page ancestor.
+        assert "load" not in {a["name"] for a in menus["/system/resource"].get("arguments", [])}
+        assert "skipped" not in capsys.readouterr().err
+
+    def test_property_section_fragment_ambiguous_context_warns(self, capsys):
+        # A shared-property `**Sub-menu:**` lists several menus: the fragment
+        # cannot be attributed to one, so it stays unattached with a warning.
+        content = (
+            "## interface/bridge/filter \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "### Shared\n"
+            "\n"
+            "**Sub-menu:** `/interface/bridge/filter, /interface/bridge/nat`\n"
+            "\n"
+            "## Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **action** (*accept \\| drop*) | Rule action |\n"
+        )
+        menus = {m["path"]: m for m in self._parse(content)}
+        assert "action" not in {a["name"] for a in menus["/interface/bridge/filter"].get("arguments", [])}
+        assert "no single known menu for its property-section fragment" in capsys.readouterr().err
+
+    def test_property_section_fragment_stale_context_warns(self, capsys):
+        # A context more than one H2 page behind is stale and must not be
+        # reused across an unrelated page.
+        content = (
+            "## ip/address \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## Overview\n"
+            "\n"
+            "Prose page with no menu context of its own.\n"
+            "\n"
+            "## Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **foo** (*string*) | Not attributable |\n"
+            "\n"
+            "### Child\n"
+            "\n"
+            "**Sub-menu:** `/ip/address/child`\n"
+        )
+        menus = {m["path"]: m for m in self._parse(content)}
+        assert "foo" not in {a["name"] for a in menus["/ip/address"].get("arguments", [])}
+        assert "skipped" in capsys.readouterr().err
 
     def test_single_child_page_context_warns_and_skips(self, capsys):
         # One sub-menu is not enough to identify the page's own menu: it could

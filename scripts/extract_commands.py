@@ -336,6 +336,66 @@ def _deepest_common_ancestor(paths: list[str]) -> str | None:
     return "/" + "/".join(common)
 
 
+def _h2_page_starts(lines: list[str]) -> list[int]:
+    """Return the line index of every H2 (`## `) page start, fence-aware.
+
+    Index 0 seeds the "page" containing any preamble, mirroring the original
+    behavior. Headings inside fenced code blocks are ignored so
+    comment-looking `##` lines cannot split a page.
+    """
+    starts = [0]
+    in_fence = False
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+        elif not in_fence and re.match(r"^## ", line):
+            starts.append(i)
+    return starts
+
+
+def _h2_page_ordinals(lines: list[str], starts: list[int]) -> list[int]:
+    """Return the H2-page ordinal of every line, indexed by line number."""
+    ordinals = [0] * len(lines)
+    for pos, start in enumerate(starts):
+        end = starts[pos + 1] if pos + 1 < len(starts) else len(lines)
+        for i in range(start, end):
+            ordinals[i] = pos
+    return ordinals
+
+
+def _nearest_explicit_contexts(lines: list[str]) -> list[list[str] | None]:
+    """Return the nearest preceding explicit menu context for every line.
+
+    A `## Properties` fragment is not a page of its own: it documents the
+    menu most recently named by a CLI-path heading or a `**Sub-menu:**` line
+    in the enclosing page. This tracks that context in document order and
+    expires it once it is more than one H2 page behind, so a stale context
+    from an unrelated page can never be attached. A context may carry several
+    paths (shared-property `**Sub-menu:**` lists); the caller rejects those as
+    ambiguous rather than guessing.
+    """
+    starts = _h2_page_starts(lines)
+    ordinals = _h2_page_ordinals(lines, starts)
+    contexts: list[list[str] | None] = [None] * len(lines)
+    current: list[str] | None = None
+    current_page: int | None = None
+    for i, line in enumerate(lines):
+        if current is not None and current_page is not None and ordinals[i] - current_page > 1:
+            current = None
+            current_page = None
+        contexts[i] = list(current) if current is not None else None
+        heading_path = _extract_heading_path(line)
+        if heading_path is not None:
+            current = ["/" + heading_path.lstrip("/")]
+            current_page = ordinals[i]
+        else:
+            sub_paths = _extract_sub_menu_paths(line)
+            if sub_paths:
+                current = sub_paths
+                current_page = ordinals[i]
+    return contexts
+
+
 def _page_sub_menu_context(lines: list[str]) -> list[tuple[str, list[str]]]:
     """Return per-line `(page_title, sub_menu_paths)` for the enclosing H2 page.
 
@@ -346,13 +406,7 @@ def _page_sub_menu_context(lines: list[str]) -> list[tuple[str, list[str]]]:
     property table often precedes the sub-menu links that describe it. Used
     only as a fallback when no `**Sub-menu:**` line is active for a table.
     """
-    starts = [0]
-    in_fence = False
-    for i, line in enumerate(lines):
-        if line.lstrip().startswith("```"):
-            in_fence = not in_fence
-        elif not in_fence and re.match(r"^## ", line):
-            starts.append(i)
+    starts = _h2_page_starts(lines)
 
     context: list[tuple[str, list[str]]] = [("", []) for _ in lines]
     for pos, start in enumerate(starts):
@@ -370,20 +424,21 @@ def _page_sub_menu_context(lines: list[str]) -> list[tuple[str, list[str]]]:
 
 # H2 headings upstream uses as *sections within* a topic page rather than as
 # page titles (a known heading-level quirk: `### Network` is followed by
-# `## Properties`). The page context fallback skips them: their shared
-# ancestor may be a broad container while the table actually documents one
-# child (e.g. `/system/resource/cpu` under a `## Properties` fragment), so
-# attaching to the ancestor would be a guess.
+# `## Properties`). Their shared ancestor is a broad container while the table
+# actually documents one child (e.g. `/system/resource/cpu` under a
+# `## Properties` fragment), so the page ancestor is never attached for them;
+# the nearest preceding explicit context is used instead.
 _MD_PROPERTY_SECTION_TITLE_RE = re.compile(r"\bpropert(y|ies)\b", re.IGNORECASE)
 
 
 def _is_property_section_title(title: str) -> bool:
     """True when an H2 `title` is a property-section fragment, not a page.
 
-    Guards the page-context fallback against `## Properties` /
-    `## Read-only properties` headings that upstream nests under a real menu
-    page. Such a fragment's sub-menu links describe its *siblings*, not a
-    shared parent, so its common ancestor must never be attached.
+    `## Properties` / `## Read-only properties` headings are fragments that
+    upstream nests under a real menu page. Such a fragment's sub-menu links
+    describe its *siblings*, so its common page ancestor must never be
+    attached; `_resolve_page_context` uses the nearest preceding explicit
+    menu context instead.
     """
     return bool(_MD_PROPERTY_SECTION_TITLE_RE.search(title))
 
@@ -453,6 +508,7 @@ def _collect_markdown_table(
     paths: list[str],
     page_title: str,
     page_context: list[str],
+    fragment_context: list[str] | None,
     heading: str,
     line_no: int,
     md_tables: list[dict],
@@ -468,9 +524,9 @@ def _collect_markdown_table(
     ignored.
 
     When no `**Sub-menu:**` association is active, the table is still stashed
-    with its `page_context` (the H2 page's distinct sub-menu paths). The merge
-    phase resolves exactly one shared ancestor from that context, or warns
-    instead of guessing.
+    with its `page_context` (the H2 page's distinct sub-menu paths) and its
+    `fragment_context` (the nearest preceding explicit menu). The merge phase
+    resolves exactly one known menu from those, or warns instead of guessing.
     """
     low = heading.lower()
     first = header_cells[0].strip().lower()
@@ -527,6 +583,7 @@ def _collect_markdown_table(
             md_tables.append({
                 "paths": [],
                 "context": list(page_context),
+                "fragment_context": list(fragment_context) if fragment_context else None,
                 "page_title": page_title,
                 "rows": parsed_rows,
                 "line_no": line_no,
@@ -546,23 +603,36 @@ def _resolve_page_context(
 ) -> list[str]:
     """Resolve a table's page context to exactly one known menu path, or [].
 
-    Conservative fallback for genuine topic pages without `**Sub-menu:**`: the
-    shared ancestor of the page's sub-menu paths identifies the documented
-    menu only when the page is a real page title (not a `## Properties`
-    fragment), the ancestor is unambiguous (at least two children, via
-    `_deepest_common_ancestor`), at least two segments deep (the root is never
-    a menu), and present in the parsed ArgTable menus. Anything softer is left
-    unassociated, with a warning so upstream drift stays visible.
+    Two conservative fallbacks for tables without an active `**Sub-menu:**`:
+
+    1. `## Properties` fragments use their nearest preceding explicit context
+       (a CLI-path heading or `**Sub-menu:**` line), because the fragment's
+       shared page ancestor is systematically too broad. The context must name
+       exactly one known menu; absent, ambiguous (several paths) or unknown
+       contexts stay unassociated.
+    2. Genuine topic pages use the shared ancestor of the page's sub-menu
+       paths, but only when it is unambiguous (at least two children, via
+       `_deepest_common_ancestor`), at least two segments deep (the root is
+       never a menu), and present in the parsed ArgTable menus.
+
+    Anything softer is left unassociated, with a warning so upstream drift
+    stays visible.
     """
     context = table.get("context") or []
     title = table.get("page_title", "")
+    if _is_property_section_title(title):
+        fragment = table.get("fragment_context") or []
+        if len(fragment) == 1 and fragment[0] in known_paths:
+            return [fragment[0]]
+        shown = fragment or context
+        if shown:
+            warnings.append(
+                f"markdown property table near line {table['line_no']} has no single "
+                f"known menu for its property-section fragment ({', '.join(shown)}); skipped"
+            )
+        return []
     candidate = _deepest_common_ancestor(context)
-    if (
-        candidate
-        and candidate.count("/") >= 2
-        and candidate in known_paths
-        and not _is_property_section_title(title)
-    ):
+    if candidate and candidate.count("/") >= 2 and candidate in known_paths:
         return [candidate]
     if context:
         warnings.append(
@@ -719,6 +789,9 @@ def parse_llms_full(filepath: str) -> list[dict]:
     # `**Sub-menu:**` association of their own. Computed once because a page's
     # sub-menu links often appear *after* the property table they describe.
     page_context = _page_sub_menu_context(lines)
+    # Per-line nearest preceding explicit menu for `## Properties` fragments,
+    # whose page context is too broad (see _resolve_page_context).
+    fragment_context = _nearest_explicit_contexts(lines)
 
     for i, line in enumerate(lines):
         # Finish a multi-line <ArgTableRow> before anything else: the buffered
@@ -835,7 +908,8 @@ def parse_llms_full(filepath: str) -> list[dict]:
                 page_title, page_paths = page_context[i]
                 _collect_markdown_table(
                     cells, rows, effective_paths, page_title, page_paths,
-                    current_heading, i + 1, md_tables, print_rows, warnings,
+                    fragment_context[i], current_heading,
+                    i + 1, md_tables, print_rows, warnings,
                 )
             continue
 
