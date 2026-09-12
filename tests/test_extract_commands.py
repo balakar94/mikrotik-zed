@@ -4,6 +4,8 @@ import os
 import tempfile
 from pathlib import Path
 
+import pytest
+
 # Add scripts to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
@@ -32,6 +34,9 @@ from extract_commands import (
     _extract_bare_cli_root,
     _strip_generated_line,
     _MAX_COVERED_ROOTS,
+    canonical_menu_path_error,
+    validate_menu_paths,
+    MenuPathError,
 )
 
 
@@ -145,6 +150,42 @@ class TestShouldInclude:
 
     def test_deeply_nested_bridge(self):
         assert should_include("/interface/bridge/port/monitor") is True
+
+
+class TestCanonicalMenuPaths:
+    """Every emitted path must be canonical or generation fails loudly.
+
+    The LSP indexes menus in a dict keyed by the exact path, so a variant
+    ("/ip/address/", "/ip//address", "/IP/address") is unreachable by
+    completion and diagnostics even though it looks harmless in the table.
+    """
+
+    def test_good_paths_have_no_error(self):
+        for path in ("/ip/address", "/ip/dhcp-server", "/interface/bridge/port/monitor"):
+            assert canonical_menu_path_error(path) is None
+
+    def test_uppercase_is_rejected(self):
+        assert canonical_menu_path_error("/IP/address") is not None
+
+    def test_trailing_slash_is_rejected(self):
+        assert canonical_menu_path_error("/ip/address/") == "trailing '/'"
+
+    def test_double_slash_is_rejected(self):
+        assert canonical_menu_path_error("/ip//address") == "empty path segment ('//')"
+
+    def test_missing_leading_slash_is_rejected(self):
+        assert canonical_menu_path_error("ip/address") == "missing leading '/'"
+
+    def test_validate_names_the_offending_path(self):
+        with pytest.raises(MenuPathError) as exc:
+            validate_menu_paths([{"path": "/ip/address"}, {"path": "/IP/bad"}])
+        assert "/IP/bad" in str(exc.value)
+
+    def test_generate_toml_fails_on_non_canonical_path(self):
+        menu = {"path": "/ip/address/", "type": "Directory",
+                "flags": [], "arguments": [], "read_only": []}
+        with pytest.raises(MenuPathError):
+            generate_toml([menu])
 
 
 class TestEscapeTomlString:

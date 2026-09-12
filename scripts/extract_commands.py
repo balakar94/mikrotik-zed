@@ -117,6 +117,56 @@ def should_include(menu_path: str) -> bool:
     return True
 
 
+# Canonical emitted menu path: exactly one leading "/", lowercase ASCII
+# alphanumerics with "/", "_", "-" separators, no trailing slash and no empty
+# segment. The LSP indexes menus in a dict keyed by the exact path string, so a
+# variant like "/ip/address/" is not reachable by completion or diagnostics.
+_CANONICAL_MENU_PATH_RE = re.compile(r"^/[a-z0-9][a-z0-9/_-]*$")
+
+
+class MenuPathError(ValueError):
+    """Raised when a menu path slated for emission is not canonical."""
+
+
+def canonical_menu_path_error(path: str) -> str | None:
+    """Return why `path` is non-canonical, or None when it is canonical.
+
+    Checks, in order: a single leading `/`, no trailing `/`, no empty
+    `//` segment, and only lowercase ASCII alphanumerics plus `/ _ -`
+    (which also rejects whitespace, control characters and uppercase).
+    """
+    if not path.startswith("/"):
+        return "missing leading '/'"
+    if path.startswith("//"):
+        return "duplicate leading '/'"
+    if path.endswith("/"):
+        return "trailing '/'"
+    if "//" in path:
+        return "empty path segment ('//')"
+    if not _CANONICAL_MENU_PATH_RE.match(path):
+        return "contains characters outside [a-z0-9/_-]"
+    return None
+
+
+def validate_menu_paths(menus: list[dict]) -> None:
+    """Raise MenuPathError when any emitted menu path is non-canonical.
+
+    A generation gate, not a cosmetic check: the LSP builds its index as a
+    dict keyed by path, so a non-canonical variant silently breaks every
+    lookup for that menu. The error names the offending path(s) and reason.
+    """
+    offenders = []
+    for menu in menus:
+        path = menu.get("path", "")
+        reason = canonical_menu_path_error(path)
+        if reason:
+            offenders.append((path, reason))
+    if offenders:
+        details = "; ".join(f"{p!r} ({why})" for p, why in offenders[:10])
+        extra = f" (+{len(offenders) - 10} more)" if len(offenders) > 10 else ""
+        raise MenuPathError(f"non-canonical menu path(s): {details}{extra}")
+
+
 HEADING_RE = re.compile(r"^#{2,4}\s+(.+)")
 
 
@@ -1339,7 +1389,11 @@ def generate_toml(
     without mutating the input, so repeated calls stay byte-identical modulo
     the Generated timestamp. Pass generics_applied explicitly only when the
     caller already previewed the count (main() does); None auto-computes it.
+
+    Raises MenuPathError before emitting anything if a menu path is not
+    canonical, so a broken table can never be written to disk.
     """
+    validate_menu_paths(menus)
     # Pure preview of generic rows per menu path (paths are unique after
     # finalize_menus). Computed once so the header count and the emitted rows
     # always agree, and the input list is never mutated.
@@ -1565,12 +1619,16 @@ def main():
     if generics_preview:
         print(f"Applied {generics_preview} generic item propertie(s) (universal add-item properties).")
 
-    toml_content = generate_toml(
-        unique,
-        llms_path=input_file,
-        overrides_applied=applied,
-        generics_applied=generics_preview,
-    )
+    try:
+        toml_content = generate_toml(
+            unique,
+            llms_path=input_file,
+            overrides_applied=applied,
+            generics_applied=generics_preview,
+        )
+    except MenuPathError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
     if write_if_changed(output_file, toml_content):
         print(f"Wrote {output_file} ({len(unique)} menus)")
