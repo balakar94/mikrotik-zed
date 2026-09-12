@@ -229,6 +229,11 @@ def normalized_host_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Addre
         inner = inner[1:-1]
     # Strip any zone id (defense in depth; '%' is rejected earlier anyway).
     inner = inner.split("%")[0]
+    # A single trailing dot is the DNS root / FQDN form (`169.254.169.254.`).
+    # Strip it so a numeric literal still normalizes to its IP; leaving it in
+    # would misclassify a denied address as a domain and bypass the denylist.
+    if len(inner) > 1 and inner.endswith("."):
+        inner = inner[:-1]
     try:
         return ipaddress.ip_address(inner)
     except ValueError:
@@ -276,19 +281,81 @@ def is_non_canonical_numeric_host(host: str) -> bool:
     return inner.lower() != norm.compressed.lower()
 
 
+def _in_ipv6_net(addr: ipaddress.IPv6Address, net: str) -> bool:
+    """Membership test that never raises (fail-closed False on bad input)."""
+    try:
+        return addr in ipaddress.IPv6Network(net)
+    except Exception:
+        return False
+
+
+def is_ipv6_transition_prefix(addr: ipaddress.IPv6Address) -> bool:
+    """Whether ``addr`` is a NAT64/Teredo/6to4 IPv6 transition prefix.
+
+    Exact prefixes: NAT64 well-known ``64:ff9b::/96``, Teredo ``2001::/32``,
+    and 6to4 ``2002::/16``. Mirrors
+    ``lsp/src/live_net.rs::is_ipv6_transition_prefix``.
+    """
+    if not isinstance(addr, ipaddress.IPv6Address):
+        return False
+    return (
+        _in_ipv6_net(addr, "64:ff9b::/96")
+        or _in_ipv6_net(addr, "2001::/32")
+        or _in_ipv6_net(addr, "2002::/16")
+    )
+
+
+def embedded_ipv4(addr: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
+    """Best-effort embedded IPv4 extraction from a transition prefix.
+
+    - NAT64 well-known ``64:ff9b::/96``: last 32 bits.
+    - 6to4 ``2002::/16``: bits 16..48.
+    - Teredo ``2001::/32``: last 32 bits, bitwise-inverted (obfuscated).
+    Returns None otherwise. Mirrors ``lsp/src/live_net.rs::embedded_ipv4``.
+    """
+    if not isinstance(addr, ipaddress.IPv6Address):
+        return None
+    if _in_ipv6_net(addr, "64:ff9b::/96"):
+        return ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)
+    if _in_ipv6_net(addr, "2002::/16"):
+        return addr.sixtofour
+    if _in_ipv6_net(addr, "2001::/32"):
+        teredo = addr.teredo
+        if teredo:
+            return teredo[1]
+    return None
+
+
 def is_normalized_ssrf_denied(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Whether a normalized IP is unconditionally SSRF-denied.
 
     Covers whole ``169.254.0.0/16`` link-local (not just ``.169.254``),
-    IPv6 ``fe80::/10`` link-local, and unspecified addresses. IPv4-mapped
-    IPv6 (``::ffff:a.b.c.d``) is unmapped to IPv4 first so
-    ``[::ffff:a9fe:a9fe]`` (metadata IP) is denied as link-local.
+    IPv6 ``fe80::/10`` link-local, unspecified addresses, and the IPv6
+    transition prefixes that tunnel IPv4 regardless of any loopback opt-in:
+    NAT64 well-known ``64:ff9b::/96``, Teredo ``2001::/32``, and 6to4
+    ``2002::/16``. IPv4-mapped IPv6 (``::ffff:a.b.c.d``) is unmapped to
+    IPv4 first so ``[::ffff:a9fe:a9fe]`` (metadata IP) is denied as
+    link-local; where a transition prefix carries an extractable embedded
+    IPv4, the IPv4 deny/private policy is re-run on it as well.
     """
     if isinstance(addr, ipaddress.IPv6Address):
         mapped = addr.ipv4_mapped
         if mapped is not None:
             return is_normalized_ssrf_denied(mapped)
         if addr.is_unspecified:
+            return True
+        # Best-effort: re-run the IPv4 deny/private checks on an embedded
+        # address first, then deny the transition prefix itself
+        # unconditionally. Both paths are exercised even though the prefix
+        # denial alone would suffice.
+        embedded = embedded_ipv4(addr)
+        if embedded is not None and (
+            is_normalized_ssrf_denied(embedded) or is_normalized_loopback_or_private(embedded)
+        ):
+            return True
+        # NAT64 / Teredo / 6to4 are unconditional denials: they tunnel IPv4
+        # (including link-local/metadata and private space).
+        if is_ipv6_transition_prefix(addr):
             return True
         try:
             if addr in ipaddress.IPv6Network("fe80::/10"):
@@ -307,6 +374,42 @@ def is_normalized_ssrf_denied(addr: ipaddress.IPv4Address | ipaddress.IPv6Addres
     return bool(addr.is_link_local)
 
 
+def is_normalized_loopback_or_private(
+    addr: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> bool:
+    """Whether a normalized IP is loopback/RFC1918/CGNAT/ULA private.
+
+    Mirrors ``lsp/src/live_net.rs::is_normalized_loopback_or_private``:
+    loopback, RFC1918, CGNAT ``100.64.0.0/10``, and ULA ``fc00::/7`` are
+    private (denied unless ``RSC_LS_LIVE_ALLOW_LOOPBACK=1`` on the Rust
+    side). Intentional divergence: the companion scripts' :func:`validate_host`
+    does NOT call this — routers legitimately live on the LAN and the scripts
+    have no allow-loopback escape hatch — so these ranges stay ALLOWED here.
+    Retained for Rust parity and tests.
+    """
+    if isinstance(addr, ipaddress.IPv6Address):
+        mapped = addr.ipv4_mapped
+        if mapped is not None:
+            return is_normalized_loopback_or_private(mapped)
+        if addr.is_loopback:
+            return True
+        return _in_ipv6_net(addr, "fc00::/7")
+    if addr.is_loopback:
+        return True
+    try:
+        if addr in ipaddress.IPv4Network("10.0.0.0/8"):
+            return True
+        if addr in ipaddress.IPv4Network("172.16.0.0/12"):
+            return True
+        if addr in ipaddress.IPv4Network("192.168.0.0/16"):
+            return True
+        if addr in ipaddress.IPv4Network("100.64.0.0/10"):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def validate_host(host: str) -> str | None:
     """Validate a device host per ``lsp/src/live_net.rs::validate_host``.
 
@@ -316,9 +419,12 @@ def validate_host(host: str) -> str | None:
     DNS: exact ``169.254.169.254``, ``metadata.google.internal``,
     ``metadata.google``, ``metadata.goog``, ``0.0.0.0``, ``::``
     (case-insensitive, bracket-tolerant), whole ``169.254.0.0/16`` for IPv4
-    literals, IPv6 ``fe80::/10`` link-local, IPv4-mapped IPv6 unmapping, and
-    non-canonical numeric literals (decimal/hex/octal/short) rejected
-    fail-closed via normalization (see ``normalized_host_ip``).
+    literals, IPv6 ``fe80::/10`` link-local, the NAT64/Teredo/6to4 transition
+    prefixes (``64:ff9b::/96``, ``2001::/32``, ``2002::/16``), IPv4-mapped
+    IPv6 unmapping, and non-canonical numeric literals (decimal/hex/octal/
+    short, including the FQDN-root trailing-dot form such as
+    ``169.254.169.254.``) rejected fail-closed via normalization (see
+    ``normalized_host_ip``).
 
     Intentional divergence from the Rust side: private/loopback ranges stay
     ALLOWED here (routers live on LAN, and this path has no
@@ -339,8 +445,14 @@ def validate_host(host: str) -> str | None:
     if "/" in host or "\\" in host:
         return "host contains path separator"
     # Lexical SSRF denylist (no DNS): case-insensitive, bracket-tolerant.
+    # Trailing-dot (FQDN root) form: strip exactly one trailing dot BEFORE
+    # bracket stripping so `[169.254.169.254].` is handled too, so
+    # `169.254.169.254.` and `metadata.google.internal.` cannot evade the
+    # exact-match denials. Mirrors lsp/src/live_net.rs::is_ssrf_denied_host.
     stripped = host.strip()
     lowered = stripped.lower()
+    if lowered.endswith(".") and len(lowered) > 1:
+        lowered = lowered[:-1]
     inner = lowered
     if inner.startswith("[") and inner.endswith("]") and len(inner) >= 2:
         inner = inner[1:-1]
@@ -491,6 +603,14 @@ def resolve_and_check_host(host: str, port: int) -> str | None:
     (fail-closed: resolution failure, empty results, unparseable IPs, and
     any denied IP all refuse the connection before credentials are sent).
     Never sends credentials itself.
+
+    Residual TOCTOU (Python-only; the Rust LSP closes this): this check
+    resolves, but ``requests``/``paramiko`` resolve again at connect time, so
+    a DNS rebind between the two lookups is still possible here. The Rust side
+    pins the validated addresses into the HTTP agent resolver
+    (``PinnedAddrs``); doing the same in Python would need a custom
+    urllib3 resolver/connection pool for ``requests`` and a pre-resolved-IP
+    socket for ``paramiko``. Not implemented today.
     """
     bare = (host or "").strip()
     if bare.startswith("[") and bare.endswith("]") and len(bare) >= 2:

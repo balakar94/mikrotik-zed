@@ -228,3 +228,40 @@ fn test_fetch_custom_resource_rejects_host_with_slash() {
     let res = fetch_custom_resource(&cfg, &custom_test_resource());
     assert!(matches!(res, Err(LiveError::InvalidHost(_))));
 }
+
+// ── F1: DNS pinning (resolve-then-connect TOCTOU) ────────────────────────
+
+#[test]
+fn test_resolve_and_validate_returns_validated_addrs() {
+    use std::net::SocketAddr;
+    // IP literals resolve locally (no DNS) and come back for pinning.
+    let v4 = resolve_and_validate_host("8.8.8.8", 443, false).unwrap();
+    assert_eq!(v4, vec!["8.8.8.8:443".parse::<SocketAddr>().unwrap()]);
+    let v6 = resolve_and_validate_host("[2001:db8::1]", 8443, false).unwrap();
+    assert_eq!(
+        v6,
+        vec!["[2001:db8::1]:8443".parse::<SocketAddr>().unwrap()]
+    );
+    // Denied addresses fail closed and return no addresses to pin.
+    assert!(resolve_and_validate_host("169.254.169.254", 443, true).is_err());
+    assert!(resolve_and_validate_host("127.0.0.1", 443, false).is_err());
+}
+
+#[test]
+fn test_pinned_resolver_never_consults_dns() {
+    use std::net::SocketAddr;
+    use ureq::Resolver;
+    let addrs: Vec<SocketAddr> = vec![
+        "8.8.8.8:443".parse().unwrap(),
+        "[2001:db8::1]:443".parse().unwrap(),
+    ];
+    let resolver = PinnedAddrs(addrs.clone());
+    // Regardless of the requested netloc (including a name that would rebound
+    // to loopback), the resolver returns exactly the validated set.
+    assert_eq!(resolver.resolve("attacker.invalid:443").unwrap(), addrs);
+    assert_eq!(
+        resolver.resolve("metadata.google.internal:80").unwrap(),
+        addrs
+    );
+    assert_eq!(resolver.resolve("other.example:443").unwrap(), addrs);
+}

@@ -68,6 +68,44 @@ fn test_denied_reason_for_ip_vectors() {
     // IPv4-mapped metadata is denied via unmapping.
     let mapped: IpAddr = "::ffff:169.254.169.254".parse().unwrap();
     assert!(denied_reason_for_ip(mapped, true).is_some());
+    // NAT64/Teredo/6to4 are unconditional denials, even with loopback allowed.
+    for bad in [
+        "64:ff9b::a9fe:a9fe", // NAT64 embedding 169.254.169.254
+        "64:ff9b::7f00:1",    // NAT64 embedding 127.0.0.1
+        "2001::1",            // Teredo
+        "2002:a9fe:a9fe::1",  // 6to4 embedding 169.254.169.254
+        "2002:0808:0808::1",  // 6to4 embedding 8.8.8.8
+    ] {
+        let addr: IpAddr = bad.parse().unwrap();
+        assert!(
+            denied_reason_for_ip(addr, true).is_some(),
+            "transition prefix must be denied even when loopback allowed: {bad}"
+        );
+        assert!(denied_reason_for_ip(addr, false).is_some());
+    }
+    // ULA fc00::/7 and CGNAT 100.64.0.0/10 are loopback/private: denied
+    // without the flag, allowed with it (not in the unconditional set).
+    for gated in [
+        "fc00::1",
+        "fd12:3456:789a::1",
+        "100.64.0.1",
+        "100.127.255.255",
+    ] {
+        let addr: IpAddr = gated.parse().unwrap();
+        assert!(
+            denied_reason_for_ip(addr, false).is_some(),
+            "ULA/CGNAT must be denied by default: {gated}"
+        );
+        assert!(
+            denied_reason_for_ip(addr, true).is_none(),
+            "ULA/CGNAT must be allowed with loopback opt-in: {gated}"
+        );
+    }
+    // Adjacent public ranges pass.
+    for ok in ["100.63.255.255", "100.128.0.0", "2606:4700::1111"] {
+        let addr: IpAddr = ok.parse().unwrap();
+        assert!(denied_reason_for_ip(addr, false).is_none(), "{ok}");
+    }
 }
 
 #[test]
@@ -120,6 +158,28 @@ fn test_ca_bundle_missing_and_oversize_fail_closed() {
     // Negative cache: second call short-circuits without I/O.
     assert!(is_bad_ca(&key) || read_ca_bundle(&key).is_none());
     let _ = std::fs::remove_file(&big);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_ca_bundle_symlink_to_oversize_fails_closed() {
+    // The symlink's own `len()` is the target path length (small), so the
+    // metadata pre-check passes; the read-time `take(cap + 1)` must still
+    // reject the oversize target rather than reading it unbounded.
+    let dir = std::env::temp_dir().join("rsc-ls-ca-symlink-test");
+    let _ = std::fs::create_dir_all(&dir);
+    let target = dir.join("huge-ca.pem");
+    std::fs::write(&target, vec![b'A'; (MAX_CA_FILE_BYTES + 1) as usize]).unwrap();
+    let link = dir.join("link-ca.pem");
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let link_key = link.to_string_lossy().to_string();
+    assert!(
+        read_ca_bundle(&link_key).is_none(),
+        "symlinked oversize CA must fail closed"
+    );
+    let _ = std::fs::remove_file(&link);
+    let _ = std::fs::remove_file(&target);
 }
 
 #[test]

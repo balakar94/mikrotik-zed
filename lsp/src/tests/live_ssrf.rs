@@ -167,6 +167,113 @@ fn test_ssrf_controls_stay_denied() {
 }
 
 #[test]
+fn test_ssrf_trailing_dot_hostnames_denied() {
+    // A trailing `.` is the DNS root/FQDN form: resolvers treat
+    // `169.254.169.254.` and `metadata.google.internal.` as the same host,
+    // but exact-string denials would miss them. All must fail closed even
+    // when loopback is allowed (these are unconditional SSRF denials).
+    for bad in [
+        "169.254.169.254.",
+        "metadata.google.internal.",
+        "metadata.google.",
+        "metadata.goog.",
+        "0.0.0.0.",
+    ] {
+        assert!(
+            is_ssrf_denied_host(bad),
+            "trailing-dot denied host must hit the exact-match denylist: {bad:?}"
+        );
+        assert!(
+            validate_host_with_allow(bad, true).is_err(),
+            "trailing-dot denied host must stay denied with loopback allowed: {bad:?}"
+        );
+        assert!(
+            validate_host_with_allow(bad, false).is_err(),
+            "trailing-dot denied host must be denied by default: {bad:?}"
+        );
+    }
+    // Case-insensitive + bracket-tolerant trailing-dot forms.
+    assert!(is_ssrf_denied_host("[Metadata.Google.Internal]."));
+    assert!(validate_host_with_allow("[metadata.goog].", true).is_err());
+    // Numeric loopback/link-local with a trailing dot is also fail-closed via
+    // the non-canonical-numeric path (mirrors `127.1`).
+    assert!(validate_host_with_allow("127.0.0.1.", false).is_err());
+    // Ordinary FQDN consumers are unaffected.
+    assert!(validate_host_with_allow("router.local.", false).is_ok());
+}
+
+#[test]
+fn test_ssrf_ipv6_transition_and_ula_cgnat_policy() {
+    // Unconditional denials: NAT64/Teredo/6to4 tunnel IPv4 (including
+    // metadata/link-local and private space) and are NOT reachable through
+    // the loopback opt-in.
+    for bad in [
+        "[64:ff9b::a9fe:a9fe]", // NAT64 embedding 169.254.169.254
+        "[64:ff9b::7f00:1]",    // NAT64 embedding 127.0.0.1
+        "[64:ff9b::c0a8:0101]", // NAT64 embedding 192.168.1.1
+        "[2001::1]",            // Teredo
+        "[2002:a9fe:a9fe::1]",  // 6to4 embedding 169.254.169.254
+        "[2002:0808:0808::1]",  // 6to4 embedding 8.8.8.8 (prefix still denied)
+    ] {
+        assert!(
+            validate_host_with_allow(bad, false).is_err(),
+            "transition prefix must be denied by default: {bad:?}"
+        );
+        assert!(
+            validate_host_with_allow(bad, true).is_err(),
+            "transition prefix must stay denied with loopback allowed: {bad:?}"
+        );
+        assert!(
+            normalized_host_ip(bad).is_some_and(is_normalized_ssrf_denied),
+            "transition prefix must hit the unconditional SSRF deny path: {bad:?}"
+        );
+    }
+    // NAT64/6to4 embedded IPv4 extraction feeds the IPv4 policy.
+    assert!(is_ipv6_transition_prefix(
+        "64:ff9b::a9fe:a9fe".parse().unwrap()
+    ));
+    assert!(is_ipv6_transition_prefix("2001::1".parse().unwrap()));
+    assert!(is_ipv6_transition_prefix(
+        "2002:c0a8:0101::1".parse().unwrap()
+    ));
+    assert!(!is_ipv6_transition_prefix("2001:db8::1".parse().unwrap()));
+    assert_eq!(
+        embedded_ipv4("64:ff9b::a9fe:a9fe".parse().unwrap()),
+        Some("169.254.169.254".parse().unwrap())
+    );
+    assert_eq!(
+        embedded_ipv4("2002:c0a8:0101::1".parse().unwrap()),
+        Some("192.168.1.1".parse().unwrap())
+    );
+    assert_eq!(embedded_ipv4("2001:db8::1".parse().unwrap()), None);
+    // ULA and CGNAT are loopback/private, NOT unconditional: denied by
+    // default, allowed with the loopback opt-in (operators use them on LAN).
+    for gated in [
+        "[fc00::1]",
+        "[fd12:3456:789a::1]",
+        "100.64.0.1",
+        "100.127.255.255",
+    ] {
+        assert!(
+            validate_host_with_allow(gated, false).is_err(),
+            "ULA/CGNAT must be denied by default: {gated:?}"
+        );
+        assert!(
+            validate_host_with_allow(gated, true).is_ok(),
+            "ULA/CGNAT must be allowed with loopback opt-in: {gated:?}"
+        );
+        assert!(
+            !is_normalized_ssrf_denied(normalized_host_ip(gated).unwrap()),
+            "ULA/CGNAT must NOT be in the unconditional deny set: {gated:?}"
+        );
+    }
+    // Public ranges adjacent to CGNAT stay allowed.
+    assert!(validate_host_with_allow("100.63.255.255", false).is_ok());
+    assert!(validate_host_with_allow("100.128.0.0", false).is_ok());
+    assert!(validate_host_with_allow("[2606:4700::1111]", false).is_ok());
+}
+
+#[test]
 fn test_legitimate_hosts_still_accepted() {
     // No regression for normal hosts: public DNS names, public IPv4/IPv6,
     // and private hosts when explicitly allowed.

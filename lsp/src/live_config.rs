@@ -124,9 +124,9 @@ pub(crate) fn validate_user(raw: &str) -> Option<String> {
 /// Whether workspace settings may override transport-security keys.
 ///
 /// Opt-in via `RSC_LS_ALLOW_SETTINGS_TRANSPORT=1`. When false (default),
-/// `host`/`user` (F2), `ssl_verify=false`, `force_http=true`,
-/// `allow_loopback=true`, and `custom_resources` from settings are ignored
-/// (env values always win).
+/// `host`/`user` (F2), `port`, `ssl_verify=false`, `force_http=true`,
+/// `allow_loopback=true`, `custom_resources`, and `ca_file` from settings
+/// are ignored (env values always win).
 fn settings_transport_allowed() -> bool {
     std::env::var("RSC_LS_ALLOW_SETTINGS_TRANSPORT")
         .ok()
@@ -363,10 +363,11 @@ impl LiveConfig {
     /// would let unrelated editor settings hijack the device connection.
     /// `enabled` is never settings-overridable (env opt-in only).
     ///
-    /// Transport-security keys (`ssl_verify=false`, `force_http=true`,
-    /// `allow_loopback=true`, `custom_resources`) are privileged: they are
-    /// ignored from workspace settings unless
-    /// `RSC_LS_ALLOW_SETTINGS_TRANSPORT=1` is set. Env values always win.
+    /// Transport-security keys (`host`, `user`, `port`, `ssl_verify=false`,
+    /// `force_http=true`, `allow_loopback=true`, `custom_resources`,
+    /// `ca_file`) are privileged: they are ignored from workspace settings
+    /// unless `RSC_LS_ALLOW_SETTINGS_TRANSPORT=1` is set. Env values always
+    /// win.
     pub fn apply_settings_value(cfg: &mut Self, v: &serde_json::Value) {
         Self::apply_settings_value_with_transport(cfg, v, settings_transport_allowed());
     }
@@ -459,7 +460,19 @@ impl LiveConfig {
             );
         }
         if let Some(port_val) = get_settings_port(settings_obj) {
-            cfg.port = port_val;
+            // F2: the port selects the transport endpoint credentials are
+            // sent to, so a settings change is privileged like host/user.
+            // Default deny unless RSC_LS_ALLOW_SETTINGS_TRANSPORT=1; env
+            // values always win when the opt-in is absent.
+            if port_val != cfg.port && !allow_transport {
+                log_warn!(
+                    "live settings port ignored (was {} now {}): set RSC_LS_ALLOW_SETTINGS_TRANSPORT=1 to allow workspace transport overrides",
+                    cfg.port,
+                    port_val
+                );
+            } else {
+                cfg.port = port_val;
+            }
         }
         // Privileged transport keys: downgrades via settings require opt-in.
         // Env values always win when the opt-in is absent.

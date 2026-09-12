@@ -7,10 +7,14 @@ plus a CLI smoke test (--help / --dry-run) that also proves the scripts'
 import bootstrap works when run as `python scripts/<name>.py`.
 """
 
+import importlib.util
+import ipaddress
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).parent.parent
 SCRIPTS = ROOT / "scripts"
@@ -24,9 +28,12 @@ sys.path.insert(0, str(SCRIPTS))
 from _mikrotik_shared import (  # noqa: E402
     check_target,
     clamp_int,
+    embedded_ipv4,
     env_int,
     extract_spki_der,
     format_host_for_url,
+    is_ipv6_transition_prefix,
+    is_normalized_loopback_or_private,
     parse_fingerprint,
     redact_secrets,
     resolve_and_check_host,
@@ -139,6 +146,25 @@ class TestValidateHostSsrfDenylist:
         assert validate_host("[Metadata.Goog]") is not None
         assert validate_host("[169.254.169.254]") is not None
 
+    def test_trailing_dot_hostnames_denied(self):
+        # A trailing `.` is the DNS root / FQDN form: resolvers treat
+        # `169.254.169.254.` and `metadata.google.internal.` as the same host,
+        # but exact-string denials would miss them. Mirrors Rust
+        # `test_ssrf_trailing_dot_hostnames_denied`.
+        for bad in [
+            "169.254.169.254.",
+            "metadata.google.internal.",
+            "metadata.google.",
+            "metadata.goog.",
+            "0.0.0.0.",
+            "[metadata.goog].",
+        ]:
+            assert validate_host(bad) is not None, f"should deny trailing-dot {bad!r}"
+        # Ordinary FQDN consumers are unaffected.
+        assert validate_host("router.local.") is None
+        # Numeric literals with a trailing dot are non-canonical: fail-closed.
+        assert validate_host("169.254.169.254.") == "SSRF denied host"
+
     def test_whole_link_local_range_denied(self):
         assert validate_host("169.254.0.1") is not None
         assert validate_host("169.254.10.20") is not None
@@ -180,6 +206,53 @@ class TestSharedSsrfVectors:
         # so loopback forms that are not non-canonical stay allowed here.
         assert validate_host("127.0.0.1") is None
         assert validate_host("[::ffff:127.0.0.1]") is None
+
+
+class TestIpv6TransitionAndPrivateRanges:
+    """Item 2 parity: NAT64/Teredo/6to4 are unconditional denials; ULA and
+    CGNAT are private (Rust gates them behind ALLOW_LOOPBACK; the scripts
+    intentionally allow private LAN ranges, so they stay allowed here)."""
+
+    def test_transition_prefixes_denied(self):
+        for bad in [
+            "64:ff9b::a9fe:a9fe",  # NAT64 embedding 169.254.169.254
+            "64:ff9b::7f00:1",  # NAT64 embedding 127.0.0.1
+            "2001::1",  # Teredo
+            "2002:a9fe:a9fe::1",  # 6to4 embedding 169.254.169.254
+        ]:
+            assert validate_host(bad) is not None, f"should deny {bad!r}"
+            assert resolve_and_check_host(bad, 443) is not None
+
+    def test_transition_prefix_helper_and_embedded_ipv4(self):
+        assert is_ipv6_transition_prefix(ipaddress.ip_address("64:ff9b::a9fe:a9fe"))
+        assert is_ipv6_transition_prefix(ipaddress.ip_address("2001::1"))
+        assert is_ipv6_transition_prefix(ipaddress.ip_address("2002:c0a8:0101::1"))
+        assert not is_ipv6_transition_prefix(ipaddress.ip_address("2001:db8::1"))
+        assert embedded_ipv4(ipaddress.ip_address("64:ff9b::a9fe:a9fe")) == ipaddress.ip_address(
+            "169.254.169.254"
+        )
+        assert embedded_ipv4(ipaddress.ip_address("2002:c0a8:0101::1")) == ipaddress.ip_address(
+            "192.168.1.1"
+        )
+        assert embedded_ipv4(ipaddress.ip_address("2001:db8::1")) is None
+
+    def test_ula_and_cgnat_are_private_not_unconditional(self):
+        # Parity with Rust is_normalized_loopback_or_private.
+        for priv in [
+            "fc00::1",
+            "fd12:3456:789a::1",
+            "100.64.0.1",
+            "100.127.255.255",
+            "10.0.0.1",
+            "192.168.88.1",
+            "127.0.0.1",
+        ]:
+            assert is_normalized_loopback_or_private(ipaddress.ip_address(priv)), priv
+        for pub in ["8.8.8.8", "100.63.255.255", "100.128.0.0", "2001:db8::1", "2606:4700::1"]:
+            assert not is_normalized_loopback_or_private(ipaddress.ip_address(pub)), pub
+        # Scripts allow private LAN ranges by design (documented divergence).
+        assert validate_host("[fd12:3456::1]") is None
+        assert validate_host("100.64.0.1") is None
 
 
 # ── format_host_for_url ───────────────────────────────────────────
@@ -409,6 +482,65 @@ class TestDeploySchemeAndTimeout:
         assert "warning: invalid timeout 'bogus', using default 5" in capsys.readouterr().err
 
 
+# ── Deploy REST body cap + redaction ─────────────────────────────
+
+def _load_deploy_module():
+    spec = importlib.util.spec_from_file_location("mikrotik_deploy", DEPLOY_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _FakeStreamResponse:
+    """Minimal requests.Response stand-in for the streamed-read helper."""
+
+    def __init__(self, chunks, encoding="utf-8"):
+        self._chunks = chunks
+        self.encoding = encoding
+
+    def iter_content(self, chunk_size=8192):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class TestDeployResponseCapAndRedaction:
+    def test_capped_reader_returns_small_body(self):
+        mod = _load_deploy_module()
+        resp = _FakeStreamResponse([b"hello ", b"world"])
+        assert mod._read_response_capped(resp, "pw", "admin") == "hello world"
+
+    def test_capped_reader_rejects_oversize_body(self, capsys):
+        mod = _load_deploy_module()
+        # 65 * 8192 = 532480 > 512 KiB, delivered in fixed chunks.
+        chunks = [b"x" * 8192 for _ in range(65)]
+        with pytest.raises(SystemExit) as exc:
+            mod._read_response_capped(_FakeStreamResponse(chunks), "s3cret", "admin")
+        assert exc.value.code == 4
+        err = capsys.readouterr().err
+        assert "response too large" in err
+        assert "s3cret" not in err
+
+    def test_deploy_reads_all_bodies_with_stream_and_cap(self):
+        text = DEPLOY_PY.read_text(encoding="utf-8")
+        # Every session response is streamed and read through the helper.
+        assert text.count("stream=True") >= 3
+        assert text.count("_read_response_capped(") >= 4  # def + 3 call sites
+        # Raw unbounded body accessors are gone.
+        assert "resp.text" not in text
+        assert "imp.text" not in text
+        assert "put_resp.text" not in text
+
+    def test_deploy_redacts_device_bodies(self):
+        text = DEPLOY_PY.read_text(encoding="utf-8")
+        # Success, fallback, and import paths all wrap device output.
+        assert "print(redact_secrets(body, password, user))" in text
+        assert "redact_secrets(imp_body[:1000], password, user)" in text
+        assert "redact_secrets(out, password, user)" in text
+        assert "redact_secrets(err, password, user)" in text
+        # Body cap matches live-check / caps.rs (512 KiB).
+        assert "MAX_RESPONSE_BYTES = 512 * 1024" in text
+
+
 # ── validate_user ─────────────────────────────────────────────────
 
 class TestValidateUser:
@@ -572,6 +704,11 @@ class TestRustParity:
         "0.0.0.0",
         "169.254.0.0/16",
         "fe80::/10",
+        "64:ff9b::/96",
+        "2001::/32",
+        "2002::/16",
+        "fc00::/7",
+        "100.64.0.0/10",
     )
 
     def test_denylist_literals_match_rust(self):

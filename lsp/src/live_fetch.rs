@@ -13,6 +13,7 @@ use crate::live_net::{
 };
 use crate::logging::{log_debug, log_info, log_warn, redact_secrets, sanitize_for_log};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{
     Arc, Mutex, OnceLock,
     atomic::{AtomicUsize, Ordering},
@@ -59,8 +60,9 @@ impl Drop for FetchPermitGuard {
 ///
 /// Uses a global `OnceLock` cache keyed by `(timeout_secs, ssl_verify)` to reuse agents across
 /// calls.
-/// Logs `live agent reuse` on hit. Prefer `get_cached_agent_for_config` (pin/CA aware); this
-/// wrapper exists for unit tests and pin-less call sites.
+/// Logs `live agent reuse` on hit. Test-only: production always pins the
+/// validated addresses via `get_cached_agent_for_config`.
+#[cfg(test)]
 pub(crate) fn get_cached_agent(timeout: Duration, ssl_verify: bool) -> ureq::Agent {
     static AGENT_CACHE: OnceLock<Mutex<HashMap<(u64, bool), ureq::Agent>>> = OnceLock::new();
     let cache = AGENT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -115,20 +117,30 @@ pub(crate) fn get_cached_agent(timeout: Duration, ssl_verify: bool) -> ureq::Age
     agent
 }
 
-/// Pin-aware agent cache key: timeout + effective verify + pin + CA path.
+/// Pin-aware agent cache key: timeout + effective verify + pin + CA path +
+/// the validated address set. Including the addresses means an agent built
+/// for one validated resolution is never reused after DNS changes.
 fn agent_cache_key_for_config(
     config: &LiveConfig,
     timeout: Duration,
-) -> (u64, bool, Option<[u8; 32]>, String) {
+    addrs: &[SocketAddr],
+) -> (u64, bool, Option<[u8; 32]>, String, Vec<SocketAddr>) {
     (
         timeout.as_secs(),
         config.ssl_verify_effective(),
         config.fingerprint,
         config.ca_file.clone(),
+        addrs.to_vec(),
     )
 }
 
 /// Get (or build) the `ureq::Agent` for a full `LiveConfig`.
+///
+/// `addrs` are the already-validated addresses from
+/// `resolve_and_validate_host`; they are pinned into the agent's resolver so
+/// the connect uses exactly those IPs without re-resolving (closing the
+/// resolve-then-connect TOCTOU). The URL hostname is still used for the
+/// `Host` header and TLS SNI/name verification.
 ///
 /// Selection order on `https`:
 ///
@@ -139,12 +151,16 @@ fn agent_cache_key_for_config(
 ///
 /// On `http` no TLS is involved; a plain agent is returned. Redirects are
 /// always disabled (3xx surfaces as `LiveError::Status`).
-pub(crate) fn get_cached_agent_for_config(config: &LiveConfig, timeout: Duration) -> ureq::Agent {
-    type PinnedAgentCacheKey = (u64, bool, Option<[u8; 32]>, String);
+pub(crate) fn get_cached_agent_for_config(
+    config: &LiveConfig,
+    timeout: Duration,
+    addrs: &[SocketAddr],
+) -> ureq::Agent {
+    type PinnedAgentCacheKey = (u64, bool, Option<[u8; 32]>, String, Vec<SocketAddr>);
     static PINNED_CACHE: OnceLock<Mutex<HashMap<PinnedAgentCacheKey, ureq::Agent>>> =
         OnceLock::new();
     let cache = PINNED_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let key = agent_cache_key_for_config(config, timeout);
+    let key = agent_cache_key_for_config(config, timeout, addrs);
     {
         let guard = cache.lock().unwrap_or_else(|e| {
             log_warn!("agent cache lock poisoned, recovering");
@@ -152,16 +168,17 @@ pub(crate) fn get_cached_agent_for_config(config: &LiveConfig, timeout: Duration
         });
         if let Some(agent) = guard.get(&key) {
             log_debug!(
-                "live agent reuse timeout={}s ssl_verify_effective={} pin_set={} ca_set={}",
+                "live agent reuse timeout={}s ssl_verify_effective={} pin_set={} ca_set={} addrs={}",
                 key.0,
                 key.1,
                 key.2.is_some(),
-                !key.3.is_empty()
+                !key.3.is_empty(),
+                key.4.len()
             );
             return agent.clone();
         }
     }
-    let agent = build_agent_for_config(config, timeout);
+    let agent = build_agent_for_config(config, timeout, addrs);
     {
         let mut guard = cache.lock().unwrap_or_else(|e| {
             log_warn!("agent cache lock poisoned, recovering");
@@ -172,69 +189,108 @@ pub(crate) fn get_cached_agent_for_config(config: &LiveConfig, timeout: Duration
     agent
 }
 
+/// A builder with the mandatory timeout + no-redirects defaults.
+fn default_agent_builder(timeout: Duration) -> ureq::AgentBuilder {
+    ureq::AgentBuilder::new().timeout(timeout).redirects(0)
+}
+
+/// Resolver that returns the validated address set for any netloc.
+///
+/// `get_cached_agent_for_config` pins the addresses returned by
+/// `resolve_and_validate_host` into this resolver, so `agent.get` never
+/// performs a second DNS lookup (closing the resolve-then-connect TOCTOU).
+/// ureq still uses the request URL hostname for the `Host` header and TLS
+/// SNI/name verification, so identity checks are unchanged.
+#[derive(Clone, Debug)]
+pub(crate) struct PinnedAddrs(pub(crate) Vec<SocketAddr>);
+
+impl ureq::Resolver for PinnedAddrs {
+    fn resolve(&self, _netloc: &str) -> std::io::Result<Vec<SocketAddr>> {
+        Ok(self.0.clone())
+    }
+}
+
+/// Finalize a builder with a resolver pinned to `addrs`.
+///
+/// ureq consults this resolver instead of the system resolver, so the
+/// connection goes to exactly the validated IPs. TLS still validates the
+/// URL hostname (SNI + `ServerName`), so pinning does not weaken identity.
+fn finish_agent(builder: ureq::AgentBuilder, addrs: Vec<SocketAddr>) -> ureq::Agent {
+    builder.resolver(PinnedAddrs(addrs)).build()
+}
+
 /// Build (uncached) the agent for a config; fail-closed fallbacks never
 /// silently downgrade to insecure: on pin/CA build failure a default
-/// verifying agent is returned so the handshake still validates.
-fn build_agent_for_config(config: &LiveConfig, timeout: Duration) -> ureq::Agent {
+/// verifying agent is returned so the handshake still validates. The
+/// validated `addrs` are always pinned into the resolver.
+fn build_agent_for_config(
+    config: &LiveConfig,
+    timeout: Duration,
+    addrs: &[SocketAddr],
+) -> ureq::Agent {
+    let pinned = addrs.to_vec();
     if config.scheme() != "https" {
-        return ureq::AgentBuilder::new()
-            .timeout(timeout)
-            .redirects(0)
-            .build();
+        return finish_agent(default_agent_builder(timeout), pinned);
     }
     if let Some(pin) = config.fingerprint {
         if !config.ca_file.is_empty() {
             match build_pinned_with_ca_agent(timeout, pin, &config.ca_file) {
-                Some(a) => {
+                Some(b) => {
                     log_info!("live tls pin + custom CA active");
-                    return a;
+                    return finish_agent(b, pinned);
                 }
                 None => {
                     log_warn!(
                         "live pin/CA agent build failed, falling back to default verifier (fail-closed, verification still attempted)"
                     );
-                    return ureq::AgentBuilder::new()
-                        .timeout(timeout)
-                        .redirects(0)
-                        .build();
+                    return finish_agent(default_agent_builder(timeout), pinned);
                 }
             }
         }
         match build_pinned_agent(timeout, pin) {
-            Some(a) => {
+            Some(b) => {
                 log_info!("live tls SPKI pin active (chain replaced by pin check)");
-                return a;
+                return finish_agent(b, pinned);
             }
             None => {
                 log_warn!(
                     "live pinned agent build failed, falling back to default verifier (fail-closed)"
                 );
-                return ureq::AgentBuilder::new()
-                    .timeout(timeout)
-                    .redirects(0)
-                    .build();
+                return finish_agent(default_agent_builder(timeout), pinned);
             }
         }
     }
     if !config.ca_file.is_empty() {
         match build_ca_agent(timeout, &config.ca_file) {
-            Some(a) => {
+            Some(b) => {
                 log_info!("live custom CA active");
-                return a;
+                return finish_agent(b, pinned);
             }
             None => {
                 log_warn!(
                     "live custom CA agent build failed, falling back to default verifier (fail-closed)"
                 );
-                return ureq::AgentBuilder::new()
-                    .timeout(timeout)
-                    .redirects(0)
-                    .build();
+                return finish_agent(default_agent_builder(timeout), pinned);
             }
         }
     }
-    // No pin/CA: reuse the legacy path (secure default or insecure + WARN).
-    get_cached_agent(timeout, config.ssl_verify_effective())
+    // No pin/CA: secure default or insecure + WARN (preserves MIKROTIK_SSL=0).
+    if config.ssl_verify_effective() {
+        finish_agent(default_agent_builder(timeout), pinned)
+    } else {
+        log_warn!(
+            "live ssl_verify=false — building agent with insecure TLS verifier (host verification disabled)"
+        );
+        match insecure_agent_builder(timeout) {
+            Some(b) => finish_agent(b, pinned),
+            None => {
+                log_warn!(
+                    "live insecure agent build failed, falling back to default verifier (verification will still be attempted)"
+                );
+                finish_agent(default_agent_builder(timeout), pinned)
+            }
+        }
+    }
 }
 
 /// SPKI-pinning verifier: accepts only a leaf whose SPKI SHA256 equals `pin`.
@@ -306,8 +362,9 @@ impl rustls::client::danger::ServerCertVerifier for SpkiPinVerifier {
     }
 }
 
-/// Build an agent that pins the leaf SPKI instead of chain validation.
-fn build_pinned_agent(timeout: Duration, pin: [u8; 32]) -> Option<ureq::Agent> {
+/// Build the builder for an agent that pins the leaf SPKI instead of chain
+/// validation. Callers finalize with an address-pinning resolver.
+fn build_pinned_agent(timeout: Duration, pin: [u8; 32]) -> Option<ureq::AgentBuilder> {
     let provider = rustls::crypto::ring::default_provider();
     let tls_config = rustls::ClientConfig::builder_with_provider(provider.into())
         .with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
@@ -319,8 +376,7 @@ fn build_pinned_agent(timeout: Duration, pin: [u8; 32]) -> Option<ureq::Agent> {
         ureq::AgentBuilder::new()
             .timeout(timeout)
             .redirects(0)
-            .tls_config(Arc::new(tls_config))
-            .build(),
+            .tls_config(Arc::new(tls_config)),
     )
 }
 
@@ -383,13 +439,14 @@ pub(crate) fn parse_pem_certs(pem_text: &str) -> Vec<rustls::pki_types::Certific
     out
 }
 
-/// Build an agent validating chains against a user-provided PEM CA bundle.
+/// Build the builder for an agent validating chains against a custom PEM CA
+/// bundle. Callers finalize with an address-pinning resolver.
 ///
 /// Fail-closed `None` when the file is missing, unreadable, oversize
 /// (>256 KiB), or contains no decodable certificates. The path itself is
 /// sanitized in logs. Repeated failures for the same canonical path are
 /// served from a negative cache (no re-read per keystroke).
-fn build_ca_agent(timeout: Duration, ca_file: &str) -> Option<ureq::Agent> {
+fn build_ca_agent(timeout: Duration, ca_file: &str) -> Option<ureq::AgentBuilder> {
     let text = read_ca_bundle(ca_file)?;
     let certs = parse_pem_certs(&text);
     if certs.is_empty() {
@@ -421,8 +478,7 @@ fn build_ca_agent(timeout: Duration, ca_file: &str) -> Option<ureq::Agent> {
         ureq::AgentBuilder::new()
             .timeout(timeout)
             .redirects(0)
-            .tls_config(Arc::new(tls_config))
-            .build(),
+            .tls_config(Arc::new(tls_config)),
     )
 }
 
@@ -483,12 +539,13 @@ impl rustls::client::danger::ServerCertVerifier for PinnedWithCaVerifier {
     }
 }
 
-/// Build an agent combining custom CA chain validation with an SPKI pin.
+/// Build the builder for an agent combining custom CA chain validation with
+/// an SPKI pin. Callers finalize with an address-pinning resolver.
 fn build_pinned_with_ca_agent(
     timeout: Duration,
     pin: [u8; 32],
     ca_file: &str,
-) -> Option<ureq::Agent> {
+) -> Option<ureq::AgentBuilder> {
     let text = read_ca_bundle(ca_file)?;
     let certs = parse_pem_certs(&text);
     if certs.is_empty() {
@@ -520,15 +577,22 @@ fn build_pinned_with_ca_agent(
         ureq::AgentBuilder::new()
             .timeout(timeout)
             .redirects(0)
-            .tls_config(Arc::new(tls_config))
-            .build(),
+            .tls_config(Arc::new(tls_config)),
     )
 }
 
 /// Build an agent that disables TLS verification (insecure).
 ///
-/// Returns `None` if the rustls insecure config cannot be built.
+/// Returns `None` if the rustls insecure config cannot be built. Test-only:
+/// production finalizes the builder with an address-pinning resolver.
+#[cfg(test)]
 pub(crate) fn build_insecure_agent(timeout: Duration) -> Option<ureq::Agent> {
+    insecure_agent_builder(timeout).map(|b| b.build())
+}
+
+/// Builder form of [`build_insecure_agent`] so callers can append a
+/// address-pinning resolver before building.
+fn insecure_agent_builder(timeout: Duration) -> Option<ureq::AgentBuilder> {
     // Use rustls dangerous verifier that accepts any certificate.
     use rustls::DigitallySignedStruct;
     use rustls::SignatureScheme;
@@ -583,12 +647,11 @@ pub(crate) fn build_insecure_agent(timeout: Duration) -> Option<ureq::Agent> {
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(NoCertificateVerification))
         .with_no_client_auth();
-    let agent = ureq::AgentBuilder::new()
+    let builder = ureq::AgentBuilder::new()
         .timeout(timeout)
         .redirects(0)
-        .tls_config(Arc::new(tls_config))
-        .build();
-    Some(agent)
+        .tls_config(Arc::new(tls_config));
+    Some(builder)
 }
 
 /// Shared live-fetch path used by both `fetch_resource` and
@@ -628,10 +691,12 @@ fn fetch_live_resource(
     // F1: resolve-then-revalidate at fetch time. Lexical checks ran at
     // config time; DNS may resolve differently now. Any denied resolved IP
     // (or resolution failure) fails closed before credentials are sent.
-    // IP literals resolve locally without DNS traffic.
-    resolve_and_validate_host(&config.host, config.port, config.allow_loopback)?;
+    // IP literals resolve locally without DNS traffic. The validated
+    // addresses are then pinned into the agent resolver so `agent.get`
+    // cannot re-resolve to a different (rebound) address.
+    let addrs = resolve_and_validate_host(&config.host, config.port, config.allow_loopback)?;
     let timeout = Duration::from_secs(config.timeout_secs.clamp(1, 30));
-    let agent = get_cached_agent_for_config(config, timeout);
+    let agent = get_cached_agent_for_config(config, timeout, &addrs);
 
     let start = Instant::now();
     let credentials = format!("{}:{}", config.user, config.pass);

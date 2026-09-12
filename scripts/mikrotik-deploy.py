@@ -108,6 +108,11 @@ def load_file(path: pathlib.Path) -> str:
 # to direct /rest/execute script output.
 _IMPORT_FAILURE_MARKERS = ("syntax error", "input does not match", "bad command name", "failure:")
 
+# Response cap for streamed REST bodies, matching live-check and
+# lsp/src/caps.rs MAX_LIVE_RESPONSE_BYTES (512 KiB). Every device body is
+# read through this bound and redacted before printing/logging.
+MAX_RESPONSE_BYTES = 512 * 1024
+
 
 def _match_import_failure_marker(output: str) -> str | None:
     """Return the first high-confidence failure marker found in /import output, or None."""
@@ -116,6 +121,41 @@ def _match_import_failure_marker(output: str) -> str | None:
         if marker in lowered:
             return marker
     return None
+
+
+def _read_response_capped(resp, password: str, user: str) -> str:
+    """Read a streamed REST response with a 512 KiB cap, fail-closed.
+
+    ``resp`` must have been requested with ``stream=True``. Reads at most
+    ``MAX_RESPONSE_BYTES`` and exits 4 (after a redacted error) when the cap
+    is exceeded or the stream errors. Returns decoded text; the caller is
+    responsible for applying :func:`redact_secrets` before printing/logging.
+    Never returns or logs credential material itself.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        for chunk in resp.iter_content(chunk_size=8192):
+            if chunk:
+                total += len(chunk)
+                if total > MAX_RESPONSE_BYTES:
+                    msg = f"error: response too large ({total} bytes > {MAX_RESPONSE_BYTES})"
+                    print(redact_secrets(msg, password, user), file=sys.stderr)
+                    sys.exit(4)
+                chunks.append(chunk)
+    except Exception as e:
+        # `requests` may be absent in a partial install; never reference its
+        # exception class here (the caller only reaches this path when it is).
+        print(
+            redact_secrets(f"error: REST response read failed: {e}", password, user),
+            file=sys.stderr,
+        )
+        sys.exit(4)
+    content = b"".join(chunks)
+    try:
+        return content.decode(resp.encoding or "utf-8", errors="replace")
+    except Exception:
+        return content.decode("utf-8", errors="replace")
 
 
 # Filename validation — mirrors lsp/src/live_net.rs::validate_host but adapted for filenames.
@@ -233,37 +273,55 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
             print(f"error: {redact_secrets(pin_err, password, user)}", file=sys.stderr)
             sys.exit(4)
     try:
-        # Try direct execute
-        resp = session.post(f"{base}/rest/execute", json={"script": content}, timeout=effective_timeout, allow_redirects=False)
+        # Try direct execute. stream=True + _read_response_capped bounds the
+        # body (an unbounded body read could OOM on a hostile/broken device).
+        resp = session.post(f"{base}/rest/execute", json={"script": content}, timeout=effective_timeout, allow_redirects=False, stream=True)
         if resp.status_code in (200, 201, 204):
             log(f"REST: execute OK ({resp.status_code})")
-            if resp.text and resp.text.strip():
-                print(resp.text)
+            body = _read_response_capped(resp, password, user)
+            if body and body.strip():
+                print(redact_secrets(body, password, user))
             return
         if 300 <= resp.status_code < 400:
             print(f"error: redirect blocked (status {resp.status_code}); refusing to follow", file=sys.stderr)
             sys.exit(4)
         # If execute not allowed, try file method
-        log(f"REST execute returned {resp.status_code}: {resp.text[:500]}")
+        resp_body = _read_response_capped(resp, password, user)
+        log(
+            f"REST execute returned {resp.status_code}: "
+            f"{redact_secrets(resp_body[:500], password, user)}"
+        )
         log("REST: falling back to PUT /rest/file upload — EXPERIMENTAL: RouterOS's file API varies across versions")
         # File upload via /rest/file (PUT) — filename already validated and URL-encoded.
         # RouterOS file API is not well documented; we try PUT with contents field
-        put_resp = session.put(f"{base}/rest/file/{encoded_filename}", json={"contents": content}, timeout=effective_timeout, allow_redirects=False)
+        put_resp = session.put(f"{base}/rest/file/{encoded_filename}", json={"contents": content}, timeout=effective_timeout, allow_redirects=False, stream=True)
         if put_resp.status_code in (200, 201, 204):
             log(f"REST: file upload OK ({put_resp.status_code}), now importing")
             # RouterOS console accepts single-quoted strings; quoting guards
             # filenames containing spaces/special chars.
-            imp = session.post(f"{base}/rest/execute", json={"script": f"/import file={shlex.quote(filename)}"}, timeout=effective_timeout, allow_redirects=False)
+            imp = session.post(f"{base}/rest/execute", json={"script": f"/import file={shlex.quote(filename)}"}, timeout=effective_timeout, allow_redirects=False, stream=True)
             if 300 <= imp.status_code < 400:
                 print(f"error: redirect blocked (status {imp.status_code}); refusing to follow", file=sys.stderr)
                 sys.exit(4)
-            log(f"REST: import result {imp.status_code}: {imp.text[:1000]}")
-            marker = _match_import_failure_marker(imp.text)
+            imp_body = _read_response_capped(imp, password, user)
+            log(
+                f"REST: import result {imp.status_code}: "
+                f"{redact_secrets(imp_body[:1000], password, user)}"
+            )
+            marker = _match_import_failure_marker(imp_body)
             if marker:
-                print(f"error: REST import failed (failure marker {marker!r}): {imp.text[:1000]}", file=sys.stderr)
+                print(
+                    redact_secrets(
+                        f"error: REST import failed (failure marker {marker!r}): {imp_body[:1000]}",
+                        password,
+                        user,
+                    ),
+                    file=sys.stderr,
+                )
                 sys.exit(5)
             return
-        msg = f"error: REST deploy failed: execute={resp.status_code} {resp.text[:1000]} file={put_resp.status_code} {put_resp.text[:1000]}"
+        put_body = _read_response_capped(put_resp, password, user)
+        msg = f"error: REST deploy failed: execute={resp.status_code} {resp_body[:1000]} file={put_resp.status_code} {put_body[:1000]}"
         print(redact_secrets(msg, password, user), file=sys.stderr)
         sys.exit(4)
     except requests.exceptions.RequestException as e:
@@ -335,14 +393,24 @@ def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str,
                 print(f"error: remote /import timed out after {effective_timeout}s", file=sys.stderr)
                 sys.exit(5)  # the finally block below closes the SSH client
             time.sleep(0.1)
-        out = stdout.read().decode(errors="replace")
-        err = stderr.read().decode(errors="replace")
+        out_bytes = stdout.read(MAX_RESPONSE_BYTES + 1)
+        err_bytes = stderr.read(MAX_RESPONSE_BYTES + 1)
+        if len(out_bytes) > MAX_RESPONSE_BYTES or len(err_bytes) > MAX_RESPONSE_BYTES:
+            print(
+                f"error: remote import output too large (> {MAX_RESPONSE_BYTES} bytes)",
+                file=sys.stderr,
+            )
+            sys.exit(5)
+        out = out_bytes.decode(errors="replace")
+        err = err_bytes.decode(errors="replace")
         # Exit status is ready by now, so recv_exit_status() returns immediately.
         exit_status = stdout.channel.recv_exit_status()
+        # Device bodies are redacted before printing (central helper covers
+        # the password and base64 Basic material).
         if out:
-            print(out)
+            print(redact_secrets(out, password, user))
         if err:
-            print(err, file=sys.stderr)
+            print(redact_secrets(err, password, user), file=sys.stderr)
         if exit_status != 0:
             print(f"error: remote import failed with exit {exit_status}", file=sys.stderr)
             sys.exit(5)
