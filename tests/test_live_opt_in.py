@@ -597,6 +597,13 @@ class TestLiveCheckUnexpectedShapeFails:
                     self.auth = None
                     self.verify = True
                     self.headers = {}
+                    self.trust_env = True
+                    self.proxies = {}
+
+                def mount(self, prefix, adapter):
+                    # live-check builds the session via the shared pinned
+                    # helper, which mounts adapters; the fake ignores them.
+                    pass
 
                 def get(self, url, timeout=None, stream=False, **kwargs):
                     return FakeResp()
