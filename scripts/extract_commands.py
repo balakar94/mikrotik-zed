@@ -74,6 +74,10 @@ _MD_NAME_RE = re.compile(r"^\*{2,4}\s*([^*]+?)\s*\*{2,4}\s*(.*)$", re.DOTALL)
 # alternatives (`**a | b** (...)`) cannot match because their `|` precedes
 # the first `(`.
 _MD_FRAGMENT_NAME_RE = re.compile(r"^\*{0,4}\s*([a-z0-9!][a-z0-9!._-]*)\s*\(([^)]*)\)")
+# TitleCase read-only labels that upstream occasionally uses instead of the
+# lowercase CLI name (`**Container**` for /ip/service `container`). Only a
+# single capitalised word qualifies; status/grouped labels stay rejected.
+_MD_TITLECASE_NAME_RE = re.compile(r"^\*{2,4}\s*([A-Z][A-Za-z0-9]*)\s*\*{2,4}\s*(.*)$", re.DOTALL)
 # Property names are single RouterOS-style tokens: lowercase alphanumerics
 # plus `! _ . -` (e.g. `802.3-sap`, `!comments`, `use-peer-dns`). Anything
 # else (grouped alternatives, sub-table labels, TitleCase status columns) is
@@ -516,6 +520,32 @@ def _parse_markdown_property_row(
     }
 
 
+def _parse_titlecase_readonly_row(cells: list[str], desc_idx: int) -> dict | None:
+    """Parse a TitleCase read-only label row (`**Container**`), or None.
+
+    Upstream narrative read-only tables occasionally capitalise labels that
+    the CLI exposes lowercase (`Container`, `Local`, `Remote` for /ip/service).
+    Only a single capitalised word is normalised, and the merge stage applies
+    the row solely to an already-known property name, so a display label can
+    never invent a new property.
+    """
+    if not cells:
+        return None
+    match = _MD_TITLECASE_NAME_RE.match(cells[0].strip())
+    if not match:
+        return None
+    name = match.group(1).lower()
+    if not _MD_VALID_NAME_RE.match(name):
+        return None
+    return {
+        "name": name,
+        "type": _parse_markdown_type(match.group(2))[0],
+        "read_only": True,
+        "description": _clean_markdown_text(cells[desc_idx]) if 0 <= desc_idx < len(cells) else "",
+        "titlecase": True,
+    }
+
+
 def _collect_markdown_table(
     header_cells: list[str],
     rows: list[str],
@@ -574,6 +604,10 @@ def _collect_markdown_table(
     for raw in rows:
         cells = _split_markdown_cells(raw)
         parsed = _parse_markdown_property_row(cells, desc_idx, type_idx)
+        if parsed is None and section == "read_only":
+            # TitleCase labels are only meaningful as read-only views of a
+            # known property; `_merge_markdown_rows` refuses to invent one.
+            parsed = _parse_titlecase_readonly_row(cells, desc_idx)
         if parsed is None:
             # Only rows whose bold marker is malformed count as an unknown
             # row kind; grouped alternatives (`**a | b**`), TitleCase status
@@ -682,6 +716,10 @@ def _merge_markdown_rows(menu: dict, rows: list[dict], known_paths: set[str]) ->
                 entry["description"] = description
             if row.get("type") and not entry.get("type"):
                 entry["type"] = row["type"]
+            continue
+        # A TitleCase label only enriches a known property (handled above):
+        # it must never invent one from a status or display label.
+        if row.get("titlecase"):
             continue
         # Generic add-item properties are owned by GENERIC_ITEM_PROPS and
         # injected later; adding a markdown row here (often with an empty

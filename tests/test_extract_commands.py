@@ -1949,6 +1949,61 @@ class TestMarkdownPropertyTables:
         assert arg["type"] == "enum | static-only"
         assert arg["description"] == "Prefix pool"
 
+    def test_titlecase_readonly_rows_enrich_known_properties(self):
+        # Upstream capitalises read-only labels (`Container`, `Local`,
+        # `Remote`) for /ip/service although the CLI exposes them lowercase.
+        # They must enrich the known read-only rows, not warn or duplicate.
+        content = (
+            "## ip/service \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            '<ArgTable c1="Read-only Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="container" typ="enum () { :0 }"></ArgTableRow>\n'
+            '<ArgTableRow arg="local" typ="ip6Addr"></ArgTableRow>\n'
+            '<ArgTableRow arg="remote" typ="composite { ip: ip6Addr }"></ArgTableRow>\n'
+            "</ArgTable>\n"
+            "\n"
+            "## Services\n"
+            "\n"
+            "**Sub-menu:** `/ip/service`\n"
+            "\n"
+            "### Read-only properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **Container** | Name of the container listening on the port |\n"
+            "| **Local** | Router local address used for the connection |\n"
+            "| **Remote** | Remote address that established the connection |\n"
+        )
+        menu = self._parse(content)[0]
+        read_only = {r["name"]: r for r in menu["read_only"]}
+        assert set(read_only) == {"container", "local", "remote"}
+        assert read_only["container"]["description"] == "Name of the container listening on the port"
+        assert read_only["local"]["description"] == "Router local address used for the connection"
+        assert read_only["remote"]["description"] == "Remote address that established the connection"
+        assert menu["arguments"] == [], "TitleCase labels must stay read-only"
+
+    def test_titlecase_readonly_row_without_known_name_is_not_invented(self):
+        content = (
+            "## ip/service \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## Services\n"
+            "\n"
+            "**Sub-menu:** `/ip/service`\n"
+            "\n"
+            "### Read-only properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **Container** | Name of the container listening on the port |\n"
+        )
+        menu = self._parse(content)[0]
+        assert menu["read_only"] == []
+        assert menu["arguments"] == []
+
     def test_type_column_tables_use_the_description_column(self):
         content = (
             "## container \n"
