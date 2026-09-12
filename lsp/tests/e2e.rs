@@ -155,6 +155,47 @@ fn complete_at(client: &mut LspClient, uri: &str, character: usize) -> Value {
     }
 }
 
+/// Request completion at an arbitrary `(line, character)` of `uri`.
+fn complete_at_position(client: &mut LspClient, uri: &str, line: usize, character: usize) -> Value {
+    match client.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character},
+        }),
+    ) {
+        Response::Ok(v) => v,
+        Response::Err(err) => panic!("completion errored: {err}"),
+    }
+}
+
+/// Splice one completion `textEdit` into a multi-line document and return the
+/// result. Fixtures are ASCII-only, so LSP `character` units equal bytes.
+fn apply_completion_edit_multiline(doc: &str, item: &Value) -> String {
+    let edit = item
+        .get("textEdit")
+        .and_then(Value::as_object)
+        .expect("completion item must carry a textEdit");
+    let range = &edit["range"];
+    let sl = range["start"]["line"].as_u64().expect("start line") as usize;
+    let sc = range["start"]["character"].as_u64().expect("start char") as usize;
+    let el = range["end"]["line"].as_u64().expect("end line") as usize;
+    let ec = range["end"]["character"].as_u64().expect("end char") as usize;
+    let new_text = edit["newText"].as_str().expect("newText");
+    let lines: Vec<&str> = doc.split('\n').collect();
+    let offset = |line: usize, character: usize| -> usize {
+        let preceding: usize = lines[..line].iter().map(|l| l.len() + 1).sum();
+        preceding + character
+    };
+    let start = offset(sl, sc);
+    let end = offset(el, ec);
+    let mut out = String::with_capacity(doc.len() + new_text.len());
+    out.push_str(&doc[..start]);
+    out.push_str(new_text);
+    out.push_str(&doc[end..]);
+    out
+}
+
 /// The completion item labelled `label`, or panic listing the available
 /// labels.
 fn item_labelled<'a>(result: &'a Value, label: &str) -> &'a Value {
@@ -705,6 +746,52 @@ fn completion_value_text_edit_preserves_quotes_over_the_wire() {
             apply_completion_edit(line, item),
             *expected,
             "wire edit for {line:?} must yield {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn completion_after_continuation_splits_partial_menu_segment() {
+    // A partial menu path split by a `\` continuation is one logical path:
+    // `/ip/rou\` + `te/che` joins to `/ip/route/che`, whose final segment
+    // `che` completes to the `/ip/route/check` action command. The returned
+    // `textEdit` must target the SECOND physical line and replace only the
+    // typed segment (`che`), never the parent path.
+    let cases: &[(&str, usize, usize, usize, &str)] = &[
+        // (doc, cursor line, cursor character, expected segment start, expected doc)
+        ("/ip/rou\\\nte/che", 1, 6, 3, "/ip/rou\\\nte/check"),
+        ("/ip/route\\\n/che", 1, 4, 1, "/ip/route\\\n/check"),
+    ];
+    let mut client = initialized_client();
+    for (idx, (doc, line, character, seg_start, expected)) in cases.iter().enumerate() {
+        let uri = format!("file:///e2e-continuation-{idx}.rsc");
+        open_text_document(&mut client, &uri, doc);
+        let result = complete_at_position(&mut client, &uri, *line, *character);
+        let item = item_labelled(&result, "check");
+        let edit = item["textEdit"]
+            .as_object()
+            .expect("partial-segment item must carry a textEdit");
+        let range = &edit["range"];
+        assert_eq!(
+            range["start"]["line"], *line as u64,
+            "segment edit must start on the cursor (continuation) line, got {range}"
+        );
+        assert_eq!(
+            range["end"]["line"], *line as u64,
+            "segment edit must end on the cursor line, got {range}"
+        );
+        assert_eq!(
+            range["start"]["character"], *seg_start as u64,
+            "edit must start at the typed segment, got {range}"
+        );
+        assert_eq!(
+            range["end"]["character"], *character as u64,
+            "edit must end at the cursor, got {range}"
+        );
+        assert_eq!(
+            apply_completion_edit_multiline(doc, item),
+            *expected,
+            "accepting `check` must replace only the typed segment of {doc:?}"
         );
     }
 }

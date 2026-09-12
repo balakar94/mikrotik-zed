@@ -311,9 +311,29 @@ pub fn compute_completions_with_live(
     before_cursor: &str,
     live_cache: Option<&LiveCache>,
 ) -> Vec<CompletionItem> {
+    compute_completions_with_logical(data, before_cursor, None, live_cache)
+}
+
+/// Live-aware completion with an explicit continuation-aware logical prefix.
+///
+/// `logical_prefix` is the `\`-continuation join up to the cursor (the
+/// server's `LogicalLine::text`) when it differs from `before_cursor`, which
+/// joins continued lines with a single space. The partial-path branch uses it
+/// so a menu path split across a continuation (`/ip/rou\` + `te/che`)
+/// resolves to the logical `/ip/route/che`; the server then maps the
+/// segment-only `textEdit` back onto the physical line(s). `None` (and a
+/// logical prefix equal to `before_cursor`) preserves the physical-only
+/// behavior byte-for-byte for single-line documents and unit callers.
+pub fn compute_completions_with_logical(
+    data: &MenuData,
+    before_cursor: &str,
+    logical_prefix: Option<&str>,
+    live_cache: Option<&LiveCache>,
+) -> Vec<CompletionItem> {
     let context = crate::parse_line(data, before_cursor);
 
-    let mut items = match_context_with_live(data, &context, before_cursor, live_cache);
+    let mut items =
+        match_context_with_live(data, &context, before_cursor, logical_prefix, live_cache);
 
     // The partially typed `:`-prefixed token under the cursor, if any.
     // `:` fires completion requests; detecting it here (instead of earlier)
@@ -384,6 +404,7 @@ fn match_context_with_live(
     data: &MenuData,
     context: &LineContext,
     before_cursor: &str,
+    logical_prefix: Option<&str>,
     live_cache: Option<&LiveCache>,
 ) -> Vec<CompletionItem> {
     // No path yet (or a bare "/") → suggest root menus. "/" parses to path
@@ -419,6 +440,30 @@ fn match_context_with_live(
                 get_value_completions_with_live(data, context, &key, live_cache, &effective);
             items = filter_by_typed_prefix(items, &typed_suffix);
             attach_value_text_edit(&mut items, before_cursor, &typed_suffix);
+            return items;
+        }
+    }
+
+    // Continuation-aware partial path. `before_cursor` joins continued lines
+    // with a space, so the physical last line cannot see a segment split
+    // across a `\` join (`/ip/rou\` + `te/che` yields the token `te/che`, no
+    // leading `/`), and that split tail is misread as a command leader. The
+    // logical join yields `/ip/route/che`; when it differs from
+    // `before_cursor`, use it (and only it) to resolve the partial segment
+    // BEFORE the verb/command branch. A known logical path is left to the
+    // normal menu branches below; single-line inputs carry no differing
+    // logical prefix and keep the original ordering byte-for-byte.
+    if let Some(logical) = logical_prefix.filter(|logical| *logical != before_cursor) {
+        let logical_path = crate::parse_line(data, logical).path;
+        let logical_key = normalize_path(&logical_path);
+        let logical_known = data.menu_by_path.contains_key(&logical_key)
+            || data.ancestor_prefixes.contains(&logical_key);
+        if !logical_known
+            && let Some((typed_segment, seg_start, seg_end)) = partial_path_segment(logical)
+        {
+            let mut items =
+                get_partial_segment_completion_items(data, &logical_path, &typed_segment);
+            attach_segment_text_edit(&mut items, seg_start, seg_end);
             return items;
         }
     }
