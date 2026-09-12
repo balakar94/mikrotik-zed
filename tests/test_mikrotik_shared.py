@@ -7,11 +7,14 @@ plus a CLI smoke test (--help / --dry-run) that also proves the scripts'
 import bootstrap works when run as `python scripts/<name>.py`.
 """
 
+import importlib.util
 import ipaddress
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).parent.parent
 SCRIPTS = ROOT / "scripts"
@@ -477,6 +480,65 @@ class TestDeploySchemeAndTimeout:
         assert clamp_int(None, 1, 30, 5) == 5
         assert clamp_int("bogus", 1, 30, 5) == 5
         assert "warning: invalid timeout 'bogus', using default 5" in capsys.readouterr().err
+
+
+# ── Deploy REST body cap + redaction ─────────────────────────────
+
+def _load_deploy_module():
+    spec = importlib.util.spec_from_file_location("mikrotik_deploy", DEPLOY_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _FakeStreamResponse:
+    """Minimal requests.Response stand-in for the streamed-read helper."""
+
+    def __init__(self, chunks, encoding="utf-8"):
+        self._chunks = chunks
+        self.encoding = encoding
+
+    def iter_content(self, chunk_size=8192):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class TestDeployResponseCapAndRedaction:
+    def test_capped_reader_returns_small_body(self):
+        mod = _load_deploy_module()
+        resp = _FakeStreamResponse([b"hello ", b"world"])
+        assert mod._read_response_capped(resp, "pw", "admin") == "hello world"
+
+    def test_capped_reader_rejects_oversize_body(self, capsys):
+        mod = _load_deploy_module()
+        # 65 * 8192 = 532480 > 512 KiB, delivered in fixed chunks.
+        chunks = [b"x" * 8192 for _ in range(65)]
+        with pytest.raises(SystemExit) as exc:
+            mod._read_response_capped(_FakeStreamResponse(chunks), "s3cret", "admin")
+        assert exc.value.code == 4
+        err = capsys.readouterr().err
+        assert "response too large" in err
+        assert "s3cret" not in err
+
+    def test_deploy_reads_all_bodies_with_stream_and_cap(self):
+        text = DEPLOY_PY.read_text(encoding="utf-8")
+        # Every session response is streamed and read through the helper.
+        assert text.count("stream=True") >= 3
+        assert text.count("_read_response_capped(") >= 4  # def + 3 call sites
+        # Raw unbounded body accessors are gone.
+        assert "resp.text" not in text
+        assert "imp.text" not in text
+        assert "put_resp.text" not in text
+
+    def test_deploy_redacts_device_bodies(self):
+        text = DEPLOY_PY.read_text(encoding="utf-8")
+        # Success, fallback, and import paths all wrap device output.
+        assert "print(redact_secrets(body, password, user))" in text
+        assert "redact_secrets(imp_body[:1000], password, user)" in text
+        assert "redact_secrets(out, password, user)" in text
+        assert "redact_secrets(err, password, user)" in text
+        # Body cap matches live-check / caps.rs (512 KiB).
+        assert "MAX_RESPONSE_BYTES = 512 * 1024" in text
 
 
 # ── validate_user ─────────────────────────────────────────────────
