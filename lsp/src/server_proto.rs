@@ -151,9 +151,11 @@ pub(crate) fn parse_error_response(id: &serde_json::Value) -> serde_json::Value 
 /// The full document is unusable by definition here, so this scans the raw
 /// text for the first `"id"` key followed by a JSON scalar (string, number
 /// per `-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`, or null) and returns
-/// it. Anything else (missing key, truncated value,
-/// non-UTF-8 body) yields null, which is the spec-mandated fallback when
-/// the id cannot be detected. Never panics, never allocates beyond the id.
+/// it. Anything else (missing key, truncated value, non-UTF-8 body) yields
+/// null, which is the spec-mandated fallback when the id cannot be detected.
+/// When the scan resumes after a rejected byte it advances by the full UTF-8
+/// code-point width, so malformed or non-ASCII bodies never land mid-character
+/// and never panic; never allocates beyond the returned id.
 pub(crate) fn extract_id_for_parse_error(body: &[u8]) -> serde_json::Value {
     let Ok(text) = std::str::from_utf8(body) else {
         return serde_json::Value::Null;
@@ -205,7 +207,10 @@ pub(crate) fn extract_id_for_parse_error(body: &[u8]) -> serde_json::Value {
                 if text[pos..].starts_with("null") {
                     return serde_json::Value::Null;
                 }
-                search_from = pos + 1;
+                // `b'n'` is ASCII, so `pos` already sits on a char boundary;
+                // still advance by the code-point width for uniformity.
+                let step = text[pos..].chars().next().map_or(1, char::len_utf8);
+                search_from = pos + step;
                 continue;
             }
             b'-' | b'0'..=b'9' => {
@@ -250,7 +255,12 @@ pub(crate) fn extract_id_for_parse_error(body: &[u8]) -> serde_json::Value {
                 return serde_json::Value::Null;
             }
             _ => {
-                search_from = pos + 1;
+                // `pos` may be the lead byte of a multi-byte character;
+                // `pos + 1` would land on a continuation byte and the next
+                // `text[search_from..]` would panic. Advance one full code
+                // point instead.
+                let step = text[pos..].chars().next().map_or(1, char::len_utf8);
+                search_from = pos + step;
                 continue;
             }
         }
