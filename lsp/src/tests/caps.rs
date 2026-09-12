@@ -198,6 +198,7 @@ fn test_caps_table_values_match_consts() {
     assert_eq!(crate::parser::MAX_BRACE_DEPTH, 4096);
     assert_eq!(crate::signature::MAX_SIGNATURE_PROPERTIES, 40);
     assert_eq!(crate::suggest::MAX_SUGGEST_INPUT_BYTES, 256);
+    assert_eq!(crate::diagnostics::MAX_DIAG_TEXT_CHARS, 120);
     // Display-budget micro-caps owned by `text_util`.
     assert_eq!(text_util::MAX_DETAIL_CHARS, 256);
     assert_eq!(text_util::MAX_DETAIL_TYPE_CHARS, 64);

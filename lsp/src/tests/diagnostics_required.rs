@@ -112,6 +112,74 @@ fn test_no_duplicate_when_unique() {
 }
 
 #[test]
+fn test_mixed_case_add_verb_triggers_missing_required() {
+    // Uppercase ADD is the same creation verb; only the supplied `address`
+    // counts, so `interface` must still be reported missing.
+    let data = synthetic_data();
+    let diags = compute_diagnostics(&data, "/IP/ADDRESS ADD ADDRESS=1.2.3.4", "file:///test.rsc");
+    let missing: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code.as_deref() == Some("missing-required"))
+        .collect();
+    assert!(
+        !missing.is_empty(),
+        "ADD must trigger required checks, got {diags:?}"
+    );
+    assert!(
+        missing.iter().any(|d| d.message.contains("interface")),
+        "interface must be the missing one, got {diags:?}"
+    );
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_deref() == Some("unknown-property")),
+        "uppercase ADDRESS must not be unknown, got {diags:?}"
+    );
+}
+
+#[test]
+fn test_mixed_case_set_with_selector_skips_missing_required() {
+    // `set` targets an existing entry via a selector, so creation args are
+    // not required — regardless of the verb's casing.
+    let data = synthetic_data();
+    let diags = compute_diagnostics(
+        &data,
+        "/IP/ADDRESS SET 0 ADDRESS=1.1.1.1/24 INTERFACE=ether1",
+        "file:///test.rsc",
+    );
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_deref() == Some("missing-required")),
+        "set with selector must not require creation args, got {diags:?}"
+    );
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_deref() == Some("unknown-command")),
+        "SET is a standard verb, got {diags:?}"
+    );
+}
+
+#[test]
+fn test_mixed_case_duplicate_property_keeps_original_casing() {
+    // ADDRESS and address are the same property; the diagnostic points at
+    // the SECOND occurrence and keeps the user's original casing in the
+    // message.
+    let data = synthetic_data();
+    let diags = compute_diagnostics(
+        &data,
+        "/ip/address add address=1.1.1.1/24 ADDRESS=2.2.2.2 interface=ether1",
+        "file:///test.rsc",
+    );
+    let dup = diags
+        .iter()
+        .find(|d| d.code.as_deref() == Some("duplicate-property"))
+        .expect("case-insensitive duplicate must fire");
+    assert_eq!(dup.message, "Duplicate property 'ADDRESS'");
+}
+
+#[test]
 fn test_invalid_enum_hint() {
     let data = synthetic_data();
     let doc = "/ip/firewall/filter add chain=invalid action=accept";

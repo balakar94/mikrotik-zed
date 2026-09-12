@@ -282,3 +282,17 @@ fn test_value_completions_with_space_before_equals_not_triggered() {
         "should not be value completions"
     );
 }
+
+#[test]
+fn test_mixed_case_used_property_is_excluded() {
+    // An already-typed property is excluded regardless of casing, so
+    // `ADDRESS=` suppresses the `address` suggestion but not `interface`.
+    let data = synthetic_data();
+    let items = compute_completions(&data, "/ip/address add ADDRESS=1.1.1.1/24 ");
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        !labels.contains(&"address"),
+        "used property must be excluded, got {labels:?}"
+    );
+    assert!(labels.contains(&"interface"), "got {labels:?}");
+}

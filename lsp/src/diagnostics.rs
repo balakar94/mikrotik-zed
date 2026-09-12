@@ -41,6 +41,7 @@
 
 use crate::StructureEvent;
 use crate::menus::MenuData;
+use crate::text_util::{normalize_key, normalize_path};
 use crate::{MAX_DIAG_BYTES, MAX_DIAG_LINES, MAX_DIAGNOSTICS};
 use std::collections::{HashMap, HashSet};
 
@@ -55,6 +56,34 @@ pub(crate) const DIAGNOSTIC_SOURCE: &str = "rsc-ls";
 /// instead of silently swallowed — mirroring the semantic truncation path.
 /// The response payload stays bounded (at most ten findings plus one hint).
 pub(crate) const MAX_SYNTAX_DIAGNOSTICS: usize = 10;
+
+/// Max chars of raw user text embedded in one diagnostic message.
+///
+/// Values and keys come straight from the document, so an invalid enum
+/// value or menu path can be hundreds of kilobytes. Every message
+/// interpolation goes through [`bounded_user_text`] so one diagnostic can
+/// never carry the whole token.
+pub(crate) const MAX_DIAG_TEXT_CHARS: usize = 120;
+
+/// Char-boundary-safe truncation of user text before it is interpolated
+/// into a diagnostic message (trailing `…` marks the cut).
+fn bounded_user_text(s: &str) -> String {
+    crate::text_util::truncate_chars(s, MAX_DIAG_TEXT_CHARS)
+}
+
+/// Append a semantic diagnostic unless [`MAX_DIAGNOSTICS`] is already
+/// reached.
+///
+/// When the cap blocks an append, `truncated` is set so the count-only
+/// truncation footer still fires; callers stop their loops on that flag so
+/// no further formatting or suggestion work is done past the cap.
+fn push_semantic(diagnostics: &mut Vec<Diagnostic>, truncated: &mut bool, diagnostic: Diagnostic) {
+    if diagnostics.len() >= MAX_DIAGNOSTICS {
+        *truncated = true;
+        return;
+    }
+    diagnostics.push(diagnostic);
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct Position {
@@ -123,7 +152,9 @@ impl TypedHint {
     fn message(&self, key: &str, raw_value: &str) -> String {
         let shown = raw_value.trim().trim_matches('"').trim_matches('\'').trim();
         format!(
-            "Invalid value '{shown}' for '{key}' (expected {})",
+            "Invalid value '{}' for '{}' (expected {})",
+            bounded_user_text(shown),
+            bounded_user_text(key),
             self.expected
         )
     }
@@ -516,8 +547,14 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
 
     let mut diagnostics = Vec::new();
     let mut budget = crate::suggest::SuggestBudget::new();
+    // Set when a semantic push is blocked by MAX_DIAGNOSTICS; drives the
+    // count-only truncation footer and stops all further property work.
+    let mut count_truncated = false;
 
     for ll in iter_lines {
+        if count_truncated {
+            break;
+        }
         let line = ll.text.as_str();
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -551,6 +588,10 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             continue;
         }
 
+        // Case-folded menu key for every lookup below; `ctx.path` keeps the
+        // user's casing for messages and ranges.
+        let path_key = normalize_path(&ctx.path);
+
         // ---- Rule 1: Unknown menu path ----
         if !ctx.path.is_empty() {
             // O(1) membership: exact menu OR a proper ancestor prefix of a
@@ -559,18 +600,25 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             // format! allocation per element. The children index remains the
             // authoritative structure for context RESOLUTION in parse_line;
             // this set only answers "is this prefix known?".
-            let is_known = data.menu_by_path.contains_key(&ctx.path)
-                || data.ancestor_prefixes.contains(&ctx.path);
+            let is_known = data.menu_by_path.contains_key(&path_key)
+                || data.ancestor_prefixes.contains(&path_key);
             if !is_known && let Some((start_char, end_char)) = find_substring_range(line, &ctx.path)
             {
-                let suggestion = budget.candidate(&ctx.path, data.menu_by_path.keys());
-                diagnostics.push(Diagnostic {
-                    range: ll.map_range(start_char, end_char),
-                    severity: Some(severity::WARNING),
-                    code: Some("unknown-menu".to_string()),
-                    source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                    message: with_suggestion(format!("Unknown menu '{}'", ctx.path), suggestion),
-                });
+                let suggestion = budget.candidate(&path_key, data.menu_by_path.keys());
+                push_semantic(
+                    &mut diagnostics,
+                    &mut count_truncated,
+                    Diagnostic {
+                        range: ll.map_range(start_char, end_char),
+                        severity: Some(severity::WARNING),
+                        code: Some("unknown-menu".to_string()),
+                        source: Some(DIAGNOSTIC_SOURCE.to_string()),
+                        message: with_suggestion(
+                            format!("Unknown menu '{}'", bounded_user_text(&ctx.path)),
+                            suggestion,
+                        ),
+                    },
+                );
                 // If menu unknown, don't emit further property diagnostics for this line
                 // to avoid cascading false positives.
                 continue;
@@ -581,11 +629,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
         // unless path is known implicitly
         // For implicit parents (no direct menu entry but valid as parent), we skip property checks
         // because they have no arguments.
-        let menu = if !ctx.path.is_empty() {
-            data.menu_by_path.get(&ctx.path)
-        } else {
-            None
-        };
+        let menu = data.menu_by_path.get(&path_key);
 
         // If menu is None but path is implicit parent, we will have is_known true but no menu
         // entry; then property checks should be skipped (no args expected).
@@ -596,12 +640,16 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
         // Property occurrences are recorded DURING tokenization, so diagnostic
         // ranges point at the exact occurrence instead of the first textual
         // match (which could sit inside the menu path or an earlier value).
+        // Lookup keys are case-folded (RouterOS properties are
+        // case-insensitive); the ORIGINAL key text rides along in
+        // `key_values` so messages keep the user's casing and `key_spans`
+        // offsets still address the original bytes.
         let tokens = crate::tokenize_with_spans(line);
         let mut key_counts: HashMap<String, usize> = HashMap::new();
-        // key → ordered byte spans (start, end) of each KEY occurrence.
+        // normalized key → ordered byte spans (start, end) of each KEY occurrence.
         let mut key_spans: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
-        // key → (value text, full-token span) of the LAST occurrence.
-        let mut key_values: HashMap<String, (String, (usize, usize))> = HashMap::new();
+        // normalized key → (original key, value text, full-token span) of the LAST occurrence.
+        let mut key_values: HashMap<String, (String, String, (usize, usize))> = HashMap::new();
 
         // Bracket regions (`[find ...]`, `[/sys/clock/get ...]`) are inert:
         // inner `key=value` pairs must not leak into outer Rule 2/4 state,
@@ -614,15 +662,16 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                 continue;
             }
             if let Some((key, value)) = crate::parser::split_key_value(&token.text) {
+                let key_key = normalize_key(key);
                 let eq_idx = key.len();
-                *key_counts.entry(key.to_string()).or_insert(0) += 1;
+                *key_counts.entry(key_key.clone()).or_insert(0) += 1;
                 key_spans
-                    .entry(key.to_string())
+                    .entry(key_key.clone())
                     .or_default()
                     .push((token.start, token.start + eq_idx));
                 key_values.insert(
-                    key.to_string(),
-                    (value.to_string(), (token.start, token.end)),
+                    key_key,
+                    (key.to_string(), value.to_string(), (token.start, token.end)),
                 );
             }
             depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
@@ -652,8 +701,8 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
         ];
         if let Some(cmd) = ctx.command.as_deref()
             && !ctx.path.is_empty()
-            && (data.menu_by_path.contains_key(&ctx.path)
-                || data.ancestor_prefixes.contains(&ctx.path))
+            && (data.menu_by_path.contains_key(&path_key)
+                || data.ancestor_prefixes.contains(&path_key))
             && !MenuData::STANDARD_VERBS
                 .iter()
                 .any(|v| v.eq_ignore_ascii_case(cmd))
@@ -669,16 +718,24 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                     .copied()
                     .chain(MENU_SPECIFIC_VERBS.iter().copied()),
             );
-            diagnostics.push(Diagnostic {
-                range: ll.map_range(s, e),
-                severity: Some(severity::WARNING),
-                code: Some("unknown-command".to_string()),
-                source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                message: with_suggestion(
-                    format!("Unknown command '{}' for '{}'", cmd, ctx.path),
-                    suggestion,
-                ),
-            });
+            push_semantic(
+                &mut diagnostics,
+                &mut count_truncated,
+                Diagnostic {
+                    range: ll.map_range(s, e),
+                    severity: Some(severity::WARNING),
+                    code: Some("unknown-command".to_string()),
+                    source: Some(DIAGNOSTIC_SOURCE.to_string()),
+                    message: with_suggestion(
+                        format!(
+                            "Unknown command '{}' for '{}'",
+                            bounded_user_text(cmd),
+                            bounded_user_text(&ctx.path)
+                        ),
+                        suggestion,
+                    ),
+                },
+            );
         }
 
         // ---- Rule 4: Duplicate property ----
@@ -687,33 +744,41 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
         // tokenization, so a key that also appears inside the menu path (e.g.
         // "address" in "/ip/address") never gets squiggled by accident.
         for (key, count) in &key_counts {
+            if count_truncated {
+                break;
+            }
             if *count > 1
                 && let Some(&(s, e)) = key_spans
                     .get(key)
                     .and_then(|spans| spans.get(1).or_else(|| spans.first()))
             {
-                diagnostics.push(Diagnostic {
-                    range: ll.map_range(s, e),
-                    severity: Some(severity::WARNING),
-                    code: Some("duplicate-property".to_string()),
-                    source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                    message: format!("Duplicate property '{}'", key),
-                });
+                push_semantic(
+                    &mut diagnostics,
+                    &mut count_truncated,
+                    Diagnostic {
+                        range: ll.map_range(s, e),
+                        severity: Some(severity::WARNING),
+                        code: Some("duplicate-property".to_string()),
+                        source: Some(DIAGNOSTIC_SOURCE.to_string()),
+                        message: format!("Duplicate property '{}'", &line[s..e]),
+                    },
+                );
             }
         }
 
         // If we have a known menu with arguments/flags, continue with property checks
         if let Some(menu) = menu {
-            // Build allowed property set
+            // Build allowed property set (case-folded keys; RouterOS
+            // properties are case-insensitive).
             let mut allowed: HashSet<String> = HashSet::new();
             for arg in &menu.arguments {
-                allowed.insert(arg.name.clone());
+                allowed.insert(normalize_key(&arg.name));
             }
             for flag in &menu.flags {
-                allowed.insert(flag.name.clone());
+                allowed.insert(normalize_key(&flag.name));
             }
             for ro in &menu.read_only {
-                allowed.insert(ro.name.clone());
+                allowed.insert(normalize_key(&ro.name));
             }
 
             // ---- Rule 2: Unknown property ----
@@ -725,6 +790,9 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                 .as_deref()
                 .is_some_and(|c| c.eq_ignore_ascii_case("unset"));
             for (key, spans) in &key_spans {
+                if count_truncated {
+                    break;
+                }
                 if is_unset && key == "value-name" {
                     continue;
                 }
@@ -732,16 +800,24 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                     && let Some(&(s, e)) = spans.first()
                 {
                     let suggestion = budget.candidate(key, allowed.iter());
-                    diagnostics.push(Diagnostic {
-                        range: ll.map_range(s, e),
-                        severity: Some(severity::WARNING),
-                        code: Some("unknown-property".to_string()),
-                        source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                        message: with_suggestion(
-                            format!("Unknown property '{}' for '{}'", key, ctx.path),
-                            suggestion,
-                        ),
-                    });
+                    push_semantic(
+                        &mut diagnostics,
+                        &mut count_truncated,
+                        Diagnostic {
+                            range: ll.map_range(s, e),
+                            severity: Some(severity::WARNING),
+                            code: Some("unknown-property".to_string()),
+                            source: Some(DIAGNOSTIC_SOURCE.to_string()),
+                            message: with_suggestion(
+                                format!(
+                                    "Unknown property '{}' for '{}'",
+                                    bounded_user_text(&line[s..e]),
+                                    bounded_user_text(&ctx.path)
+                                ),
+                                suggestion,
+                            ),
+                        },
+                    );
                 }
             }
 
@@ -753,26 +829,37 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                 && ctx
                     .command
                     .as_deref()
-                    .is_some_and(|c| c == "add" || c == "set")
-                && !(ctx.command.as_deref() == Some("set") && line_has_set_selector(&tokens, "set"))
+                    .is_some_and(|c| c.eq_ignore_ascii_case("add") || c.eq_ignore_ascii_case("set"))
+                && !(ctx
+                    .command
+                    .as_deref()
+                    .is_some_and(|c| c.eq_ignore_ascii_case("set"))
+                    && line_has_set_selector(&tokens, "set"))
             {
                 for arg in &menu.arguments {
-                    if arg.required && !key_counts.contains_key(&arg.name) {
+                    if count_truncated {
+                        break;
+                    }
+                    if arg.required && !key_counts.contains_key(&normalize_key(&arg.name)) {
                         // Range: point at the command verb token, falling back
                         // to the start of the line if no whole-token match.
                         let (s, e) = command_span.unwrap_or((0, line.len().min(8)));
-                        diagnostics.push(Diagnostic {
-                            range: ll.map_range(s, e),
-                            severity: Some(severity::WARNING),
-                            code: Some("missing-required".to_string()),
-                            source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                            message: format!(
-                                "Missing required property '{}' for '{} {}'",
-                                arg.name,
-                                ctx.path,
-                                ctx.command.as_deref().unwrap_or("")
-                            ),
-                        });
+                        push_semantic(
+                            &mut diagnostics,
+                            &mut count_truncated,
+                            Diagnostic {
+                                range: ll.map_range(s, e),
+                                severity: Some(severity::WARNING),
+                                code: Some("missing-required".to_string()),
+                                source: Some(DIAGNOSTIC_SOURCE.to_string()),
+                                message: format!(
+                                    "Missing required property '{}' for '{} {}'",
+                                    arg.name,
+                                    bounded_user_text(&ctx.path),
+                                    bounded_user_text(ctx.command.as_deref().unwrap_or(""))
+                                ),
+                            },
+                        );
                     }
                 }
             }
@@ -782,9 +869,15 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             // (complete even for display-truncated types); the type-string
             // parser is only a fallback. When neither yields members, the
             // check stays silent rather than guessing.
-            for (key, (value, span)) in &key_values {
-                // Find argument definition
-                if let Some(arg) = menu.arguments.iter().find(|a| a.name == *key)
+            for (key, (key_display, value, span)) in &key_values {
+                if count_truncated {
+                    break;
+                }
+                // Find argument definition (case-insensitive key match).
+                if let Some(arg) = menu
+                    .arguments
+                    .iter()
+                    .find(|a| normalize_key(&a.name) == *key)
                     && arg.arg_type.starts_with("enum")
                 {
                     let allowed_vals = arg.enum_members();
@@ -818,24 +911,28 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                         if !is_valid {
                             // Narrow the recorded token span to the value part
                             // only (skip "key="), keeping any quotes in range.
-                            let s = span.0 + key.len() + 1;
+                            let s = span.0 + key_display.len() + 1;
                             let e = span.1.max(s);
                             let suggestion = budget.candidate(val, allowed_vals.iter());
-                            diagnostics.push(Diagnostic {
-                                range: ll.map_range(s, e),
-                                severity: Some(severity::WARNING),
-                                code: Some("invalid-enum-value".to_string()),
-                                source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                                message: with_suggestion(
-                                    format!(
-                                        "Invalid value '{}' for '{}' (expected one of: {})",
-                                        val,
-                                        key,
-                                        allowed_vals.join(" | ")
+                            push_semantic(
+                                &mut diagnostics,
+                                &mut count_truncated,
+                                Diagnostic {
+                                    range: ll.map_range(s, e),
+                                    severity: Some(severity::WARNING),
+                                    code: Some("invalid-enum-value".to_string()),
+                                    source: Some(DIAGNOSTIC_SOURCE.to_string()),
+                                    message: with_suggestion(
+                                        format!(
+                                            "Invalid value '{}' for '{}' (expected one of: {})",
+                                            bounded_user_text(val),
+                                            bounded_user_text(key_display),
+                                            allowed_vals.join(" | ")
+                                        ),
+                                        suggestion,
                                     ),
-                                    suggestion,
-                                ),
-                            });
+                                },
+                            );
                         }
                     }
                 }
@@ -845,24 +942,38 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             // Syntactic plausibility only — never Error, never Warning — so
             // an incomplete upstream type table degrades to silence instead
             // of false positives. `enum` types stay owned by Rule 5 above.
-            for (key, (value, span)) in &key_values {
+            for (key, (key_display, value, span)) in &key_values {
+                if count_truncated {
+                    break;
+                }
                 // The named `unset` form is owned by Rule 10 below.
                 if key == "value-name" {
                     continue;
                 }
-                let Some(arg) = menu.arguments.iter().find(|a| a.name == *key) else {
+                let Some(arg) = menu
+                    .arguments
+                    .iter()
+                    .find(|a| normalize_key(&a.name) == *key)
+                else {
                     continue;
                 };
                 if let Some(hint) = check_typed_value(arg, value, &mut budget) {
-                    let s = span.0 + key.len() + 1;
+                    let s = span.0 + key_display.len() + 1;
                     let e = span.1.max(s);
-                    diagnostics.push(Diagnostic {
-                        range: ll.map_range(s, e),
-                        severity: Some(severity::HINT),
-                        code: Some(hint.code.to_string()),
-                        source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                        message: with_suggestion(hint.message(key, value), hint.suggestion),
-                    });
+                    push_semantic(
+                        &mut diagnostics,
+                        &mut count_truncated,
+                        Diagnostic {
+                            range: ll.map_range(s, e),
+                            severity: Some(severity::HINT),
+                            code: Some(hint.code.to_string()),
+                            source: Some(DIAGNOSTIC_SOURCE.to_string()),
+                            message: with_suggestion(
+                                hint.message(key_display, value),
+                                hint.suggestion,
+                            ),
+                        },
+                    );
                 }
             }
 
@@ -887,6 +998,9 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                 });
                 if let Some(vi) = verb_idx {
                     for token in tokens.iter().skip(vi + 1) {
+                        if count_truncated {
+                            break;
+                        }
                         let text = token.text.as_str();
                         if text.starts_with('/') {
                             continue;
@@ -910,24 +1024,32 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                         {
                             continue;
                         }
-                        if let Some(arg) = menu.arguments.iter().find(|a| a.name == text)
+                        if let Some(arg) = menu
+                            .arguments
+                            .iter()
+                            .find(|a| a.name.eq_ignore_ascii_case(text))
                             && !arg.unset
                         {
-                            diagnostics.push(Diagnostic {
-                                range: ll.map_range(token.start, token.end),
-                                severity: Some(severity::HINT),
-                                code: Some("non-unsettable-property".to_string()),
-                                source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                                message: format!(
-                                    "Property '{}' cannot be unset (unsettable: no) for '{}'",
-                                    text, ctx.path
-                                ),
-                            });
+                            push_semantic(
+                                &mut diagnostics,
+                                &mut count_truncated,
+                                Diagnostic {
+                                    range: ll.map_range(token.start, token.end),
+                                    severity: Some(severity::HINT),
+                                    code: Some("non-unsettable-property".to_string()),
+                                    source: Some(DIAGNOSTIC_SOURCE.to_string()),
+                                    message: format!(
+                                        "Property '{}' cannot be unset (unsettable: no) for '{}'",
+                                        bounded_user_text(text),
+                                        bounded_user_text(&ctx.path)
+                                    ),
+                                },
+                            );
                         }
                     }
                 }
                 // Named form: `value-name=<property>`.
-                if let Some((named_value, named_span)) = key_values.get("value-name") {
+                if let Some((named_key, named_value, named_span)) = key_values.get("value-name") {
                     let target = named_value
                         .trim()
                         .trim_matches('"')
@@ -936,21 +1058,29 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                         .to_string();
                     if !target.is_empty()
                         && !target.contains(['$', '[', ']', '(', ')'])
-                        && let Some(arg) = menu.arguments.iter().find(|a| a.name == target)
+                        && let Some(arg) = menu
+                            .arguments
+                            .iter()
+                            .find(|a| a.name.eq_ignore_ascii_case(&target))
                         && !arg.unset
                     {
-                        let s = named_span.0 + "value-name".len() + 1;
+                        let s = named_span.0 + named_key.len() + 1;
                         let e = named_span.1.max(s);
-                        diagnostics.push(Diagnostic {
-                            range: ll.map_range(s, e),
-                            severity: Some(severity::HINT),
-                            code: Some("non-unsettable-property".to_string()),
-                            source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                            message: format!(
-                                "Property '{target}' cannot be unset (unsettable: no) for '{}'",
-                                ctx.path
-                            ),
-                        });
+                        push_semantic(
+                            &mut diagnostics,
+                            &mut count_truncated,
+                            Diagnostic {
+                                range: ll.map_range(s, e),
+                                severity: Some(severity::HINT),
+                                code: Some("non-unsettable-property".to_string()),
+                                source: Some(DIAGNOSTIC_SOURCE.to_string()),
+                                message: format!(
+                                    "Property '{}' cannot be unset (unsettable: no) for '{}'",
+                                    bounded_user_text(&target),
+                                    bounded_user_text(&ctx.path)
+                                ),
+                            },
+                        );
                     }
                 }
             }
@@ -961,36 +1091,43 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             if ctx
                 .command
                 .as_deref()
-                .is_some_and(|c| c == "add" || c == "set")
+                .is_some_and(|c| c.eq_ignore_ascii_case("add") || c.eq_ignore_ascii_case("set"))
             {
                 for (key, spans) in &key_spans {
-                    if menu.read_only.iter().any(|r| r.name == *key)
+                    if count_truncated {
+                        break;
+                    }
+                    if menu
+                        .read_only
+                        .iter()
+                        .any(|r| normalize_key(&r.name) == *key)
                         && let Some(&(s, e)) = spans.first()
                     {
-                        diagnostics.push(Diagnostic {
-                            range: ll.map_range(s, e),
-                            severity: Some(severity::INFORMATION),
-                            code: Some("read-only-write".to_string()),
-                            source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                            message: format!(
-                                "Property '{}' is read-only and cannot be set with '{}' (output column only)",
-                                key,
-                                ctx.command.as_deref().unwrap_or("")
-                            ),
-                        });
+                        push_semantic(
+                            &mut diagnostics,
+                            &mut count_truncated,
+                            Diagnostic {
+                                range: ll.map_range(s, e),
+                                severity: Some(severity::INFORMATION),
+                                code: Some("read-only-write".to_string()),
+                                source: Some(DIAGNOSTIC_SOURCE.to_string()),
+                                message: format!(
+                                    "Property '{}' is read-only and cannot be set with '{}' (output column only)",
+                                    bounded_user_text(&line[s..e]),
+                                    bounded_user_text(ctx.command.as_deref().unwrap_or(""))
+                                ),
+                            },
+                        );
                     }
                 }
             }
         }
     }
 
-    // Bound the otherwise uncapped semantic loop: a single logical line
-    // with thousands of distinct unknown keys would otherwise yield one
-    // heap `Diagnostic` per key. Truncate BEFORE the syntax extend + hint
-    // push below so the truncation hint still fires and the syntax family
-    // still appends within its own cap.
-    let count_truncated = diagnostics.len() > MAX_DIAGNOSTICS;
-    diagnostics.truncate(MAX_DIAGNOSTICS);
+    // The semantic loop is bounded DURING accumulation (`push_semantic`
+    // caps at MAX_DIAGNOSTICS and sets `count_truncated`), so there is no
+    // post-hoc truncate here. The syntax family still appends within its
+    // own cap below.
 
     // ---- Truncation hint (O-01) -----------------------------------------
     // When the document was capped by MAX_DIAG_BYTES, MAX_DIAG_LINES, or
@@ -1566,7 +1703,7 @@ pub(crate) fn resolve_menu_for_line<'a>(
 ) -> Option<&'a crate::menus::MenuEntry> {
     let line = covering_logical_line(logicals, phys_line)?;
     let ctx = crate::parse_line(data, line.text());
-    data.menu_by_path.get(&ctx.path)
+    data.menu_by_path.get(&normalize_path(&ctx.path))
 }
 
 fn find_substring_range(haystack: &str, needle: &str) -> Option<(usize, usize)> {
@@ -1601,7 +1738,7 @@ fn line_has_set_selector(tokens: &[crate::parser::SpanToken], verb: &str) -> boo
         if t.text.starts_with('/') {
             continue;
         }
-        if t.text == verb {
+        if t.text.eq_ignore_ascii_case(verb) {
             continue;
         }
         if crate::parser::split_key_value(&t.text).is_some() {

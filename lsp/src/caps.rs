@@ -44,6 +44,7 @@
 // | `LIVE_CUSTOM_RESOURCES_MAX`       | 8              | caps.rs         | Custom live resources via env JSON                             |
 // | `MAX_CONCURRENT_FETCHES`          | 2              | live.rs         | fetch-thread semaphore                                         |
 // | `MAX_SYNTAX_DIAGNOSTICS`          | 10             | diagnostics.rs  | Unclosed/unmatched brace+quote diagnostics per publish         |
+// | `MAX_DIAG_TEXT_CHARS`             | 120            | diagnostics.rs  | Raw user text embedded in one diagnostic message               |
 // | `MAX_SYMBOLS`                     | 5000           | symbols.rs      | Document symbols per doc                                       |
 // | `MAX_FOLDING_RANGES`              | 5000           | folding.rs      | Folding ranges per doc                                         |
 // | `MAX_REFERENCES`                  | 1000           | navigation.rs   | References per request (incl. declaration)                     |

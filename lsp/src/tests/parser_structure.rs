@@ -154,6 +154,37 @@ fn test_parse_line_property_with_empty_value() {
 }
 
 #[test]
+fn test_parse_line_mixed_case_path_and_properties() {
+    // RouterOS is case-insensitive: mixed-case path segments still resolve
+    // as sub-menus and uppercase property keys fold to the lookup key.
+    let data = synthetic_data();
+    let ctx = parse_line(&data, "/IP ADDRESS add ADDRESS=1.1.1.1/24");
+    assert_eq!(ctx.path, "/IP/ADDRESS");
+    assert_eq!(ctx.command.as_deref(), Some("add"));
+    assert_eq!(
+        ctx.properties.get("address").map(|s| s.as_str()),
+        Some("1.1.1.1/24")
+    );
+}
+
+#[test]
+fn test_parse_line_normalizes_path_separators() {
+    // RouterOS consoles accept trailing and repeated `/` separators; the
+    // produced path carries one segment per real menu level.
+    let data = synthetic_data();
+    let trailing = parse_line(&data, "/ip/address/ print");
+    assert_eq!(trailing.path, "/ip/address");
+    assert_eq!(trailing.command.as_deref(), Some("print"));
+
+    let repeated = parse_line(&data, "/ip//address print");
+    assert_eq!(repeated.path, "/ip/address");
+
+    let leading = parse_line(&data, "//ip/address add");
+    assert_eq!(leading.path, "/ip/address");
+    assert_eq!(leading.command.as_deref(), Some("add"));
+}
+
+#[test]
 fn test_parse_line_no_path_command_only() {
     let data = synthetic_data();
     let ctx = parse_line(&data, "print");

@@ -199,3 +199,70 @@ fn test_missing_required_info() {
             .all(|d| d.severity == Some(severity::WARNING))
     );
 }
+
+// ── Case-insensitive RouterOS syntax ─────────────────────────────────────
+
+#[test]
+fn test_mixed_case_menu_path_is_case_insensitive() {
+    // RouterOS paths are case-insensitive; a fully uppercase menu must not
+    // raise unknown-menu.
+    let data = synthetic_data();
+    let diags = compute_diagnostics(&data, "/IP/ADDRESS print", "file:///test.rsc");
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_deref() == Some("unknown-menu")),
+        "mixed-case known menu must not be unknown, got {diags:?}"
+    );
+}
+
+#[test]
+fn test_mixed_case_property_and_menu_resolve() {
+    // Both the path and the property keys are case-insensitive: no
+    // unknown-menu / unknown-property / missing-required may fire when the
+    // required pair is supplied in mixed case.
+    let data = synthetic_data();
+    let diags = compute_diagnostics(
+        &data,
+        "/IP/ADDRESS add ADDRESS=1.1.1.1/24 INTERFACE=ether1",
+        "file:///test.rsc",
+    );
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_deref() == Some("unknown-menu")),
+        "got {diags:?}"
+    );
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_deref() == Some("unknown-property")),
+        "got {diags:?}"
+    );
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_deref() == Some("missing-required")),
+        "got {diags:?}"
+    );
+}
+
+#[test]
+fn test_trailing_and_repeated_slashes_are_not_unknown_menu() {
+    // Real console behavior: `/ip/address/` and `/ip//address` address the
+    // same menu as `/ip/address`.
+    let data = synthetic_data();
+    for doc in [
+        "/ip/address/ print",
+        "/ip//address print",
+        "//ip/address print",
+    ] {
+        let diags = compute_diagnostics(&data, doc, "file:///test.rsc");
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("unknown-menu")),
+            "{doc} must resolve, got {diags:?}"
+        );
+    }
+}

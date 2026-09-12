@@ -143,7 +143,8 @@ impl CompletionItem {
 
 // Shared text helpers live in `crate::text_util` (single owner).
 use crate::text_util::{
-    MAX_DETAIL_TYPE_CHARS, normalize_key, sanitize_detail_text, sanitize_markdown_for_hover,
+    MAX_DETAIL_TYPE_CHARS, normalize_key, normalize_path, sanitize_detail_text,
+    sanitize_markdown_for_hover,
 };
 
 /// Relevance tier of a completion candidate.
@@ -800,7 +801,7 @@ fn get_sub_menu_completion_items(
     ctx: &LineContext,
     typed_prefix: &str,
 ) -> Vec<CompletionItem> {
-    match data.child_names_by_parent.get(&ctx.path) {
+    match data.child_names_by_parent.get(&normalize_path(&ctx.path)) {
         Some(children) => children
             .iter()
             .filter(|c| c.menu_type == "Directory" || c.menu_type == "Settings Directory")
@@ -824,15 +825,16 @@ fn get_verb_completion_items(
     ctx: &LineContext,
     typed_prefix: &str,
 ) -> Vec<CompletionItem> {
-    let menu_type = data
+    let path_key = normalize_path(&ctx.path);
+    // Standard verbs are only meaningful on a KNOWN Directory /
+    // Settings Directory menu. An unknown or partially typed path must not
+    // advertise them: defaulting to "Directory" fabricated a plausible but
+    // wrong menu kind for arbitrary input. Action commands from a known
+    // child index below may still apply.
+    let is_directory = data
         .menu_by_path
-        .get(&ctx.path)
-        .map(|m| m.menu_type.as_str())
-        .unwrap_or("Directory");
-    // Only Directory / Settings Directory menus support the 15 standard verbs.
-    // Command menus (e.g. /tool/ping) have no child operations — only their
-    // own arguments/flags — so emitting verbs there is noise.
-    let is_directory = menu_type == "Directory" || menu_type == "Settings Directory";
+        .get(&path_key)
+        .is_some_and(|m| m.menu_type == "Directory" || m.menu_type == "Settings Directory");
     let mut items: Vec<CompletionItem> = if is_directory {
         MenuData::STANDARD_VERBS
             .iter()
@@ -850,7 +852,7 @@ fn get_verb_completion_items(
     };
 
     // Action commands (type = "Command" entries under this path)
-    if let Some(children) = data.child_names_by_parent.get(&ctx.path) {
+    if let Some(children) = data.child_names_by_parent.get(&path_key) {
         for child in children {
             if child.menu_type == "Command" {
                 let mut item = CompletionItem::new(child.name.clone(), kind::FUNCTION);
@@ -873,7 +875,7 @@ fn get_arg_completion_items(
     ctx: &LineContext,
     typed_prefix: &str,
 ) -> Vec<CompletionItem> {
-    let menu = match data.menu_by_path.get(&ctx.path) {
+    let menu = match data.menu_by_path.get(&normalize_path(&ctx.path)) {
         Some(m) => m,
         None => return Vec::new(),
     };
@@ -881,7 +883,7 @@ fn get_arg_completion_items(
     let mut items = Vec::new();
 
     for arg in &menu.arguments {
-        if ctx.properties.contains_key(&arg.name) {
+        if ctx.properties.contains_key(&normalize_key(&arg.name)) {
             continue; // already used
         }
         let mut item = CompletionItem::new(arg.name.clone(), kind::PROPERTY);
@@ -928,12 +930,16 @@ fn get_value_completions_with_live(
     live_cache: Option<&LiveCache>,
     typed_prefix: &str,
 ) -> Vec<CompletionItem> {
-    let menu = match data.menu_by_path.get(&ctx.path) {
+    let menu = match data.menu_by_path.get(&normalize_path(&ctx.path)) {
         Some(m) => m,
         None => return Vec::new(),
     };
 
-    let arg = match menu.arguments.iter().find(|a| a.name == property_key) {
+    let arg = match menu
+        .arguments
+        .iter()
+        .find(|a| normalize_key(&a.name) == normalize_key(property_key))
+    {
         Some(a) => a,
         None => return Vec::new(),
     };

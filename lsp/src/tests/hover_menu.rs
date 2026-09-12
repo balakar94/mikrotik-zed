@@ -185,3 +185,29 @@ fn test_hover_menu_without_read_only_no_section() {
     let h = hover_at(&data, "/ip/address", 2).expect("menu hover");
     assert!(!h.contents.value.contains("Read-only:"));
 }
+
+#[test]
+fn test_hover_caps_flags_and_read_only() {
+    // MAX_HOVER_PROPERTIES is applied consistently to flags and read_only
+    // too: the surplus folds into a per-section footer, never rendered.
+    let mut toml = String::from("[[menus]]\npath = \"/demo/many\"\ntype = \"Directory\"\n");
+    for i in 0..15 {
+        toml.push_str(&format!(
+            "[[menus.flags]]\nname = \"f{i}\"\ndescription = \"flag {i}\"\n"
+        ));
+    }
+    for i in 0..15 {
+        toml.push_str(&format!(
+            "[[menus.read_only]]\nname = \"r{i}\"\ndescription = \"ro {i}\"\n"
+        ));
+    }
+    let data = MenuData::from_toml_str(&toml);
+    let h = hover_at(&data, "/demo/many", 2).expect("menu hover");
+    let value = &h.contents.value;
+    assert!(value.contains("f11"), "12th flag must be shown");
+    assert!(!value.contains("f12"), "13th flag must be omitted");
+    assert!(value.contains("r11"), "12th read-only must be shown");
+    assert!(!value.contains("r12"), "13th read-only must be omitted");
+    let footers = value.matches("(+3 more — see completion)").count();
+    assert_eq!(footers, 2, "one footer per capped section, got {footers}");
+}

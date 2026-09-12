@@ -626,8 +626,12 @@ impl Server {
                         .and_then(|key| {
                             self.data
                                 .menu_by_path
-                                .get(&context.path)
-                                .and_then(|menu| menu.arguments.iter().find(|a| a.name == key))
+                                .get(&crate::text_util::normalize_path(&context.path))
+                                .and_then(|menu| {
+                                    menu.arguments
+                                        .iter()
+                                        .find(|a| a.name.eq_ignore_ascii_case(key))
+                                })
                                 .map(|arg| arg.arg_type.as_str())
                         })
                         .unwrap_or("");
@@ -1121,7 +1125,10 @@ impl Server {
                 let logicals = diagnostics::logical_lines(doc);
                 let help = diagnostics::covering_logical_line(&logicals, line_idx).and_then(|ll| {
                     let ctx = parse_line(&self.data, ll.text());
-                    let menu = self.data.menu_by_path.get(&ctx.path)?;
+                    let menu = self
+                        .data
+                        .menu_by_path
+                        .get(&crate::text_util::normalize_path(&ctx.path))?;
                     let tokens = tokenize_with_spans(ll.text());
                     let verb_idx = signature::resolve_verb_token(&self.data, &tokens)?;
                     let cursor_logical = ll.logical_offset_from_physical(line_idx, char_byte)?;

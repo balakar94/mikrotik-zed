@@ -195,3 +195,27 @@ fn test_concat_comment_still_property_no_warning() {
         "concat comment must stay property comment, got {diags:?}"
     );
 }
+
+#[test]
+fn test_oversized_invalid_enum_value_yields_bounded_message() {
+    // A 250 KB invalid enum value must not be copied wholesale into the
+    // diagnostic message; the interpolated user text is capped at
+    // MAX_DIAG_TEXT_CHARS chars.
+    let data = synthetic_data();
+    let value = "z".repeat(250_000);
+    let doc = format!("/ip/firewall/filter add chain={value} action=accept");
+    let diags = compute_diagnostics(&data, &doc, "file:///t.rsc");
+    let hit = diags
+        .iter()
+        .find(|d| d.code.as_deref() == Some("invalid-enum-value"))
+        .expect("oversized invalid value must still hint");
+    assert!(
+        hit.message.len() <= 512,
+        "diagnostic message must stay bounded, got {} bytes",
+        hit.message.len()
+    );
+    assert!(
+        !hit.message.contains(&value),
+        "raw oversized value must not survive into the message"
+    );
+}
