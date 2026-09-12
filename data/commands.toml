@@ -2,7 +2,7 @@
 # Auto-generated from llms-full.txt
 # Covers: /app, /beep, /blink, /caps-man, /certificate, /console, /container, /disk, /dude, /environment, /file, /import, … (1078 menus)
 # RouterOS version: 7.23.2
-# Generated: 2026-09-12T15:20:41.695168Z
+# Generated: 2026-09-12T15:46:19.319901Z
 # Source hash (sha256[:16]): a25b13ef01b09646
 # overrides_applied = 1 (data/overrides.toml)
 # generics_applied = 1944 (comment/disabled universal; place-before/copy-from ordered-only)
@@ -27830,99 +27830,122 @@ description = "invalid"
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Reference name"
 [[menus.arguments]]
 name = "interface"
 type = "iface_enum"
+description = "The interface on which the DHCP server will be running."
 required = true
 [[menus.arguments]]
 name = "relay"
 type = "ipAddr"
+description = "The IP address of the relay this DHCP server should process requests from:0.0.0.0 - the DHCP server will be used only for direct requests from clients (no DHCP relay allowed)255.255.255.255 - the DHCP server should be used for any incoming request from a DHCP relay except for those, which are processed by another DHCP server that exists in the <code>/ip/dhcp-server</code> submenu."
 [[menus.arguments]]
 name = "lease-time"
 type = "time"
+description = "The time that a client may use the assigned address. The client will try to renew this address after half of this time and will request a new address after the time limit expires."
 [[menus.arguments]]
 name = "address-pool"
 type = "enum (static-only)"
 enum_values = ["static-only"]
+description = "IP pool, from which to take IP addresses for the clients. If set to static-only, then only the clients that have a static lease (added in the lease submenu) will be allowed."
 [[menus.arguments]]
 name = "dynamic-lease-identifiers"
 type = "ubit (client-mac, client-id, opt-82)"
+description = "Specifies which parameters to use and store when generating a dynamic DHCP lease."
 [[menus.arguments]]
 name = "bootp-support"
 type = "enum (none | static | dynamic)"
 enum_values = ["none", "static", "dynamic"]
+description = "Support for BOOTP clients:none - do not respond to BOOTP requestsstatic - offer only static leases to BOOTP clientsdynamic - offer static and dynamic leases for BOOTP clients"
 [[menus.arguments]]
 name = "bootp-lease-time"
 type = "alt { enum: enum (lease-time | forever) { lease-time:0, forever:0xffffffff } , time: time }"
 enum_values = ["lease-time", "forever"]
+description = "Accepts two predefined options or time value:forever - lease never expireslease-time - use time from lease-time parameter"
 [[menus.arguments]]
 name = "delay-threshold"
 type = "alt { enum: enum (none) { none:0 } , time: time }"
 enum_values = ["none"]
+description = "If the secs field in the DHCP packet is smaller than the delay threshold, then this packet is ignored. If set to none - there is no threshold (all DHCP packets are processed)"
 [[menus.arguments]]
 name = "server-address"
 type = "ipAddr"
+description = "The IP address of the server to use in the next step of the client's bootstrap process (for example, to assign a specific server address in case several addresses are assigned to the interface)"
 [[menus.arguments]]
 name = "add-arp"
 type = "bool"
+description = "Whether to add a dynamic ARP entry. If set to no either ARP mode should be enabled on that interface or static ARP entries should be administratively defined in /ip/arp submenu."
 [[menus.arguments]]
 name = "add-dns-entries"
 type = "bool"
+description = "When set to yes, the DHCP server automatically creates dynamic DNS A records for each lease using the client's hostname. The hostname is taken from DHCP option 12 sent by the client. The resulting FQDN is formed by appending add-dns-entries-suffix (or the domain from the DHCP network configuration if no suffix is set) to the hostname."
 [[menus.arguments]]
 name = "add-dns-entries-suffix"
 type = "string"
-description = "Used only if add-dns-entries=yes. If non-empty, appends suffix to DNS entry and adds Option 15 (Domain Name) to responses."
+description = "Suffix appended to the hostname when creating dynamic DNS entries. For example, if set to example.lan and the client hostname is laptop, the DNS entry laptop.example.lan will be created. If left empty, the domain value from the DHCP network configuration is used instead."
 [[menus.arguments]]
 name = "authoritative"
 type = "enum (no | after-10sec-delay | after-2sec-delay | yes)"
 enum_values = ["no", "after-10sec-delay", "after-2sec-delay", "yes"]
+description = "Option changes the way a server responds to DHCP requests:yes - replies to clients' requests for an address that is not available from this server, DHCP server will send a negative acknowledgment (DHCPNAK);no - DHCP server ignores clients' requests for addresses that are not available from this server;after-10sec-delay - requests with \"secs < 10\" will be processed as in \"no\" setting case and requests with \"secs >= 10\" will be processed as in \"yes\" case;after-2sec-delay - requests with \"secs < 2\" will be processed as in \"no\" setting case and requests with \"secs >= 2\" will be processed as in \"yes\" case; If all requests with \"secs < x\" should be ignored, then delay-threshold=x setting should be used."
 [[menus.arguments]]
 name = "always-broadcast"
 type = "bool"
+description = "Changes whether to force broadcast DHCP replies: no - replies are sent based on the client's broadcast flag. If the server sends three consecutive offers, the third and fourth offer will be sent as a broadcast;yes - replies are always broadcasted even when the client has not specified the broadcast flag."
 [[menus.arguments]]
 name = "use-radius"
 type = "enum (no | yes | accounting)"
 enum_values = ["no", "yes", "accounting"]
+description = "Whether to use RADIUS server:no - do not use RADIUS;yes - use RADIUS for accounting and lease;accounting - use RADIUS for accounting only."
 [[menus.arguments]]
 name = "client-mac-limit"
 type = "enum (unlimited) { unlimited:0xffffffff }"
 enum_values = ["unlimited"]
-description = "maximum leases one client MAC can get"
+description = "Specifies whether to limit a specific number of clients per single MAC address or leave unlimited. Note that this setting should not be used in relay setups."
 [[menus.arguments]]
 name = "conflict-detection"
 type = "bool"
-description = "use ARP and ICMP to test for IP conflict before issuing lease"
+description = "Allows disabling/enabling conflict detection. If the option is enabled, then whenever the server tries to assign a lease it will send ICMP and ARP messages to detect whether such an address in the network already exists. If any of the above get a reply address is considered already used."
 [[menus.arguments]]
 name = "use-framed-as-classless"
 type = "bool"
+description = "Forward RADIUS Framed-Route as a DHCP Classless-Static-Route to DHCP-client. Whenever both Framed-Route and Classless-Static-Route are received, Classless-Static-Route is preferred."
 [[menus.arguments]]
 name = "use-reconfigure"
 type = "bool"
+description = "Allows the server to send Reconfigure (forcerenew) messages to clients, prompting them to renew their configuration without waiting for their lease to expire."
 [[menus.arguments]]
 name = "lease-script"
 type = "alt { script: string }"
+description = "A script that will be executed after a lease is assigned or de-assigned. Internal \"global\" variables that can be used in the script:leaseBound - set to \"1\" if bound, otherwise set to \"0\"leaseServerName - DHCP server nameleaseActMAC - active mac addressleaseActIP - active IP addresslease-agent-circuit-id - lease agent circuit IDlease-agent-remote-id - lease agent remote IDlease-hostname - client hostnamelease-options - array of options sent to client"
 [[menus.arguments]]
 name = "insert-queue-before"
 type = "enum (first | bottom) { first:0, bottom:0xffffffff }"
 enum_values = ["first", "bottom"]
+description = "Specifies where to place dynamic simple queue entries for static DHCP leases with a rate-limit parameter set."
 [[menus.arguments]]
 name = "parent-queue"
 type = "enum (none) { none:0 }"
 enum_values = ["none"]
+description = "A dynamically created queue for this lease will be configured as a child queue of the specified parent queue."
 [[menus.arguments]]
 name = "dhcp-option-set"
 type = "enum (none)"
 enum_values = ["none"]
+description = "Use a custom set of DHCP options defined in the option sets menu."
 [[menus.arguments]]
 name = "address-lists"
 type = "multi { array-id, address-list: string }"
+description = "Address list to which the address will be added if the lease is bound."
 [[menus.arguments]]
 name = "allow-dual-stack-queue"
 type = "bool"
+description = "Creates a single simple queue entry for both IPv4 and IPv6 addresses, and uses the MAC address and DUID for identification. Requires IPv6 DHCP Server to have this option enabled as well to work properly."
 [[menus.arguments]]
 name = "support-broadband-tr101"
 type = "bool"
-description = "Pass additional Option 82 Suboptions to RADIUS server as described in RFC 4679 and The Broadband Forum TR-101"
+description = "Enables or disables the inclusion of additional Option 82 suboptions (e.g. 0x81 actual upstream, 0x82 actual downstream) in RADIUS Access-Request and Accounting-Request messages as described in RFC 4679 and Broadband Forum TR-101. When enabled, the DHCP server includes specific suboptions under DHCP Option 82 (Relay Agent Information) that are used by RADIUS servers to identify subscriber line parameters in broadband access networks, especially those based on DSL infrastructure. This property only has an effect when use-radius is set to yes or accounting."
 [[menus.arguments]]
 name = "ipv6-only-preferred"
 type = "bool"

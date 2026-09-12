@@ -4,6 +4,8 @@ import os
 import tempfile
 from pathlib import Path
 
+import pytest
+
 # Add scripts to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
@@ -32,6 +34,9 @@ from extract_commands import (
     _extract_bare_cli_root,
     _strip_generated_line,
     _MAX_COVERED_ROOTS,
+    canonical_menu_path_error,
+    validate_menu_paths,
+    MenuPathError,
 )
 
 
@@ -145,6 +150,42 @@ class TestShouldInclude:
 
     def test_deeply_nested_bridge(self):
         assert should_include("/interface/bridge/port/monitor") is True
+
+
+class TestCanonicalMenuPaths:
+    """Every emitted path must be canonical or generation fails loudly.
+
+    The LSP indexes menus in a dict keyed by the exact path, so a variant
+    ("/ip/address/", "/ip//address", "/IP/address") is unreachable by
+    completion and diagnostics even though it looks harmless in the table.
+    """
+
+    def test_good_paths_have_no_error(self):
+        for path in ("/ip/address", "/ip/dhcp-server", "/interface/bridge/port/monitor"):
+            assert canonical_menu_path_error(path) is None
+
+    def test_uppercase_is_rejected(self):
+        assert canonical_menu_path_error("/IP/address") is not None
+
+    def test_trailing_slash_is_rejected(self):
+        assert canonical_menu_path_error("/ip/address/") == "trailing '/'"
+
+    def test_double_slash_is_rejected(self):
+        assert canonical_menu_path_error("/ip//address") == "empty path segment ('//')"
+
+    def test_missing_leading_slash_is_rejected(self):
+        assert canonical_menu_path_error("ip/address") == "missing leading '/'"
+
+    def test_validate_names_the_offending_path(self):
+        with pytest.raises(MenuPathError) as exc:
+            validate_menu_paths([{"path": "/ip/address"}, {"path": "/IP/bad"}])
+        assert "/IP/bad" in str(exc.value)
+
+    def test_generate_toml_fails_on_non_canonical_path(self):
+        menu = {"path": "/ip/address/", "type": "Directory",
+                "flags": [], "arguments": [], "read_only": []}
+        with pytest.raises(MenuPathError):
+            generate_toml([menu])
 
 
 class TestEscapeTomlString:
@@ -2080,6 +2121,102 @@ class TestMarkdownPropertyTables:
         names = {a["name"] for a in menu["arguments"]}
         assert "comment" not in names
         assert "disabled" not in names
+
+    def test_page_context_shared_ancestor_resolves_without_sub_menu(self):
+        # A page with no `**Sub-menu:**` still documents one menu: the shared
+        # parent of the child sub-menus it links to. The property table may
+        # precede those links, so the whole page is the context.
+        content = (
+            "## ip/dhcp-server \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="add-dns-entries" typ="bool"></ArgTableRow>\n'
+            "</ArgTable>\n"
+            "\n"
+            "## DHCP Server\n"
+            "\n"
+            "### DHCP Server Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **add-dns-entries** (*yes \\| no*) | Creates dynamic DNS records |\n"
+            "\n"
+            "### Leases\n"
+            "\n"
+            "**Sub-menu:** `/ip/dhcp-server/lease`\n"
+            "\n"
+            "### Network\n"
+            "\n"
+            "**Sub-menu:** `/ip/dhcp-server/network`\n"
+        )
+        menu = next(m for m in self._parse(content) if m["path"] == "/ip/dhcp-server")
+        argument = next(a for a in menu["arguments"] if a["name"] == "add-dns-entries")
+        assert argument["description"] == "Creates dynamic DNS records"
+
+    def test_property_section_fragment_context_is_never_attached(self, capsys):
+        # `## Properties` is a fragment of the preceding page, not a page of
+        # its own; its sub-menus are siblings, so the shared ancestor must
+        # never become the table's parent (a wrong attach would overwrite the
+        # real CPU child's rows).
+        content = (
+            "## system/resource \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **load** (*percent*) | CPU usage in percent |\n"
+            "\n"
+            "### IRQ\n"
+            "\n"
+            "**Sub-menu:** `/system/resource/irq`\n"
+            "\n"
+            "### Hardware\n"
+            "\n"
+            "**Sub-menu:** `/system/resource/hardware`\n"
+        )
+        menu = next(m for m in self._parse(content) if m["path"] == "/system/resource")
+        assert "load" not in {a["name"] for a in menu["arguments"]}
+        assert "no unambiguous menu" in capsys.readouterr().err
+
+    def test_single_child_page_context_warns_and_skips(self, capsys):
+        # One sub-menu is not enough to identify the page's own menu: it could
+        # be the child itself, so the table is left unattached with a warning.
+        content = (
+            "## ip/dhcp-server \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## DHCP Server\n"
+            "\n"
+            "### DHCP Server Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **add-dns-entries** (*yes \\| no*) | Creates dynamic DNS records |\n"
+            "\n"
+            "### Network\n"
+            "\n"
+            "**Sub-menu:** `/ip/dhcp-server/network`\n"
+        )
+        menu = next(m for m in self._parse(content) if m["path"] == "/ip/dhcp-server")
+        assert "add-dns-entries" not in {a["name"] for a in menu["arguments"]}
+        assert "no unambiguous menu" in capsys.readouterr().err
+
+    def test_deepest_common_ancestor(self):
+        from extract_commands import _deepest_common_ancestor
+
+        assert _deepest_common_ancestor(
+            ["/ip/dhcp-server/lease", "/ip/dhcp-server/network"]
+        ) == "/ip/dhcp-server"
+        # Siblings share only their root; the caller rejects it by depth.
+        assert _deepest_common_ancestor(["/ip/address", "/ip/route"]) == "/ip"
+        assert _deepest_common_ancestor(["/ip/address"]) is None
+        assert _deepest_common_ancestor(["/ip/address", "/ipv6/address"]) is None
 
 
 class TestMultiLineArgTableRow:
