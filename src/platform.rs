@@ -73,19 +73,44 @@ pub(crate) fn stored_binary_name(os: zed::Os, version: &str) -> String {
     }
 }
 
-/// Accepts a GitHub-API asset `download_url` only when it points into this
-/// extension's own release namespace on github.com; anything else yields
-/// `None` so the caller falls back to the URL it constructs itself from
-/// [`GITHUB_REPO`] and the pinned crate version. Defense in depth: it stops
-/// a tampered API response from redirecting the download to attacker-chosen
-/// content (which would then face — and fail — checksum verification anyway).
-pub(crate) fn pinned_release_url(candidate: &str) -> Option<String> {
+/// Builds the canonical release-download URL for `asset_name` under `tag`,
+/// pinned to this extension's own repository.
+///
+/// Used instead of any API-supplied URL whenever the tag is already known
+/// (the `github_release_by_tag_name` path), so a tampered or stale API
+/// response cannot substitute a different host, path, or asset.
+pub(crate) fn pinned_asset_url(tag: &str, asset_name: &str) -> String {
+    format!("https://github.com/{GITHUB_REPO}/releases/download/{tag}/{asset_name}")
+}
+
+/// Accepts a GitHub-API asset `download_url` only when it is exactly this
+/// extension's own release-download URL for `asset_name`:
+/// `https://github.com/{GITHUB_REPO}/releases/download/<tag>/<asset_name>`.
+///
+/// Anything else — foreign scheme/host/repo, a query string or fragment, a
+/// backslash, whitespace, an extra path segment, a different asset — yields
+/// `None` so the caller falls back to a URL it constructs itself from
+/// [`GITHUB_REPO`]. Defense in depth: even when `asset.name` matched, a
+/// tampered API response cannot smuggle a different path into the download
+/// (which would then also have to supply a matching `.sha256` companion in
+/// this repo's namespace).
+///
+/// `<tag>` must be non-empty and slash-free (this project's release tags are
+/// validated as `vMAJOR.MINOR.PATCH`), so the returned URL has exactly one
+/// path segment before the asset name.
+pub(crate) fn pinned_release_url(candidate: &str, asset_name: &str) -> Option<String> {
     let prefix = format!("https://github.com/{GITHUB_REPO}/releases/download/");
-    if candidate.starts_with(&prefix) {
-        Some(candidate.to_string())
-    } else {
-        None
+    let rest = candidate.strip_prefix(&prefix)?;
+    if rest.bytes().any(|b| {
+        b == b'?' || b == b'#' || b == b'\\' || b.is_ascii_whitespace() || b.is_ascii_control()
+    }) {
+        return None;
     }
+    let (tag, base) = rest.split_once('/')?;
+    if tag.is_empty() || tag.contains('/') || base != asset_name {
+        return None;
+    }
+    Some(candidate.to_string())
 }
 
 /// True when `path` exists and is spawnable as-is.
@@ -218,43 +243,84 @@ mod tests {
 
     #[test]
     fn release_urls_are_pinned_to_this_repo_namespace() {
-        let good = format!(
-            "https://github.com/{GITHUB_REPO}/releases/download/v0.5.0/rsc-ls-x86_64-unknown-linux-gnu"
-        );
-        assert_eq!(pinned_release_url(&good), Some(good.clone()));
+        let asset = "rsc-ls-x86_64-unknown-linux-gnu";
+        let good = format!("https://github.com/{GITHUB_REPO}/releases/download/v0.5.0/{asset}");
+        assert_eq!(pinned_release_url(&good, asset), Some(good.clone()));
 
         // Foreign repo under the same host.
         assert_eq!(
             pinned_release_url(
-                "https://github.com/attacker/mikrotik-zed/releases/download/v0.5.0/rsc-ls"
+                "https://github.com/attacker/mikrotik-zed/releases/download/v0.5.0/rsc-ls",
+                "rsc-ls"
             ),
             None
         );
         // Scheme downgrade.
         assert_eq!(
             pinned_release_url(
-                "http://github.com/balakar94/mikrotik-zed/releases/download/v0.5.0/rsc-ls"
+                "http://github.com/balakar94/mikrotik-zed/releases/download/v0.5.0/rsc-ls",
+                "rsc-ls"
             ),
             None
         );
         // Prefix look-alike: the repo name is a prefix of a different path.
         assert_eq!(
             pinned_release_url(
-                "https://github.com/balakar94/mikrotik-zed.evil/releases/download/v0.5.0/rsc-ls"
+                "https://github.com/balakar94/mikrotik-zed.evil/releases/download/v0.5.0/rsc-ls",
+                "rsc-ls"
             ),
             None
         );
         // Host look-alike.
         assert_eq!(
             pinned_release_url(
-                "https://github.com.evil.com/balakar94/mikrotik-zed/releases/download/v0.5.0/rsc-ls"
+                "https://github.com.evil.com/balakar94/mikrotik-zed/releases/download/v0.5.0/rsc-ls",
+                "rsc-ls"
             ),
             None
         );
-        assert_eq!(pinned_release_url(""), None);
+        assert_eq!(pinned_release_url("", asset), None);
+    }
+
+    #[test]
+    fn pinned_release_url_rejects_urls_that_are_not_the_exact_asset() {
+        let asset = "rsc-ls-x86_64-unknown-linux-gnu";
+        let prefix = format!("https://github.com/{GITHUB_REPO}/releases/download/");
+        let cases = [
+            // Prefix with no tag/asset at all.
+            prefix.clone(),
+            // Missing asset segment.
+            format!("{prefix}v0.5.0"),
+            // Asset name mismatch (same namespace, wrong file).
+            format!("{prefix}v0.5.0/rsc-ls-aarch64-apple-darwin"),
+            // Extra path segment smuggled into the tag position.
+            format!("{prefix}extra/v0.5.0/{asset}"),
+            // Query string / fragment would change what the companion URL
+            // resolves to.
+            format!("{prefix}v0.5.0/{asset}?raw=1"),
+            format!("{prefix}v0.5.0/{asset}#frag"),
+            // Backslash could be normalized to a separator by some URL stacks.
+            format!("{prefix}v0.5.0\\{asset}"),
+            // Whitespace/control characters must never appear in a URL.
+            format!("{prefix}v0.5.0/{asset} "),
+            format!("{prefix}v0.5.0/{asset}\n"),
+        ];
+        for candidate in cases {
+            assert_eq!(
+                pinned_release_url(&candidate, asset),
+                None,
+                "must reject {candidate:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pinned_asset_url_builds_the_canonical_download_url() {
         assert_eq!(
-            pinned_release_url("https://github.com/balakar94/mikrotik-zed/releases/download/"),
-            Some("https://github.com/balakar94/mikrotik-zed/releases/download/".to_string())
+            pinned_asset_url("v0.5.0", "rsc-ls-x86_64-unknown-linux-gnu"),
+            format!(
+                "https://github.com/{GITHUB_REPO}/releases/download/v0.5.0/rsc-ls-x86_64-unknown-linux-gnu"
+            )
         );
     }
 }
