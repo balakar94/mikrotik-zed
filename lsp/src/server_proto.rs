@@ -442,7 +442,7 @@ pub(crate) fn references_result(
 /// entries fetched under the previous target are stale by definition.
 /// Compares every field that selects what is fetched or where credentials
 /// are sent (host/hosts, user, port, TLS/scheme flags, timeout, custom
-/// resources, loopback policy, opt-in flag). `pass` is compared silently
+/// resources, loopback policy, operator deny list). `pass` is compared silently
 /// and never logged by this function or its callers.
 pub(crate) fn live_connection_changed(old: &LiveConfig, new: &LiveConfig) -> bool {
     old.enabled != new.enabled
@@ -456,6 +456,7 @@ pub(crate) fn live_connection_changed(old: &LiveConfig, new: &LiveConfig) -> boo
         || old.timeout_secs != new.timeout_secs
         || old.custom_resources != new.custom_resources
         || old.allow_loopback != new.allow_loopback
+        || old.deny_prefixes != new.deny_prefixes
         // F4: TLS-identity rotation (pin / pin-validity / CA bundle) must
         // invalidate entries fetched under the previous trust anchor.
         || live_identity_changed(old, new)

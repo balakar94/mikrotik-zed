@@ -5,10 +5,11 @@
 // Split from `live.rs`; re-exported there, `crate::live::…` paths unchanged.
 
 use crate::caps::{
-    LIVE_CUSTOM_RESOURCES_MAX, LIVE_MAX_HOSTS, LIVE_TIMEOUT_SECS, MAX_LIVE_VALUE_LEN,
+    LIVE_CUSTOM_RESOURCES_MAX, LIVE_MAX_HOSTS, LIVE_TIMEOUT_SECS, MAX_LIVE_DENY_PREFIXES,
+    MAX_LIVE_DENY_PREFIXES_BYTES, MAX_LIVE_VALUE_LEN,
 };
 use crate::live_cache::{ResourceKind, live_resource_for_menu_property};
-use crate::live_net::{is_ssrf_denied_host, validate_host, validate_host_with_allow};
+use crate::live_net::{DenyPrefix, is_ssrf_denied_host, validate_host, validate_host_with_policy};
 use crate::logging::{log_debug, log_info, log_warn, sanitize_for_log};
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
@@ -64,6 +65,13 @@ pub struct LiveConfig {
     /// Default deny (false) — when false, `127.0.0.0/8`, `::1`, `10/8`, `192.168/16` etc are
     /// rejected via `is_loopback_or_private`.
     pub allow_loopback: bool,
+    /// Operator SSRF deny prefixes (`RSC_LS_LIVE_DENY_PREFIXES`), env-only.
+    ///
+    /// Comma-separated IPv4/IPv6 addresses or CIDR prefixes (capped to
+    /// `MAX_LIVE_DENY_PREFIXES`). Checked FIRST in the deny evaluation and
+    /// never relaxed by `allow_loopback`; invalid entries are ignored with a
+    /// WARN. Workspace-settings overrides are intentionally NOT supported.
+    pub deny_prefixes: Vec<DenyPrefix>,
     /// SPKI SHA256 pin (`MIKROTIK_FINGERPRINT=sha256:<hex>`). When set and
     /// valid, TLS uses a pinning verifier instead of disabling verification.
     /// `None` when unset or unparsable (see `fingerprint_invalid`).
@@ -91,6 +99,7 @@ impl std::fmt::Debug for LiveConfig {
             .field("timeout_secs", &self.timeout_secs)
             .field("custom_resources", &self.custom_resources)
             .field("allow_loopback", &self.allow_loopback)
+            .field("deny_prefixes", &self.deny_prefixes)
             .field("fingerprint_set", &self.fingerprint.is_some())
             .field("fingerprint_invalid", &self.fingerprint_invalid)
             .field("ca_file", &sanitize_for_log(&self.ca_file))
@@ -239,6 +248,12 @@ impl LiveConfig {
             .map(|v| v.trim() == "1")
             .unwrap_or(false);
 
+        // Operator SSRF deny prefixes, env-only (never workspace settings).
+        // Checked FIRST by the deny policy and never relaxed by the loopback
+        // opt-in. Invalid entries and anything past the caps are ignored with
+        // a WARN so a typo cannot break the connection to the device.
+        let deny_prefixes = parse_deny_prefixes(get("RSC_LS_LIVE_DENY_PREFIXES").as_deref());
+
         // TLS pin + custom CA. Fingerprint format:
         // `MIKROTIK_FINGERPRINT=sha256:<64 hex>`. Invalid values are
         // fail-closed via `fingerprint_invalid` (see `is_active`).
@@ -260,6 +275,7 @@ impl LiveConfig {
             timeout_secs,
             custom_resources,
             allow_loopback,
+            deny_prefixes,
             fingerprint,
             fingerprint_invalid,
             ca_file,
@@ -277,7 +293,8 @@ impl LiveConfig {
         self.enabled
             && !self.host.is_empty()
             && !self.pass.is_empty()
-            && validate_host_with_allow(&self.host, self.allow_loopback).is_ok()
+            && validate_host_with_policy(&self.host, self.allow_loopback, &self.deny_prefixes)
+                .is_ok()
             && self.port != 0
     }
 
@@ -313,7 +330,7 @@ impl LiveConfig {
             // Fingerprint bytes are a public-key hash (not a secret) but only
             // the presence flag is logged to keep the line bounded.
             log_info!(
-                "live enabled host={} port={} scheme={} user={} ssl_verify={} ssl_verify_effective={} timeout={}s hosts={:?} custom_resources={} allow_loopback={} fingerprint_set={} ca_file_set={}",
+                "live enabled host={} port={} scheme={} user={} ssl_verify={} ssl_verify_effective={} timeout={}s hosts={:?} custom_resources={} allow_loopback={} deny_prefixes={} fingerprint_set={} ca_file_set={}",
                 sanitize_for_log(&self.host),
                 self.port,
                 self.scheme(),
@@ -324,6 +341,7 @@ impl LiveConfig {
                 sanitize_for_log(&format!("{:?}", self.hosts)),
                 self.custom_resources.len(),
                 self.allow_loopback,
+                self.deny_prefixes.len(),
                 self.fingerprint.is_some(),
                 !self.ca_file.is_empty()
             );
@@ -714,6 +732,90 @@ fn parse_hosts(raw: &str) -> Vec<String> {
         }
     }
     hosts
+}
+
+/// Parse the operator SSRF deny list (`RSC_LS_LIVE_DENY_PREFIXES`).
+///
+/// Comma-separated, whitespace-tolerant list of IPv4/IPv6 addresses or CIDR
+/// prefixes (bare address = `/32` or `/128`). Each entry is validated
+/// independently: an invalid entry is ignored with a WARN so an operator typo
+/// can never break the connection to the intended device. The entry count is
+/// capped at `MAX_LIVE_DENY_PREFIXES` and the raw input at
+/// `MAX_LIVE_DENY_PREFIXES_BYTES`; entries past either cap are ignored with a
+/// WARN. Never panics (multibyte/garbage input parses to `None`), and a
+/// non-empty result logs one concise WARN so the active policy is visible.
+pub(crate) fn parse_deny_prefixes(raw: Option<&str>) -> Vec<DenyPrefix> {
+    let Some(raw) = raw else {
+        return Vec::new();
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut consumed_bytes: usize = 0;
+    for entry in trimmed.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        // Charge the entry (plus its separator) against the raw byte cap
+        // before parsing, so a wall of text cannot force unbounded work.
+        consumed_bytes = consumed_bytes.saturating_add(entry.len()).saturating_add(1);
+        if consumed_bytes > MAX_LIVE_DENY_PREFIXES_BYTES {
+            log_warn!(
+                "RSC_LS_LIVE_DENY_PREFIXES exceeds {} bytes, ignoring remaining entries",
+                MAX_LIVE_DENY_PREFIXES_BYTES
+            );
+            break;
+        }
+        if out.len() >= MAX_LIVE_DENY_PREFIXES {
+            log_warn!(
+                "RSC_LS_LIVE_DENY_PREFIXES has more than {} entries, ignoring extra entries",
+                MAX_LIVE_DENY_PREFIXES
+            );
+            break;
+        }
+        match parse_one_deny_prefix(entry) {
+            Some(prefix) => out.push(prefix),
+            None => log_warn!(
+                "invalid RSC_LS_LIVE_DENY_PREFIXES entry {:?}, ignoring",
+                sanitize_for_log(entry)
+            ),
+        }
+    }
+    if !out.is_empty() {
+        log_warn!(
+            "live operator SSRF deny list active: {} prefix(es) from RSC_LS_LIVE_DENY_PREFIXES (always denied, even with RSC_LS_LIVE_ALLOW_LOOPBACK=1)",
+            out.len()
+        );
+    }
+    out
+}
+
+/// Parse one deny entry: `addr` or `addr/len` (IPv4 `0..=32`, IPv6 `0..=128`).
+fn parse_one_deny_prefix(entry: &str) -> Option<DenyPrefix> {
+    let (addr_part, len_part) = match entry.split_once('/') {
+        Some((addr, len)) => (addr.trim(), Some(len.trim())),
+        None => (entry, None),
+    };
+    if addr_part.is_empty() {
+        return None;
+    }
+    let addr: std::net::IpAddr = addr_part.parse().ok()?;
+    let max_len: u8 = if addr.is_ipv4() { 32 } else { 128 };
+    let prefix_len = match len_part {
+        None => max_len,
+        Some("") => return None,
+        Some(len) => {
+            let parsed: u16 = len.parse().ok()?;
+            if parsed > max_len as u16 {
+                return None;
+            }
+            parsed as u8
+        }
+    };
+    DenyPrefix::new(addr, prefix_len)
 }
 
 /// Parse custom resources from an optional JSON string (env var).

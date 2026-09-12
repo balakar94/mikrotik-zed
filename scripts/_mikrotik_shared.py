@@ -47,6 +47,12 @@ Usage notes:
   and benchmarking ``198.18.0.0/15`` are all denied fail-closed.
   Non-canonical numeric literals are rejected even when the normalized
   address would otherwise be allowed.
+- ``RSC_LS_LIVE_DENY_PREFIXES`` is an operator-configured, env-only
+  comma-separated list of IPv4/IPv6 addresses or CIDR prefixes the SSRF
+  policy always denies (network-specific NAT64/RFC 6052 prefixes, internal
+  ranges). It is checked first and is never relaxed; invalid entries and
+  entries past the caps are ignored with a warning. The Rust LSP applies the
+  identical list via ``LiveConfig``.
 - ``MIKROTIK_PASS`` never appears in logs: use ``redact_secrets`` on any
   error text that could echo credentials (including base64 ``user:pass``).
   Matching is by substring and over-redacts by design (fail-safe:
@@ -65,6 +71,24 @@ import socket
 import ssl
 import sys
 import urllib.parse
+
+# ── Operator-configurable SSRF deny list ─────────────────────────────────
+#
+# ``RSC_LS_LIVE_DENY_PREFIXES`` mirrors ``lsp/src/live_config.rs`` /
+# ``lsp/src/caps.rs``: a comma-separated list of IPv4/IPv6 addresses or CIDR
+# prefixes the SSRF policy always denies (e.g. a network-specific NAT64/RFC
+# 6052 prefix or an internal range). Checked first in
+# :func:`is_normalized_ssrf_denied` and never relaxed by any opt-in. Values
+# are declared once here for the companion scripts; keep them in sync with
+# ``caps.rs`` (``tests/test_mikrotik_shared.py::TestRustParity`` pins both).
+MAX_LIVE_DENY_PREFIXES = 32
+MAX_LIVE_DENY_PREFIXES_BYTES = 2 * 1024
+
+# Parsed ``RSC_LS_LIVE_DENY_PREFIXES`` keyed by the raw env value, so the
+# list is parsed (and warned about) once per distinct value rather than on
+# every host check. Tests that change the env var get a fresh parse because
+# the raw string is the cache key.
+_DENY_PREFIXES_CACHE: dict[str, list] = {}
 
 
 def env_int(name: str, default: int) -> int:
@@ -335,10 +359,144 @@ def embedded_ipv4(addr: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
     return None
 
 
-def is_normalized_ssrf_denied(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+def parse_deny_prefixes(raw: str | None) -> list:
+    """Parse the operator SSRF deny list (``RSC_LS_LIVE_DENY_PREFIXES``).
+
+    Comma-separated, whitespace-tolerant list of IPv4/IPv6 addresses or CIDR
+    prefixes (bare address = ``/32`` or ``/128``). Each entry is validated
+    independently: an invalid entry is ignored with a warning so an operator
+    typo can never break the connection to the intended device. The entry
+    count is capped at :data:`MAX_LIVE_DENY_PREFIXES` and the raw input at
+    :data:`MAX_LIVE_DENY_PREFIXES_BYTES`; entries past either cap are ignored
+    with a warning. Never raises (multibyte/garbage input parses to None), and
+    a non-empty result logs one concise warning. Mirrors
+    ``lsp/src/live_config.rs::parse_deny_prefixes``.
+    """
+    if raw is None:
+        return []
+    text = raw.strip()
+    if not text:
+        return []
+    out: list = []
+    consumed = 0
+    for token in text.split(","):
+        entry = token.strip()
+        if not entry:
+            continue
+        consumed += len(entry) + 1
+        if consumed > MAX_LIVE_DENY_PREFIXES_BYTES:
+            print(
+                f"warning: RSC_LS_LIVE_DENY_PREFIXES exceeds "
+                f"{MAX_LIVE_DENY_PREFIXES_BYTES} bytes, ignoring remaining entries",
+                file=sys.stderr,
+            )
+            break
+        if len(out) >= MAX_LIVE_DENY_PREFIXES:
+            print(
+                f"warning: RSC_LS_LIVE_DENY_PREFIXES has more than "
+                f"{MAX_LIVE_DENY_PREFIXES} entries, ignoring extra entries",
+                file=sys.stderr,
+            )
+            break
+        parsed = _parse_one_deny_prefix(entry)
+        if parsed is None:
+            print(
+                f"warning: invalid RSC_LS_LIVE_DENY_PREFIXES entry {entry!r}, ignoring",
+                file=sys.stderr,
+            )
+            continue
+        out.append(parsed)
+    if out:
+        print(
+            f"warning: live operator SSRF deny list active: {len(out)} prefix(es) "
+            f"from RSC_LS_LIVE_DENY_PREFIXES (always denied)",
+            file=sys.stderr,
+        )
+    return out
+
+
+def _parse_one_deny_prefix(entry: str):
+    """Parse one deny entry: ``addr`` or ``addr/len`` (v4 ``0..=32``, v6 ``0..=128``)."""
+    if "/" in entry:
+        addr_part, _, len_part = entry.partition("/")
+        addr_part = addr_part.strip()
+        len_part = len_part.strip()
+    else:
+        addr_part, len_part = entry, None
+    if not addr_part:
+        return None
+    try:
+        addr = ipaddress.ip_address(addr_part)
+    except ValueError:
+        return None
+    max_len = 32 if addr.version == 4 else 128
+    if len_part is None:
+        prefix_len = max_len
+    elif not len_part.isdigit():
+        return None
+    else:
+        prefix_len = int(len_part)
+        if not 0 <= prefix_len <= max_len:
+            return None
+    try:
+        return ipaddress.ip_network(f"{addr}/{prefix_len}", strict=False)
+    except ValueError:
+        return None
+
+
+def env_deny_prefixes() -> list:
+    """Parsed ``RSC_LS_LIVE_DENY_PREFIXES`` for the current process (cached).
+
+    Mirrors the Rust ``LiveConfig`` behavior: env only (no CLI/settings
+    overlay), invalid entries and cap overruns ignored with a warning.
+    """
+    raw = os.getenv("RSC_LS_LIVE_DENY_PREFIXES")
+    key = raw if raw is not None else ""
+    cached = _DENY_PREFIXES_CACHE.get(key)
+    if cached is not None:
+        return cached
+    parsed = parse_deny_prefixes(key)
+    _DENY_PREFIXES_CACHE[key] = parsed
+    return parsed
+
+
+def _extra_deny_match(
+    addr: ipaddress.IPv4Address | ipaddress.IPv6Address, deny_prefixes: list | None
+) -> bool:
+    """Whether ``addr`` matches an operator deny prefix (empty/None => False).
+
+    IPv4-mapped IPv6 candidates are unmapped first so an IPv4 deny prefix
+    also covers ``::ffff:a.b.c.d``; the original IPv6 form is checked too.
+    Mirrors ``lsp/src/live_net.rs::is_extra_deny_match``.
+    """
+    if not deny_prefixes:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address):
+        mapped = addr.ipv4_mapped
+        if mapped is not None:
+            for net in deny_prefixes:
+                if isinstance(net, ipaddress.IPv4Network) and mapped in net:
+                    return True
+    for net in deny_prefixes:
+        if isinstance(net, ipaddress.IPv4Network) and isinstance(addr, ipaddress.IPv4Address):
+            if addr in net:
+                return True
+        elif isinstance(net, ipaddress.IPv6Network) and isinstance(addr, ipaddress.IPv6Address):
+            if addr in net:
+                return True
+    return False
+
+
+def is_normalized_ssrf_denied(
+    addr: ipaddress.IPv4Address | ipaddress.IPv6Address, deny_prefixes: list | None = None
+) -> bool:
     """Whether a normalized IP is unconditionally SSRF-denied.
 
-    Covers whole ``169.254.0.0/16`` link-local (not just ``.169.254``),
+    ``deny_prefixes`` is the optional operator list from
+    ``RSC_LS_LIVE_DENY_PREFIXES`` (see :func:`parse_deny_prefixes`); when
+    present, a match is denied FIRST and unconditionally, before any built-in
+    range check. Covers whole ``169.254.0.0/16`` link-local (not just
+    ``.169.254``),
     IPv6 ``fe80::/10`` link-local, unspecified addresses, and the IPv6
     transition prefixes that tunnel IPv4 regardless of any loopback opt-in:
     NAT64 well-known ``64:ff9b::/96``, Teredo ``2001::/32``, and 6to4
@@ -358,6 +516,8 @@ def is_normalized_ssrf_denied(addr: ipaddress.IPv4Address | ipaddress.IPv6Addres
     private (see :func:`is_normalized_loopback_or_private`), not
     unconditional.
     """
+    if _extra_deny_match(addr, deny_prefixes):
+        return True
     if isinstance(addr, ipaddress.IPv6Address):
         mapped = addr.ipv4_mapped
         if mapped is not None:
@@ -531,7 +691,7 @@ def validate_host(host: str) -> str | None:
         # non-canonical numerics fail-closed (matches Rust).
         return "non-canonical numeric host"
     norm = normalized_host_ip(host)
-    if norm is not None and is_normalized_ssrf_denied(norm):
+    if norm is not None and is_normalized_ssrf_denied(norm, deny_prefixes=env_deny_prefixes()):
         return "SSRF denied host"
     return None
 
@@ -688,7 +848,7 @@ def resolve_host_addrs(host: str, port: int) -> tuple[str | None, list[str]]:
             addr = ipaddress.ip_address(ip_str)
         except ValueError:
             return f"unparseable resolved IP {ip_str!r}", []
-        if is_normalized_ssrf_denied(addr):
+        if is_normalized_ssrf_denied(addr, deny_prefixes=env_deny_prefixes()):
             return f"resolved IP denied: {ip_str}", []
         if ip_str not in ips:
             ips.append(ip_str)
