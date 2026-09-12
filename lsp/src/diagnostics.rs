@@ -1541,9 +1541,32 @@ impl LogicalLine {
 
     /// Map a byte offset in the joined text to a [`Position`] in original
     /// document coordinates. Out-of-bounds offsets are clamped defensively.
+    ///
+    /// An offset that sits exactly on a segment boundary — the exclusive end
+    /// of one physical chunk and the start of the next — maps to the END of
+    /// the PRECEDING segment. That boundary is a real position on the
+    /// current physical line (just before the trailing `\`), so reporting
+    /// the next line's start instead would make a range end on a line it
+    /// never covered. Range callers should prefer [`Self::map_range`], which
+    /// resolves a START at a boundary forward (a token beginning on a
+    /// continuation line still starts on that line).
     pub(crate) fn map_pos(&self, offset: usize) -> Position {
+        self.map_pos_with_bias(offset, false)
+    }
+
+    /// Shared segment lookup for the two boundary biases.
+    ///
+    /// `prefer_next` picks the segment that STARTS at a boundary offset
+    /// (forward bias); otherwise the segment that ENDS at it is selected
+    /// (backward bias). Offsets are clamped to the text and floored to a
+    /// char boundary first.
+    fn map_pos_with_bias(&self, offset: usize, prefer_next: bool) -> Position {
         let offset = crate::floor_char_boundary(&self.text, offset.min(self.text.len()));
-        let idx = self.segments.partition_point(|s| s.text_start <= offset);
+        let idx = if prefer_next {
+            self.segments.partition_point(|s| s.text_start <= offset)
+        } else {
+            self.segments.partition_point(|s| s.text_start < offset)
+        };
         let Some(seg) = idx.checked_sub(1).and_then(|i| self.segments.get(i)) else {
             return Position {
                 line: 0,
@@ -1563,10 +1586,27 @@ impl LogicalLine {
     /// Map a byte range in the joined text to a [`Range`] in original document
     /// coordinates. Start and end may land on different physical lines (LSP
     /// allows multi-line ranges), which happens when a token spans a join.
+    ///
+    /// Boundary offsets are resolved per endpoint: a START on a boundary
+    /// belongs to the segment it opens (forward bias) so a token that begins
+    /// on a continuation line stays on that line, while an END on a boundary
+    /// belongs to the segment it closes (backward bias) so the range never
+    /// spills across the `\` onto the next line. A zero-length range resolves
+    /// both endpoints backward, keeping it at the end of the preceding
+    /// segment instead of inverting or jumping lines.
     pub(crate) fn map_range(&self, start: usize, end: usize) -> Range {
+        let end = end.max(start);
+        if start == end {
+            // `map_pos` is exactly the backward-bias point mapping.
+            let at = self.map_pos(start);
+            return Range {
+                start: at.clone(),
+                end: at,
+            };
+        }
         Range {
-            start: self.map_pos(start),
-            end: self.map_pos(end.max(start)),
+            start: self.map_pos_with_bias(start, true),
+            end: self.map_pos_with_bias(end, false),
         }
     }
 
