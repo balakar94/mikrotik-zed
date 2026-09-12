@@ -150,6 +150,13 @@ pub(crate) fn suggestion_threshold(input_len: usize) -> usize {
 /// longer than [`MAX_SUGGEST_INPUT_BYTES`] are rejected before the
 /// O(n × m) distance scan, so direct callers cannot trigger the same
 /// unbounded cost the budget cap guards against.
+///
+/// A length short-circuit skips any candidate whose character count
+/// differs from the input's by more than `threshold`: each OSA edit
+/// changes the character count by at most one, so the distance is always
+/// at least `abs(len(input) - len(candidate))` and a wider gap could
+/// never be accepted. Length-incompatible candidates are dropped before
+/// the O(n × m) scan, so only plausible-length names pay its cost.
 pub(crate) fn best_candidate(
     input: &str,
     candidates: impl Iterator<Item = impl AsRef<str>>,
@@ -163,12 +170,22 @@ pub(crate) fn best_candidate(
     if input.is_empty() {
         return None;
     }
-    let threshold = suggestion_threshold(input.chars().count());
+    let input_chars = input.chars().count();
+    let threshold = suggestion_threshold(input_chars);
     // Owned storage: iterator items are transient, so a borrowed best
     // pick could not outlive a single loop iteration.
     let mut best: Option<(usize, String)> = None;
     for candidate in candidates {
         let candidate = candidate.as_ref();
+        // Exact lower bound: `damerau_levenshtein` is char-based and each
+        // edit shifts the character count by at most one, so
+        // `dist >= |len(input) - len(candidate)|`. A gap wider than
+        // `threshold` can never satisfy `dist <= threshold`; skipping it
+        // here is a pure optimization — acceptance and tie-break below
+        // are unchanged.
+        if candidate.chars().count().abs_diff(input_chars) > threshold {
+            continue;
+        }
         let dist = damerau_levenshtein(input, candidate);
         if dist == 0 || dist > threshold {
             continue;
