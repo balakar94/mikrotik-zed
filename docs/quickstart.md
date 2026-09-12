@@ -32,11 +32,10 @@ No manual build is required. On opening a `.rsc` file the shim resolves
    warning is logged — keep only trusted builds on PATH).
 2. **Cache** — previously downloaded copy, re-hashed against its
    `.verified` digest marker before reuse; a mismatch is deleted and
-   re-downloaded. A symlinked cache path is refused outright.
-3. **GitHub Releases** — matching platform asset downloaded to a temp
-   file, SHA-256 verified *before* execution, then atomically renamed into
-   place (a reader never sees a partial binary). Any failure aborts with
-   manual instructions; an unverified binary is never executed.
+   re-downloaded.
+3. **GitHub Releases** — matching platform asset, SHA-256 verified
+   *before* execution. Any failure aborts with manual instructions;
+   an unverified binary is never executed.
 
 **Trust model:** the `.sha256` companion is produced by the same release
 build as the binary, so it detects transfer corruption, truncation, and

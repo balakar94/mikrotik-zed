@@ -10,7 +10,7 @@
 - **Live SSRF deny list (`lsp/src/live_net.rs`, `lsp/src/live_config.rs`, `lsp/src/caps.rs`, `scripts/_mikrotik_shared.py`)**: env-only `RSC_LS_LIVE_DENY_PREFIXES` adds operator-defined IPv4/IPv6 address/CIDR deny prefixes (network-specific NAT64/RFC 6052 prefixes, internal ranges) checked FIRST and regardless of `RSC_LS_LIVE_ALLOW_LOOPBACK`; capped at 32 entries / 2 KiB with invalid entries ignored and warned. No workspace-settings overlay.
 - **Deploy transport (`scripts/mikrotik-deploy.py`, `scripts/mikrotik-live-check.py`)**: device response bodies are redacted and size-capped; the workspace-settings `port` requires the transport opt-in.
 - **WASM shim (`src/cache.rs`, `src/platform.rs`, `src/lib.rs`)**: bounded cached-binary and `.verified` marker reads; release download URLs pinned to repo/tag/asset.
-- **WASM shim download race (`src/lib.rs`, `src/platform.rs`)**: auto-downloads land in a unique temp file and are `std::fs::rename`d onto the canonical versioned path only after SHA-256 verification, so a concurrent reader or spawn never observes a partially written binary. Symlinked cache paths are refused (and unlinked) instead of being hashed or spawned.
+- **WASM shim cache hardening (`src/lib.rs`, `src/platform.rs`)**: symlinked cache paths are refused (and unlinked) instead of being hashed or spawned; a symlink is never something the extension creates, so it is treated as tampering. The auto-download write remains the host's non-atomic `download_file`; atomic install and the same-release `.sha256` (not an independent trust anchor) are documented accepted residuals, with the digest gate self-healing a torn or tampered file.
 
 ### Fixed
 
