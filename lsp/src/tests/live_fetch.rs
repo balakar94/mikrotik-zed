@@ -265,3 +265,23 @@ fn test_pinned_resolver_never_consults_dns() {
     );
     assert_eq!(resolver.resolve("other.example:443").unwrap(), addrs);
 }
+
+#[test]
+fn test_pinned_agent_cache_bounded_eviction() {
+    use crate::caps::MAX_PINNED_AGENT_CACHE_ENTRIES;
+    use std::net::SocketAddr;
+
+    // No other test populates PINNED_CACHE; this test owns it. Distinct
+    // address sets produce distinct keys, so inserting more than the cap must
+    // evict down to the bound (a churning resolver cannot grow it).
+    let cfg = cfg_with(HashMap::new());
+    let timeout = Duration::from_secs(5);
+    for i in 0..(MAX_PINNED_AGENT_CACHE_ENTRIES + 2) {
+        let addr: SocketAddr = format!("127.0.0.{}:443", i + 1).parse().unwrap();
+        let _ = get_cached_agent_for_config(&cfg, timeout, &[addr]);
+    }
+    assert_eq!(
+        crate::live_fetch::pinned_agent_cache_len_for_test(),
+        MAX_PINNED_AGENT_CACHE_ENTRIES
+    );
+}

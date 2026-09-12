@@ -664,10 +664,12 @@ pub(crate) fn denied_reason_for_ip(
 /// - Every returned IP is checked with [`denied_reason_for_ip`]; the first
 ///   denial fails the whole fetch (an attacker controls only one record to
 ///   win a race).
-/// - On success returns the validated `SocketAddr` set (sorted + deduped for
-///   a stable agent-cache key). The caller pins these addresses into the
-///   HTTP agent's resolver so the connect cannot re-resolve and be rebound
-///   (TOCTOU): the same validated IPs are used for the actual connection.
+/// - On success returns the validated `SocketAddr` set in resolver order
+///   (adjacent duplicates removed). The order is preserved so dual-stack
+///   preference / Happy Eyeballs behaviour is unchanged; the caller pins
+///   these addresses into the HTTP agent's resolver so the connect cannot
+///   re-resolve and be rebound (TOCTOU): the same validated IPs are used for
+///   the actual connection.
 pub(crate) fn resolve_and_validate_host(
     host: &str,
     port: u16,
@@ -697,9 +699,9 @@ pub(crate) fn resolve_and_validate_host(
             )));
         }
     }
-    // Stable order/duplicates: the agent cache key is the address vector, so
-    // an unstable resolver order would defeat agent reuse.
-    addrs.sort();
+    // Preserve resolver order (dual-stack preference / Happy Eyeballs) rather
+    // than sorting. `dedup` only collapses adjacent duplicates, keeping the
+    // first occurrence and thus the resolver's priority.
     addrs.dedup();
     Ok(addrs)
 }
