@@ -57,7 +57,10 @@ _DENY_ROOTS: set[str] = set()
 # Only property sections are merged. Command tables ("Menu specific
 # commands"), print filters, and unrelated sections (e.g. certificate
 # export/import parameter tables) are ignored, per the "do not invent
-# entries" rule; the universal `print` command is captured separately.
+# entries" rule. The common `print parameters` table is recognized so it can
+# never merge into a menu, but it is deliberately NOT emitted: `print` is a
+# verb (`MenuData::STANDARD_VERBS` in the LSP), not a CLI path, so it must
+# not appear as a `[[menus]]` row.
 _MD_PROPERTY_HEADER = "property"          # first header cell of a property table
 _MD_PARAMETER_HEADER = "parameter"        # first header cell of a parameter table
 _MD_PROPERTY_HEADING = "propert"          # heading marker: property section
@@ -563,9 +566,10 @@ def _collect_markdown_table(
 
     Property sections (heading contains `propert`) contribute to `md_tables`
     keyed by their associated menu paths. Command sections are skipped. A
-    `print parameters` parameter table contributes to `print_rows` (captured
-    later as the universal `/print` command). Unrelated parameter tables are
-    ignored.
+    `print parameters` parameter table is recognized and consumed into
+    `print_rows`, but never emitted: `print` is a verb, not a menu, so its
+    common verb-level modifiers must not become a synthetic `/print` menu.
+    Unrelated parameter tables are likewise ignored.
 
     When no `**Sub-menu:**` association is active, the table is still stashed
     with its `page_context` (the H2 page's distinct sub-menu paths) and its
@@ -582,6 +586,12 @@ def _collect_markdown_table(
         desc_idx = 1 if len(header_cells) > 1 else 0
 
     if first == _MD_PARAMETER_HEADER:
+        # Parameter tables never contribute menu properties. The common
+        # `print parameters` table is recognized via `_MD_PRINT_HEADING`,
+        # consumed here so it can never merge into a menu's argument list, and
+        # deliberately not emitted: `print` is a verb modeled by
+        # `MenuData::STANDARD_VERBS` in the LSP, so no synthetic `/print` menu
+        # exists. Recognizing (and dropping) the table is warning-free.
         if _MD_PRINT_HEADING not in low:
             return
         for raw in rows:
@@ -781,27 +791,6 @@ def _append_argtable_row(
         current_menu["read_only"].append(entry)
 
 
-def _build_print_command(print_rows: list[dict]) -> dict:
-    """Build the synthetic `/print` Command from the common print table.
-
-    `print` is a verb, not a menu, so its documented parameters (including
-    the `!comments` filter) have no ArgTable home. Recording them once on a
-    `/print` Command keeps completion/diagnostics aware of them without
-    injecting 17 print rows into every menu's hover card. The parameters are
-    bare tokens, so they are stored as flags (print-output modifiers).
-    """
-    menu = {"path": "/print", "type": "Command", "flags": [], "arguments": [], "read_only": []}
-    for row in print_rows:
-        menu["flags"].append({
-            "name": row["name"],
-            "type": row.get("type", ""),
-            "required": False,
-            "unset": False,
-            "description": row.get("description", ""),
-        })
-    return menu
-
-
 def parse_llms_full(filepath: str) -> list[dict]:
     """Parse llms-full.txt and extract menu entries.
 
@@ -832,6 +821,9 @@ def parse_llms_full(filepath: str) -> list[dict]:
     effective_paths: list[str] = []
     current_heading = ""
     md_tables: list[dict] = []
+    # Recognized common `print` parameters. Deliberately not emitted (see the
+    # end of this function); collecting them keeps the parameter table out of
+    # `md_tables` so it cannot merge into a menu's arguments.
     print_rows: list[dict] = []
     md_skip_until = -1
     pending_row: list[str] | None = None
@@ -993,10 +985,12 @@ def parse_llms_full(filepath: str) -> list[dict]:
                 file=sys.stderr,
             )
 
-    # `print` is a verb, not a menu: record its documented common parameters
-    # (including `!comments`) once as a synthetic Command entry.
-    if print_rows:
-        menus.append(_build_print_command(print_rows))
+    # `print` is a verb, not a menu. Its common parameters (including
+    # `!comments`) were recognized into `print_rows` above and are
+    # intentionally dropped here: `data/commands.toml` models menus/CLI paths
+    # only, and the LSP already exposes `print` via `MenuData::STANDARD_VERBS`.
+    # Emitting a synthetic `/print` menu leaked into root completion and
+    # diagnostics, so no `[[menus]]` row is produced for it.
 
     for warning in warnings:
         print(f"warning: {warning}", file=sys.stderr)

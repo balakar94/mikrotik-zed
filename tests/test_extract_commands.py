@@ -2209,8 +2209,16 @@ class TestMarkdownPropertyTables:
         for path in ("/interface/bridge/filter", "/interface/bridge/nat"):
             assert "action" in {a["name"] for a in menus[path]["arguments"]}
 
-    def test_print_parameters_become_a_print_command(self):
+    def test_print_parameters_recognized_but_not_emitted(self, capsys):
+        # Regression: `print` is a verb, not a CLI path. The common print
+        # parameter table must be recognized (warning-free) but must NOT
+        # produce a synthetic `/print` menu, and its rows (notably the
+        # `!comments` filter) must not leak into any menu's entries.
         content = (
+            "## ip/route\n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
             "### Common commands\n"
             "\n"
             "#### print parameters\n"
@@ -2221,12 +2229,17 @@ class TestMarkdownPropertyTables:
             "| **!comments** | Returns entries without comments | `/ip route print !comments` |\n"
         )
         menus = {m["path"]: m for m in self._parse(content)}
-        assert "/print" in menus
-        print_menu = menus["/print"]
-        assert print_menu["type"] == "Command"
-        flags = {f["name"]: f for f in print_menu["flags"]}
-        assert "!comments" in flags
-        assert flags["!comments"]["description"] == "Returns entries without comments"
+        err = capsys.readouterr().err
+        assert "warning:" not in err, f"print table must be recognized warning-free: {err!r}"
+        assert "/print" not in menus
+        for menu in menus.values():
+            names = {
+                entry["name"]
+                for section in ("flags", "arguments", "read_only")
+                for entry in menu.get(section, [])
+            }
+            assert "!comments" not in names, f"!comments leaked into {menu['path']}"
+            assert "append" not in names, f"print parameter leaked into {menu['path']}"
 
     def test_property_table_without_rows_warns(self, capsys):
         content = (
