@@ -323,6 +323,73 @@ fn test_ssrf_ipv4_special_use_ranges_denied() {
 }
 
 #[test]
+fn test_ssrf_ipv4_compatible_addresses_denied() {
+    // IPv4-compatible ::/96 (deprecated) embeds an IPv4 address in the low
+    // 32 bits but is NOT caught by `to_ipv4_mapped` (which only covers
+    // `::ffff:0:0/96`). Deny the whole range unconditionally, including a
+    // public embedded address: the form has no legitimate RouterOS use.
+    for bad in [
+        "[::127.0.0.1]",
+        "[::169.254.169.254]",
+        "[::a9fe:a9fe]",
+        "[::8.8.8.8]",
+        "[::10.0.0.1]",
+    ] {
+        assert!(
+            validate_host_with_allow(bad, false).is_err(),
+            "IPv4-compatible address must be denied by default: {bad:?}"
+        );
+        assert!(
+            validate_host_with_allow(bad, true).is_err(),
+            "IPv4-compatible address must stay denied with loopback allowed: {bad:?}"
+        );
+        assert!(
+            normalized_host_ip(bad).is_some_and(is_normalized_ssrf_denied),
+            "IPv4-compatible address must hit the unconditional deny path: {bad:?}"
+        );
+    }
+    // `::8.8.8.8` is denied even though the embedded IPv4 is public.
+    let public_compat: std::net::IpAddr = "::8.8.8.8".parse().unwrap();
+    assert!(is_normalized_ssrf_denied(public_compat));
+    assert!(denied_reason_for_ip(public_compat, true).is_some());
+    // Bracketed and unbracketed forms both route through normalization, and
+    // the resolved-IP classifier denies the compatible range too.
+    assert!(is_normalized_ssrf_denied("::a9fe:a9fe".parse().unwrap()));
+    assert!(denied_reason_for_ip("::a9fe:a9fe".parse().unwrap(), true).is_some());
+
+    // `::1` stays the one compatible member that is loopback-gated, not
+    // unconditionally denied; `::` stays an unconditional unspecified deny.
+    let v6_loopback: std::net::IpAddr = "::1".parse().unwrap();
+    assert!(!is_normalized_ssrf_denied(v6_loopback));
+    assert!(is_normalized_loopback_or_private(v6_loopback));
+    assert!(denied_reason_for_ip(v6_loopback, false).is_some());
+    assert!(denied_reason_for_ip(v6_loopback, true).is_none());
+    assert!(is_normalized_ssrf_denied("::".parse().unwrap()));
+
+    // IPv4-mapped public `::ffff:0:0/96` is NOT over-blocked by the
+    // compatible-range check...
+    assert!(validate_host_with_allow("[::ffff:8.8.8.8]", false).is_ok());
+    assert!(!is_normalized_ssrf_denied(
+        "::ffff:8.8.8.8".parse().unwrap()
+    ));
+    // ...while mapped private/metadata stays denied as before.
+    assert!(validate_host_with_allow("[::ffff:10.0.0.1]", false).is_err());
+    assert!(validate_host_with_allow("[::ffff:a9fe:a9fe]", true).is_err());
+
+    // The compatible form is also judged private by the loopback/private
+    // classifier (`::127.0.0.1`, `::10.0.0.1`), not just by the SSRF gate.
+    assert!(is_normalized_loopback_or_private(
+        "::127.0.0.1".parse().unwrap()
+    ));
+    assert!(is_normalized_loopback_or_private(
+        "::10.0.0.1".parse().unwrap()
+    ));
+    assert!(!is_normalized_loopback_or_private(
+        "::8.8.8.8".parse().unwrap()
+    ));
+}
+
+#[test]
 fn test_legitimate_hosts_still_accepted() {
     // No regression for normal hosts: public DNS names, public IPv4/IPv6,
     // and private hosts when explicitly allowed.

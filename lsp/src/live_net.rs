@@ -297,7 +297,10 @@ pub(crate) fn is_non_canonical_numeric_host(host: &str) -> bool {
 /// `2002::/16`. IPv4-mapped IPv6 (`::ffff:a.b.c.d`) is mapped to IPv4
 /// before the check so `[::ffff:a9fe:a9fe]` (metadata IP) is denied as
 /// link-local; where a transition prefix carries an extractable embedded
-/// IPv4, the IPv4 deny/private policy is re-run on it as well.
+/// IPv4, the IPv4 deny/private policy is re-run on it as well. The
+/// deprecated IPv4-compatible `::/96` form (`::127.0.0.1`, `::a9fe:a9fe`)
+/// is denied unconditionally too; `::1` stays loopback-gated (see
+/// `is_normalized_loopback_or_private`).
 ///
 /// IPv4 special-use ranges that are never legitimate device targets are
 /// unconditional denials too (loopback opt-in does not relax them):
@@ -338,6 +341,16 @@ pub(crate) fn is_normalized_ssrf_denied(addr: std::net::IpAddr) -> bool {
                 return is_normalized_ssrf_denied(std::net::IpAddr::V4(mapped));
             }
             if v6.is_unspecified() {
+                return true;
+            }
+            // IPv4-compatible `::/96` (deprecated): the first 96 bits are
+            // zero, so the last 32 bits hold an embedded IPv4 (`::127.0.0.1`
+            // = `::7f00:1`, `::a9fe:a9fe` = 169.254.169.254). No legitimate
+            // RouterOS target uses this deprecated form, so deny the whole
+            // range unconditionally. `::` is caught by `is_unspecified`
+            // above; `::1` is the sole loopback member and is excluded so
+            // `RSC_LS_LIVE_ALLOW_LOOPBACK` gating is unchanged.
+            if !v6.is_loopback() && v6.octets()[..12] == [0u8; 12] {
                 return true;
             }
             // Best-effort: re-run the IPv4 deny/private checks on an
@@ -429,10 +442,14 @@ pub(crate) fn embedded_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr
 /// Whether a normalized IP is loopback or RFC1918/ULA/CGNAT private.
 ///
 /// IPv4-mapped IPv6 is mapped to IPv4 first so `[::ffff:127.0.0.1]` and
-/// `[::ffff:10.0.0.1]` are judged as their IPv4 equivalents. CGNAT
-/// `100.64.0.0/10` and ULA `fc00::/7` are treated as private (denied
-/// unless `RSC_LS_LIVE_ALLOW_LOOPBACK=1`), because operators legitimately
-/// use them on the LAN — they are not in the unconditional deny set.
+/// `[::ffff:10.0.0.1]` are judged as their IPv4 equivalents. The deprecated
+/// IPv4-compatible `::/96` form is handled the same way, so `[::127.0.0.1]`
+/// and `[::10.0.0.1]` are judged as their embedded IPv4 (`::1` is loopback
+/// in its own right; `::` maps to 0.0.0.0, which is neither loopback nor
+/// private). CGNAT `100.64.0.0/10` and ULA `fc00::/7` are treated as
+/// private (denied unless `RSC_LS_LIVE_ALLOW_LOOPBACK=1`), because operators
+/// legitimately use them on the LAN — they are not in the unconditional
+/// deny set.
 pub(crate) fn is_normalized_loopback_or_private(addr: std::net::IpAddr) -> bool {
     match addr {
         std::net::IpAddr::V4(v4) => {
@@ -461,6 +478,16 @@ pub(crate) fn is_normalized_loopback_or_private(addr: std::net::IpAddr) -> bool 
             }
             if v6.is_loopback() {
                 return true;
+            }
+            // IPv4-compatible `::/96` (deprecated): judge the embedded IPv4
+            // so `[::127.0.0.1]` / `[::10.0.0.1]` are loopback/private here
+            // too (the unconditional SSRF deny already covers them).
+            if v6.octets()[..12] == [0u8; 12] {
+                let o = v6.octets();
+                let embedded = std::net::Ipv4Addr::new(o[12], o[13], o[14], o[15]);
+                if is_normalized_loopback_or_private(std::net::IpAddr::V4(embedded)) {
+                    return true;
+                }
             }
             // ULA fc00::/7: first 7 bits are 1111110.
             if (v6.segments()[0] & 0xfe00) == 0xfc00 {
@@ -607,13 +634,14 @@ pub fn validate_host_with_allow(host: &str, allow_loopback: bool) -> Result<(), 
 /// - SSRF denials for whole `169.254.0.0/16`, IPv6 `fe80::/10`, unspecified,
 ///   multicast `224.0.0.0/4`, reserved `240.0.0.0/4`, `192.0.0.0/24`,
 ///   benchmarking `198.18.0.0/15`, the NAT64/Teredo/6to4 transition prefixes
-///   (`64:ff9b::/96`, `2001::/32`, `2002::/16`), and
+///   (`64:ff9b::/96`, `2001::/32`, `2002::/16`), the IPv4-compatible
+///   `::/96` form (`::127.0.0.1`, `::a9fe:a9fe`), and
 ///   `metadata.google.internal` (lexical plus WHATWG-normalized checks)
 /// - non-canonical numeric literals rejected fail-closed
-/// - loopback/private denied unless `RSC_LS_LIVE_ALLOW_LOOPBACK=1` (via
-///   `is_loopback_or_private` against the normalized IP with IPv4-mapped
-///   unmapping; RFC1918, CGNAT `100.64.0.0/10`, and ULA `fc00::/7` count as
-///   private)
+/// - loopback/private denied unless `RSC_LS_LIVE_ALLOW_LOOPBACK=1` (range
+///   checks run on the normalized IP; IPv4-mapped and IPv4-compatible
+///   embedded addresses are judged as their IPv4 equivalent, and RFC1918,
+///   CGNAT `100.64.0.0/10`, and ULA `fc00::/7` count as private)
 pub fn validate_host(host: &str) -> Result<(), LiveError> {
     validate_host_with_allow(host, live_allow_loopback())
 }

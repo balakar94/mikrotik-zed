@@ -41,7 +41,8 @@ Usage notes:
 - Host range checks run against the normalized IP (see
   ``normalized_host_ip``): decimal (``2130706433``), hex (``0x7f000001``),
   octal (``0177.0.0.1``), short (``127.1``), IPv4-mapped IPv6
-  (``::ffff:127.0.0.1``), whole ``169.254.0.0/16``, IPv6 ``fe80::/10``,
+  (``::ffff:127.0.0.1``), IPv4-compatible IPv6 (``::127.0.0.1``,
+  ``::a9fe:a9fe``), whole ``169.254.0.0/16``, IPv6 ``fe80::/10``,
   multicast ``224.0.0.0/4``, reserved ``240.0.0.0/4``, ``192.0.0.0/24``,
   and benchmarking ``198.18.0.0/15`` are all denied fail-closed.
   Non-canonical numeric literals are rejected even when the normalized
@@ -344,7 +345,10 @@ def is_normalized_ssrf_denied(addr: ipaddress.IPv4Address | ipaddress.IPv6Addres
     ``2002::/16``. IPv4-mapped IPv6 (``::ffff:a.b.c.d``) is unmapped to
     IPv4 first so ``[::ffff:a9fe:a9fe]`` (metadata IP) is denied as
     link-local; where a transition prefix carries an extractable embedded
-    IPv4, the IPv4 deny/private policy is re-run on it as well.
+    IPv4, the IPv4 deny/private policy is re-run on it as well. The
+    deprecated IPv4-compatible ``::/96`` form (``::127.0.0.1``,
+    ``::a9fe:a9fe``) is denied unconditionally too; ``::1`` stays
+    loopback-gated (see :func:`is_normalized_loopback_or_private`).
 
     IPv4 special-use ranges that are never legitimate device targets are
     unconditional denials too (the loopback opt-in does not relax them):
@@ -359,6 +363,14 @@ def is_normalized_ssrf_denied(addr: ipaddress.IPv4Address | ipaddress.IPv6Addres
         if mapped is not None:
             return is_normalized_ssrf_denied(mapped)
         if addr.is_unspecified:
+            return True
+        # IPv4-compatible ``::/96`` (deprecated): the first 96 bits are zero,
+        # so the last 32 bits hold an embedded IPv4 (``::127.0.0.1`` =
+        # ``::7f00:1``, ``::a9fe:a9fe`` = 169.254.169.254). No legitimate
+        # RouterOS target uses this deprecated form, so deny the whole range
+        # unconditionally. ``::`` is caught above; ``::1`` is the sole
+        # loopback member and is excluded so loopback gating is unchanged.
+        if not addr.is_loopback and addr.packed[:12] == bytes(12):
             return True
         # Best-effort: re-run the IPv4 deny/private checks on an embedded
         # address first, then deny the transition prefix itself
@@ -414,7 +426,9 @@ def is_normalized_loopback_or_private(
     Mirrors ``lsp/src/live_net.rs::is_normalized_loopback_or_private``:
     loopback, RFC1918, CGNAT ``100.64.0.0/10``, and ULA ``fc00::/7`` are
     private (denied unless ``RSC_LS_LIVE_ALLOW_LOOPBACK=1`` on the Rust
-    side). Intentional divergence: the companion scripts' :func:`validate_host`
+    side). IPv4-mapped and IPv4-compatible IPv6 are unmapped to IPv4 first
+    (``::ffff:127.0.0.1``, ``::127.0.0.1``, ``::10.0.0.1``). Intentional
+    divergence: the companion scripts' :func:`validate_host`
     does NOT call this — routers legitimately live on the LAN and the scripts
     have no allow-loopback escape hatch — so these ranges stay ALLOWED here.
     Retained for Rust parity and tests.
@@ -425,6 +439,14 @@ def is_normalized_loopback_or_private(
             return is_normalized_loopback_or_private(mapped)
         if addr.is_loopback:
             return True
+        # IPv4-compatible ``::/96`` (deprecated): judge the embedded IPv4 so
+        # ``[::127.0.0.1]`` / ``[::10.0.0.1]`` are loopback/private here too
+        # (the unconditional SSRF deny already covers them). ``::1`` is
+        # handled above as loopback; ``::`` maps to 0.0.0.0 (neither).
+        if addr.packed[:12] == bytes(12):
+            embedded = ipaddress.IPv4Address(addr.packed[12:])
+            if is_normalized_loopback_or_private(embedded):
+                return True
         return _in_ipv6_net(addr, "fc00::/7")
     if addr.is_loopback:
         return True
@@ -455,7 +477,8 @@ def validate_host(host: str) -> str | None:
     reserved ``240.0.0.0/4``, ``192.0.0.0/24``, benchmarking
     ``198.18.0.0/15``, the NAT64/Teredo/6to4 transition prefixes
     (``64:ff9b::/96``, ``2001::/32``, ``2002::/16``), IPv4-mapped IPv6
-    unmapping, and non-canonical numeric literals (decimal/hex/octal/short,
+    unmapping, IPv4-compatible IPv6 (``::127.0.0.1``, ``::a9fe:a9fe``),
+    and non-canonical numeric literals (decimal/hex/octal/short,
     including the FQDN-root trailing-dot form such as
     ``169.254.169.254.``) rejected fail-closed via normalization (see
     ``normalized_host_ip``).
