@@ -82,6 +82,72 @@ fn test_diagnostics_range_within_line() {
     assert_eq!(d.range.end.character, 8);
 }
 
+#[test]
+fn test_unknown_menu_range_with_repeated_slashes() {
+    // `ctx.path` canonicalises `/ip//bogus` to `/ip/bogus`; the range must
+    // come from the typed token, not a substring search of the canonical
+    // path (which found nothing and dropped the diagnostic entirely).
+    let data = synth();
+    let line = "/ip//bogus add x=1";
+    let diags = compute_diagnostics(&data, line, "file:///a.rsc");
+    let d = diags
+        .iter()
+        .find(|d| d.code.as_deref() == Some("unknown-menu"))
+        .expect("unknown-menu must fire for '/ip//bogus'");
+    assert_eq!(d.range.start.line, 0);
+    assert_eq!(d.range.start.character, 0);
+    assert_eq!(d.range.end.character, "/ip//bogus".len() as u32);
+    assert!(
+        d.message.contains("/ip/bogus"),
+        "message keeps the canonical path, got {:?}",
+        d.message
+    );
+}
+
+#[test]
+fn test_unknown_menu_range_with_leading_slashes_and_trailing_slash() {
+    let data = synth();
+    let line = "//bogus/ print";
+    let diags = compute_diagnostics(&data, line, "file:///a.rsc");
+    let d = diags
+        .iter()
+        .find(|d| d.code.as_deref() == Some("unknown-menu"))
+        .expect("unknown-menu must fire for '//bogus/'");
+    assert_eq!(d.range.start.line, 0);
+    assert_eq!(d.range.start.character, 0);
+    assert_eq!(d.range.end.character, "//bogus/".len() as u32);
+}
+
+#[test]
+fn test_known_menu_with_leading_trailing_repeated_slashes_stays_silent() {
+    // Canonicalisation resolves the menu; a known path must never warn,
+    // whatever separator noise surrounds it.
+    let data = synth();
+    let line = " /ip/address/ print";
+    let diags = compute_diagnostics(&data, line, "file:///a.rsc");
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_deref() == Some("unknown-menu")),
+        "known menu must stay silent, got {diags:?}"
+    );
+}
+
+#[test]
+fn test_normal_unknown_menu_range_unchanged() {
+    // Regression pin: the plain single-token case keeps its historic 0..N
+    // span computed over the typed token.
+    let data = synth();
+    let line = "/bogus print";
+    let diags = compute_diagnostics(&data, line, "file:///a.rsc");
+    let d = diags
+        .iter()
+        .find(|d| d.code.as_deref() == Some("unknown-menu"))
+        .expect("unknown-menu must fire for '/bogus'");
+    assert_eq!(d.range.start.character, 0);
+    assert_eq!(d.range.end.character, "/bogus".len() as u32);
+}
+
 // ── RouterOS backslash line continuation ─────────────────────────────────
 
 #[test]

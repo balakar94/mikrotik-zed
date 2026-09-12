@@ -602,8 +602,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             // this set only answers "is this prefix known?".
             let is_known = data.menu_by_path.contains_key(&path_key)
                 || data.ancestor_prefixes.contains(&path_key);
-            if !is_known && let Some((start_char, end_char)) = find_substring_range(line, &ctx.path)
-            {
+            if !is_known && let Some((start_char, end_char)) = find_path_token_range(line) {
                 let suggestion = budget.candidate(&path_key, data.menu_by_path.keys());
                 push_semantic(
                     &mut diagnostics,
@@ -1706,13 +1705,34 @@ pub(crate) fn resolve_menu_for_line<'a>(
     data.menu_by_path.get(&normalize_path(&ctx.path))
 }
 
-fn find_substring_range(haystack: &str, needle: &str) -> Option<(usize, usize)> {
-    if needle.is_empty() {
-        return None;
+/// Byte span of the menu path as typed in `line`, if the line carries one.
+///
+/// `LineContext::path` is canonicalised: `parse_line` collapses leading,
+/// trailing and repeated `/` separators (`/ip//bogus` → `/ip/bogus`), so
+/// searching the raw line for that canonical string misses the diagnostic
+/// range and would silently drop the `unknown-menu` finding. Locate the
+/// span from the SAME quote-aware token stream `parse_line` walks and take
+/// the first token carrying a leading `/` outside any bracket region: this
+/// is the token a RouterOS user types a path with. When `parse_line` appends
+/// further path segments they are bare words proven to be known children of
+/// the preceding segment, so an UNKNOWN path can only ever end in a slash
+/// token; the first slash token therefore covers every path reaching the
+/// unknown-menu rule. Known menus are unaffected — the rule never fires for
+/// them.
+fn find_path_token_range(line: &str) -> Option<(usize, usize)> {
+    let mut depth: u32 = 0;
+    for token in crate::tokenize_with_spans(line) {
+        let (opens, closes) = crate::parser::bracket_counts(&token.text);
+        if depth > 0 || opens > 0 {
+            depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
+            continue;
+        }
+        if token.text.starts_with('/') {
+            return Some((token.start, token.end));
+        }
+        depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
     }
-    haystack
-        .find(needle)
-        .map(|start| (start, start + needle.len()))
+    None
 }
 
 /// True when `tok` looks like a RouterOS entry selector for `set`:
