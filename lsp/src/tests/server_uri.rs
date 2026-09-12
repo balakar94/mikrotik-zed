@@ -6,6 +6,7 @@ use crate::caps::{MAX_DIAG_BYTES, MAX_DIAG_LINES, MAX_DOC_SIZE, MAX_DOCS};
 use crate::diagnostics;
 use crate::menus::MenuData;
 use crate::server::{Server, is_valid_file_uri};
+use crate::server_proto::percent_decode;
 use std::sync::Arc;
 
 fn synthetic_data() -> Arc<MenuData> {
@@ -125,6 +126,53 @@ fn test_uri_allows_valid_with_dots_in_name() {
     assert!(is_valid_file_uri("file:///home/user/..hidden.rsc"));
     assert!(!is_valid_file_uri("file:///home/user/../other.rsc"));
     assert!(!is_valid_file_uri("file:///home/user/.."));
+}
+
+// ── percent_decode: UTF-8 + invalid sequences ────────────────────────────
+
+#[test]
+fn test_percent_decode_utf8_multibyte() {
+    // `%C3%A9` is the UTF-8 encoding of `é`; decoding must recombine the
+    // two bytes into one character, not two Latin-1 ones.
+    assert_eq!(
+        percent_decode("/caf%C3%A9.rsc").as_deref(),
+        Some("/café.rsc")
+    );
+    assert_eq!(percent_decode("/a%20b.rsc").as_deref(), Some("/a b.rsc"));
+    // Literal multibyte text passes through byte-for-byte.
+    assert_eq!(percent_decode("/déjà.rsc").as_deref(), Some("/déjà.rsc"));
+}
+
+#[test]
+fn test_percent_decode_rejects_invalid_sequences() {
+    // Bare `%`, incomplete escape, and non-hex digits.
+    assert_eq!(percent_decode("/a%"), None);
+    assert_eq!(percent_decode("/a%2"), None);
+    assert_eq!(percent_decode("/a%zz"), None);
+    // Bytes that do not form valid UTF-8 (lone lead byte, stray
+    // continuation byte) are rejected rather than lossily replaced.
+    assert_eq!(percent_decode("/caf%C3.rsc"), None);
+    assert_eq!(percent_decode("/a%80.rsc"), None);
+}
+
+#[test]
+fn test_uri_accepts_percent_encoded_utf8() {
+    assert!(is_valid_file_uri("file:///caf%C3%A9.rsc"));
+    assert!(is_valid_file_uri("file:///a%20b.rsc"));
+    // Invalid UTF-8 escape must be rejected, not silently decoded.
+    assert!(!is_valid_file_uri("file:///caf%C3.rsc"));
+}
+
+#[test]
+fn test_uri_rejects_encoded_backslash() {
+    // `%5c` decodes to `\`, a Windows separator: accepting it would let
+    // `..\..` evade the `/`-segment traversal check. RFC 8089 file URIs
+    // use `/`, so a decoded backslash is rejected outright.
+    assert!(!is_valid_file_uri("file:///a%5cb.rsc"));
+    assert!(!is_valid_file_uri("file:///a%5c..%5cb.rsc"));
+    assert!(!is_valid_file_uri("file:///a\\b.rsc"));
+    // The forward-slash form stays accepted.
+    assert!(is_valid_file_uri("file:///a/b.rsc"));
 }
 
 // ── didOpen / didChange / didClose handling ──────────────────────────────
