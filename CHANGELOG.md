@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Security
+
+- **LSP input boundaries (`lsp/src/server_proto.rs`, `lsp/src/live_config.rs`)**: malformed JSON-RPC with a multi-byte character after `"id"` and a workspace-settings fingerprint whose `sha256:` prefix boundary falls inside a multi-byte character no longer abort the server.
+- **Live TLS (`lsp/src/live_fetch.rs`)**: the SPKI pin verifier now verifies the TLS handshake signature against the pinned leaf instead of asserting it, closing a certificate-replay MITM against `MIKROTIK_FINGERPRINT`.
+- **Live SSRF (`lsp/src/live_net.rs`, `scripts/_mikrotik_shared.py`)**: trailing-dot hostnames, NAT64/Teredo/6to4 and IPv4 special-use ranges (multicast, reserved, `192.0.0.0/24`, benchmarking) are denied; ULA/CGNAT are loopback-gated; validated DNS addresses are pinned for Rust and both Python transports (no resolve-then-connect TOCTOU); `MIKROTIK_FINGERPRINT` is verified on the request TLS connection before credentials are sent.
+- **Deploy transport (`scripts/mikrotik-deploy.py`, `scripts/mikrotik-live-check.py`)**: device response bodies are redacted and size-capped; the workspace-settings `port` requires the transport opt-in.
+- **WASM shim (`src/cache.rs`, `src/platform.rs`, `src/lib.rs`)**: bounded cached-binary and `.verified` marker reads; release download URLs pinned to repo/tag/asset.
+
+### Fixed
+
+- **Diagnostics DoS bounds (`lsp/src/diagnostics.rs`, `lsp/src/suggest.rs`)**: suggestion input cap plus a length short-circuit, a bounded diagnostic message length, and bounded syntax-finding memory during the document walk.
+- **Menu handling (`lsp/src/diagnostics.rs`, `lsp/src/completion.rs`, `lsp/src/parser.rs`)**: case-insensitive menu/property/verb lookups, slash canonicalisation, unknown-menu ranges with repeated slashes, partial menu-path completion, and UTF-8 `file://` URI decoding.
+- **Data pipeline (`scripts/extract_commands.py`)**: markdown property tables and multi-line `<ArgTableRow>` rows; page-context association; generation fails on non-canonical menu paths.
+
+### Added
+
+- **Grammar value parsing (`grammars/rsc/grammar.js`)**: URL values, colon-containing scalars, block-valued parameters and quoted variable references — real-export parse rate 11/30 → 29/30 clean.
+- **Syntax highlighting (`languages/rsc/highlights.scm`)**: `(url)` and `(mixed_value)` captures; grammar pinned at `1e61ad4`.
+
+### Changed
+
+- **Behavior**: completion on an unknown or partial menu no longer advertises the 15 standard verbs; workspace-settings `port` and fingerprint overlays are gated; `MIKROTIK_FINGERPRINT` without `MIKROTIK_CA_FILE` is pure SPKI pinning (self-signed devices work) and environment proxies are ignored by the Python scripts; `file://` URIs containing backslashes are rejected.
+
+## [0.5.6] - 2026-09-10
+
 ### Added
 
 - **LSP completion (`lsp/src/completion.rs`)**: deterministic relevance ranking — `sortText` tiers (`0!live_` device truth < required < optional < verb < submenu < enum < common-hint < placeholder < flag < typo-fallback < snippet) with exact/prefix/substring quality inside each tier; truncation at `MAX_COMPLETION_ITEMS=200` is relevance-ordered. Typed-prefix `filterText` plus `textEdit` replacement shadows for values and submenus (`chain=in` + `input` no longer yields `ininput`). Curated `chain=input|forward|output` common hints (`common value — verify on device`); device-dependent types stay silent without live data.
@@ -185,7 +210,8 @@ Baseline release tagged `v0.5.0`. Changes since `v0.4.0`:
 - `extension.toml` kept to schema-known keys only.
 - Local `TODO.md` ignored.
 
-[Unreleased]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.5...HEAD
+[Unreleased]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.6...HEAD
+[0.5.6]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.3...v0.5.5
 [0.5.3]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.1...v0.5.2
