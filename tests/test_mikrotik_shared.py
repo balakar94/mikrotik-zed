@@ -32,12 +32,15 @@ LIVE_CHECK_PY = SCRIPTS / "mikrotik-live-check.py"
 sys.path.insert(0, str(SCRIPTS))
 
 from _mikrotik_shared import (  # noqa: E402
+    MAX_LIVE_DENY_PREFIXES,
+    MAX_LIVE_DENY_PREFIXES_BYTES,
     build_pinned_requests_session,
     build_pinned_urllib_handlers,
     check_target,
     check_target_with_addrs,
     clamp_int,
     embedded_ipv4,
+    env_deny_prefixes,
     env_int,
     extract_spki_der,
     format_host_for_url,
@@ -45,6 +48,7 @@ from _mikrotik_shared import (  # noqa: E402
     is_normalized_loopback_or_private,
     is_normalized_ssrf_denied,
     open_pinned_socket,
+    parse_deny_prefixes,
     parse_fingerprint,
     redact_secrets,
     resolve_and_check_host,
@@ -764,6 +768,85 @@ class TestDerSpkiWalker:
         assert spki_sha256(b"not-der") is None
 
 
+# ── Operator SSRF deny prefixes (RSC_LS_LIVE_DENY_PREFIXES) ────────
+
+class TestOperatorDenyPrefixes:
+    """Parse/validate/match parity with the Rust live SSRF deny list."""
+
+    def test_match_v4_v6_and_mapped(self):
+        denies = parse_deny_prefixes("64:ff9b:1::/48, 192.0.2.0/24, 198.51.100.7")
+        assert len(denies) == 3
+        # v6 custom NAT64/RFC 6052-style prefix.
+        assert is_normalized_ssrf_denied(
+            ipaddress.ip_address("64:ff9b:1::a9fe:a9fe"), deny_prefixes=denies
+        )
+        assert not is_normalized_ssrf_denied(
+            ipaddress.ip_address("64:ff9b:2::1"), deny_prefixes=denies
+        )
+        # v4 CIDR (host bits ignored) and bare /32.
+        assert is_normalized_ssrf_denied(ipaddress.ip_address("192.0.2.5"), deny_prefixes=denies)
+        assert not is_normalized_ssrf_denied(ipaddress.ip_address("192.0.3.5"), deny_prefixes=denies)
+        assert is_normalized_ssrf_denied(
+            ipaddress.ip_address("198.51.100.7"), deny_prefixes=denies
+        )
+        assert not is_normalized_ssrf_denied(
+            ipaddress.ip_address("198.51.100.8"), deny_prefixes=denies
+        )
+        # IPv4-mapped IPv6 candidate hits the v4 deny prefix.
+        assert is_normalized_ssrf_denied(
+            ipaddress.ip_address("::ffff:192.0.2.5"), deny_prefixes=denies
+        )
+        # Non-matching public v4/v6 stays allowed; empty list is a no-op.
+        assert not is_normalized_ssrf_denied(ipaddress.ip_address("8.8.8.8"), deny_prefixes=denies)
+        assert not is_normalized_ssrf_denied(
+            ipaddress.ip_address("2606:4700::1111"), deny_prefixes=denies
+        )
+        assert not is_normalized_ssrf_denied(ipaddress.ip_address("192.0.2.5"))
+
+    def test_env_drives_validate_host_and_resolve(self, monkeypatch):
+        monkeypatch.setenv("RSC_LS_LIVE_DENY_PREFIXES", "192.0.2.0/24,64:ff9b:1::/48")
+        assert validate_host("192.0.2.5") is not None
+        assert validate_host("[64:ff9b:1::1]") is not None
+        assert resolve_host_addrs("192.0.2.5", 443)[0] is not None
+        # Non-matching public still passes (custom list is additive).
+        assert validate_host("8.8.8.8") is None
+        assert validate_host("2606:4700::1111") is None
+        monkeypatch.delenv("RSC_LS_LIVE_DENY_PREFIXES", raising=False)
+        assert validate_host("192.0.2.5") is None
+
+    def test_invalid_entries_ignored_without_panic(self):
+        denies = parse_deny_prefixes(
+            "not-an-ip,192.0.2.0/33,2001:db8::/129,999.1.1.1,日本語/24,,1.2.3.4/x,10.0.0.0/8"
+        )
+        assert len(denies) == 1
+        assert is_normalized_ssrf_denied(ipaddress.ip_address("10.1.2.3"), deny_prefixes=denies)
+        # Multibyte/garbage-only input never raises and yields nothing.
+        assert parse_deny_prefixes("日本語,💥/128,//") == []
+        assert parse_deny_prefixes(None) == []
+        assert parse_deny_prefixes("   ") == []
+
+    def test_caps_enforced(self):
+        raw = ",".join(f"198.51.100.{i}/32" for i in range(40))
+        denies = parse_deny_prefixes(raw)
+        assert len(denies) == MAX_LIVE_DENY_PREFIXES
+        huge = "1" * (MAX_LIVE_DENY_PREFIXES_BYTES + 64)
+        assert parse_deny_prefixes(huge) == []
+        # Entries before the oversized token survive; the rest are dropped.
+        denies2 = parse_deny_prefixes(f"10.0.0.0/8,{huge}")
+        assert len(denies2) == 1
+        assert is_normalized_ssrf_denied(ipaddress.ip_address("10.1.1.1"), deny_prefixes=denies2)
+
+    def test_env_deny_prefixes_cached_and_env_only(self, monkeypatch):
+        # Env getter is cached per distinct raw value and reflects env changes.
+        monkeypatch.setenv("RSC_LS_LIVE_DENY_PREFIXES", "10.0.0.0/8")
+        assert env_deny_prefixes() == env_deny_prefixes()
+        assert env_deny_prefixes()
+        monkeypatch.setenv("RSC_LS_LIVE_DENY_PREFIXES", "192.0.2.0/24")
+        assert len(env_deny_prefixes()) == 1
+        monkeypatch.delenv("RSC_LS_LIVE_DENY_PREFIXES", raising=False)
+        assert env_deny_prefixes() == []
+
+
 # ── Rust parity tripwire ──────────────────────────────────────────
 
 class TestRustParity:
@@ -800,6 +883,24 @@ class TestRustParity:
         for literal in self.LITERALS:
             assert literal in SHARED_PY.read_text(encoding="utf-8"), f"shared lost {literal!r}"
             assert literal in rust, f"Rust live_net.rs lost {literal!r}"
+
+    def test_deny_prefix_env_and_caps_match_rust(self):
+        # RSC_LS_LIVE_DENY_PREFIXES is shared by the LSP and the companion
+        # scripts; the caps are declared once in caps.rs and mirrored here.
+        rust_caps = (ROOT / "lsp" / "src" / "caps.rs").read_text(encoding="utf-8")
+        rust_net = (ROOT / "lsp" / "src" / "live_net.rs").read_text(encoding="utf-8")
+        rust_conf = (ROOT / "lsp" / "src" / "live_config.rs").read_text(encoding="utf-8")
+        shared = SHARED_PY.read_text(encoding="utf-8")
+        assert "RSC_LS_LIVE_DENY_PREFIXES" in shared
+        assert "RSC_LS_LIVE_DENY_PREFIXES" in rust_conf
+        assert "MAX_LIVE_DENY_PREFIXES: usize = 32" in rust_caps
+        assert "MAX_LIVE_DENY_PREFIXES_BYTES: usize = 2 * 1024" in rust_caps
+        assert "MAX_LIVE_DENY_PREFIXES = 32" in shared
+        assert "MAX_LIVE_DENY_PREFIXES_BYTES = 2 * 1024" in shared
+        assert MAX_LIVE_DENY_PREFIXES == 32
+        assert MAX_LIVE_DENY_PREFIXES_BYTES == 2 * 1024
+        # The shared matcher lives beside the built-in SSRF policy.
+        assert "is_extra_deny_match" in rust_net
 
 
 # ── Deploy SSH pre-credential resolve gate ──────────────────────────
