@@ -1134,6 +1134,44 @@ impl SyntaxFinding {
     }
 }
 
+/// Record one syntactic finding, retaining only the earliest
+/// [`MAX_SYNTAX_DIAGNOSTICS`] by document position; every finding that is
+/// not retained bumps `dropped`.
+///
+/// Findings arrive from two phases: the walk emits unmatched closes and
+/// unclosed quotes in document order, but the reversed unclosed-brace drain
+/// yields the *latest* line first. A plain "stop pushing once full" cap
+/// would therefore keep the wrong drain entries; this bounded retainer
+/// evicts the current latest finding whenever an earlier one arrives,
+/// reproducing the former sort-then-truncate survivors with O(1) memory.
+/// Ties keep the earlier arrival (the eviction key is compared with `<`),
+/// matching the stable sort the former implementation relied on.
+fn record_syntax_finding(
+    findings: &mut Vec<SyntaxFinding>,
+    dropped: &mut usize,
+    finding: SyntaxFinding,
+) {
+    let key = (finding.line, finding.character);
+    if findings.len() < MAX_SYNTAX_DIAGNOSTICS {
+        findings.push(finding);
+        return;
+    }
+    // Locate the latest retained finding. `>=` selects the last of any
+    // equal keys, so a tie evicts the later arrival.
+    let mut latest_idx = 0;
+    let mut latest_key = (findings[0].line, findings[0].character);
+    for (idx, prior) in findings.iter().enumerate().skip(1) {
+        if (prior.line, prior.character) >= latest_key {
+            latest_idx = idx;
+            latest_key = (prior.line, prior.character);
+        }
+    }
+    *dropped += 1;
+    if key < latest_key {
+        findings[latest_idx] = finding;
+    }
+}
+
 /// Syntax rules 6–7 (see module header): unclosed `{` (plus its
 /// `unmatched-brace` companion), and unterminated quoted strings.
 ///
@@ -1143,20 +1181,24 @@ impl SyntaxFinding {
 /// document position ("oldest first"), capped at [`MAX_SYNTAX_DIAGNOSTICS`]
 /// plus one explicit `truncated` footer when the cap drops findings.
 ///
-/// Memory-bounded by construction: the walk records lightweight
-/// (position, kind) pairs only; sorting, truncation, and Diagnostic
-/// materialization happen afterwards over those records. A pathological
-/// document (megabytes of stray `}`) therefore costs a small struct per
-/// finding instead of a full Diagnostic allocation per event. Sorting
-/// `(line, character)` usize pairs is order-identical to sorting
-/// `(range.start.line, range.start.character)` u32 pairs (monotone casts),
-/// and `sort_by_key` is stable, so emitted output matches the former
-/// implementation byte-for-byte — including tie order among findings that
-/// share a position. No ordering invariant between unclosed opens and
-/// unmatched closes is assumed: findings from all three sources are sorted
-/// globally by the same key the old code used.
+/// Memory-bounded during the walk: at most [`MAX_SYNTAX_DIAGNOSTICS`]
+/// lightweight (position, kind) records are retained while scanning; every
+/// further event is counted (not stored) so the footer still reports an
+/// accurate dropped total. A pathological document (megabytes of stray `}`)
+/// therefore costs O(1) structs instead of one record per event. Sorting
+/// and Diagnostic materialization happen afterwards over those ≤ N
+/// records. Sorting `(line, character)` usize pairs is order-identical to
+/// sorting `(range.start.line, range.start.character)` u32 pairs (monotone
+/// casts), and `sort_by_key` is stable, so the emitted output matches the
+/// former sort-all-then-truncate implementation byte-for-byte — including
+/// tie order among findings that share a position — while never holding
+/// more than N findings in memory.
 fn syntax_diagnostics(doc: &str) -> Vec<Diagnostic> {
     let mut findings: Vec<SyntaxFinding> = Vec::new();
+    // Findings beyond the cap are counted, never stored: the walk visits
+    // every event but a stray-`}` flood reaches the overflow branch for
+    // almost all of them, so memory stays O(MAX_SYNTAX_DIAGNOSTICS).
+    let mut dropped: usize = 0;
     // Stack of (line, character) positions of `{` still considered open.
     let mut opens: Vec<(usize, usize)> = Vec::new();
     // Latched once the stack overflows MAX_BRACE_DEPTH (pathological input).
@@ -1175,44 +1217,55 @@ fn syntax_diagnostics(doc: &str) -> Vec<Diagnostic> {
         }
         StructureEvent::CloseBrace { line, character } => {
             if opens.pop().is_none() && !saturated {
-                findings.push(SyntaxFinding {
-                    line,
-                    character,
-                    kind: SyntaxFindingKind::UnmatchedBrace,
-                });
+                record_syntax_finding(
+                    &mut findings,
+                    &mut dropped,
+                    SyntaxFinding {
+                        line,
+                        character,
+                        kind: SyntaxFindingKind::UnmatchedBrace,
+                    },
+                );
             }
         }
         StructureEvent::UnterminatedQuote { line, character } => {
             // One error at the OPENING quote; everything after it is treated
             // as string content by the shared walker, so this never cascades.
-            findings.push(SyntaxFinding {
-                line,
-                character,
-                kind: SyntaxFindingKind::UnclosedQuote,
-            });
+            record_syntax_finding(
+                &mut findings,
+                &mut dropped,
+                SyntaxFinding {
+                    line,
+                    character,
+                    kind: SyntaxFindingKind::UnclosedQuote,
+                },
+            );
         }
     });
 
     // Remaining opens are unclosed braces. The stack pops innermost-first,
-    // so drain it reversed to recover document order.
+    // so drain it reversed to recover document order. A saturated stack may
+    // hold up to MAX_BRACE_DEPTH entries, so the drain must honor the same
+    // bound instead of re-inflating `findings`.
     for (line, character) in opens.into_iter().rev() {
-        findings.push(SyntaxFinding {
-            line,
-            character,
-            kind: SyntaxFindingKind::UnclosedBrace,
-        });
+        record_syntax_finding(
+            &mut findings,
+            &mut dropped,
+            SyntaxFinding {
+                line,
+                character,
+                kind: SyntaxFindingKind::UnclosedBrace,
+            },
+        );
     }
 
-    // Deterministic ordering across the three sources, then an explicit
-    // cap keeping the OLDEST ten (document order) plus a `truncated`
-    // Information footer naming the dropped remainder — mirroring the
-    // semantic truncation path so the 11th error is acknowledged, not
-    // silent. Full Diagnostics — with their heap messages — are built
-    // only for the survivors.
+    // Deterministic ordering across the three sources. The cap was already
+    // applied during accumulation; `total` reconstructs the pre-cap count so
+    // the `truncated` Information footer — built only when findings were
+    // dropped — keeps reporting the same totals as before. Full Diagnostics
+    // (with their heap messages) are materialized only for the survivors.
     findings.sort_by_key(|f| (f.line, f.character));
-    let total = findings.len();
-    let dropped = total.saturating_sub(MAX_SYNTAX_DIAGNOSTICS);
-    findings.truncate(MAX_SYNTAX_DIAGNOSTICS);
+    let total = findings.len() + dropped;
     let mut out: Vec<Diagnostic> = findings
         .into_iter()
         .map(SyntaxFinding::into_diagnostic)

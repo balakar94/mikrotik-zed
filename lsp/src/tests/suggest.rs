@@ -1,7 +1,7 @@
 // Suggestion engine.
 use crate::menus::MenuData;
 use crate::suggest::*;
-use crate::suggest::{MAX_SUGGESTIONS_PER_PUBLISH, SuggestBudget};
+use crate::suggest::{MAX_SUGGEST_INPUT_BYTES, MAX_SUGGESTIONS_PER_PUBLISH, SuggestBudget};
 use std::sync::Arc;
 fn validator_data() -> Arc<MenuData> {
     Arc::new(MenuData::from_toml_str(
@@ -155,6 +155,70 @@ fn budget_allows_first_suggestions_then_cuts_off() {
         let _ = budget.candidate("adress", ["address"].iter());
     }
     assert_eq!(budget.candidate("adress", ["address"].iter()), None);
+}
+
+// ── input-length cap (DoS guard) ─────────────────────────────────────────
+
+#[test]
+fn budget_rejects_over_long_input_without_spending_budget() {
+    // Over-long inputs must be rejected before the budget is debited:
+    // calling far past the per-publish allowance with garbage cannot use
+    // it up, so the next legitimate typo still gets its suggestion.
+    let mut budget = SuggestBudget::new();
+    let over_long = "a".repeat(MAX_SUGGEST_INPUT_BYTES + 1);
+    for _ in 0..(MAX_SUGGESTIONS_PER_PUBLISH + 5) {
+        assert_eq!(budget.candidate(&over_long, ["address"].iter()), None);
+    }
+    assert_eq!(
+        budget.candidate("adress", ["address"].iter()),
+        Some("address".to_string()),
+        "rejected over-long calls must not consume the publish budget"
+    );
+}
+
+#[test]
+fn best_candidate_rejects_very_long_input_quickly() {
+    // Defense in depth: direct callers are protected too, so the
+    // O(n × m) scan never runs for absurd input.
+    let long = "a".repeat(100_000);
+    let started = std::time::Instant::now();
+    let picked = best_candidate(&long, ["address", "interface"].into_iter());
+    let elapsed = started.elapsed();
+    assert_eq!(picked, None);
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "over-long input must short-circuit, took {elapsed:?}"
+    );
+}
+
+#[test]
+fn input_exactly_at_cap_is_still_evaluated() {
+    // The guard is `>`, so exactly MAX bytes proceeds to normal
+    // evaluation; `best_candidate`'s trim recovers the identifier.
+    let padded = format!(
+        "{}{}",
+        " ".repeat(MAX_SUGGEST_INPUT_BYTES - "adress".len()),
+        "adress"
+    );
+    assert_eq!(padded.len(), MAX_SUGGEST_INPUT_BYTES);
+    assert_eq!(
+        best_candidate(&padded, ["address"].into_iter()),
+        Some("address".to_string())
+    );
+
+    let mut budget = SuggestBudget::new();
+    assert_eq!(
+        budget.candidate(&padded, ["address"].iter()),
+        Some("address".to_string())
+    );
+}
+
+#[test]
+fn short_input_behavior_unchanged_by_input_cap() {
+    assert_eq!(
+        best_candidate("adress", ["address", "interface"].into_iter()),
+        Some("address".to_string())
+    );
 }
 
 #[test]

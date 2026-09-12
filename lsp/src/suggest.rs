@@ -42,14 +42,22 @@ impl SuggestBudget {
         }
     }
 
-    /// [`best_candidate`] unless the publish already spent its budget,
-    /// in which case `None` (caller emits the diagnostic without the
-    /// "Did you mean …?" suffix — same code and severity).
+    /// [`best_candidate`] unless the publish already spent its budget or
+    /// `input` exceeds [`MAX_SUGGEST_INPUT_BYTES`], in which case `None`
+    /// (caller emits the diagnostic without the "Did you mean …?"
+    /// suffix — same code and severity). Over-long inputs are rejected
+    /// before the budget is debited, so they cannot exhaust the publish
+    /// allowance for the legitimate tokens that follow.
     pub(crate) fn candidate(
         &mut self,
         input: &str,
         candidates: impl Iterator<Item = impl AsRef<str>>,
     ) -> Option<String> {
+        // Single choke point for the documented input cap: byte length
+        // matches the existing guard sites (`signature`, `server_publish`).
+        if input.len() > MAX_SUGGEST_INPUT_BYTES {
+            return None;
+        }
         if self.remaining == 0 {
             return None;
         }
@@ -138,11 +146,19 @@ pub(crate) fn suggestion_threshold(input_len: usize) -> usize {
 /// 3. Among equals, the **lexicographically smallest** candidate wins,
 ///    making the result independent of candidate iteration order.
 ///
-/// The input is trimmed defensively; empty input returns `None`.
+/// The input is trimmed defensively; empty input returns `None`. Inputs
+/// longer than [`MAX_SUGGEST_INPUT_BYTES`] are rejected before the
+/// O(n × m) distance scan, so direct callers cannot trigger the same
+/// unbounded cost the budget cap guards against.
 pub(crate) fn best_candidate(
     input: &str,
     candidates: impl Iterator<Item = impl AsRef<str>>,
 ) -> Option<String> {
+    // Defense in depth: `SuggestBudget::candidate` already rejects these,
+    // but `best_candidate` is callable directly.
+    if input.len() > MAX_SUGGEST_INPUT_BYTES {
+        return None;
+    }
     let input = input.trim();
     if input.is_empty() {
         return None;
