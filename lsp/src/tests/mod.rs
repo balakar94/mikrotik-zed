@@ -174,6 +174,9 @@ mod live_hosts;
 mod live_resources;
 
 #[cfg(test)]
+mod live_settings_fuzz;
+
+#[cfg(test)]
 mod live_ssrf;
 
 #[cfg(test)]
