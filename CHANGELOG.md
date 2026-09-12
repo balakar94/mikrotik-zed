@@ -14,12 +14,14 @@
 
 - **Diagnostics DoS bounds (`lsp/src/diagnostics.rs`, `lsp/src/suggest.rs`)**: suggestion input cap plus a length short-circuit, a bounded diagnostic message length, and bounded syntax-finding memory during the document walk.
 - **Menu handling (`lsp/src/diagnostics.rs`, `lsp/src/completion.rs`, `lsp/src/parser.rs`)**: case-insensitive menu/property/verb lookups, slash canonicalisation, unknown-menu ranges with repeated slashes, partial menu-path completion, and UTF-8 `file://` URI decoding.
-- **Data pipeline (`scripts/extract_commands.py`)**: markdown property tables and multi-line `<ArgTableRow>` rows; page-context association; generation fails on non-canonical menu paths.
+- **Data pipeline (`scripts/extract_commands.py`)**: markdown property tables and multi-line `<ArgTableRow>` rows; page-context association and `## Properties` fragments resolved to their nearest menu; escaped-pipe type clauses and TitleCase read-only labels parse; generation fails on non-canonical menu paths. Extraction now runs warning-free.
+- **LSP signature/completion ranges (`lsp/src/signature.rs`, `lsp/src/completion.rs`, `lsp/src/server.rs`, `lsp/src/diagnostics.rs`)**: signature `activeParameter` never exceeds the emitted parameters; value `textEdit` ranges preserve surrounding quotes on the wire; logical ranges keep endpoints on their physical line at `\` continuation boundaries and no longer invert on non-boundary offsets.
 
 ### Added
 
 - **Grammar value parsing (`grammars/rsc/grammar.js`)**: URL values, colon-containing scalars, block-valued parameters and quoted variable references — real-export parse rate 11/30 → 29/30 clean.
 - **Syntax highlighting (`languages/rsc/highlights.scm`)**: `(url)` and `(mixed_value)` captures; grammar pinned at `1e61ad4`.
+- **LSP completion (`lsp/src/completion.rs`)**: action (`Command`) children in partial menu-path completion (`/ip/route/che` → `check`); the ASCII-only identifier subset is documented and pinned.
 
 ### Changed
 
