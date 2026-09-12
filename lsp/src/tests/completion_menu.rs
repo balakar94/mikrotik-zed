@@ -191,6 +191,36 @@ fn test_root_completions_are_only_roots() {
     assert!(labels.contains(&"/beep"));
 }
 
+#[test]
+fn test_no_print_root_menu_in_real_dataset() {
+    // Regression guard: `print` is a verb, not a CLI path. A synthetic
+    // `/print` menu used to leak into root completion and made diagnostics
+    // and hover treat it as a known menu. The embedded dataset must not
+    // carry `/print`, while the verb stays available via
+    // [`MenuData::STANDARD_VERBS`] on directory menus.
+    let data = MenuData::load();
+    assert!(
+        !data.menu_by_path.contains_key("/print"),
+        "dataset must not carry a synthetic /print menu"
+    );
+    let items = compute_completions(&data, "");
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        !labels.contains(&"/print"),
+        "root completion must not offer /print, got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"print"),
+        "root completion must not offer the print verb as a root item, got {labels:?}"
+    );
+    // The verb itself is unaffected: a known directory menu still offers it.
+    let verb_items = compute_completions(&data, "/ip/route ");
+    assert!(
+        verb_items.iter().any(|i| i.label == "print"),
+        "print must remain a standard verb on /ip/route"
+    );
+}
+
 // ── Sub-menu completions ─────────────────────────────────────────────────
 
 #[test]

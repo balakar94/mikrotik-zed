@@ -1,8 +1,8 @@
 # MikroTik RouterOS CLI Command Table
 # Auto-generated from llms-full.txt
-# Covers: /app, /beep, /blink, /caps-man, /certificate, /console, /container, /disk, /dude, /environment, /file, /import, … (1078 menus)
+# Covers: /app, /beep, /blink, /caps-man, /certificate, /console, /container, /disk, /dude, /environment, /file, /import, … (1077 menus)
 # RouterOS version: 7.23.2
-# Generated: 2026-09-12T16:12:37.921173Z
+# Generated: 2026-09-12T16:59:45.222114Z
 # Source hash (sha256[:16]): a25b13ef01b09646
 # overrides_applied = 1 (data/overrides.toml)
 # generics_applied = 1944 (comment/disabled universal; place-before/copy-from ordered-only)
@@ -39651,77 +39651,6 @@ type = "string"
 [[menus.read_only]]
 name = "last-disconnect-reason"
 type = "enum (peer-request | hung-up | idle-timeout | session-timeout | reset | reboot | port-error | nas-error | nas-request) { peer-request:1, hung-up:2...)"
-
-[[menus]]
-path = "/print"
-type = "Command"
-[[menus.flags]]
-name = "append"
-type = ""
-[[menus.flags]]
-name = "as-value"
-type = ""
-description = "Print output as an array of parameters and its values."
-[[menus.flags]]
-name = "brief"
-type = ""
-description = "Brief output is typically is minimalist and is represented as a table of items with most commonly needed parameters."
-[[menus.flags]]
-name = "detail"
-type = ""
-description = "Print detailed description, the output is not as readable as brief output but may be useful to view all parameters."
-[[menus.flags]]
-name = "count-only"
-type = ""
-description = "Print only count of items in current menu."
-[[menus.flags]]
-name = "file"
-type = ""
-description = "Write output to a file."
-[[menus.flags]]
-name = "follow"
-type = ""
-description = "Print all current entries and track new entries until <kbd>ctrl</kbd>-<kbd>c</kbd> is pressed. Could be used when viewing, for example, log entries."
-[[menus.flags]]
-name = "follow-only"
-type = ""
-description = "Print and track only new entries until <kbd>ctrl</kbd>-<kbd>c</kbd> is pressed. Could be used when, for example, trying to see new log entries."
-[[menus.flags]]
-name = "from"
-type = ""
-description = "Print parameters only from a specified item."
-[[menus.flags]]
-name = "interval"
-type = ""
-description = "Continuously print output in a selected time interval, useful to track down changes where follow is not acceptable"
-[[menus.flags]]
-name = "terse"
-type = ""
-description = "Show details in a compact and machine-friendly format."
-[[menus.flags]]
-name = "value-list"
-type = ""
-description = "Data is displayed in a table, where parameters are split by lines and available items are split by columns (can be used for parsing purposes)."
-[[menus.flags]]
-name = "order-by"
-type = ""
-description = "Sort output by one or more properties. Prefix the property name with - for descending order. Up to three sorting fields can be specified."
-[[menus.flags]]
-name = "without-paging"
-type = ""
-description = "If the output does not fit in the console screen then print all information in a single piece without stops."
-[[menus.flags]]
-name = "where"
-type = ""
-description = "Expressions followed by where parameters can be used to filter outmatched entries."
-[[menus.flags]]
-name = "about"
-type = ""
-description = "Returns entries that have the about parameter, such as \"managed by CAPsMAN \" information or warnings"
-[[menus.flags]]
-name = "!comments"
-type = ""
-description = "Returns entries without comments"
 
 [[menus]]
 path = "/queue"

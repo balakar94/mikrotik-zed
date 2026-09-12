@@ -12,6 +12,7 @@
 
 ### Fixed
 
+- **Menu space (`scripts/extract_commands.py`, `data/commands.toml`, `lsp/src/tests/completion_menu.rs`)**: the synthetic `/print` menu is no longer emitted — `print` is a verb (`MenuData::STANDARD_VERBS`), not a CLI path, so root completion and menu diagnostics no longer offer/treat `/print` as a known menu. The common print-parameter table stays recognized (warning-free) but its rows, including `!comments`, are not merged into any menu; menu count `1078 → 1077`.
 - **Diagnostics DoS bounds (`lsp/src/diagnostics.rs`, `lsp/src/suggest.rs`)**: suggestion input cap plus a length short-circuit, a bounded diagnostic message length, and bounded syntax-finding memory during the document walk.
 - **Menu handling (`lsp/src/diagnostics.rs`, `lsp/src/completion.rs`, `lsp/src/parser.rs`)**: case-insensitive menu/property/verb lookups, slash canonicalisation, unknown-menu ranges with repeated slashes, partial menu-path completion, and UTF-8 `file://` URI decoding.
 - **Data pipeline (`scripts/extract_commands.py`)**: markdown property tables and multi-line `<ArgTableRow>` rows; page-context association and `## Properties` fragments resolved to their nearest menu; escaped-pipe type clauses and TitleCase read-only labels parse; generation fails on non-canonical menu paths. Extraction now runs warning-free.
