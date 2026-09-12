@@ -14,6 +14,10 @@
 //!   by extension version, so the version must live in the filename itself;
 //!   otherwise an updated extension would keep finding and reusing a stale
 //!   binary forever.
+//! * [`temp_download_name`] — the per-attempt temp path a download lands in
+//!   before it is verified and atomically renamed onto [`stored_binary_name`].
+//!   It can never collide with a storage or marker name, so a partial file is
+//!   never mistaken for a cached binary.
 //!
 //! Honesty note on [`is_executable`]: in the shipped wasm32-wasip2 component
 //! `cfg(unix)` is false, so it reduces to an existence check on every host
@@ -71,6 +75,47 @@ pub(crate) fn stored_binary_name(os: zed::Os, version: &str) -> String {
         zed::Os::Windows => format!("{BINARY_NAME}-{version}.exe"),
         _ => format!("{BINARY_NAME}-{version}"),
     }
+}
+
+/// Suffix for the in-progress download file that is renamed onto
+/// [`stored_binary_name`] once verification passes.
+pub(crate) const DOWNLOAD_TEMP_SUFFIX: &str = ".download";
+
+/// Work-dir-relative temp path for one download attempt.
+///
+/// `nonce` differentiates concurrent Zed processes (see [`download_nonce`]);
+/// the suffix is deliberately neither the versioned spawn name nor a marker
+/// name, so an interrupted download can never be picked up as a cached binary.
+pub(crate) fn temp_download_name(stored_name: &str, nonce: u64) -> String {
+    format!("{stored_name}.{nonce:016x}{DOWNLOAD_TEMP_SUFFIX}")
+}
+
+/// Per-instance nonce for download temp paths.
+///
+/// `RandomState` is seeded by the standard library from the host's WASI random
+/// source (`wasi:random/random` on the pinned 1.90 toolchain, randomized per
+/// extension instance), so concurrent Zed processes — and repeated attempts in
+/// one process — draw different values. It is an anti-collision token for
+/// temp-file naming only and never feeds a security decision: digest
+/// verification remains the only trust gate.
+pub(crate) fn download_nonce() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    // Constant input: the entropy lives in the `RandomState` keys.
+    hasher.write_u64(0x9e37_79b9_7f4a_7c15);
+    hasher.finish()
+}
+
+/// True when `path` exists and is itself a symbolic link (not followed).
+///
+/// The extension never creates a symlink at a cache path, so one there is
+/// tampering or leftover state and must not be hashed, made executable, or
+/// spawned. A missing path is not a symlink.
+pub(crate) fn is_symlink(path: &str) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
 }
 
 /// Builds the canonical release-download URL for `asset_name` under `tag`,
@@ -239,6 +284,75 @@ mod tests {
             stored_binary_name(zed::Os::Windows, "0.4.0"),
             stored_binary_name(zed::Os::Windows, "0.5.0")
         );
+    }
+
+    #[test]
+    fn temp_download_name_is_version_keyed_and_suffixed() {
+        assert_eq!(
+            temp_download_name("rsc-ls-0.6.0", 0x0123_4567_89ab_cdef),
+            "rsc-ls-0.6.0.0123456789abcdef.download"
+        );
+        assert_eq!(
+            temp_download_name("rsc-ls-0.6.0.exe", 1),
+            "rsc-ls-0.6.0.exe.0000000000000001.download"
+        );
+    }
+
+    #[test]
+    fn temp_download_name_varies_with_nonce() {
+        // Distinct processes get distinct nonces => distinct temp paths, so
+        // two downloads can never interleave bytes in one temp file.
+        assert_ne!(
+            temp_download_name("rsc-ls-0.6.0", 1),
+            temp_download_name("rsc-ls-0.6.0", 2)
+        );
+    }
+
+    #[test]
+    fn temp_download_name_cannot_be_mistaken_for_a_cache_entry() {
+        for os in [zed::Os::Mac, zed::Os::Windows] {
+            let stored = stored_binary_name(os, "0.6.0");
+            let temp = temp_download_name(&stored, 7);
+            assert_ne!(temp, stored);
+            assert!(
+                !temp.ends_with(".verified"),
+                "temp must not collide with the marker name: {temp}"
+            );
+            assert!(temp.ends_with(DOWNLOAD_TEMP_SUFFIX));
+        }
+    }
+
+    #[test]
+    fn missing_and_regular_paths_are_not_symlinks() {
+        assert!(!is_symlink("definitely-missing-rsc-ls-path"));
+
+        let path = std::env::temp_dir().join(format!(
+            "rsc-zed-symlink-probe-{}-regular",
+            std::process::id()
+        ));
+        let path = path.to_string_lossy().into_owned();
+        std::fs::write(&path, b"x").unwrap();
+        assert!(!is_symlink(&path));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_cache_paths_are_detected() {
+        let dir = std::env::temp_dir();
+        let target = dir.join(format!("rsc-zed-symlink-target-{}", std::process::id()));
+        let link = dir.join(format!("rsc-zed-symlink-link-{}", std::process::id()));
+        std::fs::write(&target, b"x").unwrap();
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert!(
+            is_symlink(link.to_str().unwrap()),
+            "a symlink at the cache path must be rejected before reuse"
+        );
+
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_file(&target);
     }
 
     #[test]

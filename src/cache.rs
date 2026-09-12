@@ -1,9 +1,12 @@
 //! Integrity markers for binaries cached in the extension work dir.
 //!
-//! Problem this closes: the Zed host writes `download_file` output
-//! non-atomically, so a mid-transfer network failure used to leave a
-//! truncated file at the final path — and an existence-only reuse gate then
-//! served that corrupt file forever (a doomed spawn loop).
+//! Problem this closes: the Zed host's `download_file` writes the target
+//! non-atomically, so a mid-transfer network failure or a process crash used
+//! to leave a truncated file at the final path — and an existence-only reuse
+//! gate then served that corrupt file forever (a doomed spawn loop). The
+//! caller now downloads to a unique temp path and `std::fs::rename`s it onto
+//! the canonical name only after checksum verification, so the canonical path
+//! is never a torn write.
 //!
 //! Mechanism: right after a fresh download passes checksum verification and
 //! is made executable, the caller records a marker file
@@ -11,7 +14,9 @@
 //! verified. Every later reuse re-hashes the cached bytes and compares them
 //! against the marker before spawning, so truncation, on-disk corruption, or
 //! silent replacement is detected and healed by a fresh download instead of
-//! being respawned indefinitely.
+//! being respawned indefinitely. The marker write is itself not atomic with
+//! respect to the rename, so the gate — not the marker alone — is the
+//! authority; see the R2 residual note in [`crate`].
 //!
 //! Scope guard: this module owns marker I/O and cached-binary integrity
 //! checks. Download/verification policy stays in [`crate::verify`],

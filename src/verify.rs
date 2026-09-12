@@ -12,6 +12,14 @@
 //! how failures are worded). Orchestration (installation status transitions,
 //! logging, cleanup calls) stays in [`crate`]; the hash primitive lives in
 //! [`crate::sha256`].
+//!
+//! Accepted limitation (R1): the `.sha256` companion is produced by the same
+//! release build as the binary, so it is not an independent trust anchor. It
+//! detects transfer corruption, truncation, and asset mismatch — it does not
+//! prove provenance. A compromised release or repository can publish a binary
+//! and a matching digest together. Independent verification needs a
+//! build-provenance attestation or an out-of-band digest, which the shim does
+//! not consume.
 
 use zed_extension_api::http_client::{HttpMethod, HttpRequest, RedirectPolicy};
 
