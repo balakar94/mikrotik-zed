@@ -734,6 +734,41 @@ pub(crate) fn partial_path_segment(text: &str) -> Option<(String, usize, usize)>
     Some((tok.text[seg_rel..].to_string(), start, end))
 }
 
+/// Effective `[start, end)` byte span of a typed value suffix to replace.
+///
+/// `suffix` is the value text after `=` up to the cursor. The span preserves
+/// one leading opening quote and leaves a trailing closing quote in place,
+/// so accepting a candidate replaces exactly the effective value text:
+///
+/// - `in`   -> `(0, 2)`
+/// - `"in`  -> `(1, 3)` (opening quote preserved)
+/// - `in"`  -> `(0, 2)` (closing quote preserved)
+/// - `"in"` -> `(1, 3)` (both quotes preserved)
+/// - `"`    -> `(1, 1)` (zero-length insertion after the lone quote)
+/// - `""`   -> `(1, 1)` (zero-length insertion between the quotes)
+/// - ``     -> `(0, 0)`
+///
+/// Shared by the completion-layer shadow builder and the server's wire-range
+/// computation, so the edit a client applies is the edit the unit tests pin.
+pub(crate) fn value_replacement_span(suffix: &str) -> (usize, usize) {
+    let start = if suffix.starts_with('"') || suffix.starts_with('\'') {
+        1
+    } else {
+        0
+    };
+    let mut end = suffix.len();
+    // A lone quote is not a closing quote: it needs a second byte (content
+    // or the matching quote) before it can close the value.
+    let has_closing_quote = suffix.len() >= 2 && (suffix.ends_with('"') || suffix.ends_with('\''));
+    if has_closing_quote {
+        end -= 1;
+    }
+    if end < start {
+        end = start;
+    }
+    (start, end)
+}
+
 /// Attach replacing `textEdit`s for the typed value suffix after `=`.
 ///
 /// The range covers exactly the effective suffix (a leading opening quote
@@ -749,27 +784,14 @@ pub(crate) fn partial_path_segment(text: &str) -> Option<(String, usize, usize)>
 fn attach_value_text_edit(items: &mut [CompletionItem], before_cursor: &str, typed_suffix: &str) {
     let line = current_line(before_cursor);
     let (start, end) = if typed_suffix.is_empty() || !line.ends_with(typed_suffix) {
-        // Nothing to replace: insert at the cursor.
+        // Nothing locatable to replace: insert at the cursor.
         (line.len(), line.len())
     } else {
         let suffix_start = line.len() - typed_suffix.len();
-        // Preserve one leading opening quote.
-        let start = if typed_suffix.starts_with('"') || typed_suffix.starts_with('\'') {
-            suffix_start + 1
-        } else {
-            suffix_start
-        };
-        // Preserve a trailing closing quote when it closes a non-empty value.
-        let has_closing_quote = typed_suffix.len() >= 2
-            && (typed_suffix.ends_with('"') || typed_suffix.ends_with('\''));
-        let end = if has_closing_quote {
-            line.len() - 1
-        } else {
-            line.len()
-        };
-        // Defensive clamps: always a valid, ordered range inside the line.
-        let end = end.min(line.len());
-        (start.min(end), end)
+        let (span_start, span_end) = value_replacement_span(typed_suffix);
+        // Defensive clamp: always a valid, ordered range inside the line.
+        let end = (suffix_start + span_end).min(line.len());
+        ((suffix_start + span_start).min(end), end)
     };
     for item in items.iter_mut() {
         let new_text = item

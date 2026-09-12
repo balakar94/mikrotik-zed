@@ -137,6 +137,23 @@ fn test_golden_filter_action_empty_suffix_inserts_at_cursor() {
 }
 
 #[test]
+fn test_value_replacement_span_matrix() {
+    // Single source of truth shared by the completion shadow builder and the
+    // server's wire range: one leading opening quote is preserved and a
+    // trailing closing quote is left in place.
+    assert_eq!(value_replacement_span(""), (0, 0));
+    assert_eq!(value_replacement_span("in"), (0, 2));
+    assert_eq!(value_replacement_span("\"in"), (1, 3));
+    assert_eq!(value_replacement_span("in\""), (0, 2));
+    assert_eq!(value_replacement_span("\"in\""), (1, 3));
+    assert_eq!(value_replacement_span("'a'"), (1, 2));
+    // A lone quote cannot close a value: zero-length insertion after it.
+    assert_eq!(value_replacement_span("\""), (1, 1));
+    // A balanced empty pair inserts between its quotes.
+    assert_eq!(value_replacement_span("\"\""), (1, 1));
+}
+
+#[test]
 fn test_golden_filter_action_prefix_before_substring() {
     let data = MenuData::load();
     let line = "/ip/firewall/filter add action=ac";

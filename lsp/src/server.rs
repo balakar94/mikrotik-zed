@@ -772,19 +772,18 @@ impl Server {
                                     {
                                         let pos = key_part.len();
                                         let suffix_part = &tok.text[pos + 1..];
-                                        let leading = if suffix_part.starts_with('"')
-                                            || suffix_part.starts_with('\'')
-                                        {
-                                            1
-                                        } else {
-                                            0
-                                        };
-                                        let log_start = tok.start + pos + 1 + leading;
+                                        // Same effective span the completion
+                                        // layer uses: preserve a leading
+                                        // opening quote and leave a trailing
+                                        // closing quote in place.
+                                        let (span_start, span_end) =
+                                            completion::value_replacement_span(suffix_part);
+                                        let base = tok.start + pos + 1;
                                         let (log_s, log_e) =
                                             if has_trailing_ws && trimmed_suffix.is_empty() {
                                                 (cursor_logical_clamped, cursor_logical_clamped)
                                             } else {
-                                                (log_start, cursor_logical_clamped)
+                                                (base + span_start, base + span_end)
                                             };
                                         let log_s = log_s.min(logical_text.len()).min(log_e);
                                         let log_e = log_e.min(logical_text.len());
@@ -829,19 +828,14 @@ impl Server {
                                     {
                                         let pos = key_part.len();
                                         let suffix_part = &tok.text[pos + 1..];
-                                        let leading = if suffix_part.starts_with('"')
-                                            || suffix_part.starts_with('\'')
-                                        {
-                                            1
-                                        } else {
-                                            0
-                                        };
-                                        let start = tok.start + pos + 1 + leading;
+                                        let (span_start, span_end) =
+                                            completion::value_replacement_span(suffix_part);
+                                        let base = tok.start + pos + 1;
                                         let (s, e) = if has_trailing_ws && trimmed_suffix.is_empty()
                                         {
                                             (char_byte, char_byte)
                                         } else {
-                                            (start, char_byte)
+                                            (base + span_start, base + span_end)
                                         };
                                         let s_clamped = s.min(line_text.len()).min(e);
                                         let e_clamped = e.min(line_text.len());

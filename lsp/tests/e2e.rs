@@ -141,6 +141,58 @@ fn open_text_document(client: &mut LspClient, uri: &str, text: &str) {
     );
 }
 
+/// Request completion at `character` on line 0 of `uri`.
+fn complete_at(client: &mut LspClient, uri: &str, character: usize) -> Value {
+    match client.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": 0, "character": character},
+        }),
+    ) {
+        Response::Ok(v) => v,
+        Response::Err(err) => panic!("completion errored: {err}"),
+    }
+}
+
+/// The completion item labelled `label`, or panic listing the available
+/// labels.
+fn item_labelled<'a>(result: &'a Value, label: &str) -> &'a Value {
+    let items = result["items"].as_array().expect("CompletionList.items");
+    items
+        .iter()
+        .find(|i| i["label"] == label)
+        .unwrap_or_else(|| {
+            panic!(
+                "no item labelled {label:?}; got {:?}",
+                items
+                    .iter()
+                    .filter_map(|i| i["label"].as_str())
+                    .collect::<Vec<_>>()
+            )
+        })
+}
+
+/// Splice one completion `textEdit` into a single-line document and return
+/// the result, exactly what a spec-compliant client applies on accept.
+fn apply_completion_edit(line: &str, item: &Value) -> String {
+    let edit = item
+        .get("textEdit")
+        .and_then(Value::as_object)
+        .expect("completion item must carry a textEdit");
+    let range = &edit["range"];
+    let sc = range["start"]["character"].as_u64().expect("start char") as usize;
+    let ec = range["end"]["character"].as_u64().expect("end char") as usize;
+    assert_eq!(range["start"]["line"], 0, "single-line fixture expected");
+    assert_eq!(range["end"]["line"], 0, "single-line fixture expected");
+    let new_text = edit["newText"].as_str().expect("newText");
+    let mut out = String::with_capacity(line.len() + new_text.len());
+    out.push_str(&line[..sc]);
+    out.push_str(new_text);
+    out.push_str(&line[ec..]);
+    out
+}
+
 // ── Framed JSON-RPC client ───────────────────────────────────────────────
 
 /// Classification of a matched JSON-RPC response.
@@ -607,6 +659,54 @@ fn completion_after_menu_path_returns_nonempty_items() {
             .filter_map(|i| i["label"].as_str())
             .collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn completion_value_text_edit_preserves_quotes_over_the_wire() {
+    // The returned `textEdit` is what the client applies, so this pins the
+    // wire range (not the completion layer's shadow): a leading opening
+    // quote is preserved and a trailing closing quote is left in place.
+    let cases: &[(&str, &str, &str)] = &[
+        // (typed line, candidate label, expected line after applying the edit)
+        (
+            "/ip/firewall/filter add chain=in\"",
+            "input",
+            "/ip/firewall/filter add chain=input\"",
+        ),
+        (
+            "/ip/firewall/filter add chain=\"in",
+            "input",
+            "/ip/firewall/filter add chain=\"input",
+        ),
+        (
+            "/ip/firewall/filter add action=\"acc\"",
+            "accept",
+            "/ip/firewall/filter add action=\"accept\"",
+        ),
+        (
+            "/ip/firewall/filter add action=",
+            "accept",
+            "/ip/firewall/filter add action=accept",
+        ),
+        (
+            "/ip/firewall/filter add chain=in",
+            "input",
+            "/ip/firewall/filter add chain=input",
+        ),
+    ];
+    let mut client = initialized_client();
+    for (idx, (line, label, expected)) in cases.iter().enumerate() {
+        let uri = format!("file:///e2e-value-edit-{idx}.rsc");
+        open_text_document(&mut client, &uri, line);
+        // ASCII fixture: character count == byte count, cursor at end.
+        let result = complete_at(&mut client, &uri, line.len());
+        let item = item_labelled(&result, label);
+        assert_eq!(
+            apply_completion_edit(line, item),
+            *expected,
+            "wire edit for {line:?} must yield {expected:?}"
+        );
+    }
 }
 
 #[test]
