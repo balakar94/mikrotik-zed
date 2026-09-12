@@ -2004,6 +2004,89 @@ class TestMarkdownPropertyTables:
         assert menu["read_only"] == []
         assert menu["arguments"] == []
 
+    def test_fragment_prefers_last_subsection_over_page_children(self):
+        # Regression for the /tool/traffic-generator/stats table: the
+        # fragment's page links stream/port/raw (whose shared ancestor is
+        # /tool/traffic-generator/stats), but the nearest explicit context is
+        # the latency-distribution subsection it actually documents.
+        content = (
+            "## tool/traffic-generator/stats \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## tool/traffic-generator/stats/latency-distribution \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            '<ArgTable c1="Read-only Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="latency" typ="string"></ArgTableRow>\n'
+            '<ArgTableRow arg="count" typ="num"></ArgTableRow>\n'
+            "</ArgTable>\n"
+            "\n"
+            "## Stats\n"
+            "\n"
+            "**Sub-menu:** `/tool/traffic-generator/stats`\n"
+            "\n"
+            "### Latency Distribution\n"
+            "\n"
+            "**Sub-menu:** `/tool/traffic-generator/stats/latency-distribution`\n"
+            "\n"
+            "## Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **count** (*integer*) | Number of packets in the current latency range |\n"
+            "| **latency** (*string*) | latency range |\n"
+            "\n"
+            "### Stream Stats\n"
+            "\n"
+            "**Sub-menu:** `/tool/traffic-generator/stats/stream`\n"
+            "\n"
+            "### Port Stats\n"
+            "\n"
+            "**Sub-menu:** `/tool/traffic-generator/stats/port`\n"
+        )
+        menus = {m["path"]: m for m in self._parse(content)}
+        latency = {r["name"]: r for r in menus["/tool/traffic-generator/stats/latency-distribution"]["read_only"]}
+        assert latency["count"]["description"] == "Number of packets in the current latency range"
+        assert latency["latency"]["description"] == "latency range"
+        assert "count" not in {
+            a["name"] for a in menus["/tool/traffic-generator/stats"].get("arguments", [])
+        }
+
+    def test_fragment_prefers_nearest_network_over_alert_page_context(self):
+        # Regression for the /ip/dhcp-server/network table: the fragment's
+        # own page links /ip/dhcp-server/alert, but the nearest explicit
+        # context is the Network subsection.
+        content = (
+            "## ip/dhcp-server/network \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="address" typ="ipAddr"></ArgTableRow>\n'
+            "</ArgTable>\n"
+            "\n"
+            "## DHCP Server\n"
+            "\n"
+            "### Network\n"
+            "\n"
+            "**Sub-menu:** `/ip/dhcp-server/network`\n"
+            "\n"
+            "## Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **address** (*IP/netmask*) | The network DHCP server(s) will lease addresses from |\n"
+            "\n"
+            "### Alert\n"
+            "\n"
+            "**Sub-menu:** `/ip/dhcp-server/alert`\n"
+        )
+        menus = {m["path"]: m for m in self._parse(content)}
+        network = next(m for m in menus["/ip/dhcp-server/network"]["arguments"] if m["name"] == "address")
+        assert network["description"] == "The network DHCP server(s) will lease addresses from"
+
     def test_type_column_tables_use_the_description_column(self):
         content = (
             "## container \n"
