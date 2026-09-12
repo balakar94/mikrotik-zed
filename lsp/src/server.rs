@@ -712,18 +712,17 @@ impl Server {
                 // correctly while staying byte- and UTF-16-correct.
                 {
                     let line_text = current_line;
-                    // Drop the completion layer's line-0 `textEdit` shadows
-                    // before remapping. The builders in `completion.rs` never
-                    // learn the cursor's physical line, so their ranges are
-                    // valid only as unit-test shadows; only the mapping below
-                    // knows the physical/logical join. Any shadow the mapping
-                    // cannot place must stay absent — a line-0 range measured
-                    // against the joined logical line would corrupt multi-line
-                    // documents. Single-line docs get an equivalent range
-                    // re-added by the same mapping, unchanged.
-                    for item in &mut items {
-                        item.text_edit = None;
-                    }
+                    // No pre-clear pass is needed: every completion-layer
+                    // `textEdit` shadow is overwritten by the mapping below.
+                    // The shadow carriers are a closed set — sub-menu / verb
+                    // (kinds 9/3), partial menu-path segment (kind 9) and value
+                    // (kind 12) — and each has a matching branch here whose
+                    // range is always produced (logical mapping or the
+                    // same-token physical fallback). Property / flag items
+                    // carry no shadow at all. A line-0 guess therefore cannot
+                    // reach the wire; if a new shadow-carrying kind is added,
+                    // extend the filters below in lockstep or the stale line-0
+                    // range will be serialized.
                     // Value vs non-value decision uses the same tolerant trimmed
                     // logic as `completion::match_context` — driven by the
                     // logical `before_cursor` (continuation-aware).
