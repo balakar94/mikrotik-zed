@@ -251,3 +251,32 @@ fn test_submenu_action_command_included_as_verb() {
     let check_item = items.iter().find(|i| i.label == "check").unwrap();
     assert_eq!(check_item.detail.as_deref(), Some("action command"));
 }
+
+// ── Case-insensitive menu/verb/property completion ───────────────────────
+
+#[test]
+fn test_mixed_case_menu_before_verb_offers_verbs() {
+    let data = synthetic_data();
+    let items = compute_completions(&data, "/IP/ADDRESS ");
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(labels.contains(&"add"), "got {labels:?}");
+    assert!(labels.contains(&"print"), "got {labels:?}");
+}
+
+#[test]
+fn test_mixed_case_path_and_verb_yield_arg_completion() {
+    let data = synthetic_data();
+    let items = compute_completions(&data, "/IP/ADDRESS add ");
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(labels.contains(&"address"), "got {labels:?}");
+    assert!(labels.contains(&"interface"), "got {labels:?}");
+    assert!(labels.contains(&"comment"), "got {labels:?}");
+
+    // The verb itself is case-insensitive too.
+    let upper = compute_completions(&data, "/IP/ADDRESS ADD ");
+    assert!(
+        upper.iter().any(|i| i.label == "address"),
+        "uppercase verb must still resolve args, got {:?}",
+        upper.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+    );
+}

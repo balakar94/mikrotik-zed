@@ -5,6 +5,7 @@
 // consumers: completion, hover, diagnostics, and the LSP handlers.
 
 use crate::menus::{LineContext, MenuData};
+use crate::text_util::{normalize_key, normalize_path};
 use std::collections::HashMap;
 
 /// One token plus its byte span within the tokenized text.
@@ -581,14 +582,18 @@ pub(crate) fn split_trailing_verb(path: &str, data: &MenuData) -> Option<(String
     if path.is_empty() {
         return None;
     }
-    if data.menu_by_path.contains_key(path) || data.ancestor_prefixes.contains(path) {
+    let path_key = normalize_path(path);
+    if data.menu_by_path.contains_key(&path_key) || data.ancestor_prefixes.contains(&path_key) {
         return None;
     }
     let (parent, last) = path.rsplit_once('/')?;
     if parent.is_empty() || last.is_empty() {
         return None;
     }
-    if !(data.menu_by_path.contains_key(parent) || data.ancestor_prefixes.contains(parent)) {
+    let parent_key = normalize_path(parent);
+    if !(data.menu_by_path.contains_key(&parent_key)
+        || data.ancestor_prefixes.contains(&parent_key))
+    {
         return None;
     }
     if !MenuData::STANDARD_VERBS
@@ -626,7 +631,10 @@ pub fn parse_line(data: &MenuData, before_cursor: &str) -> LineContext {
         }
 
         if let Some((key, value)) = split_key_value(token) {
-            properties.insert(key.to_string(), value.to_string());
+            // Keys are case-insensitive on RouterOS; the context only ever
+            // answers membership/value questions, so the lookup key is
+            // folded while the token text itself stays untouched.
+            properties.insert(normalize_key(key), value.to_string());
             depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
             continue;
         }
@@ -664,10 +672,11 @@ pub fn parse_line(data: &MenuData, before_cursor: &str) -> LineContext {
             // Use child_names_by_parent (not menu_by_path) so implicit
             // intermediate menus like /ip/firewall are recognized as valid
             // path segments even though they have no direct TOML entry.
+            // Paths and child names are case-insensitive on RouterOS.
             let is_sub_menu = data
                 .child_names_by_parent
-                .get(&current_path)
-                .map(|children| children.iter().any(|c| c.name == token))
+                .get(&normalize_path(&current_path))
+                .map(|children| children.iter().any(|c| c.name.eq_ignore_ascii_case(token)))
                 .unwrap_or(false);
             if is_sub_menu {
                 path_parts.push(token.to_string());

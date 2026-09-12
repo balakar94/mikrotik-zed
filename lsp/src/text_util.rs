@@ -40,6 +40,35 @@ pub(crate) fn normalize_key(s: &str) -> String {
     s.to_ascii_lowercase()
 }
 
+/// Canonical lookup key for a RouterOS menu path.
+///
+/// RouterOS paths are case-insensitive and its console accepts leading,
+/// trailing and repeated `/` separators, while the embedded dataset stores
+/// exactly one lowercase, separator-canonical key per menu. Every path
+/// comparison against `menu_by_path`, `ancestor_prefixes` or
+/// `child_names_by_parent` must therefore go through this key. The original
+/// string is never replaced: callers keep it for messages, ranges, hover
+/// text and completion labels.
+///
+/// An all-separator input canonicalizes to `/` when it starts with a slash
+/// (`/`, `//`), and to the empty string otherwise.
+pub(crate) fn normalize_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len() + 1);
+    for segment in path.split('/') {
+        if segment.is_empty() {
+            continue;
+        }
+        out.push('/');
+        for ch in segment.chars() {
+            out.push(ch.to_ascii_lowercase());
+        }
+    }
+    if out.is_empty() && path.starts_with('/') {
+        return "/".to_string();
+    }
+    out
+}
+
 /// One-line verb glossary (lowercase verb → predicate phrase).
 ///
 /// Canonical default arm: `"is a standard RouterOS command"` (see module

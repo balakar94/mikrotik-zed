@@ -41,6 +41,7 @@
 
 use crate::StructureEvent;
 use crate::menus::MenuData;
+use crate::text_util::{normalize_key, normalize_path};
 use crate::{MAX_DIAG_BYTES, MAX_DIAG_LINES, MAX_DIAGNOSTICS};
 use std::collections::{HashMap, HashSet};
 
@@ -551,6 +552,10 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             continue;
         }
 
+        // Case-folded menu key for every lookup below; `ctx.path` keeps the
+        // user's casing for messages and ranges.
+        let path_key = normalize_path(&ctx.path);
+
         // ---- Rule 1: Unknown menu path ----
         if !ctx.path.is_empty() {
             // O(1) membership: exact menu OR a proper ancestor prefix of a
@@ -559,11 +564,11 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             // format! allocation per element. The children index remains the
             // authoritative structure for context RESOLUTION in parse_line;
             // this set only answers "is this prefix known?".
-            let is_known = data.menu_by_path.contains_key(&ctx.path)
-                || data.ancestor_prefixes.contains(&ctx.path);
+            let is_known = data.menu_by_path.contains_key(&path_key)
+                || data.ancestor_prefixes.contains(&path_key);
             if !is_known && let Some((start_char, end_char)) = find_substring_range(line, &ctx.path)
             {
-                let suggestion = budget.candidate(&ctx.path, data.menu_by_path.keys());
+                let suggestion = budget.candidate(&path_key, data.menu_by_path.keys());
                 diagnostics.push(Diagnostic {
                     range: ll.map_range(start_char, end_char),
                     severity: Some(severity::WARNING),
@@ -581,11 +586,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
         // unless path is known implicitly
         // For implicit parents (no direct menu entry but valid as parent), we skip property checks
         // because they have no arguments.
-        let menu = if !ctx.path.is_empty() {
-            data.menu_by_path.get(&ctx.path)
-        } else {
-            None
-        };
+        let menu = data.menu_by_path.get(&path_key);
 
         // If menu is None but path is implicit parent, we will have is_known true but no menu
         // entry; then property checks should be skipped (no args expected).
@@ -596,12 +597,16 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
         // Property occurrences are recorded DURING tokenization, so diagnostic
         // ranges point at the exact occurrence instead of the first textual
         // match (which could sit inside the menu path or an earlier value).
+        // Lookup keys are case-folded (RouterOS properties are
+        // case-insensitive); the ORIGINAL key text rides along in
+        // `key_values` so messages keep the user's casing and `key_spans`
+        // offsets still address the original bytes.
         let tokens = crate::tokenize_with_spans(line);
         let mut key_counts: HashMap<String, usize> = HashMap::new();
-        // key → ordered byte spans (start, end) of each KEY occurrence.
+        // normalized key → ordered byte spans (start, end) of each KEY occurrence.
         let mut key_spans: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
-        // key → (value text, full-token span) of the LAST occurrence.
-        let mut key_values: HashMap<String, (String, (usize, usize))> = HashMap::new();
+        // normalized key → (original key, value text, full-token span) of the LAST occurrence.
+        let mut key_values: HashMap<String, (String, String, (usize, usize))> = HashMap::new();
 
         // Bracket regions (`[find ...]`, `[/sys/clock/get ...]`) are inert:
         // inner `key=value` pairs must not leak into outer Rule 2/4 state,
@@ -614,15 +619,16 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                 continue;
             }
             if let Some((key, value)) = crate::parser::split_key_value(&token.text) {
+                let key_key = normalize_key(key);
                 let eq_idx = key.len();
-                *key_counts.entry(key.to_string()).or_insert(0) += 1;
+                *key_counts.entry(key_key.clone()).or_insert(0) += 1;
                 key_spans
-                    .entry(key.to_string())
+                    .entry(key_key.clone())
                     .or_default()
                     .push((token.start, token.start + eq_idx));
                 key_values.insert(
-                    key.to_string(),
-                    (value.to_string(), (token.start, token.end)),
+                    key_key,
+                    (key.to_string(), value.to_string(), (token.start, token.end)),
                 );
             }
             depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
@@ -652,8 +658,8 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
         ];
         if let Some(cmd) = ctx.command.as_deref()
             && !ctx.path.is_empty()
-            && (data.menu_by_path.contains_key(&ctx.path)
-                || data.ancestor_prefixes.contains(&ctx.path))
+            && (data.menu_by_path.contains_key(&path_key)
+                || data.ancestor_prefixes.contains(&path_key))
             && !MenuData::STANDARD_VERBS
                 .iter()
                 .any(|v| v.eq_ignore_ascii_case(cmd))
@@ -697,23 +703,24 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                     severity: Some(severity::WARNING),
                     code: Some("duplicate-property".to_string()),
                     source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                    message: format!("Duplicate property '{}'", key),
+                    message: format!("Duplicate property '{}'", &line[s..e]),
                 });
             }
         }
 
         // If we have a known menu with arguments/flags, continue with property checks
         if let Some(menu) = menu {
-            // Build allowed property set
+            // Build allowed property set (case-folded keys; RouterOS
+            // properties are case-insensitive).
             let mut allowed: HashSet<String> = HashSet::new();
             for arg in &menu.arguments {
-                allowed.insert(arg.name.clone());
+                allowed.insert(normalize_key(&arg.name));
             }
             for flag in &menu.flags {
-                allowed.insert(flag.name.clone());
+                allowed.insert(normalize_key(&flag.name));
             }
             for ro in &menu.read_only {
-                allowed.insert(ro.name.clone());
+                allowed.insert(normalize_key(&ro.name));
             }
 
             // ---- Rule 2: Unknown property ----
@@ -738,7 +745,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                         code: Some("unknown-property".to_string()),
                         source: Some(DIAGNOSTIC_SOURCE.to_string()),
                         message: with_suggestion(
-                            format!("Unknown property '{}' for '{}'", key, ctx.path),
+                            format!("Unknown property '{}' for '{}'", &line[s..e], ctx.path),
                             suggestion,
                         ),
                     });
@@ -753,11 +760,15 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                 && ctx
                     .command
                     .as_deref()
-                    .is_some_and(|c| c == "add" || c == "set")
-                && !(ctx.command.as_deref() == Some("set") && line_has_set_selector(&tokens, "set"))
+                    .is_some_and(|c| c.eq_ignore_ascii_case("add") || c.eq_ignore_ascii_case("set"))
+                && !(ctx
+                    .command
+                    .as_deref()
+                    .is_some_and(|c| c.eq_ignore_ascii_case("set"))
+                    && line_has_set_selector(&tokens, "set"))
             {
                 for arg in &menu.arguments {
-                    if arg.required && !key_counts.contains_key(&arg.name) {
+                    if arg.required && !key_counts.contains_key(&normalize_key(&arg.name)) {
                         // Range: point at the command verb token, falling back
                         // to the start of the line if no whole-token match.
                         let (s, e) = command_span.unwrap_or((0, line.len().min(8)));
@@ -782,9 +793,12 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             // (complete even for display-truncated types); the type-string
             // parser is only a fallback. When neither yields members, the
             // check stays silent rather than guessing.
-            for (key, (value, span)) in &key_values {
-                // Find argument definition
-                if let Some(arg) = menu.arguments.iter().find(|a| a.name == *key)
+            for (key, (key_display, value, span)) in &key_values {
+                // Find argument definition (case-insensitive key match).
+                if let Some(arg) = menu
+                    .arguments
+                    .iter()
+                    .find(|a| normalize_key(&a.name) == *key)
                     && arg.arg_type.starts_with("enum")
                 {
                     let allowed_vals = arg.enum_members();
@@ -818,7 +832,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                         if !is_valid {
                             // Narrow the recorded token span to the value part
                             // only (skip "key="), keeping any quotes in range.
-                            let s = span.0 + key.len() + 1;
+                            let s = span.0 + key_display.len() + 1;
                             let e = span.1.max(s);
                             let suggestion = budget.candidate(val, allowed_vals.iter());
                             diagnostics.push(Diagnostic {
@@ -830,7 +844,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                                     format!(
                                         "Invalid value '{}' for '{}' (expected one of: {})",
                                         val,
-                                        key,
+                                        key_display,
                                         allowed_vals.join(" | ")
                                     ),
                                     suggestion,
@@ -845,23 +859,27 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             // Syntactic plausibility only — never Error, never Warning — so
             // an incomplete upstream type table degrades to silence instead
             // of false positives. `enum` types stay owned by Rule 5 above.
-            for (key, (value, span)) in &key_values {
+            for (key, (key_display, value, span)) in &key_values {
                 // The named `unset` form is owned by Rule 10 below.
                 if key == "value-name" {
                     continue;
                 }
-                let Some(arg) = menu.arguments.iter().find(|a| a.name == *key) else {
+                let Some(arg) = menu
+                    .arguments
+                    .iter()
+                    .find(|a| normalize_key(&a.name) == *key)
+                else {
                     continue;
                 };
                 if let Some(hint) = check_typed_value(arg, value, &mut budget) {
-                    let s = span.0 + key.len() + 1;
+                    let s = span.0 + key_display.len() + 1;
                     let e = span.1.max(s);
                     diagnostics.push(Diagnostic {
                         range: ll.map_range(s, e),
                         severity: Some(severity::HINT),
                         code: Some(hint.code.to_string()),
                         source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                        message: with_suggestion(hint.message(key, value), hint.suggestion),
+                        message: with_suggestion(hint.message(key_display, value), hint.suggestion),
                     });
                 }
             }
@@ -910,7 +928,10 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                         {
                             continue;
                         }
-                        if let Some(arg) = menu.arguments.iter().find(|a| a.name == text)
+                        if let Some(arg) = menu
+                            .arguments
+                            .iter()
+                            .find(|a| a.name.eq_ignore_ascii_case(text))
                             && !arg.unset
                         {
                             diagnostics.push(Diagnostic {
@@ -927,7 +948,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                     }
                 }
                 // Named form: `value-name=<property>`.
-                if let Some((named_value, named_span)) = key_values.get("value-name") {
+                if let Some((named_key, named_value, named_span)) = key_values.get("value-name") {
                     let target = named_value
                         .trim()
                         .trim_matches('"')
@@ -936,10 +957,13 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                         .to_string();
                     if !target.is_empty()
                         && !target.contains(['$', '[', ']', '(', ')'])
-                        && let Some(arg) = menu.arguments.iter().find(|a| a.name == target)
+                        && let Some(arg) = menu
+                            .arguments
+                            .iter()
+                            .find(|a| a.name.eq_ignore_ascii_case(&target))
                         && !arg.unset
                     {
-                        let s = named_span.0 + "value-name".len() + 1;
+                        let s = named_span.0 + named_key.len() + 1;
                         let e = named_span.1.max(s);
                         diagnostics.push(Diagnostic {
                             range: ll.map_range(s, e),
@@ -961,10 +985,13 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             if ctx
                 .command
                 .as_deref()
-                .is_some_and(|c| c == "add" || c == "set")
+                .is_some_and(|c| c.eq_ignore_ascii_case("add") || c.eq_ignore_ascii_case("set"))
             {
                 for (key, spans) in &key_spans {
-                    if menu.read_only.iter().any(|r| r.name == *key)
+                    if menu
+                        .read_only
+                        .iter()
+                        .any(|r| normalize_key(&r.name) == *key)
                         && let Some(&(s, e)) = spans.first()
                     {
                         diagnostics.push(Diagnostic {
@@ -974,7 +1001,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                             source: Some(DIAGNOSTIC_SOURCE.to_string()),
                             message: format!(
                                 "Property '{}' is read-only and cannot be set with '{}' (output column only)",
-                                key,
+                                &line[s..e],
                                 ctx.command.as_deref().unwrap_or("")
                             ),
                         });
@@ -1566,7 +1593,7 @@ pub(crate) fn resolve_menu_for_line<'a>(
 ) -> Option<&'a crate::menus::MenuEntry> {
     let line = covering_logical_line(logicals, phys_line)?;
     let ctx = crate::parse_line(data, line.text());
-    data.menu_by_path.get(&ctx.path)
+    data.menu_by_path.get(&normalize_path(&ctx.path))
 }
 
 fn find_substring_range(haystack: &str, needle: &str) -> Option<(usize, usize)> {
@@ -1601,7 +1628,7 @@ fn line_has_set_selector(tokens: &[crate::parser::SpanToken], verb: &str) -> boo
         if t.text.starts_with('/') {
             continue;
         }
-        if t.text == verb {
+        if t.text.eq_ignore_ascii_case(verb) {
             continue;
         }
         if crate::parser::split_key_value(&t.text).is_some() {

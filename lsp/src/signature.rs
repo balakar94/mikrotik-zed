@@ -212,8 +212,12 @@ pub(crate) fn resolve_verb_token(data: &MenuData, tokens: &[SpanToken]) -> Optio
         let current_path = format!("/{}", path_parts.join("/"));
         let is_sub_menu = data
             .child_names_by_parent
-            .get(&current_path)
-            .is_some_and(|children| children.iter().any(|c| c.name == tok.text));
+            .get(&crate::text_util::normalize_path(&current_path))
+            .is_some_and(|children| {
+                children
+                    .iter()
+                    .any(|c| c.name.eq_ignore_ascii_case(&tok.text))
+            });
         if is_sub_menu {
             path_parts.push(tok.text.clone());
             depth = depth.saturating_add(opens).saturating_sub(closes).min(32);

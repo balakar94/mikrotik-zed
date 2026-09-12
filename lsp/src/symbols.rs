@@ -327,8 +327,12 @@ fn menu_command_entry(
         let current_path = format!("/{}", path_parts.join("/"));
         let is_sub_menu = data
             .child_names_by_parent
-            .get(&current_path)
-            .map(|children| children.iter().any(|c| c.name == tok.text))
+            .get(&crate::text_util::normalize_path(&current_path))
+            .map(|children| {
+                children
+                    .iter()
+                    .any(|c| c.name.eq_ignore_ascii_case(&tok.text))
+            })
             .unwrap_or(false);
         if is_sub_menu {
             path_parts.push(tok.text.clone());
