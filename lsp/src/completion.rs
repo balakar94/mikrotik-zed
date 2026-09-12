@@ -38,12 +38,13 @@
 //
 // `filterText` is always populated from the label so clients never match
 // against snippet bodies (`address=$1$0`). `textEdit` is populated at this
-// layer ONLY for value items and sub-menu/verb items, with a single-line
-// (line 0) range assumption: the server rewrites those ranges with the
-// physical/logical-line mapping at runtime, so they are unit-test shadows
-// here. Property/flag items intentionally carry NO `textEdit` from this
-// layer — the server has no positional injector for those kinds and a
-// line-0 guess would corrupt multi-line documents (see Risks).
+// layer ONLY for value items, sub-menu/verb items, and partial menu-path
+// segment items, with a single-line (line 0) range assumption: the server
+// rewrites those ranges with the physical/logical-line mapping at runtime,
+// so they are unit-test shadows here. Property/flag items intentionally
+// carry NO `textEdit` from this layer — the server has no positional
+// injector for those kinds and a line-0 guess would corrupt multi-line
+// documents (see Risks).
 
 use crate::caps::MAX_COMPLETION_ITEMS;
 use crate::live::{LiveCache, live_resource_values_for_property};
@@ -444,6 +445,24 @@ fn match_context_with_live(
     // usually consumes space-separated partials as the command, so this
     // mainly orders the unfiltered menu; any genuine partial still gets a
     // replacing `textEdit` on prefix-matching items).
+    //
+    // Partial MENU-PATH segment (`/ip/addr`): the canonical path is not a
+    // known menu, so the path-keyed builders below stay silent. When its
+    // parent is known, offer the parent's child menus matching the typed
+    // final segment and replace ONLY that segment (never the parent
+    // prefix). A junk parent yields nothing — standard verbs must never
+    // leak onto an unknown path.
+    let path_key = normalize_path(&context.path);
+    let path_known =
+        data.menu_by_path.contains_key(&path_key) || data.ancestor_prefixes.contains(&path_key);
+    if !path_known
+        && let Some((typed_segment, seg_start, seg_end)) = partial_path_segment(before_cursor)
+    {
+        let mut items = get_partial_segment_completion_items(data, &context.path, &typed_segment);
+        attach_segment_text_edit(&mut items, seg_start, seg_end);
+        return items;
+    }
+
     let partial = partial_name_token(before_cursor);
     let typed = partial
         .as_ref()
@@ -684,6 +703,37 @@ pub(crate) fn partial_name_token(before_cursor: &str) -> Option<(String, usize, 
     Some((tok.text, start, end))
 }
 
+/// Partial final segment of a `/-prefixed` path token under the cursor.
+///
+/// Returns `(typed_segment, byte_start, byte_end)` relative to the text's
+/// last line. Unlike [`partial_name_token`] this deliberately accepts a
+/// token that starts with `/`: the completion layer only calls it when the
+/// canonical path is unknown, and the server uses it to rewrite the
+/// segment-only `textEdit` for `/ip/addr` → `address`. A trailing `/`
+/// (`/ip/`) means the segment is finished/empty, and a bare `/name` has no
+/// known parent, so both are rejected here.
+pub(crate) fn partial_path_segment(text: &str) -> Option<(String, usize, usize)> {
+    let line = current_line(text);
+    if line.is_empty() {
+        return None;
+    }
+    let tok = crate::parser::tokenize_with_spans(line).last().cloned()?;
+    if !tok.text.starts_with('/') || tok.text.ends_with('/') {
+        return None;
+    }
+    // Start of the final segment: just after the last `/`.
+    let seg_rel = tok.text.rfind('/')? + 1;
+    if seg_rel >= tok.text.len() {
+        return None;
+    }
+    let end = tok.end.min(line.len());
+    let start = (tok.start + seg_rel).min(end);
+    if start >= end {
+        return None;
+    }
+    Some((tok.text[seg_rel..].to_string(), start, end))
+}
+
 /// Attach replacing `textEdit`s for the typed value suffix after `=`.
 ///
 /// The range covers exactly the effective suffix (a leading opening quote
@@ -729,6 +779,19 @@ fn attach_token_text_edit(items: &mut [CompletionItem], span: Option<(usize, usi
                 .unwrap_or_else(|| item.label.clone());
             item.text_edit = Some(line_zero_edit(start, end, new_text));
         }
+    }
+}
+
+/// Attach a replacing `textEdit` that covers exactly the typed final menu
+/// segment (`/ip/addr` → `/ip/address`), never the parent prefix. Applied
+/// to every partial-segment item, whose labels already match the segment.
+fn attach_segment_text_edit(items: &mut [CompletionItem], start: usize, end: usize) {
+    for item in items.iter_mut() {
+        let new_text = item
+            .insert_text
+            .clone()
+            .unwrap_or_else(|| item.label.clone());
+        item.text_edit = Some(line_zero_edit(start, end, new_text));
     }
 }
 
@@ -816,6 +879,57 @@ fn get_sub_menu_completion_items(
             .collect(),
         None => Vec::new(),
     }
+}
+
+/// Partial last segment of a menu path (`/ip/addr` → `address`).
+///
+/// Offered only when the canonical path is NOT a known menu but its parent
+/// IS: the parent prefix is already typed, so the child name is the whole
+/// insert text and the `textEdit` replaces just the typed segment. Ranked
+/// exactly like a sub-menu (`RankTier::Submenu`). An unknown parent (or one
+/// without a child index) yields an empty set, so no standard verbs are
+/// advertised for junk input. Case-insensitive, like every RouterOS name.
+fn get_partial_segment_completion_items(
+    data: &MenuData,
+    path: &str,
+    typed_segment: &str,
+) -> Vec<CompletionItem> {
+    let Some(parent) = parent_path(path) else {
+        return Vec::new();
+    };
+    let parent_key = normalize_path(parent);
+    if !(data.menu_by_path.contains_key(&parent_key)
+        || data.ancestor_prefixes.contains(&parent_key))
+    {
+        return Vec::new();
+    }
+    let typed_lower = normalize_key(typed_segment);
+    match data.child_names_by_parent.get(&parent_key) {
+        Some(children) => children
+            .iter()
+            .filter(|c| c.menu_type == "Directory" || c.menu_type == "Settings Directory")
+            .filter(|c| normalize_key(&c.name).starts_with(&typed_lower))
+            .map(|c| {
+                let mut item = CompletionItem::new(c.name.clone(), kind::CLASS);
+                item.detail = Some(sanitize_detail_text(&format!("sub-menu — {}", c.path)));
+                item.insert_text = Some(c.name.clone());
+                item.insert_text_format = Some(1);
+                item.sort_text = Some(rank(RankTier::Submenu, &c.name, typed_segment));
+                item
+            })
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Parent path of `path` (everything before the final `/`), or `None` when
+/// `path` has no parent segment (bare `/name`) or an empty last segment.
+fn parent_path(path: &str) -> Option<&str> {
+    let (parent, last) = path.rsplit_once('/')?;
+    if parent.is_empty() || last.is_empty() {
+        return None;
+    }
+    Some(parent)
 }
 
 // ── Verbs ────────────────────────────────────────────────────────────────

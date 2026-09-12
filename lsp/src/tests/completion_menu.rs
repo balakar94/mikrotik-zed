@@ -258,6 +258,97 @@ fn test_known_directory_still_offers_standard_verbs() {
     }
 }
 
+// ── Partial menu-path segment completion ─────────────────────────────────
+
+#[test]
+fn test_partial_path_segment_suggests_child_and_replaces_segment_only() {
+    // `/ip/addr` is not a known menu, but its parent `/ip` is: the child
+    // `address` is offered as a sub-menu and the textEdit must replace ONLY
+    // the typed `addr`, never the already-typed `/ip/` prefix.
+    let data = synthetic_data();
+    let line = "/ip/addr";
+    let items = compute_completions(&data, line);
+    let addr = items
+        .iter()
+        .find(|i| i.label == "address")
+        .expect("partial segment 'addr' must suggest 'address'");
+    assert_eq!(addr.kind, Some(kind::CLASS));
+    assert_eq!(addr.insert_text.as_deref(), Some("address"));
+    // Sub-menu tier (3), prefix match (1), normalized label.
+    assert_eq!(addr.sort_text.as_deref(), Some("31_address"));
+    assert_eq!(addr.filter_text.as_deref(), Some("address"));
+    let edit = addr.text_edit.as_ref().expect("segment textEdit");
+    assert_eq!(edit.range.start.line, 0);
+    assert_eq!(edit.range.start.character as usize, "/ip/".len());
+    assert_eq!(edit.range.end.character as usize, line.len());
+    assert_eq!(
+        format!(
+            "{}{}{}",
+            &line[..edit.range.start.character as usize],
+            edit.new_text,
+            &line[edit.range.end.character as usize..]
+        ),
+        "/ip/address"
+    );
+    // No standard verbs may leak onto an unknown path.
+    assert!(
+        !items
+            .iter()
+            .any(|i| MenuData::STANDARD_VERBS.contains(&i.label.as_str())),
+        "partial path must not advertise verbs, got {:?}",
+        items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_partial_path_segment_is_case_insensitive_and_slash_tolerant() {
+    let data = synthetic_data();
+    for line in ["/ip/ADDR", "/ip//addr", "//ip/addr"] {
+        let items = compute_completions(&data, line);
+        assert!(
+            items.iter().any(|i| i.label == "address"),
+            "{line:?} must suggest address, got {:?}",
+            items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+        );
+        let item = items.iter().find(|i| i.label == "address").unwrap();
+        let edit = item.text_edit.as_ref().expect("segment textEdit");
+        let seg_start = line.to_ascii_lowercase().rfind("addr").unwrap();
+        assert_eq!(edit.range.start.character as usize, seg_start);
+        assert_eq!(edit.range.end.character as usize, line.len());
+    }
+}
+
+#[test]
+fn test_known_path_completion_unchanged_by_partial_segment() {
+    // A complete known menu keeps its existing behaviour: verbs, and no
+    // duplicate partial-segment `address` item.
+    let data = synthetic_data();
+    let items = compute_completions(&data, "/ip/address ");
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"add"),
+        "known menu keeps verbs, got {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"address"),
+        "known menu must not gain a duplicate child item, got {labels:?}"
+    );
+}
+
+#[test]
+fn test_partial_path_with_unknown_parent_is_empty() {
+    // Junk parent: no children to offer and no standard verbs to advertise.
+    let data = synthetic_data();
+    for line in ["/bogus/xx", "/unknown/path", "/bogus/xx add"] {
+        let items = compute_completions(&data, line);
+        assert!(
+            items.is_empty(),
+            "{line:?} must stay empty, got {:?}",
+            items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+        );
+    }
+}
+
 #[test]
 fn test_submenu_action_command_included_as_verb() {
     let data = synthetic_data();
