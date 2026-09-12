@@ -188,14 +188,22 @@ pub(crate) fn spki_sha256(cert_der: &[u8]) -> Option<[u8; 32]> {
 }
 
 /// Check if a host is denied by SSRF protection.
+///
+/// Exact-match denials run after stripping exactly one trailing `.` (the DNS
+/// root / FQDN form): `169.254.169.254.` and `metadata.google.internal.`
+/// resolve to the same host but would otherwise evade an exact comparison.
+/// Numeric literals with a trailing dot are additionally rejected fail-closed
+/// by `is_non_canonical_numeric_host` in `validate_host`.
 pub(crate) fn is_ssrf_denied_host(host: &str) -> bool {
-    // Normalize: lowercase, strip brackets, strip port if present? host here is without port.
-    let lower = host.trim().to_ascii_lowercase();
-    // Strip IPv6 brackets for comparison
+    // Normalize: lowercase, strip a single trailing `.` (DNS root / FQDN
+    // form) BEFORE bracket stripping so `[169.254.169.254].` is handled too,
+    // then strip IPv6 brackets for comparison.
+    let trimmed = host.trim().to_ascii_lowercase();
+    let lower = trimmed.strip_suffix('.').unwrap_or(trimmed.as_str());
     let inner = if lower.starts_with('[') && lower.ends_with(']') {
         &lower[1..lower.len() - 1]
     } else {
-        &lower
+        lower
     };
     // Exact denials
     if inner == "169.254.169.254" {

@@ -167,6 +167,42 @@ fn test_ssrf_controls_stay_denied() {
 }
 
 #[test]
+fn test_ssrf_trailing_dot_hostnames_denied() {
+    // A trailing `.` is the DNS root/FQDN form: resolvers treat
+    // `169.254.169.254.` and `metadata.google.internal.` as the same host,
+    // but exact-string denials would miss them. All must fail closed even
+    // when loopback is allowed (these are unconditional SSRF denials).
+    for bad in [
+        "169.254.169.254.",
+        "metadata.google.internal.",
+        "metadata.google.",
+        "metadata.goog.",
+        "0.0.0.0.",
+    ] {
+        assert!(
+            is_ssrf_denied_host(bad),
+            "trailing-dot denied host must hit the exact-match denylist: {bad:?}"
+        );
+        assert!(
+            validate_host_with_allow(bad, true).is_err(),
+            "trailing-dot denied host must stay denied with loopback allowed: {bad:?}"
+        );
+        assert!(
+            validate_host_with_allow(bad, false).is_err(),
+            "trailing-dot denied host must be denied by default: {bad:?}"
+        );
+    }
+    // Case-insensitive + bracket-tolerant trailing-dot forms.
+    assert!(is_ssrf_denied_host("[Metadata.Google.Internal]."));
+    assert!(validate_host_with_allow("[metadata.goog].", true).is_err());
+    // Numeric loopback/link-local with a trailing dot is also fail-closed via
+    // the non-canonical-numeric path (mirrors `127.1`).
+    assert!(validate_host_with_allow("127.0.0.1.", false).is_err());
+    // Ordinary FQDN consumers are unaffected.
+    assert!(validate_host_with_allow("router.local.", false).is_ok());
+}
+
+#[test]
 fn test_legitimate_hosts_still_accepted() {
     // No regression for normal hosts: public DNS names, public IPv4/IPv6,
     // and private hosts when explicitly allowed.

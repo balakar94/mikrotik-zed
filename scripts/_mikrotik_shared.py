@@ -229,6 +229,11 @@ def normalized_host_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Addre
         inner = inner[1:-1]
     # Strip any zone id (defense in depth; '%' is rejected earlier anyway).
     inner = inner.split("%")[0]
+    # A single trailing dot is the DNS root / FQDN form (`169.254.169.254.`).
+    # Strip it so a numeric literal still normalizes to its IP; leaving it in
+    # would misclassify a denied address as a domain and bypass the denylist.
+    if len(inner) > 1 and inner.endswith("."):
+        inner = inner[:-1]
     try:
         return ipaddress.ip_address(inner)
     except ValueError:
@@ -317,7 +322,8 @@ def validate_host(host: str) -> str | None:
     ``metadata.google``, ``metadata.goog``, ``0.0.0.0``, ``::``
     (case-insensitive, bracket-tolerant), whole ``169.254.0.0/16`` for IPv4
     literals, IPv6 ``fe80::/10`` link-local, IPv4-mapped IPv6 unmapping, and
-    non-canonical numeric literals (decimal/hex/octal/short) rejected
+    non-canonical numeric literals (decimal/hex/octal/short, including the
+    FQDN-root trailing-dot form such as ``169.254.169.254.``) rejected
     fail-closed via normalization (see ``normalized_host_ip``).
 
     Intentional divergence from the Rust side: private/loopback ranges stay
@@ -339,8 +345,14 @@ def validate_host(host: str) -> str | None:
     if "/" in host or "\\" in host:
         return "host contains path separator"
     # Lexical SSRF denylist (no DNS): case-insensitive, bracket-tolerant.
+    # Trailing-dot (FQDN root) form: strip exactly one trailing dot BEFORE
+    # bracket stripping so `[169.254.169.254].` is handled too, so
+    # `169.254.169.254.` and `metadata.google.internal.` cannot evade the
+    # exact-match denials. Mirrors lsp/src/live_net.rs::is_ssrf_denied_host.
     stripped = host.strip()
     lowered = stripped.lower()
+    if lowered.endswith(".") and len(lowered) > 1:
+        lowered = lowered[:-1]
     inner = lowered
     if inner.startswith("[") and inner.endswith("]") and len(inner) >= 2:
         inner = inner[1:-1]

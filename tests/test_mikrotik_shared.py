@@ -139,6 +139,25 @@ class TestValidateHostSsrfDenylist:
         assert validate_host("[Metadata.Goog]") is not None
         assert validate_host("[169.254.169.254]") is not None
 
+    def test_trailing_dot_hostnames_denied(self):
+        # A trailing `.` is the DNS root / FQDN form: resolvers treat
+        # `169.254.169.254.` and `metadata.google.internal.` as the same host,
+        # but exact-string denials would miss them. Mirrors Rust
+        # `test_ssrf_trailing_dot_hostnames_denied`.
+        for bad in [
+            "169.254.169.254.",
+            "metadata.google.internal.",
+            "metadata.google.",
+            "metadata.goog.",
+            "0.0.0.0.",
+            "[metadata.goog].",
+        ]:
+            assert validate_host(bad) is not None, f"should deny trailing-dot {bad!r}"
+        # Ordinary FQDN consumers are unaffected.
+        assert validate_host("router.local.") is None
+        # Numeric literals with a trailing dot are non-canonical: fail-closed.
+        assert validate_host("169.254.169.254.") == "SSRF denied host"
+
     def test_whole_link_local_range_denied(self):
         assert validate_host("169.254.0.1") is not None
         assert validate_host("169.254.10.20") is not None
