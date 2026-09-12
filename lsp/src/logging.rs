@@ -132,9 +132,37 @@ pub(crate) fn uri_hash(uri: &str) -> String {
     uri.hash(&mut h);
     format!("{:016x}", h.finish())[..8].to_string()
 }
+
+/// Bounded, non-reversible URI descriptor for log lines.
+///
+/// A document URI is client-controlled and can be up to `MAX_MESSAGE_SIZE`
+/// (multi-MiB). Log only its byte length and short hash so a malformed URI
+/// cannot flood the log or expose path material. Use this everywhere a URI
+/// would otherwise be interpolated raw.
+pub(crate) fn uri_for_log(uri: &str) -> String {
+    format!("len={} hash={}", uri.len(), uri_hash(uri))
+}
+
+/// Sanitize a JSON-RPC method token for a log line.
+///
+/// Strips every ASCII control character (including `\r`/`\n`, so a crafted
+/// `method` cannot forge log lines) and caps the result at 64 chars.
+/// `request_suffix` must use this rather than interpolating `method` raw.
+pub(crate) fn sanitize_method_for_log(m: &str) -> String {
+    let stripped: String = m.chars().filter(|c| !c.is_control()).collect();
+    if stripped.chars().count() > 64 {
+        stripped.chars().take(64).collect()
+    } else {
+        stripped
+    }
+}
+
 pub(crate) fn request_suffix(m: &str, uri: Option<&str>, d: u64, enc: &str) -> String {
     let h = uri.map(uri_hash).unwrap_or_else(|| "none".to_string());
-    format!("method={m} uri_hash={h} latency={d}ms encoding={enc}")
+    format!(
+        "method={} uri_hash={h} latency={d}ms encoding={enc}",
+        sanitize_method_for_log(m)
+    )
 }
 
 /// Sanitize a value before interpolating it into a log line.

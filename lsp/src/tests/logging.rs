@@ -69,3 +69,42 @@ fn truncate_command_caps_at_256_and_strips_newlines() {
     assert_eq!(truncate_command_for_log(&long).chars().count(), 256);
     assert_eq!(truncate_command_for_log("a\nb\rc"), "abc");
 }
+
+#[test]
+fn method_sanitizer_strips_control_chars_and_bounds() {
+    // A crafted method must not forge log lines.
+    assert_eq!(
+        sanitize_method_for_log("textDocument/ho\nver"),
+        "textDocument/hover"
+    );
+    assert!(!sanitize_method_for_log("a\r\nb").contains('\n'));
+    assert!(!sanitize_method_for_log("a\u{0}b\u{7}c").contains('\u{0}'));
+    assert_eq!(sanitize_method_for_log("a\tb"), "ab");
+    let long = "m".repeat(200);
+    assert_eq!(sanitize_method_for_log(&long).chars().count(), 64);
+    // Newlines cannot appear in a rendered request suffix.
+    let suffix = request_suffix("evil\nmethod", Some("file:///x"), 7, "utf-16");
+    assert!(!suffix.contains('\n'), "suffix forged: {suffix:?}");
+    assert!(suffix.contains("method=evilmethod"));
+    assert!(suffix.contains("uri_hash="));
+}
+
+#[test]
+fn uri_for_log_is_bounded_and_not_reversible() {
+    let long_uri = format!("file:///{}", "a".repeat(5 * 1024 * 1024));
+    let logged = uri_for_log(&long_uri);
+    assert!(logged.starts_with("len="), "got {logged}");
+    assert!(logged.contains("hash="));
+    assert!(
+        logged.len() < 64,
+        "bounded descriptor, got len {}",
+        logged.len()
+    );
+    assert!(
+        !logged.contains(&"a".repeat(32)),
+        "raw URI material must not be logged"
+    );
+    // Stable for the same input, different across inputs.
+    assert_eq!(uri_for_log("file:///a"), uri_for_log("file:///a"));
+    assert_ne!(uri_for_log("file:///a"), uri_for_log("file:///b"));
+}

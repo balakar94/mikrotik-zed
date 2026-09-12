@@ -33,6 +33,7 @@ use crate::live::{
 };
 use crate::logging::{
     log_debug, log_error, log_info, log_warn, sanitize_for_log, truncate_command_for_log,
+    uri_for_log,
 };
 use crate::menus::MenuData;
 use crate::parser::{ParseCache, build_before_cursor, parse_line, tokenize_with_spans};
@@ -354,7 +355,7 @@ impl Server {
                 // Validate URI scheme — only file:// URIs are expected; reject others to avoid
                 // leaking path handling or storing attacker-controlled arbitrary schemes.
                 if !is_valid_file_uri(uri) {
-                    log_warn!("rejecting didOpen with non-file URI: {uri:?}");
+                    log_warn!("rejecting didOpen with non-file URI: {}", uri_for_log(uri));
                     return None;
                 }
                 let text = params["params"]["textDocument"]["text"].as_str()?;
@@ -367,15 +368,17 @@ impl Server {
                 // and were inserted unconditionally), symmetric with didChange.
                 if !self.docs.contains_key(&uri_owned) && self.docs.len() >= MAX_DOCS {
                     log_warn!(
-                        "too many open documents ({} >= {MAX_DOCS}), rejecting: {uri:?}",
-                        self.docs.len()
+                        "too many open documents ({} >= {MAX_DOCS}), rejecting: {}",
+                        self.docs.len(),
+                        uri_for_log(uri)
                     );
                     return None;
                 }
                 if text.len() > MAX_DOC_SIZE {
                     log_warn!(
-                        "document too large ({} bytes > {MAX_DOC_SIZE}), truncating: {uri:?}",
-                        text.len()
+                        "document too large ({} bytes > {MAX_DOC_SIZE}), truncating: {}",
+                        text.len(),
+                        uri_for_log(uri)
                     );
                     // Truncate at char boundary to avoid invalid UTF-8
                     let trunc_idx = floor_char_boundary(text, MAX_DOC_SIZE);
@@ -406,7 +409,10 @@ impl Server {
                 // - Full sync: each change contains only "text" (replace doc).
                 let uri = params["params"]["textDocument"]["uri"].as_str()?;
                 if !is_valid_file_uri(uri) {
-                    log_warn!("rejecting didChange with non-file URI: {uri:?}");
+                    log_warn!(
+                        "rejecting didChange with non-file URI: {}",
+                        uri_for_log(uri)
+                    );
                     return None;
                 }
                 let changes = params["params"]["contentChanges"].as_array()?;
@@ -416,8 +422,9 @@ impl Server {
                 // Enforce doc count cap on first insert via didChange (client may skip didOpen)
                 if !self.docs.contains_key(uri) && self.docs.len() >= MAX_DOCS {
                     log_warn!(
-                        "too many open documents ({} >= {MAX_DOCS}), rejecting didChange: {uri:?}",
-                        self.docs.len()
+                        "too many open documents ({} >= {MAX_DOCS}), rejecting didChange: {}",
+                        self.docs.len(),
+                        uri_for_log(uri)
                     );
                     return None;
                 }
@@ -432,7 +439,8 @@ impl Server {
                     let Some(text) = change.get("text").and_then(|t| t.as_str()) else {
                         log_warn!(
                             "didChange: skipping contentChanges element without a string 'text' \
-                             for {uri:?}"
+                             for {}",
+                            uri_for_log(uri)
                         );
                         continue;
                     };
@@ -586,7 +594,10 @@ impl Server {
                     return Some(invalid_params_response(&id, "missing position.character"));
                 };
                 let Some(doc) = self.docs.get(uri) else {
-                    log_debug!("completion for untracked URI, returning null result: {uri:?}");
+                    log_debug!(
+                        "completion for untracked URI, returning null result: {}",
+                        uri_for_log(uri)
+                    );
                     return Some(serde_json::json!({
                         "jsonrpc": "2.0",
                         "id": id,
@@ -1039,7 +1050,10 @@ impl Server {
                     return Some(invalid_params_response(&id, "missing position.character"));
                 };
                 let Some(doc) = self.docs.get(uri) else {
-                    log_debug!("hover for untracked URI, returning null result: {uri:?}");
+                    log_debug!(
+                        "hover for untracked URI, returning null result: {}",
+                        uri_for_log(uri)
+                    );
                     return Some(serde_json::json!({
                         "jsonrpc": "2.0",
                         "id": id,
@@ -1095,7 +1109,10 @@ impl Server {
                     return Some(invalid_params_response(&id, "missing position.character"));
                 };
                 let Some(doc) = self.docs.get(uri) else {
-                    log_debug!("signatureHelp for untracked URI, returning null result: {uri:?}");
+                    log_debug!(
+                        "signatureHelp for untracked URI, returning null result: {}",
+                        uri_for_log(uri)
+                    );
                     return Some(serde_json::json!({
                         "jsonrpc": "2.0",
                         "id": id,
@@ -1153,7 +1170,10 @@ impl Server {
                     return Some(invalid_params_response(&id, "missing textDocument.uri"));
                 };
                 let Some(doc) = self.docs.get(uri) else {
-                    log_debug!("documentSymbol for untracked URI, returning null result: {uri:?}");
+                    log_debug!(
+                        "documentSymbol for untracked URI, returning null result: {}",
+                        uri_for_log(uri)
+                    );
                     return Some(serde_json::json!({
                         "jsonrpc": "2.0",
                         "id": id,
@@ -1218,7 +1238,10 @@ impl Server {
                     return Some(invalid_params_response(&id, "missing position.character"));
                 };
                 let Some(doc) = self.docs.get(uri) else {
-                    log_debug!("definition for untracked URI, returning null result: {uri:?}");
+                    log_debug!(
+                        "definition for untracked URI, returning null result: {}",
+                        uri_for_log(uri)
+                    );
                     return Some(serde_json::json!({
                         "jsonrpc": "2.0",
                         "id": id,
@@ -1267,7 +1290,10 @@ impl Server {
                     ));
                 };
                 let Some(doc) = self.docs.get(uri) else {
-                    log_debug!("references for untracked URI, returning empty list: {uri:?}");
+                    log_debug!(
+                        "references for untracked URI, returning empty list: {}",
+                        uri_for_log(uri)
+                    );
                     return Some(serde_json::json!({
                         "jsonrpc": "2.0",
                         "id": id,
@@ -1312,7 +1338,10 @@ impl Server {
                     return Some(invalid_params_response(&id, "missing newName"));
                 };
                 let Some(doc) = self.docs.get(uri) else {
-                    log_debug!("rename for untracked URI, returning null result: {uri:?}");
+                    log_debug!(
+                        "rename for untracked URI, returning null result: {}",
+                        uri_for_log(uri)
+                    );
                     return Some(serde_json::json!({
                         "jsonrpc": "2.0",
                         "id": id,
@@ -1344,7 +1373,10 @@ impl Server {
                     return Some(invalid_params_response(&id, "missing textDocument.uri"));
                 };
                 let Some(doc) = self.docs.get(uri) else {
-                    log_debug!("foldingRange for untracked URI, returning null result: {uri:?}");
+                    log_debug!(
+                        "foldingRange for untracked URI, returning null result: {}",
+                        uri_for_log(uri)
+                    );
                     return Some(serde_json::json!({
                         "jsonrpc": "2.0",
                         "id": id,
@@ -1424,7 +1456,10 @@ impl Server {
                     return Some(invalid_params_response(&id, "missing context.diagnostics"));
                 };
                 let Some(doc) = self.docs.get(uri) else {
-                    log_debug!("codeAction for untracked URI, returning empty list: {uri:?}");
+                    log_debug!(
+                        "codeAction for untracked URI, returning empty list: {}",
+                        uri_for_log(uri)
+                    );
                     return Some(serde_json::json!({
                         "jsonrpc": "2.0",
                         "id": id,
