@@ -30,10 +30,19 @@ No manual build is required. On opening a `.rsc` file the shim resolves
 
 1. **PATH** — your own `rsc-ls` (dev override; bypasses checksum gate,
    warning is logged — keep only trusted builds on PATH).
-2. **Cache** — previously downloaded copy, reused as-is.
+2. **Cache** — previously downloaded copy, re-hashed against its
+   `.verified` digest marker before reuse; a mismatch is deleted and
+   re-downloaded.
 3. **GitHub Releases** — matching platform asset, SHA-256 verified
    *before* execution. Any failure aborts with manual instructions;
    an unverified binary is never executed.
+
+**Trust model:** the `.sha256` companion is produced by the same release
+build as the binary, so it detects transfer corruption, truncation, and
+mismatched assets. It is not an independent anchor against a compromised
+release or repository, which could ship a binary and a matching digest
+together. Release build-provenance attestations exist but are not consumed
+by the shim.
 
 ## 3 · First `.rsc` file
 
