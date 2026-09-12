@@ -73,3 +73,45 @@ fn test_server_completion_multiline_before_cursor() {
     // array
     assert!(items.is_empty() || items.iter().any(|i| i["label"] == "0.0.0.0/0"));
 }
+
+// ── Continuation-aware partial menu path ─────────────────────────────────
+
+#[test]
+fn test_partial_path_segment_across_continuation() {
+    // The server passes the continuation-aware logical join as the second
+    // argument. The physical `before_cursor` (space-joined) only sees
+    // `te/che` after the split, while the logical prefix carries the full
+    // `/ip/route/che`; the completion layer must resolve the final segment
+    // `che` to the `/ip/route/check` action command.
+    let data = MenuData::load();
+    let cases: &[(&str, &str, usize, usize)] = &[
+        // (before_cursor, logical_prefix, expected segment start, expected end)
+        ("/ip/rou te/che", "/ip/route/che", 10, 13),
+        ("/ip/route /che", "/ip/route/che", 10, 13),
+    ];
+    for (before, logical, seg_start, seg_end) in cases {
+        let items =
+            crate::completion::compute_completions_with_logical(&data, before, Some(logical), None);
+        let check = items
+            .iter()
+            .find(|i| i.label == "check")
+            .unwrap_or_else(|| {
+                panic!(
+                    "no `check` item for logical {logical:?}; got {:?}",
+                    items.iter().map(|i| &i.label).collect::<Vec<_>>()
+                )
+            });
+        let edit = check
+            .text_edit
+            .as_ref()
+            .expect("partial-segment item carries a textEdit shadow");
+        assert_eq!(
+            (
+                edit.range.start.character as usize,
+                edit.range.end.character as usize
+            ),
+            (*seg_start, *seg_end),
+            "segment-only shadow span for logical {logical:?}"
+        );
+    }
+}

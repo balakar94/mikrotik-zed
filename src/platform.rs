@@ -138,6 +138,18 @@ pub(crate) fn is_executable(path: &str) -> bool {
     }
 }
 
+/// True when `path` exists and is itself a symbolic link (not followed).
+///
+/// The extension never creates a symlink at a cache path, so one there is
+/// tampering or leftover state and must not be hashed, made executable, or
+/// spawned. A missing path is not a symlink. This uses only the already
+/// imported `wasi:filesystem` surface (no new host capability).
+pub(crate) fn is_symlink(path: &str) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,5 +334,34 @@ mod tests {
                 "https://github.com/{GITHUB_REPO}/releases/download/v0.5.0/rsc-ls-x86_64-unknown-linux-gnu"
             )
         );
+    }
+
+    #[test]
+    fn missing_and_regular_paths_are_not_symlinks() {
+        assert!(!is_symlink("definitely-missing-rsc-ls-path"));
+
+        let path = std::env::temp_dir().join(format!(
+            "rsc-zed-symlink-probe-{}-regular",
+            std::process::id()
+        ));
+        let path = path.to_string_lossy().into_owned();
+        std::fs::write(&path, b"x").unwrap();
+        assert!(!is_symlink(&path));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_paths_are_detected() {
+        let base =
+            std::env::temp_dir().join(format!("rsc-zed-symlink-probe-{}", std::process::id()));
+        let target = base.with_extension("target").to_string_lossy().into_owned();
+        let link = base.with_extension("link").to_string_lossy().into_owned();
+        std::fs::write(&target, b"x").unwrap();
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(is_symlink(&link));
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_file(&target);
     }
 }

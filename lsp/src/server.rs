@@ -654,9 +654,30 @@ impl Server {
                         arg_type,
                     );
                 }
+                // Continuation-aware logical prefix up to the cursor: the
+                // physical line alone cannot see a path segment split across a
+                // `\` join. Computed once here and reused by the textEdit
+                // injection below, so the completion layer and the physical
+                // range mapping agree on the joined text. The parse-cache
+                // lookup is the single full-document hash for this request.
+                let logicals = self.parse_cache.lookup_or_insert(uri, doc);
+                let covering = diagnostics::covering_logical_line(logicals, line_idx);
+                let cursor_logical_opt =
+                    covering.and_then(|ll| ll.logical_offset_from_physical(line_idx, char_byte));
+                let logical_prefix_text: Option<String> = match (covering, cursor_logical_opt) {
+                    (Some(ll), Some(cursor_logical)) => {
+                        let text = ll.text();
+                        let clamped = crate::encoding::floor_char_boundary(
+                            text,
+                            cursor_logical.min(text.len()),
+                        );
+                        Some(text[..clamped].to_string())
+                    }
+                    _ => None,
+                };
                 let mut items = {
                     // Narrow live-lock: held only for the synchronous cache
-                    // read inside `compute_completions_with_live` (fresh-entry
+                    // read inside `compute_completions_with_logical` (fresh-entry
                     // `Arc` clones). A full snapshot clone under lock would
                     // also work but `LiveCache` is not `Clone` and the
                     // completion layer only needs `&LiveCache`, so scoping the
@@ -666,9 +687,10 @@ impl Server {
                         log_warn!("live cache lock poisoned, recovering");
                         e.into_inner()
                     });
-                    completion::compute_completions_with_live(
+                    completion::compute_completions_with_logical(
                         &self.data,
                         &before_cursor,
+                        logical_prefix_text.as_deref(),
                         Some(&*live_guard as &LiveCache),
                     )
                 };
@@ -735,16 +757,10 @@ impl Server {
                     let mut value_range_phys: Option<(usize, usize, usize, usize)> = None;
                     // (phys_start_line, phys_start_char_byte, phys_end_line, phys_end_char_byte) in
                     // byte offsets
-                    // Helper: try logical path first, fallback to physical.
-                    // Cached join: single-hash lookup-or-insert (cold cache or
-                    // changed text reparses once; warm hits reuse the slice).
-                    // Identical bytes to a fresh `logical_lines` either way,
-                    // so mapping behavior is identical warm or cold.
-                    let logicals = self.parse_cache.lookup_or_insert(uri, doc);
-                    let covering = diagnostics::covering_logical_line(logicals, line_idx);
-                    let cursor_logical_opt = covering
-                        .and_then(|ll| ll.logical_offset_from_physical(line_idx, char_byte));
-
+                    // Logical join, covering line and cursor mapping were
+                    // computed once before the completion call above; reusing
+                    // them keeps a single full-document hash per request and
+                    // guarantees the mapping matches the completion context.
                     if let Some((key_part, value_part)) =
                         crate::parser::split_key_value(&trimmed_last)
                     {

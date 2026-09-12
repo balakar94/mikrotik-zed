@@ -86,7 +86,11 @@ impl zed::Extension for RscExtension {
         // respawned; control falls through to a fresh download.
         if let Some(cached) = &self.cached_binary {
             let probe = if cached.as_str() == stored_name.as_str() {
-                platform::is_executable(cached) && cache::cached_binary_is_intact(cached)
+                // Refuse a symlinked cache entry outright: the extension never
+                // creates one, so it is tampering or leftover state.
+                !platform::is_symlink(cached)
+                    && platform::is_executable(cached)
+                    && cache::cached_binary_is_intact(cached)
             } else {
                 // Absolute path from PATH – assume it still exists; worktree.which already failed
                 // so this is a stale cache; fall through to download.
@@ -111,7 +115,20 @@ impl zed::Extension for RscExtension {
         // reason is logged, the stale pair is removed best-effort, and control
         // falls through to a fresh, re-verified download instead of respawning
         // a possibly corrupt file forever.
-        if platform::is_executable(&stored_name) {
+        // A symlink at the stored path is tampering or leftover state: never
+        // hash or spawn it. `remove_file` unlinks the link itself, never its
+        // target. Keying the reuse gate on `symlinked` (not on the removal
+        // succeeding) means an unremovable link still falls through to a fresh
+        // download instead of being reused.
+        let symlinked = platform::is_symlink(&stored_name);
+        if symlinked {
+            eprintln!(
+                "[mikrotik-zed] refusing to reuse symlinked cache entry {stored_name}; removing it and downloading afresh"
+            );
+            remove_cached_artifacts(&stored_name);
+        }
+
+        if !symlinked && platform::is_executable(&stored_name) {
             match cache::integrity_problem(&stored_name) {
                 None => {
                     eprintln!(

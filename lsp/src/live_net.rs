@@ -288,6 +288,95 @@ pub(crate) fn is_non_canonical_numeric_host(host: &str) -> bool {
     inner.to_ascii_lowercase() != canonical
 }
 
+// ── Operator deny prefixes (`RSC_LS_LIVE_DENY_PREFIXES`) ─────────────────
+//
+// The built-in policy knows the well-known NAT64 prefix `64:ff9b::/96` but
+// cannot know a network-specific NAT64/RFC 6052 prefix or another custom
+// internal range. Operators who need those denied list them explicitly in
+// the env var; the parsed prefixes are carried on `LiveConfig` and checked
+// FIRST in the deny evaluation so `RSC_LS_LIVE_ALLOW_LOOPBACK=1` never
+// overrides them.
+
+/// One operator-configured SSRF deny prefix (`addr/len`, host bits ignored).
+///
+/// Family-aware: an IPv4 prefix only matches IPv4 addresses and an IPv6
+/// prefix only matches IPv6 addresses. IPv4-mapped IPv6 candidates are
+/// unmapped by [`is_extra_deny_match`] before the family check, so a
+/// `192.0.2.0/24` deny also covers `::ffff:192.0.2.5`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DenyPrefix {
+    net: std::net::IpAddr,
+    prefix_len: u8,
+}
+
+impl DenyPrefix {
+    /// Build a prefix, rejecting a length outside the family's range.
+    ///
+    /// IPv4 allows `0..=32`, IPv6 allows `0..=128`; host bits in `addr` are
+    /// ignored during matching (`192.0.2.5/24` behaves as `192.0.2.0/24`).
+    pub(crate) fn new(addr: std::net::IpAddr, prefix_len: u8) -> Option<Self> {
+        let max = if addr.is_ipv4() { 32 } else { 128 };
+        if prefix_len > max {
+            return None;
+        }
+        Some(Self {
+            net: addr,
+            prefix_len,
+        })
+    }
+
+    /// Whether `addr` falls inside this prefix (same family only).
+    pub(crate) fn contains(&self, addr: std::net::IpAddr) -> bool {
+        match (self.net, addr) {
+            (std::net::IpAddr::V4(net), std::net::IpAddr::V4(cand)) => {
+                prefix_bits_match(&net.octets(), &cand.octets(), self.prefix_len)
+            }
+            (std::net::IpAddr::V6(net), std::net::IpAddr::V6(cand)) => {
+                prefix_bits_match(&net.octets(), &cand.octets(), self.prefix_len)
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Compare the first `prefix_len` bits of two equal-length octet arrays.
+///
+/// Slice access is in-bounds by construction: `prefix_len / 8` never exceeds
+/// the 4- or 16-byte array length because callers validate the length cap in
+/// [`DenyPrefix::new`], and both slices come from the same address family.
+fn prefix_bits_match(net: &[u8], cand: &[u8], prefix_len: u8) -> bool {
+    let full = (prefix_len / 8) as usize;
+    if net[..full] != cand[..full] {
+        return false;
+    }
+    let rem = prefix_len % 8;
+    if rem == 0 {
+        return true;
+    }
+    let mask = 0xffu8 << (8 - rem);
+    (net[full] & mask) == (cand[full] & mask)
+}
+
+/// Whether `addr` matches any operator deny prefix (empty list => false).
+///
+/// IPv4-mapped IPv6 candidates are unmapped first so an IPv4 deny prefix
+/// also covers the mapped form; the original IPv6 form is checked too, so a
+/// v6-mapped prefix entry is honored as well.
+pub(crate) fn is_extra_deny_match(addr: std::net::IpAddr, deny_prefixes: &[DenyPrefix]) -> bool {
+    if deny_prefixes.is_empty() {
+        return false;
+    }
+    if let std::net::IpAddr::V6(v6) = addr
+        && let Some(mapped) = v6.to_ipv4_mapped()
+        && deny_prefixes
+            .iter()
+            .any(|p| p.contains(std::net::IpAddr::V4(mapped)))
+    {
+        return true;
+    }
+    deny_prefixes.iter().any(|p| p.contains(addr))
+}
+
 /// Whether a normalized IP is unconditionally SSRF-denied.
 ///
 /// Covers whole `169.254.0.0/16` link-local (not just `.169.254`),
@@ -566,6 +655,20 @@ fn live_allow_loopback() -> bool {
 
 /// Validate `host` with explicit loopback allowance.
 pub fn validate_host_with_allow(host: &str, allow_loopback: bool) -> Result<(), LiveError> {
+    validate_host_with_policy(host, allow_loopback, &[])
+}
+
+/// Validate `host` with explicit loopback allowance and operator deny prefixes.
+///
+/// Identical to [`validate_host_with_allow`] except the operator deny set
+/// (from `RSC_LS_LIVE_DENY_PREFIXES`) is checked FIRST against the
+/// normalized IP, so those ranges are denied regardless of
+/// `allow_loopback`.
+pub(crate) fn validate_host_with_policy(
+    host: &str,
+    allow_loopback: bool,
+    deny_prefixes: &[DenyPrefix],
+) -> Result<(), LiveError> {
     if host.is_empty() {
         return Err(LiveError::InvalidHost("empty".to_string()));
     }
@@ -601,6 +704,17 @@ pub fn validate_host_with_allow(host: &str, allow_loopback: bool) -> Result<(), 
         ));
     }
     if let Some(normalized) = normalized_host_ip(host) {
+        // Operator deny prefixes run FIRST and unconditionally: a custom
+        // NAT64/internal range must stay denied even with loopback allowed.
+        if is_extra_deny_match(normalized, deny_prefixes) {
+            log_warn!(
+                "live host denied by RSC_LS_LIVE_DENY_PREFIXES: {:?}",
+                sanitize_for_log(host)
+            );
+            return Err(LiveError::InvalidHost(
+                "operator deny prefix (RSC_LS_LIVE_DENY_PREFIXES)".to_string(),
+            ));
+        }
         if is_normalized_ssrf_denied(normalized) {
             return Err(LiveError::InvalidHost("SSRF denied host".to_string()));
         }
@@ -671,10 +785,32 @@ pub(crate) fn live_identity_changed(old: &LiveConfig, new: &LiveConfig) -> bool 
 /// Returns `Some(reason)` when the address is denied, `None` when allowed.
 /// Unconditionally denied: whole `169.254.0.0/16`, IPv6 `fe80::/10`,
 /// unspecified, and — unless `allow_loopback` — loopback/RFC1918.
+///
+/// Test-only convenience wrapper over [`denied_reason_for_ip_with_denies`]
+/// with an empty operator deny set; production carries the parsed list on
+/// `LiveConfig` and calls the `_with_denies` form.
+#[cfg(test)]
 pub(crate) fn denied_reason_for_ip(
     addr: std::net::IpAddr,
     allow_loopback: bool,
 ) -> Option<&'static str> {
+    denied_reason_for_ip_with_denies(addr, allow_loopback, &[])
+}
+
+/// [`denied_reason_for_ip`] with operator deny prefixes checked FIRST.
+///
+/// The operator set (from `RSC_LS_LIVE_DENY_PREFIXES`) is consulted before
+/// the built-in policy and is never relaxed by `allow_loopback`: a custom
+/// NAT64/RFC 6052 prefix or internal range stays denied even when loopback
+/// is explicitly allowed.
+pub(crate) fn denied_reason_for_ip_with_denies(
+    addr: std::net::IpAddr,
+    allow_loopback: bool,
+    deny_prefixes: &[DenyPrefix],
+) -> Option<&'static str> {
+    if is_extra_deny_match(addr, deny_prefixes) {
+        return Some("operator deny prefix (RSC_LS_LIVE_DENY_PREFIXES)");
+    }
     if is_normalized_ssrf_denied(addr) {
         return Some("SSRF denied resolved IP");
     }
@@ -684,24 +820,36 @@ pub(crate) fn denied_reason_for_ip(
     None
 }
 
+/// Test-only convenience wrapper over
+/// [`resolve_and_validate_host_with_denies`] with an empty operator deny set.
+#[cfg(test)]
+pub(crate) fn resolve_and_validate_host(
+    host: &str,
+    port: u16,
+    allow_loopback: bool,
+) -> Result<Vec<std::net::SocketAddr>, LiveError> {
+    resolve_and_validate_host_with_denies(host, port, allow_loopback, &[])
+}
+
 /// Resolve `host:port` and deny the fetch when ANY resolved IP is denied.
 ///
 /// - IP literals resolve locally (no DNS) via `ToSocketAddrs`.
 /// - Hostnames resolve via the system resolver (`getaddrinfo`).
 /// - Empty results or resolution failures are fail-closed (`InvalidHost`).
-/// - Every returned IP is checked with [`denied_reason_for_ip`]; the first
-///   denial fails the whole fetch (an attacker controls only one record to
-///   win a race).
+/// - Every returned IP is checked with [`denied_reason_for_ip_with_denies`];
+///   the first denial fails the whole fetch (an attacker controls only one
+///   record to win a race).
 /// - On success returns the validated `SocketAddr` set in resolver order
 ///   (adjacent duplicates removed). The order is preserved so dual-stack
 ///   preference / Happy Eyeballs behaviour is unchanged; the caller pins
 ///   these addresses into the HTTP agent's resolver so the connect cannot
 ///   re-resolve and be rebound (TOCTOU): the same validated IPs are used for
 ///   the actual connection.
-pub(crate) fn resolve_and_validate_host(
+pub(crate) fn resolve_and_validate_host_with_denies(
     host: &str,
     port: u16,
     allow_loopback: bool,
+    deny_prefixes: &[DenyPrefix],
 ) -> Result<Vec<std::net::SocketAddr>, LiveError> {
     use std::net::ToSocketAddrs;
     let bare = host.trim().trim_start_matches('[').trim_end_matches(']');
@@ -715,7 +863,9 @@ pub(crate) fn resolve_and_validate_host(
         ));
     }
     for sa in &addrs {
-        if let Some(reason) = denied_reason_for_ip(sa.ip(), allow_loopback) {
+        if let Some(reason) =
+            denied_reason_for_ip_with_denies(sa.ip(), allow_loopback, deny_prefixes)
+        {
             log_warn!(
                 "live fetch denied: host {:?} resolved to denied IP {} ({reason})",
                 sanitize_for_log(host),
@@ -863,19 +1013,20 @@ pub(crate) fn format_host_for_url(host: &str) -> String {
 
 /// Shared base URL builder — single source for host/port/scheme validation.
 ///
-/// Validates host (`validate_host_with_allow`, SSRF, slash, port), wraps bare
-/// IPv6, parses via `url::Url::parse`, and checks scheme. Path is left as `/`
-/// for callers to set via `Url::set_path`. Keeps caps single source.
+/// Validates host (`validate_host_with_policy`, SSRF, slash, port), wraps
+/// bare IPv6, parses via `url::Url::parse`, and checks scheme. Path is left
+/// as `/` for callers to set via `Url::set_path`. Keeps caps single source.
 ///
 /// Keep in sync with `scripts/_mikrotik_shared.py::validate_host` /
 /// `format_host_for_url` / `resolve_scheme`.
-pub(crate) fn build_base_url_with_allow(
+pub(crate) fn build_base_url_with_policy(
     host: &str,
     port: u16,
     scheme: &str,
     allow_loopback: bool,
+    deny_prefixes: &[DenyPrefix],
 ) -> Result<url::Url, LiveError> {
-    validate_host_with_allow(host, allow_loopback)?;
+    validate_host_with_policy(host, allow_loopback, deny_prefixes)?;
     if port == 0 {
         return Err(LiveError::InvalidPort("port 0".to_string()));
     }
@@ -887,7 +1038,7 @@ pub(crate) fn build_base_url_with_allow(
     if is_ssrf_denied_host(host) {
         return Err(LiveError::InvalidHost("SSRF denied host".to_string()));
     }
-    // Loopback/private check already done via validate_host_with_allow above, but
+    // Loopback/private check already done via validate_host_with_policy above, but
     // keep SSRF deny above for explicitness.
     let host_for_url = format_host_for_url(host);
     let url_str = format!("{scheme}://{host_for_url}:{port}/");
@@ -907,11 +1058,12 @@ pub(crate) fn build_rest_url(
     config: &LiveConfig,
     resource: ResourceKind,
 ) -> Result<String, LiveError> {
-    let mut base = build_base_url_with_allow(
+    let mut base = build_base_url_with_policy(
         &config.host,
         config.port,
         config.scheme(),
         config.allow_loopback,
+        &config.deny_prefixes,
     )?;
     base.set_path(resource.rest_path());
     let url_str = base.to_string();
@@ -929,11 +1081,12 @@ pub(crate) fn build_custom_rest_url(
     config: &LiveConfig,
     custom: &CustomResource,
 ) -> Result<String, LiveError> {
-    let mut base = build_base_url_with_allow(
+    let mut base = build_base_url_with_policy(
         &config.host,
         config.port,
         config.scheme(),
         config.allow_loopback,
+        &config.deny_prefixes,
     )?;
     // Ensure custom path starts with /
     let path = if custom.path.starts_with('/') {

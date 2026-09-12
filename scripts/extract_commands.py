@@ -95,6 +95,13 @@ _MD_COMMAND_NAMES: frozenset[str] = frozenset({
     "move", "export", "import", "edit", "reset", "force-update",
 })
 
+# Row-overlap fallback (pathless tables): a table whose parsed rows are ALL
+# already documented on exactly one known menu is about that menu. One-row
+# tables are deliberately excluded because broad names (`enabled`, `active`)
+# coincide with dozens of menus; `_MD_MIN_OVERLAP_ROWS` keeps the signal to
+# tables whose agreement is too specific to be coincidence.
+_MD_MIN_OVERLAP_ROWS = 2
+
 
 def should_include(menu_path: str) -> bool:
     """Check if a menu path should be included — COMPLETE coverage.
@@ -297,6 +304,20 @@ def _clean_markdown_text(text: str) -> str:
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
     text = text.replace("**", "").replace("*", "").replace("`", "")
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _row_description_index(cells: list[str], header_len: int, default: int) -> int:
+    """Description-cell index for a body row, tolerating unescaped pipes.
+
+    Upstream occasionally leaves a literal `|` inside a type cell (e.g.
+    `(*yes | no*; Default: ...)`), so the row splits into more cells than the
+    header. The trailing cell is the real description; the header's index
+    would instead pick up a type fragment (`no; Default: yes)`). Rows that do
+    not exceed the header keep the header-derived index.
+    """
+    if len(cells) > header_len:
+        return len(cells) - 1
+    return default
 
 
 def _extract_sub_menu_paths(line: str) -> list[str]:
@@ -549,6 +570,30 @@ def _parse_titlecase_readonly_row(cells: list[str], desc_idx: int) -> dict | Non
     }
 
 
+def _new_markdown_stats() -> dict[str, int]:
+    """Fresh counters for `parse_llms_full(stats=...)` markdown accounting.
+
+    Diagnostics only (never feeds the table): lets callers prove that every
+    genuine property table either merges or warns. `property_no_context`
+    counts stashed pathless tables; it must equal the resolved plus skipped
+    counters — a mismatch means a pathless table was dropped silently.
+    """
+    return {
+        "tables_total": 0,
+        "print_parameter_tables": 0,
+        "other_parameter_tables": 0,
+        "non_property_tables": 0,
+        "property_tables": 0,
+        "property_with_submenu": 0,
+        "property_no_context": 0,
+        "property_no_rows": 0,
+        "property_resolved": 0,
+        "property_skipped": 0,
+        "rows_processed": 0,
+        "rows_merged": 0,
+    }
+
+
 def _collect_markdown_table(
     header_cells: list[str],
     rows: list[str],
@@ -561,6 +606,7 @@ def _collect_markdown_table(
     md_tables: list[dict],
     print_rows: list[dict],
     warnings: list[str],
+    stats: dict[str, int] | None = None,
 ) -> None:
     """Classify one pipe table and stash its rows for later merging.
 
@@ -575,7 +621,14 @@ def _collect_markdown_table(
     with its `page_context` (the H2 page's distinct sub-menu paths) and its
     `fragment_context` (the nearest preceding explicit menu). The merge phase
     resolves exactly one known menu from those, or warns instead of guessing.
+
+    `stats`, when provided, is a `_new_markdown_stats()` dict updated with the
+    classification of every table. A genuine property table is never dropped
+    without either a stash (resolved later) or a warning: the no-path/no-row
+    branch warns too.
     """
+    if stats is not None:
+        stats["tables_total"] += 1
     low = heading.lower()
     first = header_cells[0].strip().lower()
     header = [cell.strip().lower() for cell in header_cells]
@@ -592,10 +645,15 @@ def _collect_markdown_table(
         # deliberately not emitted: `print` is a verb modeled by
         # `MenuData::STANDARD_VERBS` in the LSP, so no synthetic `/print` menu
         # exists. Recognizing (and dropping) the table is warning-free.
+        if stats is not None:
+            is_print = _MD_PRINT_HEADING in low
+            stats["print_parameter_tables" if is_print else "other_parameter_tables"] += 1
         if _MD_PRINT_HEADING not in low:
             return
         for raw in rows:
-            parsed = _parse_markdown_property_row(_split_markdown_cells(raw), desc_idx, type_idx)
+            cells = _split_markdown_cells(raw)
+            row_desc_idx = _row_description_index(cells, len(header_cells), desc_idx)
+            parsed = _parse_markdown_property_row(cells, row_desc_idx, type_idx)
             if parsed is not None:
                 print_rows.append({
                     "name": parsed["name"],
@@ -605,19 +663,24 @@ def _collect_markdown_table(
         return
 
     if _MD_COMMAND_HEADING in low or _MD_PROPERTY_HEADING not in low:
+        if stats is not None:
+            stats["non_property_tables"] += 1
         return
 
+    if stats is not None:
+        stats["property_tables"] += 1
     section = "read_only" if (
         "read-only" in low or "read only" in low or "readonly" in low
     ) else "arguments"
     parsed_rows: list[dict] = []
     for raw in rows:
         cells = _split_markdown_cells(raw)
-        parsed = _parse_markdown_property_row(cells, desc_idx, type_idx)
+        row_desc_idx = _row_description_index(cells, len(header_cells), desc_idx)
+        parsed = _parse_markdown_property_row(cells, row_desc_idx, type_idx)
         if parsed is None and section == "read_only":
             # TitleCase labels are only meaningful as read-only views of a
             # known property; `_merge_markdown_rows` refuses to invent one.
-            parsed = _parse_titlecase_readonly_row(cells, desc_idx)
+            parsed = _parse_titlecase_readonly_row(cells, row_desc_idx)
         if parsed is None:
             # Only rows whose bold marker is malformed count as an unknown
             # row kind; grouped alternatives (`**a | b**`), TitleCase status
@@ -638,6 +701,8 @@ def _collect_markdown_table(
 
     if not paths:
         if parsed_rows:
+            if stats is not None:
+                stats["property_no_context"] += 1
             md_tables.append({
                 "paths": [],
                 "context": list(page_context),
@@ -646,56 +711,141 @@ def _collect_markdown_table(
                 "rows": parsed_rows,
                 "line_no": line_no,
             })
+        else:
+            # A "Property" table with no parseable row and no target menu was
+            # previously dropped silently. Prose/backtick-shaped tables (e.g.
+            # the routing-filter matcher list) are not menu properties, but
+            # the skip must stay visible.
+            if stats is not None:
+                stats["property_no_rows"] += 1
+            warnings.append(
+                f"markdown property table near line {line_no} yielded no rows (heading "
+                f"{heading!r}); skipped"
+            )
         return
     if not parsed_rows:
+        if stats is not None:
+            stats["property_no_rows"] += 1
         warnings.append(
             f"property table near line {line_no} for {', '.join(paths)} yielded no rows "
             f"(heading {heading!r}); upstream shape may have drifted"
         )
         return
+    if stats is not None:
+        stats["property_with_submenu"] += 1
     md_tables.append({"paths": list(paths), "rows": parsed_rows})
 
 
+def _menu_property_names(menus: list[dict]) -> dict[str, set[str]]:
+    """Map each parsed menu path to the union of its flag/argument/read-only names.
+
+    Duplicate paths (upstream repeats a page) contribute to the same set. Used
+    only by the markdown row-overlap fallback, which treats a table whose every
+    parsed row is already documented on one menu as that menu's table.
+    """
+    by_path: dict[str, set[str]] = {}
+    for menu in menus:
+        names = by_path.setdefault(menu["path"], set())
+        for section in ("flags", "arguments", "read_only"):
+            for entry in menu.get(section, []) or []:
+                name = entry.get("name", "")
+                if name:
+                    names.add(name)
+    return by_path
+
+
+def _resolve_by_row_overlap(
+    table: dict, menu_names: dict[str, set[str]]
+) -> str | None:
+    """Return the single menu documenting every parsed row, or None.
+
+    Conservative: needs at least `_MD_MIN_OVERLAP_ROWS` parsed rows and exactly
+    one known menu whose property names are a superset of those rows. Zero or
+    several candidates stay unresolved so the caller warns instead of guessing.
+    """
+    rows = {row["name"] for row in table.get("rows", []) if row.get("name")}
+    if len(rows) < _MD_MIN_OVERLAP_ROWS:
+        return None
+    matches = [path for path, known in menu_names.items() if rows <= known]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def _resolve_page_context(
-    table: dict, known_paths: set[str], warnings: list[str]
+    table: dict,
+    known_paths: set[str],
+    warnings: list[str],
+    menu_names: dict[str, set[str]] | None = None,
+    stats: dict[str, int] | None = None,
 ) -> list[str]:
     """Resolve a table's page context to exactly one known menu path, or [].
 
-    Two conservative fallbacks for tables without an active `**Sub-menu:**`:
+    Three conservative fallbacks for tables without an active `**Sub-menu:**`:
 
     1. `## Properties` fragments use their nearest preceding explicit context
        (a CLI-path heading or `**Sub-menu:**` line), because the fragment's
        shared page ancestor is systematically too broad. The context must name
        exactly one known menu; absent, ambiguous (several paths) or unknown
-       contexts stay unassociated.
+       contexts are not attached here.
     2. Genuine topic pages use the shared ancestor of the page's sub-menu
        paths, but only when it is unambiguous (at least two children, via
        `_deepest_common_ancestor`), at least two segments deep (the root is
        never a menu), and present in the parsed ArgTable menus.
+    3. Row overlap: a table whose rows are all already documented on exactly
+       one known menu is attached to it (see `_resolve_by_row_overlap`).
 
-    Anything softer is left unassociated, with a warning so upstream drift
-    stays visible.
+    Anything softer is left unassociated. A genuine property table is never
+    dropped without a warning: every unresolved table emits exactly one.
     """
     context = table.get("context") or []
     title = table.get("page_title", "")
     if _is_property_section_title(title):
         fragment = table.get("fragment_context") or []
         if len(fragment) == 1 and fragment[0] in known_paths:
+            if stats is not None:
+                stats["property_resolved"] += 1
             return [fragment[0]]
+        overlap = _resolve_by_row_overlap(table, menu_names or {})
+        if overlap is not None and overlap in known_paths:
+            if stats is not None:
+                stats["property_resolved"] += 1
+            return [overlap]
         shown = fragment or context
+        if stats is not None:
+            stats["property_skipped"] += 1
         if shown:
             warnings.append(
                 f"markdown property table near line {table['line_no']} has no single "
                 f"known menu for its property-section fragment ({', '.join(shown)}); skipped"
             )
+        else:
+            warnings.append(
+                f"markdown property table near line {table['line_no']} has no single "
+                "known menu for its property-section fragment; skipped"
+            )
         return []
     candidate = _deepest_common_ancestor(context)
     if candidate and candidate.count("/") >= 2 and candidate in known_paths:
+        if stats is not None:
+            stats["property_resolved"] += 1
         return [candidate]
+    overlap = _resolve_by_row_overlap(table, menu_names or {})
+    if overlap is not None and overlap in known_paths:
+        if stats is not None:
+            stats["property_resolved"] += 1
+        return [overlap]
+    if stats is not None:
+        stats["property_skipped"] += 1
     if context:
         warnings.append(
             f"markdown property table near line {table['line_no']} has page context "
             f"{', '.join(context)} but no unambiguous menu; skipped"
+        )
+    else:
+        warnings.append(
+            f"markdown property table near line {table['line_no']} has no page context "
+            "and no unambiguous row-overlap menu; skipped"
         )
     return []
 
@@ -791,7 +941,7 @@ def _append_argtable_row(
         current_menu["read_only"].append(entry)
 
 
-def parse_llms_full(filepath: str) -> list[dict]:
+def parse_llms_full(filepath: str, stats: dict[str, int] | None = None) -> list[dict]:
     """Parse llms-full.txt and extract menu entries.
 
     Reads both table shapes upstream ships:
@@ -805,6 +955,10 @@ def parse_llms_full(filepath: str) -> list[dict]:
     description wins (see `_merge_markdown_rows`). Multi-line
     `<ArgTableRow ...>` openings (attributes whose quoted value spans a
     newline) are buffered until the tag closes.
+
+    `stats`, when provided, is a `_new_markdown_stats()` dict populated with
+    the outcome of every pipe table (see `analyze_markdown_tables`). It never
+    affects the parsed menus.
     """
     with open(filepath, "r", encoding="utf-8") as f:
         content = f.read()
@@ -953,7 +1107,7 @@ def parse_llms_full(filepath: str) -> list[dict]:
                 _collect_markdown_table(
                     cells, rows, effective_paths, page_title, page_paths,
                     fragment_context[i], current_heading,
-                    i + 1, md_tables, print_rows, warnings,
+                    i + 1, md_tables, print_rows, warnings, stats,
                 )
             continue
 
@@ -969,16 +1123,24 @@ def parse_llms_full(filepath: str) -> list[dict]:
         by_path: dict[str, list[dict]] = {}
         for menu in menus:
             by_path.setdefault(menu["path"], []).append(menu)
+        menu_names = _menu_property_names(menus)
         merged = 0
         for table in md_tables:
             paths = table["paths"]
             if not paths:
-                paths = _resolve_page_context(table, known_paths, warnings)
+                paths = _resolve_page_context(
+                    table, known_paths, warnings, menu_names, stats
+                )
                 if not paths:
                     continue
+            if stats is not None:
+                stats["rows_processed"] += len(table["rows"])
             for path in paths:
                 for menu in by_path.get(path, []):
-                    merged += _merge_markdown_rows(menu, table["rows"], known_paths)
+                    added = _merge_markdown_rows(menu, table["rows"], known_paths)
+                    merged += added
+                    if stats is not None:
+                        stats["rows_merged"] += added
         if merged:
             print(
                 f"info: merged {merged} markdown property row(s) from topic pages.",
@@ -996,6 +1158,21 @@ def parse_llms_full(filepath: str) -> list[dict]:
         print(f"warning: {warning}", file=sys.stderr)
 
     return menus
+
+
+def analyze_markdown_tables(filepath: str) -> tuple[list[dict], dict[str, int]]:
+    """Parse `filepath` and return `(menus, stats)` for the pipe-table surface.
+
+    Diagnostics/test helper around `parse_llms_full(stats=...)`: the stats dict
+    classifies every markdown pipe table as a genuine property table (with
+    sub-menu, resolved by context/overlap, or skipped), a print/other parameter
+    table, or a non-property/command table. A genuine property table is never
+    dropped silently, so `property_no_context` always equals the resolved plus
+    skipped counters.
+    """
+    stats = _new_markdown_stats()
+    menus = parse_llms_full(filepath, stats=stats)
+    return menus, stats
 
 
 def clean_type(typ: str) -> str:

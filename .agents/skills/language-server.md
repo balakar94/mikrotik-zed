@@ -158,6 +158,8 @@ Canonical values live in `caps.rs` (single source of truth, re-exported from the
 | `LIVE_NEGATIVE_TTL_SECS` | 15 s | `caps.rs` | Negative cache TTL after failed live fetch (retry gate) |
 | `LIVE_MAX_HOSTS` | 4 | `caps.rs` | Cap on comma-separated `MIKROTIK_HOST` entries parsed |
 | `LIVE_CUSTOM_RESOURCES_MAX` | 8 | `caps.rs` | Cap on `RSC_LS_LIVE_RESOURCES` JSON array entries |
+| `MAX_LIVE_DENY_PREFIXES` | 32 | `caps.rs` | Cap on `RSC_LS_LIVE_DENY_PREFIXES` operator SSRF deny prefixes |
+| `MAX_LIVE_DENY_PREFIXES_BYTES` | 2 KiB | `caps.rs` | Raw byte cap on the `RSC_LS_LIVE_DENY_PREFIXES` env value |
 | `LIVE_TIMEOUT_SECS` | 5 s | `caps.rs` | Default per-request live fetch timeout (clamped 1..30s via `MIKROTIK_TIMEOUT`) |
 | `LIVE_FETCH_BLOCKING_TIMEOUT_SECS` | 2 s | `caps.rs` | Max blocking time completion handler waits (coalesce window); background hydrator is unbounded but non-blocking |
 | `LIVE_TTL_SECS` | 60 s | `caps.rs` | TTL for successful live cache entries |

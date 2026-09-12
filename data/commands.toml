@@ -2,7 +2,7 @@
 # Auto-generated from llms-full.txt
 # Covers: /app, /beep, /blink, /caps-man, /certificate, /console, /container, /disk, /dude, /environment, /file, /import, … (1077 menus)
 # RouterOS version: 7.23.2
-# Generated: 2026-09-12T16:59:45.222114Z
+# Generated: 2026-09-12T17:21:30.111782Z
 # Source hash (sha256[:16]): a25b13ef01b09646
 # overrides_applied = 1 (data/overrides.toml)
 # generics_applied = 1944 (comment/disabled universal; place-before/copy-from ordered-only)
@@ -241,39 +241,39 @@ type = "Settings Directory"
 name = "disk"
 type = "enum (none)"
 enum_values = ["none"]
-description = "Global setting that specifies which disk will be used for storage operations"
+description = "Global setting that specifies which disk will be used for storage operations."
 [[menus.arguments]]
 name = "router-ip"
 type = "ipAddr"
-description = "Manually specifies the IP address at which the current RouterOS device can be reached"
+description = "Manually specifies the IP address at which the current RouterOS device can be reached."
 [[menus.arguments]]
 name = "lan-bridge"
 type = "iface_enum { none }"
-description = "Manually specifies the bridge interface that represents the local area network"
+description = "Manually specifies the bridge interface that represents the local area network."
 [[menus.arguments]]
 name = "media-path"
 type = "file"
-description = "Manually specifies the directory path where all media files will be stored"
+description = "Manually specifies the directory path where all media files will be stored."
 [[menus.arguments]]
 name = "download-path"
 type = "file"
-description = "Manually specifies the directory path where all downloaded content will be stored"
+description = "Manually specifies the directory path where all downloaded content will be stored."
 [[menus.arguments]]
 name = "show-in-webfig"
 type = "bool"
-description = "Controls whether links to enabled applications are displayed on the WebFig login page"
+description = "Controls whether links to enabled applications are displayed on the WebFig login page."
 [[menus.arguments]]
 name = "auto-update"
 type = "bool"
-description = "Global setting that enables automatic updates for all installed applications packages"
+description = "Global setting that enables automatic updates for all installed applications packages."
 [[menus.arguments]]
 name = "registry-mirrors"
 type = "multi { array-id, array-id, src-and-dst: composite { src: string , dst: string } }"
-description = "Specifies one or more registry mirror URLs for container image retrieval"
+description = "Specifies one or more registry mirror URLs addresses for container image retrieval."
 [[menus.arguments]]
 name = "app-store-urls"
 type = "multi { array-id, app-store-url: string }"
-description = "URL to a custom app store. Must point to a YAML array where each application is an element"
+description = "URL to a custom app store. The URL must point to a YAML array where each application is an element within the array."
 [[menus.read_only]]
 name = "assumed-router-ip"
 type = "ipAddr"
@@ -3460,6 +3460,7 @@ required = true
 [[menus.arguments]]
 name = "slot"
 type = "string"
+description = "Name of the file system"
 [[menus.arguments]]
 name = "parent"
 type = "enum ()"
@@ -3543,30 +3544,39 @@ type = "num"
 [[menus.arguments]]
 name = "iscsi-export"
 type = "bool"
+description = "Disables/enables iSCSI on the host device"
 [[menus.arguments]]
 name = "iscsi-server-port"
 type = "num"
+description = "Network port used by the iSCSI server. (starting 7.21beta2)"
 [[menus.arguments]]
 name = "iscsi-server-iqn"
 type = "string"
+description = "Unique identifier used by the iSCSI server. By default the format for the IQN is iqn.2000-02.com.mikrotik:slot (starting 7.21beta2)"
 [[menus.arguments]]
 name = "iscsi-port"
 type = "num"
+description = "Network port used by the iSCSI target to listen for incoming connections from initiators. The default port for iSCSI traffic is 3260."
 [[menus.arguments]]
 name = "iscsi-address"
 type = "ipAddr"
+description = "IP address of the iSCSI target. (Host device IP)"
 [[menus.arguments]]
 name = "iscsi-iqn"
 type = "string"
+description = "Unique identifier used to name the iSCSI target."
 [[menus.arguments]]
 name = "nfs-sharing"
 type = "bool"
+description = "Disable/enable NFS on the host device"
 [[menus.arguments]]
 name = "nfs-address"
 type = "ipAddr"
+description = "IP address of the NFS target. (host device IP)"
 [[menus.arguments]]
 name = "nfs-share"
 type = "string"
+description = "Specify the folder to mount (client parameter)"
 [[menus.arguments]]
 name = "smb-sharing"
 type = "bool"
@@ -3614,9 +3624,11 @@ type = "num"
 name = "crypted-backend"
 type = "enum (none)"
 enum_values = ["none"]
+description = "Drive or partition to encrypt"
 [[menus.arguments]]
 name = "encryption-key"
 type = "string"
+description = "key used to decrypt"
 [[menus.arguments]]
 name = "self-encryption-password"
 type = "string"
@@ -5939,24 +5951,30 @@ type = "dynamic"
 [[menus.arguments]]
 name = "remote-address"
 type = "multi { array-id, address: string }"
+description = "Target device IP"
 required = true
 [[menus.arguments]]
 name = "mode"
 type = "enum (upload | download)"
 enum_values = ["upload", "download"]
+description = "Sets if you want to download/upload the file (direction of the sync)"
 required = true
 [[menus.arguments]]
 name = "local-path"
 type = "file"
+description = "File/folder path. Used for mode Upload to set the path of the file/folder to upload to the device"
 [[menus.arguments]]
 name = "remote-path"
 type = "string"
+description = "File/folder path. Used with mode download to set the path on the target device to be downloaded"
 [[menus.arguments]]
 name = "user"
 type = "string"
+description = "Target device username"
 [[menus.arguments]]
 name = "password"
 type = "string"
+description = "Target device password"
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -29356,15 +29374,19 @@ type = "Settings Directory"
 name = "enabled"
 type = "enum (auto | yes | no) { auto:0, yes:1, no:2 }"
 enum_values = ["auto", "yes", "no"]
+description = "Allows disabling or enabling connection tracking. With disabled connection tracking firewall features listed above will stop working. If set to \"auto\" connection tracking is disabled until at least one firewall rule is added."
 [[menus.arguments]]
 name = "tcp-syn-sent-timeout"
 type = "time"
+description = "TCP SYN timeout."
 [[menus.arguments]]
 name = "tcp-syn-received-timeout"
 type = "time"
+description = "TCP SYN timeout."
 [[menus.arguments]]
 name = "tcp-established-timeout"
 type = "time"
+description = "Time after which established TCP connection times out."
 [[menus.arguments]]
 name = "tcp-fin-wait-timeout"
 type = "time"
@@ -29389,21 +29411,27 @@ type = "time"
 [[menus.arguments]]
 name = "loose-tcp-tracking"
 type = "bool"
+description = "In case loose-tcp-tracking=yes, the 2nd part (SYN,ACK) and 3rd part (ACK) of the handshake without having seen the first initial SYN will be considered ESTABLISHEDIn case loose-tcp-tracking=no, the 2nd part (SYN,ACK) and 3rd part (ACK) without having seen the first initial SYN will be considered INVALID"
 [[menus.arguments]]
 name = "liberal-tcp-tracking"
 type = "bool"
+description = "Enables or disables liberal TCP connection tracking by toggling the kernel parameter nf_conntrack_tcp_be_liberal. When set to yes, the system marks only out of window RST segments as INVALID. Caution: Enabling this setting may allow malformed packets that would otherwise be considered invalid by the firewall's connection-state matcher. This can increase exposure to certain evasion techniques. This property should be enabled only when troubleshooting or working around known issues."
 [[menus.arguments]]
 name = "udp-timeout"
 type = "time"
+description = "Specifies the timeout for UDP connections that have seen packets in one direction"
 [[menus.arguments]]
 name = "udp-stream-timeout"
 type = "time"
+description = "Specifies the timeout of UDP connections that have seen packets in both directions"
 [[menus.arguments]]
 name = "icmp-timeout"
 type = "time"
+description = "ICMP connection timeout"
 [[menus.arguments]]
 name = "generic-timeout"
 type = "time"
+description = "Timeout for all other connection entries"
 [[menus.read_only]]
 name = "active-ipv4"
 type = "bool"
@@ -29413,9 +29441,11 @@ type = "bool"
 [[menus.read_only]]
 name = "max-entries"
 type = "num"
+description = "Max amount of entries that the connection tracking table can hold. This value depends on the installed amount of RAM. Note that the system does not create a maximum-size connection tracking table when it starts; it may increase if the situation demands it and the system still has free RAM, but the size will not exceed 1048576"
 [[menus.read_only]]
 name = "total-entries"
 type = "num"
+description = "Amount of connections that the connection table currently holds"
 [[menus.read_only]]
 name = "total-ip4-entries"
 type = "num"
@@ -30690,33 +30720,41 @@ description = "HTTPS"
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Descriptive name for the HotSpot server instance."
 [[menus.arguments]]
 name = "interface"
 type = "alt { interface: iface_enum , interface: iface_enum }"
+description = "The specific local interface (physical or virtual) where the HotSpot service will listen for client requests."
 required = true
 [[menus.arguments]]
 name = "address-pool"
 type = "enum (none) { none:0 }"
 enum_values = ["none"]
+description = "The IP address pool from which HotSpot clients will receive their IP addresses via DHCP."
 [[menus.arguments]]
 name = "profile"
 type = "enum"
+description = "Reference to the HotSpot Server Profile containing common settings like login methods and HTML directory."
 [[menus.arguments]]
 name = "idle-timeout"
 type = "alt { symbolic-names: enum (none) { none:0 } , time-interval: time }"
 enum_values = ["none"]
+description = "The period of inactivity after which a client is automatically logged out if no traffic is detected."
 [[menus.arguments]]
 name = "keepalive-timeout"
 type = "alt { symbolic-names: enum (none) { none:0 } , time-interval: time }"
 enum_values = ["none"]
+description = "The time interval used to check if the client is still reachable; if the client does not respond, the session is terminated."
 [[menus.arguments]]
 name = "login-timeout"
 type = "alt { symbolic-names: enum (none) { none:0 } , time-interval: time }"
 enum_values = ["none"]
+description = "The maximum duration allowed for a client to complete the authentication process after the login page is displayed."
 [[menus.arguments]]
 name = "addresses-per-mac"
 type = "enum (unlimited) { unlimited:0 }"
 enum_values = ["unlimited"]
+description = "Limits the number of IP addresses that can be associated with a single MAC address."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -30739,6 +30777,7 @@ type = "ipAddr"
 [[menus.read_only]]
 name = "proxy-status"
 type = "string"
+description = "Indicates the current operational state of the internal web-proxy used by the HotSpot system."
 
 [[menus]]
 path = "/ip/hotspot/active"
@@ -34217,26 +34256,33 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "enabled"
 type = "bool"
+description = "whether to enable or not the SOCKS proxy"
 [[menus.arguments]]
 name = "port"
 type = "num"
+description = "TCP port on which the SOCKS server listens for connections"
 [[menus.arguments]]
 name = "connection-idle-timeout"
 type = "time"
+description = "time after which idle connections are terminated"
 [[menus.arguments]]
 name = "max-connections"
 type = "num"
+description = "maximum number of simultaneous connections"
 [[menus.arguments]]
 name = "vrf"
 type = "enum"
+description = "Set VRF on which service is creating connections."
 [[menus.arguments]]
 name = "version"
 type = "enum (4 | 5)"
 enum_values = ["4", "5"]
+description = "SOCKS version."
 [[menus.arguments]]
 name = "auth-method"
 type = "enum (none | password)"
 enum_values = ["none", "password"]
+description = "SOCKS authentication method."
 
 [[menus]]
 path = "/ip/socks/access"
@@ -47386,16 +47432,19 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "enabled"
 type = "bool"
+description = "Enable NTP client for time synchronization"
 [[menus.arguments]]
 name = "mode"
 type = "enum (unicast | broadcast | multicast | manycast)"
 enum_values = ["unicast", "broadcast", "multicast", "manycast"]
+description = "Mode that the NTP client will operate in"
 [[menus.arguments]]
 name = "servers"
 type = "multi { server-list: address (flags=46D) }"
 [[menus.arguments]]
 name = "vrf"
 type = "enum"
+description = "Virtual Routing and Forwarding"
 [[menus.read_only]]
 name = "freq-drift"
 type = "num"
@@ -48647,28 +48696,35 @@ type = "disabled"
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Name of the task."
 required = true
 [[menus.arguments]]
 name = "start-date"
 type = "date"
+description = "Date of the first script execution."
 [[menus.arguments]]
 name = "start-time"
 type = "alt { startup: enum (startup) { startup:0xffffffff } , time: date }"
 enum_values = ["startup"]
+description = "Time of the first script execution. Use startup to execute 3 seconds after system boot."
 [[menus.arguments]]
 name = "days"
 type = "alt { day: enum (never | always) { never:0, always:127 } , day: ubit (sun, mon, tue, wed, thu, fri, sat) }"
 enum_values = ["never", "always"]
+description = "Days of the week when the task can run. Separate multiple days with commas (for example, mon,wed,fri). Use always to run every day."
 unset = true
 [[menus.arguments]]
 name = "interval"
 type = "time"
+description = "Interval between two script executions. When set to zero, the script runs only once at the start time."
 [[menus.arguments]]
 name = "on-event"
 type = "alt { script: string }"
+description = "Script to execute."
 [[menus.arguments]]
 name = "policy"
 type = "multi { array-id, policy: enum }"
+description = "Policies applied to the scheduled script, controlling permissions during execution."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -48691,6 +48747,7 @@ type = "string"
 [[menus.read_only]]
 name = "run-count"
 type = "num"
+description = "Counter incremented each time the script runs. Resets on reboot."
 [[menus.read_only]]
 name = "next-run"
 type = "date"
@@ -52687,27 +52744,31 @@ description = "disabled"
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "User name. Must start and end with an alphanumeric character but can include \"\\_\", \".\", \"#\", \"-\", and \"@\" symbols. However, the \"\\\" symbol is prohibited in the user name."
 required = true
 [[menus.arguments]]
 name = "group"
 type = "enum"
+description = "Name of the group the user belongs to"
 required = true
 [[menus.arguments]]
 name = "password"
 type = "string"
+description = "User password. If not specified, it is left blank (hit <kbd>Enter</kbd> when logging in). It conforms to standard Unix characteristics of passwords and may contain letters, digits, \"\\\" and \"\\_\" symbols."
 required = true
 [[menus.arguments]]
 name = "inactivity-timeout"
 type = "time"
-description = "period after which inactivity policy is applied"
+description = "Specifies time after which the user will be logged out or the session will be locked. Minimal timeout - 1 minute, maximal timeout - 24 hours. Works only for CLI sessions."
 [[menus.arguments]]
 name = "inactivity-policy"
 type = "enum (none | logout | lockscreen)"
 enum_values = ["none", "logout", "lockscreen"]
-description = "specify action taken after inactivity timeout"
+description = "Specifies inactivity action - logout (the user will be logged out) or lockscreen (the session will be locked, requiring password input to continue). Works only for CLI sessions."
 [[menus.arguments]]
 name = "address"
 type = "object { address: alt { address: ipPrefix , address: ip6Prefix } }"
+description = "Host or network address from which the user is allowed to log in"
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -52727,6 +52788,7 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "last-logged-in"
 type = "date"
+description = "Read-only field. Last time and date when a user logged in."
 
 [[menus]]
 path = "/user-manager"
@@ -53519,18 +53581,23 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "use-radius"
 type = "bool"
+description = "Enable user authentication via RADIUS"
 [[menus.arguments]]
 name = "accounting"
 type = "bool"
+description = "If the RADIUS server should be sent accounting for login, logout. Bandwidth usage statistics are not part of /user accounting"
 [[menus.arguments]]
 name = "interim-update"
 type = "time"
+description = "Interim-Update time interval"
 [[menus.arguments]]
 name = "default-group"
 type = "enum"
+description = "User group used by default for users authenticated via a RADIUS server."
 [[menus.arguments]]
 name = "exclude-groups"
 type = "multi { group: enum }"
+description = "Exclude-groups consist of the groups that should not be allowed to be used for users authenticated by radius. If the radius server provides a group specified in this list, the default-group will be used instead. This is to protect against privilege escalation when one user (without policy permission) can change the radius server list, set up their own radius server and log in as admin."
 
 [[menus]]
 path = "/user/active"
@@ -53588,12 +53655,15 @@ type = "Directory"
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "The name of the user group"
 [[menus.arguments]]
 name = "policy"
 type = "multi { array-id, array-id, policy: super { ! , policy: enum } }"
+description = "List of allowed policies: Login policies: local - policy that grants rights to log in locally via consoletelnet - policy that grants rights to log in remotely via telnetssh - policy that grants rights to log in remotely via secure shell protocolweb - policy that grants rights to log in remotely via WebFig.winbox - policy that grants rights to log in remotely via WinBox and bandwidth test authenticationpassword - policy that grants rights to change the password for currently logged in user (own password) api - grants rights to access the router via API.rest-api - grants rights to access the router via REST API.ftp - policy that grants full rights to log in remotely via FTP. Allows reading/writing/erasing files and to transfer files from/to the router. Should be used together with read/write policies.romon - policy that grants rights to connect to the RoMon server. Config Policies: reboot - policy that allows rebooting the routerread - policy that grants read access to the router's configuration. All console commands that do not alter the router's configuration are allowed. Doesn't affect FTPwrite - policy that grants write access to the router's configuration, except for user management. This policy does not allow reading the configuration, so make sure to enable read policy as wellpolicy - policy that grants user management rights. Should be used together with the write policy. Also allows seeing global variables created by other users (requires also 'test' policy). Allows designing skins (requires also \"sensitive\" policy).test - policy that grants rights to run ping, traceroute, bandwidth-test, wireless scan, snooper, fetch, email and other test commandssensitive - grants rights to change the \"hide sensitive\" option, if this policy is disabled sensitive information is not displayed.sniff - policy that grants rights to use the packet sniffer tool, torch tool, traffic generator."
 [[menus.arguments]]
 name = "skin"
 type = "enum"
+description = "The skin used for WebFig"
 [[menus.arguments]]
 name = "comment"
 type = "string"
