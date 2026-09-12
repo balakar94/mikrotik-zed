@@ -317,19 +317,22 @@ pub(crate) fn is_normalized_ssrf_denied(addr: std::net::IpAddr) -> bool {
             if v6.is_unspecified() {
                 return true;
             }
-            // NAT64 / Teredo / 6to4 are unconditional denials: they tunnel
-            // IPv4 (including link-local/metadata and private space) and are
-            // not reachable through the `ALLOW_LOOPBACK` opt-in.
-            if is_ipv6_transition_prefix(v6) {
-                return true;
-            }
             // Best-effort: re-run the IPv4 deny/private checks on an
-            // extractable embedded address (defense in depth).
+            // extractable embedded address (NAT64/6to4 always; Teredo's
+            // obfuscated client address as a heuristic), then deny the
+            // transition prefix itself unconditionally. Both paths are
+            // exercised even though the prefix denial alone would suffice.
             if let Some(embedded) = embedded_ipv4(v6) {
                 let v4 = std::net::IpAddr::V4(embedded);
                 if is_normalized_ssrf_denied(v4) || is_normalized_loopback_or_private(v4) {
                     return true;
                 }
+            }
+            // NAT64 / Teredo / 6to4 are unconditional denials: they tunnel
+            // IPv4 (including link-local/metadata and private space) and are
+            // not reachable through the `ALLOW_LOOPBACK` opt-in.
+            if is_ipv6_transition_prefix(v6) {
+                return true;
             }
             // fe80::/10: first 10 bits are 1111111010.
             if (v6.segments()[0] & 0xffc0) == 0xfe80 {

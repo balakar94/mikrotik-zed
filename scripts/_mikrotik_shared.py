@@ -344,15 +344,18 @@ def is_normalized_ssrf_denied(addr: ipaddress.IPv4Address | ipaddress.IPv6Addres
             return is_normalized_ssrf_denied(mapped)
         if addr.is_unspecified:
             return True
-        # NAT64 / Teredo / 6to4 are unconditional denials: they tunnel IPv4
-        # (including link-local/metadata and private space).
-        if is_ipv6_transition_prefix(addr):
-            return True
-        # Best-effort: re-run IPv4 deny/private checks on an embedded address.
+        # Best-effort: re-run the IPv4 deny/private checks on an embedded
+        # address first, then deny the transition prefix itself
+        # unconditionally. Both paths are exercised even though the prefix
+        # denial alone would suffice.
         embedded = embedded_ipv4(addr)
         if embedded is not None and (
             is_normalized_ssrf_denied(embedded) or is_normalized_loopback_or_private(embedded)
         ):
+            return True
+        # NAT64 / Teredo / 6to4 are unconditional denials: they tunnel IPv4
+        # (including link-local/metadata and private space).
+        if is_ipv6_transition_prefix(addr):
             return True
         try:
             if addr in ipaddress.IPv6Network("fe80::/10"):
