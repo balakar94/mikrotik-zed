@@ -637,34 +637,44 @@ pub(crate) fn denied_reason_for_ip(
 /// - Every returned IP is checked with [`denied_reason_for_ip`]; the first
 ///   denial fails the whole fetch (an attacker controls only one record to
 ///   win a race).
+/// - On success returns the validated `SocketAddr` set (sorted + deduped for
+///   a stable agent-cache key). The caller pins these addresses into the
+///   HTTP agent's resolver so the connect cannot re-resolve and be rebound
+///   (TOCTOU): the same validated IPs are used for the actual connection.
 pub(crate) fn resolve_and_validate_host(
     host: &str,
     port: u16,
     allow_loopback: bool,
-) -> Result<(), LiveError> {
+) -> Result<Vec<std::net::SocketAddr>, LiveError> {
     use std::net::ToSocketAddrs;
     let bare = host.trim().trim_start_matches('[').trim_end_matches(']');
-    let addrs: Vec<std::net::IpAddr> = (bare, port)
+    let mut addrs: Vec<std::net::SocketAddr> = (bare, port)
         .to_socket_addrs()
-        .map(|iter| iter.map(|s| s.ip()).collect())
+        .map(|iter| iter.collect())
         .map_err(|e| LiveError::InvalidHost(format!("dns resolution failed: {e}")))?;
     if addrs.is_empty() {
         return Err(LiveError::InvalidHost(
             "dns resolution returned no addresses".to_string(),
         ));
     }
-    for addr in addrs {
-        if let Some(reason) = denied_reason_for_ip(addr, allow_loopback) {
+    for sa in &addrs {
+        if let Some(reason) = denied_reason_for_ip(sa.ip(), allow_loopback) {
             log_warn!(
-                "live fetch denied: host {:?} resolved to denied IP {addr} ({reason})",
-                sanitize_for_log(host)
+                "live fetch denied: host {:?} resolved to denied IP {} ({reason})",
+                sanitize_for_log(host),
+                sa.ip()
             );
             return Err(LiveError::InvalidHost(format!(
-                "resolved IP denied: {addr}"
+                "resolved IP denied: {}",
+                sa.ip()
             )));
         }
     }
-    Ok(())
+    // Stable order/duplicates: the agent cache key is the address vector, so
+    // an unstable resolver order would defeat agent reuse.
+    addrs.sort();
+    addrs.dedup();
+    Ok(addrs)
 }
 
 // ── F8: bounded CA-bundle loading ────────────────────────────────────────

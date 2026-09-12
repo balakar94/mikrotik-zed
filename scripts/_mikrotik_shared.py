@@ -600,6 +600,14 @@ def resolve_and_check_host(host: str, port: int) -> str | None:
     (fail-closed: resolution failure, empty results, unparseable IPs, and
     any denied IP all refuse the connection before credentials are sent).
     Never sends credentials itself.
+
+    Residual TOCTOU (Python-only; the Rust LSP closes this): this check
+    resolves, but ``requests``/``paramiko`` resolve again at connect time, so
+    a DNS rebind between the two lookups is still possible here. The Rust side
+    pins the validated addresses into the HTTP agent resolver
+    (``PinnedAddrs``); doing the same in Python would need a custom
+    urllib3 resolver/connection pool for ``requests`` and a pre-resolved-IP
+    socket for ``paramiko``. Not implemented today.
     """
     bare = (host or "").strip()
     if bare.startswith("[") and bare.endswith("]") and len(bare) >= 2:

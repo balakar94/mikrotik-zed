@@ -38,9 +38,8 @@ pub(crate) use crate::live_config::{
 };
 #[allow(unused_imports)]
 pub(crate) use crate::live_fetch::{
-    FetchPermitGuard, MAX_CONCURRENT_FETCHES, build_insecure_agent, extract_and_sanitize,
-    fetch_custom_resource, fetch_resource, get_cached_agent, get_cached_agent_for_config,
-    parse_pem_certs, try_acquire_fetch_permit,
+    FetchPermitGuard, MAX_CONCURRENT_FETCHES, extract_and_sanitize, fetch_custom_resource,
+    fetch_resource, get_cached_agent_for_config, parse_pem_certs, try_acquire_fetch_permit,
 };
 #[allow(unused_imports)]
 pub(crate) use crate::live_net::{
@@ -61,4 +60,6 @@ pub(crate) use crate::live_cache::{
 #[cfg(test)]
 pub(crate) use crate::live_config::{legacy_http_shim_allowed_with, with_settings_transport_env};
 #[cfg(test)]
-pub(crate) use crate::live_fetch::fetch_interfaces;
+pub(crate) use crate::live_fetch::{
+    PinnedAddrs, build_insecure_agent, fetch_interfaces, get_cached_agent,
+};
