@@ -45,11 +45,11 @@ pub(crate) use crate::live_fetch::{
 #[allow(unused_imports)]
 pub(crate) use crate::live_net::{
     LiveError, MAX_CA_FILE_BYTES, build_base_url_with_allow, build_custom_rest_url, build_rest_url,
-    denied_reason_for_ip, extract_spki_der, format_host_for_url, is_bad_ca, is_loopback_or_private,
-    is_non_canonical_numeric_host, is_normalized_loopback_or_private, is_normalized_ssrf_denied,
-    is_ssrf_denied_host, live_identity_changed, normalized_host_ip, read_ca_bundle,
-    resolve_and_validate_host, sha256, sha256_block, spki_sha256, validate_host,
-    validate_host_with_allow,
+    denied_reason_for_ip, embedded_ipv4, extract_spki_der, format_host_for_url, is_bad_ca,
+    is_ipv6_transition_prefix, is_loopback_or_private, is_non_canonical_numeric_host,
+    is_normalized_loopback_or_private, is_normalized_ssrf_denied, is_ssrf_denied_host,
+    live_identity_changed, normalized_host_ip, read_ca_bundle, resolve_and_validate_host, sha256,
+    sha256_block, spki_sha256, validate_host, validate_host_with_allow,
 };
 
 // Test-only helpers stay reachable through the same facade path so

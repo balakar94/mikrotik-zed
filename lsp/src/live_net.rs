@@ -290,9 +290,13 @@ pub(crate) fn is_non_canonical_numeric_host(host: &str) -> bool {
 /// Whether a normalized IP is unconditionally SSRF-denied.
 ///
 /// Covers whole `169.254.0.0/16` link-local (not just `.169.254`),
-/// IPv6 `fe80::/10` link-local, and unspecified addresses. IPv4-mapped
-/// IPv6 (`::ffff:a.b.c.d`) is mapped to IPv4 before the check so
-/// `[::ffff:a9fe:a9fe]` (metadata IP) is denied as link-local.
+/// IPv6 `fe80::/10` link-local, unspecified addresses, and the IPv6
+/// transition prefixes that tunnel IPv4 regardless of the loopback opt-in:
+/// NAT64 well-known `64:ff9b::/96`, Teredo `2001::/32`, and 6to4
+/// `2002::/16`. IPv4-mapped IPv6 (`::ffff:a.b.c.d`) is mapped to IPv4
+/// before the check so `[::ffff:a9fe:a9fe]` (metadata IP) is denied as
+/// link-local; where a transition prefix carries an extractable embedded
+/// IPv4, the IPv4 deny/private policy is re-run on it as well.
 pub(crate) fn is_normalized_ssrf_denied(addr: std::net::IpAddr) -> bool {
     match addr {
         std::net::IpAddr::V4(v4) => {
@@ -312,6 +316,20 @@ pub(crate) fn is_normalized_ssrf_denied(addr: std::net::IpAddr) -> bool {
             if v6.is_unspecified() {
                 return true;
             }
+            // NAT64 / Teredo / 6to4 are unconditional denials: they tunnel
+            // IPv4 (including link-local/metadata and private space) and are
+            // not reachable through the `ALLOW_LOOPBACK` opt-in.
+            if is_ipv6_transition_prefix(v6) {
+                return true;
+            }
+            // Best-effort: re-run the IPv4 deny/private checks on an
+            // extractable embedded address (defense in depth).
+            if let Some(embedded) = embedded_ipv4(v6) {
+                let v4 = std::net::IpAddr::V4(embedded);
+                if is_normalized_ssrf_denied(v4) || is_normalized_loopback_or_private(v4) {
+                    return true;
+                }
+            }
             // fe80::/10: first 10 bits are 1111111010.
             if (v6.segments()[0] & 0xffc0) == 0xfe80 {
                 return true;
@@ -321,11 +339,73 @@ pub(crate) fn is_normalized_ssrf_denied(addr: std::net::IpAddr) -> bool {
     }
 }
 
-/// Whether a normalized IP is loopback or RFC1918 private.
+/// Whether `v6` is a NAT64/Teredo/6to4 IPv6 transition prefix.
+///
+/// Exact prefixes: NAT64 well-known `64:ff9b::/96`, Teredo `2001::/32`,
+/// and 6to4 `2002::/16`. Keep the literal strings in sync with
+/// `scripts/_mikrotik_shared.py::is_normalized_ssrf_denied`.
+pub(crate) fn is_ipv6_transition_prefix(v6: std::net::Ipv6Addr) -> bool {
+    let s = v6.segments();
+    // NAT64 well-known prefix 64:ff9b::/96.
+    if s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0 {
+        return true;
+    }
+    // Teredo 2001::/32.
+    if s[0] == 0x2001 && s[1] == 0x0000 {
+        return true;
+    }
+    // 6to4 2002::/16.
+    if s[0] == 0x2002 {
+        return true;
+    }
+    false
+}
+
+/// Best-effort embedded IPv4 extraction from an IPv6 transition prefix.
+///
+/// - NAT64 well-known `64:ff9b::/96`: last 32 bits.
+/// - 6to4 `2002::/16`: bits 16..48 (segments 1 and 2).
+/// - Teredo `2001::/32`: last 32 bits, bitwise-inverted (obfuscated client).
+///
+/// Returns `None` when `v6` is not one of these prefixes. The caller only
+/// uses the result to re-run IPv4 policy; the prefix itself is already
+/// unconditionally denied.
+pub(crate) fn embedded_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+    let s = v6.segments();
+    if s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0 {
+        return Some(std::net::Ipv4Addr::new(
+            (s[6] >> 8) as u8,
+            (s[6] & 0xff) as u8,
+            (s[7] >> 8) as u8,
+            (s[7] & 0xff) as u8,
+        ));
+    }
+    if s[0] == 0x2002 {
+        return Some(std::net::Ipv4Addr::new(
+            (s[1] >> 8) as u8,
+            (s[1] & 0xff) as u8,
+            (s[2] >> 8) as u8,
+            (s[2] & 0xff) as u8,
+        ));
+    }
+    if s[0] == 0x2001 && s[1] == 0x0000 {
+        return Some(std::net::Ipv4Addr::new(
+            ((!s[6]) >> 8) as u8,
+            ((!s[6]) & 0xff) as u8,
+            ((!s[7]) >> 8) as u8,
+            ((!s[7]) & 0xff) as u8,
+        ));
+    }
+    None
+}
+
+/// Whether a normalized IP is loopback or RFC1918/ULA/CGNAT private.
 ///
 /// IPv4-mapped IPv6 is mapped to IPv4 first so `[::ffff:127.0.0.1]` and
-/// `[::ffff:10.0.0.1]` are judged as their IPv4 equivalents. ULA
-/// (`fc00::/7`) stays allowed to avoid over-blocking, matching prior policy.
+/// `[::ffff:10.0.0.1]` are judged as their IPv4 equivalents. CGNAT
+/// `100.64.0.0/10` and ULA `fc00::/7` are treated as private (denied
+/// unless `RSC_LS_LIVE_ALLOW_LOOPBACK=1`), because operators legitimately
+/// use them on the LAN — they are not in the unconditional deny set.
 pub(crate) fn is_normalized_loopback_or_private(addr: std::net::IpAddr) -> bool {
     match addr {
         std::net::IpAddr::V4(v4) => {
@@ -342,6 +422,10 @@ pub(crate) fn is_normalized_loopback_or_private(addr: std::net::IpAddr) -> bool 
             if o[0] == 172 && (16..=31).contains(&o[1]) {
                 return true;
             }
+            // CGNAT 100.64.0.0/10 (100.64.0.0 - 100.127.255.255).
+            if o[0] == 100 && (64..=127).contains(&o[1]) {
+                return true;
+            }
             false
         }
         std::net::IpAddr::V6(v6) => {
@@ -351,12 +435,16 @@ pub(crate) fn is_normalized_loopback_or_private(addr: std::net::IpAddr) -> bool 
             if v6.is_loopback() {
                 return true;
             }
+            // ULA fc00::/7: first 7 bits are 1111110.
+            if (v6.segments()[0] & 0xfe00) == 0xfc00 {
+                return true;
+            }
             false
         }
     }
 }
 
-/// Whether `host` is loopback or private (RFC1918 / ULA / loopback).
+/// Whether `host` is loopback or private (RFC1918 / CGNAT / ULA / loopback).
 ///
 /// Used for `RSC_LS_LIVE_ALLOW_LOOPBACK` gating: when loopback is not
 /// allowed, these hosts are SSRF-denied. Handles IPv4 and IPv6 literals,
@@ -385,8 +473,8 @@ pub(crate) fn is_loopback_or_private(host: &str) -> bool {
         if addr.is_loopback() {
             return true;
         }
-        // RFC1918 private for IPv4; ULA (fc00::/7) is considered private but not required for this
-        // flag.
+        // RFC1918 private for IPv4; CGNAT treated as private too. ULA
+        // (fc00::/7) is private as well.
         match addr {
             std::net::IpAddr::V4(v4) => {
                 let o = v4.octets();
@@ -399,9 +487,15 @@ pub(crate) fn is_loopback_or_private(host: &str) -> bool {
                 if o[0] == 172 && (16..=31).contains(&o[1]) {
                     return true;
                 }
+                if o[0] == 100 && (64..=127).contains(&o[1]) {
+                    return true;
+                }
             }
-            std::net::IpAddr::V6(_) => {
-                // Loopback already handled; ULA not denied by default to avoid over-blocking.
+            std::net::IpAddr::V6(v6) => {
+                // Loopback already handled; ULA fc00::/7 is private.
+                if (v6.segments()[0] & 0xfe00) == 0xfc00 {
+                    return true;
+                }
             }
         }
     }
@@ -484,10 +578,14 @@ pub fn validate_host_with_allow(host: &str, allow_loopback: bool) -> Result<(), 
 /// - no null bytes, no control chars
 /// - no URI delimiters that would alter URL parsing (`@`, `?`, `#`, ` `, `%`)
 /// - SSRF denials for whole `169.254.0.0/16`, IPv6 `fe80::/10`, unspecified,
-///   and `metadata.google.internal` (lexical plus WHATWG-normalized checks)
+///   the NAT64/Teredo/6to4 transition prefixes (`64:ff9b::/96`, `2001::/32`,
+///   `2002::/16`), and `metadata.google.internal` (lexical plus
+///   WHATWG-normalized checks)
 /// - non-canonical numeric literals rejected fail-closed
 /// - loopback/private denied unless `RSC_LS_LIVE_ALLOW_LOOPBACK=1` (via
-///   `is_loopback_or_private` against the normalized IP with IPv4-mapped unmapping)
+///   `is_loopback_or_private` against the normalized IP with IPv4-mapped
+///   unmapping; RFC1918, CGNAT `100.64.0.0/10`, and ULA `fc00::/7` count as
+///   private)
 pub fn validate_host(host: &str) -> Result<(), LiveError> {
     validate_host_with_allow(host, live_allow_loopback())
 }

@@ -7,6 +7,7 @@ plus a CLI smoke test (--help / --dry-run) that also proves the scripts'
 import bootstrap works when run as `python scripts/<name>.py`.
 """
 
+import ipaddress
 import os
 import subprocess
 import sys
@@ -24,9 +25,12 @@ sys.path.insert(0, str(SCRIPTS))
 from _mikrotik_shared import (  # noqa: E402
     check_target,
     clamp_int,
+    embedded_ipv4,
     env_int,
     extract_spki_der,
     format_host_for_url,
+    is_ipv6_transition_prefix,
+    is_normalized_loopback_or_private,
     parse_fingerprint,
     redact_secrets,
     resolve_and_check_host,
@@ -199,6 +203,53 @@ class TestSharedSsrfVectors:
         # so loopback forms that are not non-canonical stay allowed here.
         assert validate_host("127.0.0.1") is None
         assert validate_host("[::ffff:127.0.0.1]") is None
+
+
+class TestIpv6TransitionAndPrivateRanges:
+    """Item 2 parity: NAT64/Teredo/6to4 are unconditional denials; ULA and
+    CGNAT are private (Rust gates them behind ALLOW_LOOPBACK; the scripts
+    intentionally allow private LAN ranges, so they stay allowed here)."""
+
+    def test_transition_prefixes_denied(self):
+        for bad in [
+            "64:ff9b::a9fe:a9fe",  # NAT64 embedding 169.254.169.254
+            "64:ff9b::7f00:1",  # NAT64 embedding 127.0.0.1
+            "2001::1",  # Teredo
+            "2002:a9fe:a9fe::1",  # 6to4 embedding 169.254.169.254
+        ]:
+            assert validate_host(bad) is not None, f"should deny {bad!r}"
+            assert resolve_and_check_host(bad, 443) is not None
+
+    def test_transition_prefix_helper_and_embedded_ipv4(self):
+        assert is_ipv6_transition_prefix(ipaddress.ip_address("64:ff9b::a9fe:a9fe"))
+        assert is_ipv6_transition_prefix(ipaddress.ip_address("2001::1"))
+        assert is_ipv6_transition_prefix(ipaddress.ip_address("2002:c0a8:0101::1"))
+        assert not is_ipv6_transition_prefix(ipaddress.ip_address("2001:db8::1"))
+        assert embedded_ipv4(ipaddress.ip_address("64:ff9b::a9fe:a9fe")) == ipaddress.ip_address(
+            "169.254.169.254"
+        )
+        assert embedded_ipv4(ipaddress.ip_address("2002:c0a8:0101::1")) == ipaddress.ip_address(
+            "192.168.1.1"
+        )
+        assert embedded_ipv4(ipaddress.ip_address("2001:db8::1")) is None
+
+    def test_ula_and_cgnat_are_private_not_unconditional(self):
+        # Parity with Rust is_normalized_loopback_or_private.
+        for priv in [
+            "fc00::1",
+            "fd12:3456:789a::1",
+            "100.64.0.1",
+            "100.127.255.255",
+            "10.0.0.1",
+            "192.168.88.1",
+            "127.0.0.1",
+        ]:
+            assert is_normalized_loopback_or_private(ipaddress.ip_address(priv)), priv
+        for pub in ["8.8.8.8", "100.63.255.255", "100.128.0.0", "2001:db8::1", "2606:4700::1"]:
+            assert not is_normalized_loopback_or_private(ipaddress.ip_address(pub)), pub
+        # Scripts allow private LAN ranges by design (documented divergence).
+        assert validate_host("[fd12:3456::1]") is None
+        assert validate_host("100.64.0.1") is None
 
 
 # ── format_host_for_url ───────────────────────────────────────────
@@ -591,6 +642,11 @@ class TestRustParity:
         "0.0.0.0",
         "169.254.0.0/16",
         "fe80::/10",
+        "64:ff9b::/96",
+        "2001::/32",
+        "2002::/16",
+        "fc00::/7",
+        "100.64.0.0/10",
     )
 
     def test_denylist_literals_match_rust(self):
