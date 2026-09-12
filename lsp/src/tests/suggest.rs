@@ -1,7 +1,7 @@
 // Suggestion engine.
 use crate::menus::MenuData;
 use crate::suggest::*;
-use crate::suggest::{MAX_SUGGESTIONS_PER_PUBLISH, SuggestBudget};
+use crate::suggest::{MAX_SUGGEST_INPUT_BYTES, MAX_SUGGESTIONS_PER_PUBLISH, SuggestBudget};
 use std::sync::Arc;
 fn validator_data() -> Arc<MenuData> {
     Arc::new(MenuData::from_toml_str(
@@ -157,6 +157,70 @@ fn budget_allows_first_suggestions_then_cuts_off() {
     assert_eq!(budget.candidate("adress", ["address"].iter()), None);
 }
 
+// ── input-length cap (DoS guard) ─────────────────────────────────────────
+
+#[test]
+fn budget_rejects_over_long_input_without_spending_budget() {
+    // Over-long inputs must be rejected before the budget is debited:
+    // calling far past the per-publish allowance with garbage cannot use
+    // it up, so the next legitimate typo still gets its suggestion.
+    let mut budget = SuggestBudget::new();
+    let over_long = "a".repeat(MAX_SUGGEST_INPUT_BYTES + 1);
+    for _ in 0..(MAX_SUGGESTIONS_PER_PUBLISH + 5) {
+        assert_eq!(budget.candidate(&over_long, ["address"].iter()), None);
+    }
+    assert_eq!(
+        budget.candidate("adress", ["address"].iter()),
+        Some("address".to_string()),
+        "rejected over-long calls must not consume the publish budget"
+    );
+}
+
+#[test]
+fn best_candidate_rejects_very_long_input_quickly() {
+    // Defense in depth: direct callers are protected too, so the
+    // O(n × m) scan never runs for absurd input.
+    let long = "a".repeat(100_000);
+    let started = std::time::Instant::now();
+    let picked = best_candidate(&long, ["address", "interface"].into_iter());
+    let elapsed = started.elapsed();
+    assert_eq!(picked, None);
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "over-long input must short-circuit, took {elapsed:?}"
+    );
+}
+
+#[test]
+fn input_exactly_at_cap_is_still_evaluated() {
+    // The guard is `>`, so exactly MAX bytes proceeds to normal
+    // evaluation; `best_candidate`'s trim recovers the identifier.
+    let padded = format!(
+        "{}{}",
+        " ".repeat(MAX_SUGGEST_INPUT_BYTES - "adress".len()),
+        "adress"
+    );
+    assert_eq!(padded.len(), MAX_SUGGEST_INPUT_BYTES);
+    assert_eq!(
+        best_candidate(&padded, ["address"].into_iter()),
+        Some("address".to_string())
+    );
+
+    let mut budget = SuggestBudget::new();
+    assert_eq!(
+        budget.candidate(&padded, ["address"].iter()),
+        Some("address".to_string())
+    );
+}
+
+#[test]
+fn short_input_behavior_unchanged_by_input_cap() {
+    assert_eq!(
+        best_candidate("adress", ["address", "interface"].into_iter()),
+        Some("address".to_string())
+    );
+}
+
 #[test]
 fn large_unknown_doc_stays_bounded_and_omits_suffix_only() {
     let data = validator_data();
@@ -172,4 +236,122 @@ fn large_unknown_doc_stays_bounded_and_omits_suffix_only() {
             .all(|d| d.code.is_some() && d.severity.is_some())
     );
     assert!(diags.iter().all(|d| d.source.as_deref() == Some("rsc-ls")));
+}
+
+// ── length short-circuit (DoS optimization) ──────────────────────────────
+
+/// Pre-optimization reference for [`best_candidate`]: identical rules
+/// without the length short-circuit, so the optimized version can be
+/// compared against it directly.
+fn reference_best_candidate(
+    input: &str,
+    candidates: impl Iterator<Item = impl AsRef<str>>,
+) -> Option<String> {
+    if input.len() > MAX_SUGGEST_INPUT_BYTES {
+        return None;
+    }
+    let input = input.trim();
+    if input.is_empty() {
+        return None;
+    }
+    let threshold = suggestion_threshold(input.chars().count());
+    let mut best: Option<(usize, String)> = None;
+    for candidate in candidates {
+        let candidate = candidate.as_ref();
+        let dist = damerau_levenshtein(input, candidate);
+        if dist == 0 || dist > threshold {
+            continue;
+        }
+        let take_over = match &best {
+            None => true,
+            Some((best_dist, best_name)) => {
+                dist < *best_dist || (dist == *best_dist && candidate < best_name.as_str())
+            }
+        };
+        if take_over {
+            best = Some((dist, candidate.to_string()));
+        }
+    }
+    best.map(|(_, name)| name)
+}
+
+const MENU_PATH_LIKE: [&str; 7] = [
+    "/ip/address",
+    "/ip/route",
+    "/ip/firewall/filter",
+    "/system/clock",
+    "/interface/ethernet",
+    "/routing/bgp/connection",
+    "/queue/simple",
+];
+
+#[test]
+fn length_short_circuit_keeps_expected_best_among_mixed_lengths() {
+    // The near-length typo must still win even when a far-length name is
+    // present: the latter is skipped by the length gap before its
+    // distance is ever computed.
+    let picked = best_candidate(
+        "adress",
+        ["/a_very_long_unrelated_path_name", "interface", "address"].into_iter(),
+    );
+    assert_eq!(picked.as_deref(), Some("address"));
+}
+
+#[test]
+fn length_short_circuit_matches_unoptimized_reference() {
+    // Differential check over a matrix of inputs and mixed-length
+    // candidate sets: the optimization must not change any result.
+    let candidate_sets: [&[&str]; 3] = [
+        &["a", "ab", "abc", "abcd", "abcde", "abcdef"],
+        &["address", "adresss", "addr", "a", "interface"],
+        MENU_PATH_LIKE.as_slice(),
+    ];
+    let inputs = [
+        "aaa",
+        "adress",
+        "nmae",
+        "abc",
+        "/ip/addres",
+        "zzzqqqxxxwww",
+        "/ip/route",
+    ];
+    for candidates in candidate_sets {
+        for input in inputs {
+            assert_eq!(
+                best_candidate(input, candidates.iter()),
+                reference_best_candidate(input, candidates.iter()),
+                "input={input:?} candidates={candidates:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn best_candidate_256_byte_unknown_path_skips_menu_paths() {
+    // Exactly at the cap (still evaluated), but 256 chars is far longer
+    // than any menu path, so the short-circuit rejects every candidate
+    // without running the O(n × m) distance scan.
+    let input = format!("/{}", "x".repeat(MAX_SUGGEST_INPUT_BYTES - 1));
+    assert_eq!(input.len(), MAX_SUGGEST_INPUT_BYTES);
+    assert_eq!(best_candidate(&input, MENU_PATH_LIKE.into_iter()), None);
+}
+
+#[test]
+fn flood_of_256_byte_unknown_paths_stays_fast() {
+    // Smoke guard, not a micro-benchmark: before the length
+    // short-circuit this flood cost ~22 s in debug builds (100 × 256-char
+    // O(n × m) scans). The 3 s bound tolerates slow CI while still
+    // failing the unfixed quadratic path.
+    let input = format!("/{}", "x".repeat(MAX_SUGGEST_INPUT_BYTES - 1));
+    let mut budget = SuggestBudget::new();
+    let started = std::time::Instant::now();
+    for _ in 0..MAX_SUGGESTIONS_PER_PUBLISH {
+        assert_eq!(budget.candidate(&input, MENU_PATH_LIKE.iter()), None);
+    }
+    let elapsed = started.elapsed();
+    eprintln!("100 × 256-byte flood: {elapsed:?}");
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "100 × 256-byte flood took {elapsed:?}; length short-circuit regressed"
+    );
 }

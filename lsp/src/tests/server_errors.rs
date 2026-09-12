@@ -60,6 +60,59 @@ fn test_parse_error_response_shape() {
 }
 
 #[test]
+fn test_extract_id_multibyte_value_does_not_panic_and_returns_null() {
+    // Reproduces the pre-fix panic: the scanner advanced one byte past the
+    // lead byte of `é` and then sliced mid-character. Must return Null.
+    let body = "{\"id\": é}".as_bytes();
+    assert!(crate::server_proto::extract_id_for_parse_error(body).is_null());
+}
+
+#[test]
+fn test_extract_id_multibyte_resumes_at_char_boundary() {
+    // Multi-byte value with no separating space.
+    let body = "{\"id\":é}".as_bytes();
+    assert!(crate::server_proto::extract_id_for_parse_error(body).is_null());
+
+    // A rejected multi-byte value must not abort the scan: the scanner
+    // resumes after the whole code point and still recovers a later id.
+    let body = "{\"id\": é, \"id\": 7}".as_bytes();
+    assert_eq!(
+        crate::server_proto::extract_id_for_parse_error(body),
+        serde_json::json!(7)
+    );
+
+    // A later `"id"` with a multi-byte value must not panic either; the
+    // first id is a valid string and wins.
+    let body = "{\"id\": \"x\", \"id\": é}".as_bytes();
+    assert_eq!(
+        crate::server_proto::extract_id_for_parse_error(body),
+        serde_json::json!("x")
+    );
+}
+
+#[test]
+fn test_extract_id_numeric_and_string_values() {
+    // Parse the expected number from text: a `3.14` float literal would trip
+    // clippy's `approx_constant` lint.
+    let expected_float =
+        serde_json::from_str::<serde_json::Value>("3.14").expect("3.14 is valid JSON");
+    assert_eq!(
+        crate::server_proto::extract_id_for_parse_error(b"{\"id\": 3.14}"),
+        expected_float
+    );
+    assert_eq!(
+        crate::server_proto::extract_id_for_parse_error(b"{\"id\": \"hello world\"}"),
+        serde_json::json!("hello world")
+    );
+}
+
+#[test]
+fn test_extract_id_non_utf8_returns_null() {
+    let body = b"{\"id\": \xff}";
+    assert!(crate::server_proto::extract_id_for_parse_error(body).is_null());
+}
+
+#[test]
 fn test_completion_property_text_edit_replaces_partial_name() {
     // `/ip/address add inter` with the cursor after `inter` must offer
     // `interface` (kind 5) with a textEdit covering exactly `inter` on

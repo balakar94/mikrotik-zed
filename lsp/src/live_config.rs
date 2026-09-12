@@ -1111,7 +1111,13 @@ pub(crate) fn parse_fingerprint(raw: Option<&str>) -> (Option<[u8; 32]>, bool) {
         return (None, false);
     }
     let mut hex = trimmed;
-    if hex.len() >= 7 && hex[..7].eq_ignore_ascii_case("sha256:") {
+    // `get(..7)` yields `None` when byte 7 is not a char boundary, so a
+    // multi-byte character at the prefix position is rejected fail-closed
+    // instead of panicking on the slice.
+    if hex
+        .get(..7)
+        .is_some_and(|p| p.eq_ignore_ascii_case("sha256:"))
+    {
         hex = &hex[7..];
     }
     let compact: String = hex
