@@ -67,6 +67,13 @@ _MD_TABLE_SEP_RE = re.compile(r"^\|[\s:|-]+\|?\s*$")
 _MD_SUB_MENU_RE = re.compile(r"^\*\*Sub-menu:\*\*\s*(.+)$")
 # First cell `**name** (rest)`, tolerating 2-4 bold markers and no space.
 _MD_NAME_RE = re.compile(r"^\*{2,4}\s*([^*]+?)\s*\*{2,4}\s*(.*)$", re.DOTALL)
+# Fallback for rows whose closing bold marker wraps the whole
+# `(type; Default: ...)` clause instead of the name alone, e.g.
+# `**prefix-pool (*enum \| static-only*; Default: static-only)**`. Captures
+# the leading CLI token and its parenthesised type directly. Grouped
+# alternatives (`**a | b** (...)`) cannot match because their `|` precedes
+# the first `(`.
+_MD_FRAGMENT_NAME_RE = re.compile(r"^\*{0,4}\s*([a-z0-9!][a-z0-9!._-]*)\s*\(([^)]*)\)")
 # Property names are single RouterOS-style tokens: lowercase alphanumerics
 # plus `! _ . -` (e.g. `802.3-sap`, `!comments`, `use-peer-dns`). Anything
 # else (grouped alternatives, sub-table labels, TitleCase status columns) is
@@ -472,17 +479,24 @@ def _parse_markdown_property_row(
 
     Returns `{name, type, read_only, description}`. The name must match
     `_MD_VALID_NAME_RE`; rows that are grouped alternatives, sub-table labels
-    or prose are rejected (None), never invented as properties.
+    or prose are rejected (None), never invented as properties. When the bold
+    pair wraps the whole type clause (`**prefix-pool (*enum \\| ...)**`) the
+    leading token and parenthesised type are recovered instead of warning.
     """
     if not cells:
         return None
-    name_match = _MD_NAME_RE.match(cells[0].strip())
-    if not name_match:
-        return None
-    name = name_match.group(1).strip()
+    raw = cells[0].strip()
+    name_match = _MD_NAME_RE.match(raw)
+    name = name_match.group(1).strip() if name_match else ""
+    remainder = name_match.group(2) if name_match else ""
     if not _MD_VALID_NAME_RE.match(name):
-        return None
-    remainder = name_match.group(2)
+        fragment = _MD_FRAGMENT_NAME_RE.match(raw)
+        if fragment is None:
+            return None
+        name = fragment.group(1)
+        remainder = f"({fragment.group(2)})"
+        if not _MD_VALID_NAME_RE.match(name):
+            return None
     read_only = False
     typ = ""
     if type_idx is not None and 0 <= type_idx < len(cells):

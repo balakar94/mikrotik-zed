@@ -1924,6 +1924,31 @@ class TestMarkdownPropertyTables:
         assert by_name["validate-server-duid"]["type"] == "yes | no"
         assert by_name["digest"]["description"] == "Hash"
 
+    def test_bold_wraps_whole_type_clause_with_escaped_pipe(self):
+        # Upstream misplaces the closing `**` so it wraps the whole
+        # `(type; Default: ...)` clause: the escaped pipe inside the type
+        # must survive cell splitting and the name/type must parse instead
+        # of being warned as an unknown row.
+        content = (
+            "## ipv6/dhcp-server \n"
+            "\n"
+            "**Type:** Directory\n"
+            "\n"
+            "## DHCPv6 Server\n"
+            "\n"
+            "**Sub-menu:** `/ipv6/dhcp-server`\n"
+            "\n"
+            "### Properties\n"
+            "\n"
+            "| Property | Description |\n"
+            "| :-- | :-- |\n"
+            "| **prefix-pool (*enum \\| static-only*; Default: static-only)** | Prefix pool |\n"
+        )
+        menu = self._parse(content)[0]
+        arg = next(a for a in menu["arguments"] if a["name"] == "prefix-pool")
+        assert arg["type"] == "enum | static-only"
+        assert arg["description"] == "Prefix pool"
+
     def test_type_column_tables_use_the_description_column(self):
         content = (
             "## container \n"
