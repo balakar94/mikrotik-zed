@@ -31,6 +31,11 @@ Responses are capped (`MAX_COMPLETION_ITEMS` — see [caps](lsp-config.md)).
 Resolves menu paths, properties, and verbs against the published reference
 (not paraphrase). Menu cards list a bounded property set
 (`MAX_HOVER_PROPERTIES`, descriptions capped at `MAX_HOVER_DESC_CHARS`).
+When the upstream description is empty, the card still shows `Type:` with a
+short gloss when the type is known (`type_gloss` in `lsp/src/text_util.rs`),
+plus context, values, or an example when available; flags fall back to name-only
+or name plus type. Overflow collapses into a `(+N more — see completion)` footer;
+coverage details live in the `data/commands.toml` header.
 
 ## Diagnostics
 
