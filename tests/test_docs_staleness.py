@@ -10,7 +10,7 @@ import pytest
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from sync_llms import build_manifest_text, main as sync_main
+from sync_llms import build_manifest_text, main as sync_main, sync_result_message
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 ISO_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
@@ -347,3 +347,39 @@ class TestCheckModeNeverWrites:
         by_name = {s["name"]: s for s in data["sources"]}
         assert by_name["full"]["sha256"] == hashlib.sha256(PAYLOADS["llms-full.txt"]).hexdigest()
         assert ISO_Z_RE.match(data["synced_at_utc"])
+
+
+# ── Final summary line: sync_result_message ──────────────────────────
+
+class TestSyncResultMessage:
+    """Pure helper: maps changed file names to the final summary line (no I/O, no network)."""
+
+    def test_empty_means_no_changes(self):
+        assert sync_result_message([]) == "Sync complete: no changes."
+
+    def test_index_only_reports_noop_extract(self):
+        assert sync_result_message(["llms.txt"]) == (
+            "Sync complete: index-only change "
+            "(llms.txt updated, llms-full.txt unchanged) "
+            "— extract will be no-op."
+        )
+
+    def test_index_only_never_suggests_extract(self):
+        assert "extract_commands.py" not in sync_result_message(["llms.txt"])
+
+    def test_full_only_suggests_extract(self):
+        assert sync_result_message(["llms-full.txt"]) == (
+            "Sync complete: files updated. "
+            "Run `python3 scripts/extract_commands.py` to regenerate commands.toml."
+        )
+
+    def test_both_suggests_extract(self):
+        assert sync_result_message(["llms.txt", "llms-full.txt"]) == (
+            "Sync complete: files updated (llms.txt and llms-full.txt changed). "
+            "Run `python3 scripts/extract_commands.py` to regenerate commands.toml."
+        )
+
+    def test_both_is_order_invariant(self):
+        assert sync_result_message(["llms-full.txt", "llms.txt"]) == sync_result_message(
+            ["llms.txt", "llms-full.txt"]
+        )
