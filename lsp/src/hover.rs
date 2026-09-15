@@ -9,7 +9,33 @@ use crate::menus::{MenuData, MenuEntry};
 // Shared text helpers live in `crate::text_util` (single owner); the
 // re-exports below keep historical `hover::` paths resolving for tests.
 pub(crate) use crate::text_util::{MAX_HOVER_PROPERTIES, sanitize_markdown_for_hover};
-use crate::text_util::{normalize_key, normalize_path, type_gloss, verb_role};
+use crate::text_util::{normalize_key, normalize_path, truncate_chars, type_gloss, verb_role};
+
+/// Max chars for one argument description inside a menu hover card.
+///
+/// Feature-local micro-cap: keeps each `- **name** `type`` bullet on one
+/// markdown line while the section stays bounded by
+/// [`MAX_HOVER_PROPERTIES`].
+const MAX_MENU_ARG_DESC_CHARS: usize = 120;
+
+/// Single-line argument description for a menu hover bullet.
+///
+/// Sanitizes via [`sanitize_markdown_for_hover`], flattens to one line
+/// (no wire break inside the bullet), then caps at
+/// [`MAX_MENU_ARG_DESC_CHARS`]. Empty upstream text stays empty so the
+/// caller keeps the bare `- **name** `type`` fallback.
+fn menu_arg_suffix(description: &str) -> String {
+    if description.is_empty() {
+        return String::new();
+    }
+    let clean = sanitize_markdown_for_hover(description);
+    let single = clean.split_whitespace().collect::<Vec<_>>().join(" ");
+    if single.is_empty() {
+        return String::new();
+    }
+    let short = truncate_chars(&single, MAX_MENU_ARG_DESC_CHARS);
+    format!(" — {short}")
+}
 
 /// Case/separator-insensitive menu lookup.
 ///
@@ -175,7 +201,8 @@ pub fn compute_hover(
                     &arg.arg_type
                 };
                 let req = if arg.required { " (required)" } else { "" };
-                md.push_str(&format!("\n- **{}** `{}`{}", arg.name, typ, req));
+                let suffix = menu_arg_suffix(&arg.description);
+                md.push_str(&format!("\n- **{}** `{}`{}{}", arg.name, typ, req, suffix));
             }
             if total > MAX_HOVER_PROPERTIES {
                 md.push_str(&format!(

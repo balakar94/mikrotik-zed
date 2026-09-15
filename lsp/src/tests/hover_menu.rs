@@ -211,3 +211,57 @@ fn test_hover_caps_flags_and_read_only() {
     let footers = value.matches("(+3 more — see completion)").count();
     assert_eq!(footers, 2, "one footer per capped section, got {footers}");
 }
+#[test]
+fn test_hover_menu_arg_shows_description() {
+    let data = synthetic_data();
+    let h = hover_at(&data, "/ip/address", 2).expect("menu hover");
+    let value = &h.contents.value;
+    assert!(
+        value.contains("- **address** `ipPrefix` — IP address"),
+        "argument with docs must show its description, got: {value}"
+    );
+    assert_eq!(h.contents.kind, "markdown");
+}
+#[test]
+fn test_hover_menu_arg_without_description_fallback() {
+    let data = synthetic_data();
+    let h = hover_at(&data, "/ip/address", 2).expect("menu hover");
+    let value = &h.contents.value;
+    let line = value
+        .lines()
+        .find(|l| l.starts_with("- **interface**"))
+        .expect("interface bullet must exist");
+    assert_eq!(
+        line, "- **interface** `iface_enum`",
+        "argument without docs keeps the bare fallback, got: {line}"
+    );
+}
+#[test]
+fn test_hover_menu_arg_description_truncated_single_line() {
+    let long = "a".repeat(200);
+    let toml = format!(
+        "[[menus]]\npath = \"/demo/desc\"\ntype = \"Directory\"\n\
+         [[menus.arguments]]\nname = \"token\"\ntype = \"string\"\n\
+         description = \"{long} [x](http://example.com/a)\\nsecond line\"\n"
+    );
+    let data = MenuData::from_toml_str(&toml);
+    let h = hover_at(&data, "/demo/desc", 2).expect("menu hover");
+    let value = &h.contents.value;
+    let line = value
+        .lines()
+        .find(|l| l.starts_with("- **token**"))
+        .expect("token bullet must exist");
+    assert!(
+        line.contains("…"),
+        "long description must be truncated, got: {line}"
+    );
+    assert!(
+        !line.contains("http://"),
+        "URLs must not survive sanitization, got: {line}"
+    );
+    let desc = line.split_once('—').expect("bullet must carry a suffix").1;
+    assert!(
+        desc.chars().count() <= 120 + 8,
+        "per-arg description stays near the 120-char cap, got: {line}"
+    );
+}
