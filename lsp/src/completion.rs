@@ -1186,7 +1186,7 @@ fn get_value_completions_with_live(
 
     // Boolean
     if arg.arg_type == "bool" || arg.arg_type == "boolean" {
-        for val in ["yes", "no", "true", "false"] {
+        for val in ["yes", "no", "true", "false", "on", "off"] {
             let mut item = CompletionItem::new(val.to_string(), kind::ENUM_MEMBER);
             item.detail = Some("bool value".to_string());
             item.insert_text = Some(val.to_string());

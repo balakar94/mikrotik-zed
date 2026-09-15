@@ -208,7 +208,9 @@ fn test_value_completions_bool() {
     assert!(labels.contains(&"no"));
     assert!(labels.contains(&"true"));
     assert!(labels.contains(&"false"));
-    assert_eq!(items.len(), 4);
+    assert!(labels.contains(&"on"));
+    assert!(labels.contains(&"off"));
+    assert_eq!(items.len(), 6);
 }
 
 #[test]

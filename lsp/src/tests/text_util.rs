@@ -117,3 +117,18 @@ fn test_type_gloss_known_types() {
     assert!(type_gloss("bool").is_some());
     assert!(type_gloss("string").is_none());
 }
+
+#[test]
+fn test_type_gloss_bool_lists_full_allowlist() {
+    // Parity pin with the diagnostics `BOOL_WORDS` allowlist
+    // (yes/no/true/false/on/off): the hover gloss must name every
+    // accepted spelling so users are never misled by completion.
+    assert_eq!(
+        type_gloss("bool"),
+        Some("yes | no (true/false/on/off also accepted)")
+    );
+    assert_eq!(
+        type_gloss("boolean"),
+        Some("yes | no (true/false/on/off also accepted)")
+    );
+}

@@ -104,7 +104,7 @@ pub(crate) fn type_gloss(arg_type: &str) -> Option<&'static str> {
     } else if arg_type.starts_with("ipAddr") || arg_type == "address" {
         Some("IP address")
     } else if arg_type == "bool" || arg_type == "boolean" {
-        Some("yes | no (true/false also accepted)")
+        Some("yes | no (true/false/on/off also accepted)")
     } else {
         None
     }

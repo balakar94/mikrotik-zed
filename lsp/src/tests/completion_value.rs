@@ -77,11 +77,13 @@ fn test_values_after_equals_bool() {
     let data = synthetic();
     let items = compute_completions(&data, "/ip/firewall/filter add enabled=");
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-    assert_eq!(items.len(), 4);
+    assert_eq!(items.len(), 6);
     assert!(labels.contains(&"yes"));
     assert!(labels.contains(&"no"));
     assert!(labels.contains(&"true"));
     assert!(labels.contains(&"false"));
+    assert!(labels.contains(&"on"));
+    assert!(labels.contains(&"off"));
 }
 
 #[test]
@@ -143,7 +145,7 @@ fn test_values_after_equals_bool_also_triggers_iface_check_independent() {
     // Ensure bool and iface_enum are independent: a bool prop should not get iface values
     let data = synthetic();
     let bool_items = compute_completions(&data, "/system/clock set enabled=");
-    // enabled is bool -> should have yes/no/true/false but not ether1
+    // enabled is bool -> should have yes/no/true/false/on/off but not ether1
     assert!(bool_items.iter().any(|i| i.label == "yes"));
     assert!(!bool_items.iter().any(|i| i.label == "ether1"));
 }
