@@ -54,6 +54,7 @@
 // | `MAX_BRACE_DEPTH`                 | 4096           | parser.rs       | Open-brace stack bound (walk_structure + syntax)               |
 // | `MAX_SIGNATURE_PROPERTIES`        | 40             | signature.rs    | Properties per signature label                                 |
 // | `MAX_SUGGEST_INPUT_BYTES`         | 256            | suggest.rs      | Max mistyped token length for quick-fix suggestions            |
+// | `MAX_SUGGESTIONS_PER_PUBLISH`     | 100            | suggest.rs      | Did-you-mean evaluations per diagnostics publish               |
 // | `MAX_DETAIL_CHARS`                | 256            | text_util.rs    | Single-line completion `detail` cap                            |
 // | `MAX_DETAIL_TYPE_CHARS`           | 64             | text_util.rs    | Type half embedded in a completion `detail`                    |
 // | `MAX_HOVER_PROPERTIES`            | 12             | text_util.rs    | Properties per menu hover card (rest folds into a footer)      |
