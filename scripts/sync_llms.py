@@ -18,6 +18,9 @@ Behavior:
   - Extracts RouterOS version hints from llms-full.txt (header, for logging;
     highest feature-gate mention, recorded in the provenance manifest).
   - If changed, overwrites local files and prints version diff.
+- Final summary distinguishes index-only (llms.txt) from full changes:
+  an index-only sync reports that extract will be a no-op, while any
+  llms-full.txt change keeps suggesting the extract_commands.py rerun.
   - Maintains data/upstream-docs.toml, a provenance manifest recording which
     upstream bytes were synced (per-file SHA256, RouterOS version hint, UTC
     timestamp). Written only on real runs: rewritten whenever anything changed
@@ -206,6 +209,30 @@ def full_version_hint(text: str) -> str:
     return ".".join(str(p) for p in best) if best else ""
 
 
+def sync_result_message(changed_files: list[str]) -> str:
+    """Final sync summary line for a real (non-check) run.
+
+    Pure helper (no I/O): identical inputs always produce identical text.
+    The extraction pipeline reads llms-full.txt only, so an index-only
+    change (llms.txt without llms-full.txt) makes extract a no-op and the
+    message says so instead of suggesting a regeneration run.
+    """
+    if not changed_files:
+        return "Sync complete: no changes."
+    if "llms-full.txt" not in changed_files:
+        return (
+            "Sync complete: index-only change "
+            "(llms.txt updated, llms-full.txt unchanged) "
+            "— extract will be no-op."
+        )
+    if set(changed_files) == {"llms.txt", "llms-full.txt"}:
+        return (
+            "Sync complete: files updated (llms.txt and llms-full.txt changed). "
+            "Run `python3 scripts/extract_commands.py` to regenerate commands.toml."
+        )
+    return "Sync complete: files updated. Run `python3 scripts/extract_commands.py` to regenerate commands.toml."
+
+
 def _load_manifest_hashes(root: Path) -> dict[str, str] | None:
     """Return {path -> sha256} from data/upstream-docs.toml, or None.
 
@@ -245,6 +272,11 @@ def main(argv: list[str] | None = None, *, project_root: Path | None = None, fet
     do_fetch = fetch_url if fetch is None else fetch
 
     overall_changed = False
+    # Per-file change tracking (parallel to overall_changed): names from FILES
+    # that differ from local bytes (or are staged under --force). Used only to
+    # pick the final summary line — index-only changes leave llms-full.txt
+    # untouched, so extract would be a no-op and must not be suggested.
+    changed_files: list[str] = []
     has_error = False
     # --check fallback state: manifest hashes loaded lazily on the first
     # missing local file (read-only; --check never writes). _manifest_loaded
@@ -322,6 +354,7 @@ def main(argv: list[str] | None = None, *, project_root: Path | None = None, fet
             print(f"  {filename}: new file (remote hash {remote_hash[:16]}, version {remote_version})")
 
         overall_changed = True
+        changed_files.append(filename)
 
         if args.check:
             print(f"  {filename}: --check mode, not writing")
@@ -376,10 +409,7 @@ def main(argv: list[str] | None = None, *, project_root: Path | None = None, fet
     if args.check and overall_changed:
         print("Check: updates available (run without --check to apply)", file=sys.stderr)
         return 2
-    if overall_changed:
-        print("Sync complete: files updated. Run `python3 scripts/extract_commands.py` to regenerate commands.toml.")
-    else:
-        print("Sync complete: no changes.")
+    print(sync_result_message(changed_files))
     return 0
 
 
