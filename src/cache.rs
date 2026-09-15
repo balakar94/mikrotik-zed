@@ -253,7 +253,7 @@ mod tests {
             (String::new(), "empty"),
             (format!("{}\n", "a".repeat(63)), "short"),
             (format!("{}\n", "a".repeat(65)), "long"),
-            (format!("{}\n", format!("{}g", "f".repeat(63))), "non-hex"),
+            (format!("{}g\n", "f".repeat(63)), "non-hex"),
             ("<html><body>404</body></html>\n".to_string(), "garbage"),
             (
                 format!("{}extra\n", digest_of(BYTES_A)),
