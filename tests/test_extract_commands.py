@@ -42,6 +42,7 @@ from extract_commands import (
     _menu_property_names,
     _resolve_by_row_overlap,
     _row_description_index,
+    _markdown_table_has_real_delta,
 )
 
 
@@ -2806,3 +2807,91 @@ class TestMarkdownTableAccounting:
         )
         assert stats["property_tables"] > 100
         assert stats["non_property_tables"] > 0
+
+
+class TestMarkdownSkipLevels:
+    """Skipped property tables report at info or warning level by coverage.
+
+    Fully ArgTable-covered duplicates (including generic-only deltas and
+    display tables without valid rows) have zero coverage loss and report
+    at `info:` level. Tables holding at least one actionable row unknown
+    upstream (e.g. an uncovered `manager` row) keep `warning:`. Resolution
+    and merge behavior are unchanged, only the message level.
+    """
+
+    def _write_temp(self, content: str) -> str:
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+        tmp.write(content)
+        tmp.flush()
+        tmp.close()
+        return tmp.name
+
+    def _parse(self, content: str):
+        path = self._write_temp(content)
+        try:
+            return parse_llms_full(path)
+        finally:
+            os.unlink(path)
+
+    def test_fully_covered_duplicate_reports_info_not_warning(self, capsys):
+        # Both menus document alpha/beta, so the pathless table is a total
+        # duplicate with zero coverage loss: skipped at info level.
+        content = (
+            "## ip/one \n\n**Type:** Directory\n\n"
+            '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="alpha" typ="string"></ArgTableRow>\n'
+            '<ArgTableRow arg="beta" typ="string"></ArgTableRow>\n'
+            "</ArgTable>\n\n"
+            "## ip/two \n\n**Type:** Directory\n\n"
+            '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="alpha" typ="string"></ArgTableRow>\n'
+            '<ArgTableRow arg="beta" typ="string"></ArgTableRow>\n'
+            "</ArgTable>\n\n"
+            "## Shared topic\n\n#### Properties\n\n"
+            "| Property | Description |\n| :-- | :-- |\n"
+            "| **alpha** (*string*) | A |\n"
+            "| **beta** (*string*) | B |\n"
+        )
+        self._parse(content)
+        err = capsys.readouterr().err
+        assert "no unambiguous row-overlap menu" in err
+        assert "info:" in err
+        assert "warning:" not in err
+
+    def test_real_delta_keeps_warning(self, capsys):
+        # Neither menu documents the new rows, so the skip signals a real
+        # coverage delta and must stay at warning level.
+        content = (
+            "## ip/address \n\n**Type:** Directory\n\n"
+            "## Address topic\n\n#### Properties\n\n"
+            "| Property | Description |\n| :-- | :-- |\n"
+            "| **brand-new-alpha** (*string*) | A |\n"
+            "| **brand-new-beta** (*string*) | B |\n"
+        )
+        self._parse(content)
+        err = capsys.readouterr().err
+        assert "no unambiguous row-overlap menu" in err
+        assert "warning:" in err
+
+    def test_display_table_without_valid_rows_reports_info(self, capsys):
+        # Prose-shaped property table yields no parsed rows: zero loss, info.
+        content = (
+            "## ip/address \n\n**Type:** Directory\n\n"
+            "## Some topic\n\n### Properties\n\n"
+            "| Property | Description |\n| :-- | :-- |\n"
+            "| plain prose without bold | Just prose |\n"
+        )
+        self._parse(content)
+        err = capsys.readouterr().err
+        assert "yielded no rows" in err
+        assert "info:" in err
+        assert "warning:" not in err
+
+    def test_helper_flags_manager_as_real_delta(self):
+        table = {"rows": [{"name": "manager"}, {"name": "ssid"}]}
+        menu_names = {"/interface/wifi/configuration": {"ssid", "country"}}
+        assert _markdown_table_has_real_delta(table, menu_names) is True
+        covered = {"rows": [{"name": "ssid"}, {"name": "country"}]}
+        assert _markdown_table_has_real_delta(covered, menu_names) is False
+        generic_only = {"rows": [{"name": "disabled"}, {"name": "comment"}]}
+        assert _markdown_table_has_real_delta(generic_only, menu_names) is False

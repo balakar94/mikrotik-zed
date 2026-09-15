@@ -607,6 +607,7 @@ def _collect_markdown_table(
     print_rows: list[dict],
     warnings: list[str],
     stats: dict[str, int] | None = None,
+    infos: list[str] | None = None,
 ) -> None:
     """Classify one pipe table and stash its rows for later merging.
 
@@ -624,8 +625,10 @@ def _collect_markdown_table(
 
     `stats`, when provided, is a `_new_markdown_stats()` dict updated with the
     classification of every table. A genuine property table is never dropped
-    without either a stash (resolved later) or a warning: the no-path/no-row
-    branch warns too.
+    without either a stash (resolved later) or a visible skip: the no-path /
+    no-row branch reports at `info:` level (display table without valid rows,
+    zero coverage loss), never silently. `infos`, when provided, receives
+    those informational skips; otherwise they fall back to `warnings`.
     """
     if stats is not None:
         stats["tables_total"] += 1
@@ -715,18 +718,21 @@ def _collect_markdown_table(
             # A "Property" table with no parseable row and no target menu was
             # previously dropped silently. Prose/backtick-shaped tables (e.g.
             # the routing-filter matcher list) are not menu properties, but
-            # the skip must stay visible.
+            # the skip must stay visible. Zero parsed rows means zero coverage
+            # loss, so this reports at `info:` level, never `warning:`.
             if stats is not None:
                 stats["property_no_rows"] += 1
-            warnings.append(
+            (infos if infos is not None else warnings).append(
                 f"markdown property table near line {line_no} yielded no rows (heading "
                 f"{heading!r}); skipped"
             )
         return
     if not parsed_rows:
+        # Display table without valid rows for an associated menu: same
+        # zero-loss rationale as above, reported at `info:` level.
         if stats is not None:
             stats["property_no_rows"] += 1
-        warnings.append(
+        (infos if infos is not None else warnings).append(
             f"property table near line {line_no} for {', '.join(paths)} yielded no rows "
             f"(heading {heading!r}); upstream shape may have drifted"
         )
@@ -754,6 +760,45 @@ def _menu_property_names(menus: list[dict]) -> dict[str, set[str]]:
     return by_path
 
 
+def _markdown_table_has_real_delta(
+    table: dict, menu_names: dict[str, set[str]] | None
+) -> bool:
+    """True when a skipped table holds at least one actionable new row.
+
+    Log-level gate only, never affecting merge or resolution: rows that
+    `_merge_markdown_rows` would always skip (generic add-item properties in
+    `GENERIC_NAMES`, documented command verbs in `_MD_COMMAND_NAMES`, and
+    TitleCase-only labels) cannot be deltas. Any other row name absent from
+    the union of ArgTable-derived names is a real delta (e.g. `manager`)
+    and keeps `warning:`. A fully covered duplicate (or a generic-only
+    delta) has zero coverage loss and reports at `info:` level.
+
+    Conservative: when in doubt, returns True so the caller keeps warning.
+    Empty `menu_names` or rows without names count as doubt.
+    """
+    rows = table.get("rows", []) or []
+    if not rows:
+        return False
+    if not menu_names:
+        return True
+    known: set[str] = set()
+    for names in menu_names.values():
+        known.update(names)
+    for row in rows:
+        if row.get("titlecase"):
+            continue
+        name = row.get("name", "")
+        if not name:
+            continue
+        if name in GENERIC_NAMES:
+            continue
+        if name in _MD_COMMAND_NAMES:
+            continue
+        if name not in known:
+            return True
+    return False
+
+
 def _resolve_by_row_overlap(
     table: dict, menu_names: dict[str, set[str]]
 ) -> str | None:
@@ -778,6 +823,7 @@ def _resolve_page_context(
     warnings: list[str],
     menu_names: dict[str, set[str]] | None = None,
     stats: dict[str, int] | None = None,
+    infos: list[str] | None = None,
 ) -> list[str]:
     """Resolve a table's page context to exactly one known menu path, or [].
 
@@ -796,7 +842,12 @@ def _resolve_page_context(
        one known menu is attached to it (see `_resolve_by_row_overlap`).
 
     Anything softer is left unassociated. A genuine property table is never
-    dropped without a warning: every unresolved table emits exactly one.
+    dropped silently: every unresolved table emits exactly one skip message.
+    Skips with a real delta (see `_markdown_table_has_real_delta`, e.g. an
+    uncovered `manager` row) keep `warning:`; fully ArgTable-covered
+    duplicates, generic-only deltas, and display tables report at `info:`
+    level via `infos` (falling back to `warnings` when `infos` is None).
+    Resolution and merge behavior are unchanged, only the message level.
     """
     context = table.get("context") or []
     title = table.get("page_title", "")
@@ -814,13 +865,16 @@ def _resolve_page_context(
         shown = fragment or context
         if stats is not None:
             stats["property_skipped"] += 1
+        sink = warnings if _markdown_table_has_real_delta(table, menu_names) else (
+            infos if infos is not None else warnings
+        )
         if shown:
-            warnings.append(
+            sink.append(
                 f"markdown property table near line {table['line_no']} has no single "
                 f"known menu for its property-section fragment ({', '.join(shown)}); skipped"
             )
         else:
-            warnings.append(
+            sink.append(
                 f"markdown property table near line {table['line_no']} has no single "
                 "known menu for its property-section fragment; skipped"
             )
@@ -837,13 +891,16 @@ def _resolve_page_context(
         return [overlap]
     if stats is not None:
         stats["property_skipped"] += 1
+    sink = warnings if _markdown_table_has_real_delta(table, menu_names) else (
+        infos if infos is not None else warnings
+    )
     if context:
-        warnings.append(
+        sink.append(
             f"markdown property table near line {table['line_no']} has page context "
             f"{', '.join(context)} but no unambiguous menu; skipped"
         )
     else:
-        warnings.append(
+        sink.append(
             f"markdown property table near line {table['line_no']} has no page context "
             "and no unambiguous row-overlap menu; skipped"
         )
@@ -968,6 +1025,7 @@ def parse_llms_full(filepath: str, stats: dict[str, int] | None = None) -> list[
     current_section = None  # "flags", "arguments", or "readonly"
     in_argtable = False
     warnings: list[str] = []
+    infos: list[str] = []
 
     # Markdown association state: the page heading drives which section a
     # pipe table belongs to, while `**Sub-menu:**` / path headings drive the
@@ -1107,7 +1165,7 @@ def parse_llms_full(filepath: str, stats: dict[str, int] | None = None) -> list[
                 _collect_markdown_table(
                     cells, rows, effective_paths, page_title, page_paths,
                     fragment_context[i], current_heading,
-                    i + 1, md_tables, print_rows, warnings, stats,
+                    i + 1, md_tables, print_rows, warnings, stats, infos,
                 )
             continue
 
@@ -1129,7 +1187,7 @@ def parse_llms_full(filepath: str, stats: dict[str, int] | None = None) -> list[
             paths = table["paths"]
             if not paths:
                 paths = _resolve_page_context(
-                    table, known_paths, warnings, menu_names, stats
+                    table, known_paths, warnings, menu_names, stats, infos
                 )
                 if not paths:
                     continue
@@ -1156,6 +1214,8 @@ def parse_llms_full(filepath: str, stats: dict[str, int] | None = None) -> list[
 
     for warning in warnings:
         print(f"warning: {warning}", file=sys.stderr)
+    for info in infos:
+        print(f"info: {info}", file=sys.stderr)
 
     return menus
 
