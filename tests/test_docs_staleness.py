@@ -383,3 +383,55 @@ class TestSyncResultMessage:
         assert sync_result_message(["llms-full.txt", "llms.txt"]) == sync_result_message(
             ["llms.txt", "llms-full.txt"]
         )
+
+    def test_forced_rewrite_with_no_byte_change_reports_no_content_change(self):
+        msg = sync_result_message([], forced=True)
+        assert msg == "Sync complete: no content change (files rewritten due to --force)."
+        assert "files updated" not in msg
+        assert "extract_commands.py" not in msg
+
+    def test_forced_false_is_default_no_changes(self):
+        assert sync_result_message([]) == "Sync complete: no changes."
+        assert sync_result_message([], forced=False) == "Sync complete: no changes."
+
+    def test_real_change_ignores_forced_flag(self):
+        assert "files updated" in sync_result_message(["llms.txt", "llms-full.txt"], forced=True)
+
+    def test_force_identical_bytes_rewrites_files_and_manifest_but_reports_no_content_change(
+        self, tmp_path, capsys
+    ):
+        """--force on byte-identical files: manifest policy still rewrites, but
+        the final summary must not claim content changed."""
+        for fname, payload in PAYLOADS.items():
+            (tmp_path / fname).write_bytes(payload)
+        manifest = tmp_path / "data" / "upstream-docs.toml"
+        manifest.parent.mkdir()
+        manifest.write_text("# stale baseline — --force must rewrite\n")
+
+        before_hashes = {fname: hashlib.sha256(payload).hexdigest() for fname, payload in PAYLOADS.items()}
+        fetch, _ = _fake_fetch(PAYLOADS)
+        rc = sync_main(argv=["--force"], project_root=tmp_path, fetch=fetch)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "no content change (files rewritten due to --force)" in out
+        assert "files updated" not in out
+        # Bytes are identical, files still present with the same hashes.
+        for fname, payload in PAYLOADS.items():
+            assert (tmp_path / fname).read_bytes() == payload
+        # Manifest policy intact: --force rewrites even with no byte change.
+        assert manifest.read_text() != "# stale baseline — --force must rewrite\n"
+        data = _toml_loads(manifest.read_text(encoding="utf-8"))
+        by_name = {s["name"]: s for s in data["sources"]}
+        assert by_name["full"]["sha256"] == before_hashes["llms-full.txt"]
+        assert by_name["index"]["sha256"] == before_hashes["llms.txt"]
+
+    def test_force_partial_change_still_reports_files_updated(self, tmp_path, capsys):
+        """--force with one real change: summary keeps the files-updated line."""
+        (tmp_path / "llms.txt").write_bytes(PAYLOADS["llms.txt"])  # identical -> forced
+        (tmp_path / "llms-full.txt").write_bytes(b"# stale corpus\n")  # differs -> changed
+        fetch, _ = _fake_fetch(PAYLOADS)
+        rc = sync_main(argv=["--force"], project_root=tmp_path, fetch=fetch)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "files updated" in out
+        assert "no content change" not in out

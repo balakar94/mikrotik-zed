@@ -209,15 +209,20 @@ def full_version_hint(text: str) -> str:
     return ".".join(str(p) for p in best) if best else ""
 
 
-def sync_result_message(changed_files: list[str]) -> str:
+def sync_result_message(changed_files: list[str], forced: bool = False) -> str:
     """Final sync summary line for a real (non-check) run.
 
     Pure helper (no I/O): identical inputs always produce identical text.
     The extraction pipeline reads llms-full.txt only, so an index-only
     change (llms.txt without llms-full.txt) makes extract a no-op and the
     message says so instead of suggesting a regeneration run.
+    `forced` marks a --force rewrite where no byte actually changed: the
+    manifest policy still rewrites, but the summary must not claim files
+    were updated.
     """
     if not changed_files:
+        if forced:
+            return "Sync complete: no content change (files rewritten due to --force)."
         return "Sync complete: no changes."
     if "llms-full.txt" not in changed_files:
         return (
@@ -273,10 +278,15 @@ def main(argv: list[str] | None = None, *, project_root: Path | None = None, fet
 
     overall_changed = False
     # Per-file change tracking (parallel to overall_changed): names from FILES
-    # that differ from local bytes (or are staged under --force). Used only to
-    # pick the final summary line — index-only changes leave llms-full.txt
+    # with bytes differing from local (new files count as changed). Forced
+    # rewrites of byte-identical files (--force) are tracked separately in
+    # forced_files so the final summary does not claim content changed.
+    # overall_changed stays True for any staged write (changed or forced) to
+    # preserve --check exit codes and the manifest rewrite policy. Used only
+    # to pick the final summary line — index-only changes leave llms-full.txt
     # untouched, so extract would be a no-op and must not be suggested.
     changed_files: list[str] = []
+    forced_files: list[str] = []
     has_error = False
     # --check fallback state: manifest hashes loaded lazily on the first
     # missing local file (read-only; --check never writes). _manifest_loaded
@@ -325,6 +335,20 @@ def main(argv: list[str] | None = None, *, project_root: Path | None = None, fet
 
         if local_hash == remote_hash and not args.force:
             print(f"  {filename}: unchanged (hash {remote_hash[:16]}, version {remote_version})")
+            continue
+
+        # Byte-identical file under --force: rewrite is staged (manifest policy
+        # and exit codes treat --force as a write), but no content changed, so
+        # track it in forced_files, not changed_files.
+        if local_hash == remote_hash and args.force:
+            print(f"  {filename}: unchanged content, forced rewrite staged (hash {remote_hash[:16]})")
+            overall_changed = True
+            forced_files.append(filename)
+            if args.check:
+                print(f"  {filename}: --check mode, not writing")
+                continue
+            pending_writes.append((local_path, data))
+            print(f"  {filename}: staged {len(data)} bytes (will write after both fetches)")
             continue
 
         # Diff stats
@@ -409,7 +433,7 @@ def main(argv: list[str] | None = None, *, project_root: Path | None = None, fet
     if args.check and overall_changed:
         print("Check: updates available (run without --check to apply)", file=sys.stderr)
         return 2
-    print(sync_result_message(changed_files))
+    print(sync_result_message(changed_files, forced=bool(forced_files)))
     return 0
 
 
