@@ -36,7 +36,7 @@ use crate::logging::{
     uri_for_log,
 };
 use crate::menus::MenuData;
-use crate::parser::{ParseCache, build_before_cursor, parse_line, tokenize_with_spans};
+use crate::parser::{ParseCache, build_before_cursor_from_lines, parse_line, tokenize_with_spans};
 use crate::rename;
 use crate::signature;
 use crate::symbols;
@@ -76,6 +76,38 @@ pub(crate) struct Server {
     /// not exist in production builds.
     #[cfg(test)]
     pub(crate) published: Vec<(String, serde_json::Value)>,
+}
+
+/// Write one JSON-RPC `value` to stdout with `Content-Length` framing.
+///
+/// Serializes `value`, then writes the header, the body, and a flush in
+/// that order (no buffering layer). A serialization failure is logged with
+/// `serialize_kind` and reported as non-fatal (caller keeps serving); a
+/// header, body, or flush failure is logged and reported as fatal (caller
+/// terminates the loop). Returns `Err` only when the caller must return.
+fn write_response(value: &serde_json::Value, serialize_kind: &str) -> Result<(), ()> {
+    let json = match serde_json::to_string(value) {
+        Ok(j) => j,
+        Err(e) => {
+            log_error!("failed to serialize {serialize_kind}: {e}");
+            return Ok(());
+        }
+    };
+    let header = format!("Content-Length: {}\r\n\r\n", json.len());
+    let mut stdout = std::io::stdout().lock();
+    if let Err(e) = stdout.write_all(header.as_bytes()) {
+        log_error!("write header error: {e}");
+        return Err(());
+    }
+    if let Err(e) = stdout.write_all(json.as_bytes()) {
+        log_error!("write body error: {e}");
+        return Err(());
+    }
+    if let Err(e) = stdout.flush() {
+        log_error!("flush error: {e}");
+        return Err(());
+    }
+    Ok(())
 }
 
 impl Server {
@@ -177,25 +209,7 @@ impl Server {
                     log_warn!("JSON parse error: {e}");
                     let id = extract_id_for_parse_error(&body);
                     let resp = parse_error_response(&id);
-                    let json = match serde_json::to_string(&resp) {
-                        Ok(j) => j,
-                        Err(e) => {
-                            log_error!("failed to serialize parse error response: {e}");
-                            continue;
-                        }
-                    };
-                    let header = format!("Content-Length: {}\r\n\r\n", json.len());
-                    let mut stdout = std::io::stdout().lock();
-                    if let Err(e) = stdout.write_all(header.as_bytes()) {
-                        log_error!("write header error: {e}");
-                        return;
-                    }
-                    if let Err(e) = stdout.write_all(json.as_bytes()) {
-                        log_error!("write body error: {e}");
-                        return;
-                    }
-                    if let Err(e) = stdout.flush() {
-                        log_error!("flush error: {e}");
+                    if write_response(&resp, "parse error response").is_err() {
                         return;
                     }
                     continue;
@@ -206,28 +220,10 @@ impl Server {
 
             let response = self.handle_message(method, &msg);
 
-            if let Some(resp) = response {
-                let json = match serde_json::to_string(&resp) {
-                    Ok(j) => j,
-                    Err(e) => {
-                        log_error!("failed to serialize response: {e}");
-                        continue;
-                    }
-                };
-                let header = format!("Content-Length: {}\r\n\r\n", json.len());
-                let mut stdout = std::io::stdout().lock();
-                if let Err(e) = stdout.write_all(header.as_bytes()) {
-                    log_error!("write header error: {e}");
-                    return;
-                }
-                if let Err(e) = stdout.write_all(json.as_bytes()) {
-                    log_error!("write body error: {e}");
-                    return;
-                }
-                if let Err(e) = stdout.flush() {
-                    log_error!("flush error: {e}");
-                    return;
-                }
+            if let Some(resp) = response
+                && write_response(&resp, "response").is_err()
+            {
+                return;
             }
         }
     }
@@ -606,17 +602,18 @@ impl Server {
                 };
 
                 // Convert the wire `character` ONCE into a byte offset within
-                // the cursor line, extracted with the same `str::lines()` split
-                // that `build_before_cursor` uses internally, so encoding math
-                // cannot diverge from the string being sliced.
+                // the cursor line, taken from the single `str::lines` split
+                // below that `build_before_cursor_from_lines` also consumes,
+                // so encoding math cannot diverge from the string sliced.
                 let line_idx = line as usize;
-                let current_line = doc.lines().nth(line_idx).unwrap_or("");
+                let lines: Vec<&str> = doc.lines().collect();
+                let current_line = lines.get(line_idx).copied().unwrap_or("");
                 let char_byte = lsp_character_to_byte_offset(
                     current_line,
                     character as usize,
                     self.position_encoding,
                 );
-                let before_cursor = build_before_cursor(doc, line_idx, char_byte);
+                let before_cursor = build_before_cursor_from_lines(&lines, line_idx, char_byte);
                 // Live enrichment: stale-while-revalidate (non-blocking).
                 // Completion only reads fresh cache; misses trigger a background
                 // thread that hydrates for the next keystroke. Coalescing and
@@ -891,7 +888,7 @@ impl Server {
                         // Convert byte offsets to wire characters per encoding, using
                         // the physical line text for the corresponding line (so
                         // multi-byte chars are counted correctly per line).
-                        let lines: Vec<&str> = doc.lines().collect();
+                        // Reuses the single request-level `lines` split above.
                         let s_line_text = lines.get(s_line).copied().unwrap_or("");
                         let e_line_text = lines.get(e_line).copied().unwrap_or("");
                         let start_char = match self.position_encoding {
@@ -1066,7 +1063,7 @@ impl Server {
                         if let (Some((s_line, s_byte, e_line, e_byte)), Some(lower)) =
                             (submenu_range_phys, typed_lower)
                         {
-                            let lines: Vec<&str> = doc.lines().collect();
+                            // Reuses the single request-level `lines` split above.
                             let s_line_text = lines.get(s_line).copied().unwrap_or("");
                             let e_line_text = lines.get(e_line).copied().unwrap_or("");
                             let start_char = match self.position_encoding {

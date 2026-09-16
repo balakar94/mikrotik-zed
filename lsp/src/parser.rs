@@ -381,35 +381,16 @@ pub(crate) fn tokenize(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Build the "before cursor" context across multiple lines.
+/// Build the "before cursor" context from pre-split document lines.
 ///
-/// RouterOS commands can span multiple lines — properties on subsequent lines
-/// are continuations of the same command.  Walks backwards from the cursor
-/// line, collecting all lines belonging to the current command.
-///
-/// Preceding lines are contributed as their *effective content*: the comment
-/// tail is cut quote-aware ([`effective_content_end`]), an odd trailing
-/// backslash run (a continuation marker) is removed, and the remainder is
-/// trimmed of surrounding whitespace. Lines whose effective content is empty
-/// — full-line comments (including indented ones and comments ending in a
-/// backslash) and lone-backslash lines — are INERT: the walk skips them and
-/// keeps going, so a comment between a path line and its command line does
-/// not lose the path context.
-///
-/// `cursor_char` is a BYTE offset within the cursor line (already converted
-/// from the negotiated wire encoding by callers at the protocol boundary).
-///
-/// The result is intentionally NOT right-trimmed: trailing whitespace before
-/// the cursor is the signal that distinguishes "typing inside the last
-/// token" (value-completion mode) from "finished the token, starting a new
-/// one" (property-completion mode). The tokenizer ignores surrounding
-/// whitespace anyway, so only consumers that care about the cursor boundary
-/// can observe the difference. This no-right-trim guarantee applies ONLY to
-/// the cursor line itself — preceding lines are normalized as described
-/// above. BLANK physical lines still terminate the walk: a blank line
-/// separates commands.
-pub fn build_before_cursor(doc: &str, cursor_line: usize, cursor_char: usize) -> String {
-    let lines: Vec<&str> = doc.lines().collect();
+/// Slice overload of [`build_before_cursor`]: same continuation join,
+/// blank-line rule, comment handling, and char-boundary clamp, but over a
+/// caller-owned `str::lines` split so one split serves several lookups.
+pub fn build_before_cursor_from_lines(
+    lines: &[&str],
+    cursor_line: usize,
+    cursor_char: usize,
+) -> String {
     if cursor_line >= lines.len() {
         return String::new();
     }
@@ -455,6 +436,42 @@ pub fn build_before_cursor(doc: &str, cursor_line: usize, cursor_char: usize) ->
     }
 
     parts.join(" ")
+}
+
+/// Build the "before cursor" context across multiple lines.
+///
+/// RouterOS commands can span multiple lines — properties on subsequent lines
+/// are continuations of the same command.  Walks backwards from the cursor
+/// line, collecting all lines belonging to the current command.
+///
+/// Preceding lines are contributed as their *effective content*: the comment
+/// tail is cut quote-aware ([`effective_content_end`]), an odd trailing
+/// backslash run (a continuation marker) is removed, and the remainder is
+/// trimmed of surrounding whitespace. Lines whose effective content is empty
+/// — full-line comments (including indented ones and comments ending in a
+/// backslash) and lone-backslash lines — are INERT: the walk skips them and
+/// keeps going, so a comment between a path line and its command line does
+/// not lose the path context.
+///
+/// `cursor_char` is a BYTE offset within the cursor line (already converted
+/// from the negotiated wire encoding by callers at the protocol boundary).
+///
+/// The result is intentionally NOT right-trimmed: trailing whitespace before
+/// the cursor is the signal that distinguishes "typing inside the last
+/// token" (value-completion mode) from "finished the token, starting a new
+/// one" (property-completion mode). The tokenizer ignores surrounding
+/// whitespace anyway, so only consumers that care about the cursor boundary
+/// can observe the difference. This no-right-trim guarantee applies ONLY to
+/// the cursor line itself — preceding lines are normalized as described
+/// above. BLANK physical lines still terminate the walk: a blank line
+/// separates commands.
+///
+/// Thin wrapper over [`build_before_cursor_from_lines`] with one internal
+/// `str::lines` split; hot paths with a cached split call the slice
+/// overload directly.
+pub fn build_before_cursor(doc: &str, cursor_line: usize, cursor_char: usize) -> String {
+    let lines: Vec<&str> = doc.lines().collect();
+    build_before_cursor_from_lines(&lines, cursor_line, cursor_char)
 }
 
 /// Split `token` into `(key, value)` at the first `=` outside quotes.
