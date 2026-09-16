@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-16
+
+### Security
+
+- **Shim atomic install (`src/lib.rs`, `src/cache.rs`, `src/platform.rs`)**: downloads land in `<stored>.part-<pid>-<counter>`, are SHA-256 verified and chmodded there, then published via atomic rename; the `.verified` marker is written tmp+rename (`0600` on unix) and integrity is re-checked immediately before spawn. Symlinked staging/stored paths are refused; staging residue is removed best-effort.
+- **Shim PATH gate (`src/lib.rs`)**: `worktree.which()` no longer wins silently — new `RSC_LS_ALLOW_PATH` gate (default `1` for compat, `0` forces the verified cache), PATH binaries log absolute path plus short hash prefix, with optional `RSC_LS_PATH_SHA256` developer pin failing closed to the cache.
+- **Deploy destructive gate (`scripts/mikrotik-deploy.py`)**: local pre-scan for `system reset` / `remove` / `reset-configuration` requires `--force-destructive` (or `MIKROTIK_FORCE_DESTRUCTIVE=1`), else exit 2 with an `/export` backup hint; enforced in `main()` and both transports, including `--dry-run`.
+- **Dependencies (`lsp/Cargo.toml`)**: `rustls 0.23.43 → 0.23.45` (RUSTSEC-2026-0285).
+
+### Fixed
+
+- **Tasks schema (`languages/rsc/tasks.json`, `.zed/tasks.json`)**: the Validate task used `reveal: on_error`, which does not exist in Zed's task schema (`reveal` allows only `always` / `no_focus` / `never`) and failed registry packaging with `unknown variant on_error`. It now uses `reveal: never` with `hide: on_success`, keeping quiet-success behavior.
+- **Completion live-cache read (`lsp/src/server.rs`)**: the `textDocument/completion` arm used a blocking `live_cache.lock()` on the keystroke fast path; it now uses `try_lock` with fallback to the static snapshot (`None`), preserving poison recovery.
+- **LSP completion plumbing (`lsp/src/server.rs`, `lsp/src/parser.rs`)**: one `write_response` helper owns stdout framing (exact bytes and log texts preserved; no buffering change), and each completion request splits the document into lines once via `build_before_cursor_from_lines`, keeping `build_before_cursor` as a wrapper. No wire or continuation-semantics change.
+- **Diagnostics message grammar (`lsp/src/diagnostics.rs`)**: standardized `lead verb + target + fix` messages (`Missing required 'x=' for 'verb' … — add x=…`, `Unknown property … — did you mean …?`); severity ladder frozen (Error = syntax only).
+- **Hover cards (`lsp/src/hover.rs`)**: `Required` block now precedes `Optional` under `Arguments`, sharing the existing `MAX_HOVER_*` budget; footer reads `(+N more — type Space after verb to list)` plus `Source: published reference`. Menu hover also shows argument descriptions (`feat/lsp`).
+- **Deploy companions (`scripts/mikrotik-deploy.py`, `scripts/mikrotik-live-check.py`, `scripts/_mikrotik_shared.py`)**: `1..65535` port guard mirrored into deploy, one jittered retry for idempotent live `GET` only (never for `POST /rest/execute` or `/import`), IPv6 bracketing in every log/URL string, and an `openssl s_client … xxd` comparison hint on SPKI pin mismatch with documented `CA_FILE` vs pin-only precedence.
+- **Zed tasks order (`languages/rsc/tasks.json`, `.zed/tasks.json`)**: `Validate → Check --dry-run → Live check → Live --dry-run → Deploy REST → Deploy SSH`; the echo enable-hint task is removed; new Live `--dry-run` variant with explicit `--timeout` passthrough; zero secrets.
+- **Quickstart/docs (`docs/quickstart.md`, `docs/language-features.md`, `docs/device-deploy.md`, `docs/index.md`)**: setup prose collapsed to link-outs, hover/task docs updated, stale `quickstart.md#2-binary-resolution` anchor fixed.
+- **Build gates (`Makefile`, `scripts/check_extract_fresh.sh`)**: local recipes use `--locked` like CI (escape via `UNLOCKED=1`); `validate` uses the timestamp-agnostic extract-freshness check shared with CI instead of a strict diff that always failed on the generated header.
+- **Highlight (`languages/rsc/highlights.scm`)**: menu-specific verb tint (`run`/`info`/`warning`/`error`/`debug`/`unset`); grammar pinned at `7b035b7`.
+- **Completion bool values (`lsp/src/completion.rs`, `lsp/src/hover.rs`)**: `on`/`off` offered alongside `yes`/`no` with glossary fallback.
+
+### Added
+
+- **Export regression quarantine (`grammars/rsc/test/corpus/export_value_regression.txt`, `docs/export-fixtures/tool-fetch.rsc`, `lsp/tests/e2e.rs`)**: three corpus cases plus a sanitized `/tool/fetch` fixture and an E2E asserting zero syntax diagnostics for long URLs, block-valued parameters, and quoted variables.
+- **Deterministic diagnostics fuzz (`lsp/src/tests/diagnostics_fuzz.rs`)**: 2000 hostile PRNG values per validator family (bool/num/time/mac/ip/ubit/enums/required/unset) plus multibyte boundary insertion, fail-closed, under 1s in debug.
+- **Cap-mirror contract (`lsp/src/tests/caps.rs`)**: wire-side mirrors in `perf_smoke.rs` / `framing_chaos.rs` are asserted equal to `caps.rs`; a drifted mirror fails `test-rust`.
+- **Deploy dry-run matrix (`tests/test_mikrotik_shared.py`, `tests/test_functionality.py`)**: REST/SSH × timeout-clamp edges × invalid hosts with network syscalls disabled, asserting exit codes and password redaction; task schema test pins Zed's `reveal`/`hide` enums.
+- **Release provenance (`.github/workflows/release.yml`, `scripts/publish_grammar.py`)**: per-job uploads carry only binary + companion with one combined `SHA256SUMS` (now including an `sbom.txt` dependency manifest); `meta` fails lightweight tags; grammar publishing uses an explicit path allowlist with `--no-commit`.
+
+### Changed
+
+- **Data/provenance**: upstream docs re-sync 2026-09-15 (index-only); extraction zero-loss table skips demoted from warning to info; sync CLI messages clarified (identical-bytes `--force`, index-only vs full summaries).
+
 ## [0.6.0] - 2026-09-12
 
 ### Security
@@ -220,7 +255,8 @@ Baseline release tagged `v0.5.0`. Changes since `v0.4.0`:
 - `extension.toml` kept to schema-known keys only.
 - Local `TODO.md` ignored.
 
-[Unreleased]: https://github.com/balakar94/mikrotik-zed/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/balakar94/mikrotik-zed/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/balakar94/mikrotik-zed/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.6...v0.6.0
 [0.5.6]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.3...v0.5.5
