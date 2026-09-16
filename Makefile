@@ -163,12 +163,16 @@ install-tools: ## Install toolchains: rustup+wasm32-wasip2, Python venv (.venv) 
 	@echo "==> Toolchains ready: cargo + $(WASM_TARGET), $(VENV_DIR)/bin/python, tree-sitter-cli via npx"
 	@echo "    Activate venv: source $(VENV_DIR)/bin/activate"
 
-install-lsp: build-lsp ## Build rsc-ls and copy to PATH (~/.cargo/bin; + /opt/homebrew/bin on macOS, ~/.local/bin on Linux)
+install-lsp: build-lsp ## Build rsc-ls and copy to PATH (~/.cargo/bin; + /opt/homebrew/bin on macOS, ~/.local/bin on Linux; adhoc re-sign on macOS)
 	@mkdir -p ~/.cargo/bin; cp target/release/rsc-ls ~/.cargo/bin/rsc-ls; chmod +x ~/.cargo/bin/rsc-ls
 	@echo "Installed: ~/.cargo/bin/rsc-ls"
 	@uname_s=$$(uname -s); \
 	if [ "$$uname_s" = "Darwin" ] && [ -d /opt/homebrew/bin ]; then cp target/release/rsc-ls /opt/homebrew/bin/rsc-ls && echo "Installed: /opt/homebrew/bin/rsc-ls (for Zed GUI)"; fi; \
-	if [ "$$uname_s" != "Darwin" ] && [ -d "$$HOME/.local/bin" ]; then cp target/release/rsc-ls "$$HOME/.local/bin/rsc-ls" && echo "Installed: $$HOME/.local/bin/rsc-ls"; fi
+	if [ "$$uname_s" != "Darwin" ] && [ -d "$$HOME/.local/bin" ]; then cp target/release/rsc-ls "$$HOME/.local/bin/rsc-ls" && echo "Installed: $$HOME/.local/bin/rsc-ls"; fi; \
+	if [ "$$uname_s" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then \
+		codesign -s - ~/.cargo/bin/rsc-ls && echo "Re-signed: ~/.cargo/bin/rsc-ls (adhoc — macOS kills linker-signed binaries carrying provenance xattrs)"; \
+		if [ -f /opt/homebrew/bin/rsc-ls ]; then codesign -s - /opt/homebrew/bin/rsc-ls && echo "Re-signed: /opt/homebrew/bin/rsc-ls (adhoc — macOS kills linker-signed binaries carrying provenance xattrs)"; fi; \
+	fi
 	@echo "Verify: which rsc-ls && rsc-ls --help 2>&1 | head -n 5 || echo 'rsc-ls ready'"
 
 install: install-deps install-tools install-lsp ## Full bootstrap: system deps + toolchains + rsc-ls (SKIP_SYSTEM=1 to skip distro packages)

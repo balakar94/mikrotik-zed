@@ -24,6 +24,7 @@
 - **Build gates (`Makefile`, `scripts/check_extract_fresh.sh`)**: local recipes use `--locked` like CI (escape via `UNLOCKED=1`); `validate` uses the timestamp-agnostic extract-freshness check shared with CI instead of a strict diff that always failed on the generated header.
 - **Highlight (`languages/rsc/highlights.scm`)**: menu-specific verb tint (`run`/`info`/`warning`/`error`/`debug`/`unset`); grammar pinned at `7b035b7`.
 - **Completion bool values (`lsp/src/completion.rs`, `lsp/src/hover.rs`)**: `on`/`off` offered alongside `yes`/`no` with glossary fallback.
+- **Install (`Makefile`)**: `install-lsp` re-signs the installed copies adhoc on macOS — the kernel kills linker-signed binaries carrying provenance xattrs (`SIGKILL`, Code Signature Invalid), so copies in `~/.cargo/bin` and `/opt/homebrew/bin` are re-signed after install.
 
 ### Added
 
