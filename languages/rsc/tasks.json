@@ -37,6 +37,8 @@
       "${input:mikrotik_host}",
       "--user",
       "${input:mikrotik_user}",
+      "--timeout",
+      "${input:mikrotik_timeout}",
       "--method",
       "rest"
     ],
@@ -51,6 +53,12 @@
         "type": "prompt",
         "description": "MikroTik User",
         "default": "admin"
+      },
+      {
+        "id": "mikrotik_timeout",
+        "type": "prompt",
+        "description": "Timeout seconds (1..30, default 5)",
+        "default": "5"
       }
     ],
     "env": {},
@@ -61,6 +69,49 @@
     "hide": "on_success",
     "shell": "system",
     "tags": ["mikrotik-live", "mikrotik-verify"]
+  },
+  {
+    "label": "MikroTik: Live — Check connectivity --dry-run (opt-in)",
+    "command": "python3",
+    "args": [
+      "scripts/mikrotik-live-check.py",
+      "--host",
+      "${input:mikrotik_host}",
+      "--user",
+      "${input:mikrotik_user}",
+      "--timeout",
+      "${input:mikrotik_timeout}",
+      "--method",
+      "rest",
+      "--dry-run"
+    ],
+    "inputs": [
+      {
+        "id": "mikrotik_host",
+        "type": "prompt",
+        "description": "MikroTik Host (IP/hostname)"
+      },
+      {
+        "id": "mikrotik_user",
+        "type": "prompt",
+        "description": "MikroTik User",
+        "default": "admin"
+      },
+      {
+        "id": "mikrotik_timeout",
+        "type": "prompt",
+        "description": "Timeout seconds (1..30, default 5)",
+        "default": "5"
+      }
+    ],
+    "env": {},
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": true,
+    "reveal": "always",
+    "hide": "on_success",
+    "shell": "system",
+    "tags": ["mikrotik-live", "mikrotik-verify", "mikrotik-dry-run"]
   },
   {
     "label": "MikroTik: Deploy current file (REST)",

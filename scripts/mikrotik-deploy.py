@@ -311,7 +311,7 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
     # We try direct execute: POST /rest/execute with {"script": content}
     # This avoids file handling differences across versions.
     # Redirects are disabled on every call: 3xx fails closed, never followed.
-    log(f"REST: uploading {len(content)} bytes to {host} as {user} (direct execute)")
+    log(f"REST: uploading {len(content)} bytes to {host_for_url} as {user} (direct execute)")
     # The SPKI pin (when set) is verified inside the pinned HTTPS connection,
     # on the same socket as the request and before the Authorization header is
     # written — no separate handshake to race (see _mikrotik_shared).
@@ -375,14 +375,15 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
 def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str, filename: str, dry_run: bool, accept_host_key: bool, timeout: int = 60, force_destructive: bool = False) -> None:
     # SSRF gate before any SSH dial — enforced even on --dry-run.
     _deny_ssrf_host_or_exit(host)
+    host_for_url = format_host_for_url(host)
     # Sanitize filename before SFTP — same gate as REST.
     filename = _sanitize_and_validate_filename(filename)
     # Local destructive pre-scan before any preview or network access.
     # Same verdict on dry-run (exit 2 unless --force-destructive).
     check_destructive_or_exit(content, force_destructive)
     if dry_run:
-        log(f"DRY-RUN SSH: would scp {len(content)} bytes to {host}:{port} as {user} -> /{filename}")
-        log(f"DRY-RUN SSH: would ssh {user}@{host} \"/import file={filename}\"")
+        log(f"DRY-RUN SSH: would scp {len(content)} bytes to {host_for_url}:{port} as {user} -> /{filename}")
+        log(f"DRY-RUN SSH: would ssh {user}@{host_for_url} \"/import file={filename}\"")
         return
     if not HAS_PARAMIKO:
         print("error: SSH method requires 'paramiko' (pip install paramiko)", file=sys.stderr)
@@ -395,7 +396,7 @@ def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str,
         print(f"error: {target_err}", file=sys.stderr)
         sys.exit(4)
 
-    log(f"SSH: connecting to {host}:{port} as {user}")
+    log(f"SSH: connecting to {host_for_url}:{port} as {user}")
     client = paramiko.SSHClient()
     # Load the user's known_hosts; unknown hosts are rejected by paramiko's default policy.
     client.load_system_host_keys()
@@ -493,7 +494,7 @@ def parse_args() -> argparse.Namespace:
         "--http",
         action="store_true",
         default=os.getenv("MIKROTIK_HTTP") == "1",
-        help="Force plain HTTP for REST transport (env MIKROTIK_HTTP=1)",
+        help="Force plain HTTP for REST transport (env MIKROTIK_HTTP=1). No legacy SSL=0 fallback here; Rust rsc-ls keeps one behind opt-in RSC_LS_LEGACY_HTTP_SHIM=1",
     )
     p.add_argument(
         "--timeout",
@@ -518,12 +519,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--fingerprint",
         default=os.getenv("MIKROTIK_FINGERPRINT"),
-        help="SPKI SHA256 pin for REST TLS (env MIKROTIK_FINGERPRINT, format sha256:<hex>)",
+        help="SPKI SHA256 pin for REST TLS (env MIKROTIK_FINGERPRINT, format sha256:<hex>). Precedence: CA_FILE => chain+hostname AND pin; pin-only => chain relaxed, pin enforced pre-Auth",
     )
     p.add_argument(
         "--ca-file",
         default=os.getenv("MIKROTIK_CA_FILE"),
-        help="Custom CA bundle path for REST TLS (env MIKROTIK_CA_FILE)",
+        help="Custom CA bundle path for REST TLS (env MIKROTIK_CA_FILE). With a pin: chain+hostname AND pin are both enforced",
     )
     return p.parse_args()
 
@@ -553,7 +554,7 @@ def main() -> None:
     if not args.password and not args.dry_run:
         # Prompt securely if not provided and not dry-run
         try:
-            args.password = getpass.getpass(f"Password for {args.user}@{args.host}: ")
+            args.password = getpass.getpass(f"Password for {args.user}@{format_host_for_url(args.host)}: ")
         except Exception:
             pass
         if not args.password:
@@ -611,7 +612,7 @@ def main() -> None:
         sys.exit(2)
 
     if args.dry_run:
-        log(f"DRY-RUN: {path} -> {args.host} as {args.user} ({len(content)} bytes, method={args.method})")
+        log(f"DRY-RUN: {path} -> {format_host_for_url(args.host)} as {args.user} ({len(content)} bytes, method={args.method})")
         # Show first 500 chars
         preview = content[:500].replace("\n", "\\n")
         log(f"Preview: {preview[:200]}...")

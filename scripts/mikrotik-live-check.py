@@ -111,7 +111,7 @@ def parse_args() -> argparse.Namespace:
         "--http",
         action="store_true",
         default=os.getenv("MIKROTIK_HTTP") == "1",
-        help="Force plain HTTP (env MIKROTIK_HTTP=1)",
+        help="Force plain HTTP (env MIKROTIK_HTTP=1). No legacy SSL=0 fallback here; Rust rsc-ls keeps one behind opt-in RSC_LS_LEGACY_HTTP_SHIM=1",
     )
     p.add_argument(
         "--timeout",
@@ -124,12 +124,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--fingerprint",
         default=os.getenv("MIKROTIK_FINGERPRINT"),
-        help="SPKI SHA256 pin (env MIKROTIK_FINGERPRINT, format sha256:<hex>)",
+        help="SPKI SHA256 pin (env MIKROTIK_FINGERPRINT, format sha256:<hex>). Precedence: CA_FILE => chain+hostname AND pin; pin-only => chain relaxed, pin enforced pre-Auth",
     )
     p.add_argument(
         "--ca-file",
         default=os.getenv("MIKROTIK_CA_FILE"),
-        help="Custom CA bundle path (env MIKROTIK_CA_FILE)",
+        help="Custom CA bundle path (env MIKROTIK_CA_FILE). With a pin: chain+hostname AND pin are both enforced",
     )
     # Compatibility shim for tasks.json that still passes --method rest (ignored, but required for test)
     p.add_argument("--method", choices=["rest", "auto", "ssh"], default="rest", help=argparse.SUPPRESS)

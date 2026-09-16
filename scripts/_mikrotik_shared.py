@@ -971,7 +971,12 @@ def verify_spki_pin_on_socket(sock, pin: bytes | None) -> None:
     if digest is None:
         raise ssl.SSLError("TLS pin check: could not parse peer SPKI")
     if not hmac.compare_digest(digest, pin):
-        raise ssl.SSLError("TLS pin check: SPKI pin mismatch")
+        raise ssl.SSLError(
+            "TLS pin check: SPKI pin mismatch; compare with "
+            "openssl s_client -connect host:port | openssl x509 -pubkey ... | "
+            "openssl pkey -pubin -outform DER | "
+            "openssl dgst -sha256 -binary | xxd -p -c 64"
+        )
 
 
 def build_pinned_requests_adapter(addrs: list[str], pin: bytes | None = None):
