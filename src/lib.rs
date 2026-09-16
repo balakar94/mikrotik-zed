@@ -60,20 +60,106 @@ impl zed::Extension for RscExtension {
         //    picked up without a release round-trip. The plain name is probed
         //    everywhere; Windows manual installs keep the `.exe` suffix, so
         //    probe that there too (no-op elsewhere).
-        if let Some(path) = worktree
-            .which(BINARY_NAME)
-            .or_else(|| worktree.which(binary_name))
-        {
-            eprintln!("[mikrotik-zed] using {BINARY_NAME} from PATH: {path}");
+        //
+        //    Supply-chain gate `RSC_LS_ALLOW_PATH` (read via
+        //    `worktree.shell_env()`, never `std::env`, so the WASM component
+        //    stays sandboxed): default `1` preserves compatibility and keeps
+        //    PATH first; `0` skips PATH entirely and forces the verified
+        //    work-dir cache / auto-download path below. Set
+        //    `RSC_LS_ALLOW_PATH=0` in the shell environment when only
+        //    checksum-verified binaries may run.
+        //
+        //    Optional hash pin for developers: set `RSC_LS_PATH_SHA256` to the
+        //    expected 64-character lowercase hex digest of the PATH binary
+        //    (compare with `sha256sum "$(which rsc-ls)"`). When present and
+        //    well-formed, a PATH hit whose bytes hash differently is refused
+        //    and resolution falls through to the verified cache path; a
+        //    malformed pin value is treated the same way (fail closed, never
+        //    spawned). When PATH is used, only the absolute path plus a short
+        //    hash prefix are logged -- never environment values or secrets --
+        //    alongside the extension version; run `rsc-ls --version` locally
+        //    for the binary version (probing it from the shim would require a
+        //    spawn, which is not cheap here).
+        let shell_env = worktree.shell_env();
+        let allow_path = shell_env
+            .iter()
+            .find(|(k, _)| k == "RSC_LS_ALLOW_PATH")
+            .map(|(_, v)| v.trim() != "0")
+            .unwrap_or(true);
+        if allow_path {
+            if let Some(path) = worktree
+                .which(BINARY_NAME)
+                .or_else(|| worktree.which(binary_name))
+            {
+                let pinned = shell_env
+                    .iter()
+                    .find(|(k, _)| k == "RSC_LS_PATH_SHA256")
+                    .map(|(_, v)| v.trim().to_ascii_lowercase());
+                let hash_result =
+                    crate::sha256::sha256_file_hex(&path, crate::verify::MAX_VERIFIED_BINARY_BYTES);
+                // A refusal must fall through to the verified cache below;
+                // only an accepted PATH hit returns early.
+                let mut usable: Option<String> = None;
+                match (&pinned, &hash_result) {
+                    (Some(pin), Ok(digest)) => {
+                        let well_formed =
+                            pin.len() == 64 && pin.bytes().all(|b| b.is_ascii_hexdigit());
+                        if !well_formed {
+                            eprintln!(
+                                "[mikrotik-zed] refusing PATH binary {path}: RSC_LS_PATH_SHA256 value is malformed; falling through to verified cache"
+                            );
+                        } else if !crate::sha256::digests_match(pin, digest) {
+                            eprintln!(
+                                "[mikrotik-zed] refusing PATH binary {path}: sha256 {}… does not match pin {}…; falling through to verified cache",
+                                crate::verify::short_digest(digest),
+                                crate::verify::short_digest(pin)
+                            );
+                        } else {
+                            eprintln!(
+                                "[mikrotik-zed] using {BINARY_NAME} from PATH: {path} (sha256 {}…, extension v{version}, pin verified; confirm binary version with `rsc-ls --version`)",
+                                crate::verify::short_digest(digest)
+                            );
+                            usable = Some(path);
+                        }
+                    }
+                    (Some(_), Err(_)) => {
+                        eprintln!(
+                            "[mikrotik-zed] refusing PATH binary {path}: could not hash it to check RSC_LS_PATH_SHA256; falling through to verified cache"
+                        );
+                    }
+                    (None, Ok(digest)) => {
+                        eprintln!(
+                            "[mikrotik-zed] using {BINARY_NAME} from PATH: {path} (sha256 {}…, extension v{version}; confirm binary version with `rsc-ls --version`)",
+                            crate::verify::short_digest(digest)
+                        );
+                        eprintln!(
+                            "[mikrotik-zed] warning: PATH binary bypasses the checksum/.verified gate used by the auto-download path (see verify.rs/cache.rs); ensure it is trusted (set RSC_LS_ALLOW_PATH=0 to force verified cache, or pin with RSC_LS_PATH_SHA256)"
+                        );
+                        usable = Some(path);
+                    }
+                    (None, Err(_)) => {
+                        eprintln!(
+                            "[mikrotik-zed] using {BINARY_NAME} from PATH: {path} (extension v{version}; binary could not be hashed for logging, confirm with `rsc-ls --version`)"
+                        );
+                        eprintln!(
+                            "[mikrotik-zed] warning: PATH binary bypasses the checksum/.verified gate used by the auto-download path (see verify.rs/cache.rs); ensure it is trusted (set RSC_LS_ALLOW_PATH=0 to force verified cache, or pin with RSC_LS_PATH_SHA256)"
+                        );
+                        usable = Some(path);
+                    }
+                }
+                if let Some(accepted) = usable {
+                    self.cached_binary = Some(accepted.clone());
+                    return Ok(zed::Command {
+                        command: accepted,
+                        args: vec![],
+                        env: shell_env,
+                    });
+                }
+            }
+        } else {
             eprintln!(
-                "[mikrotik-zed] warning: PATH binary bypasses the checksum/.verified gate used by the auto-download path (see verify.rs/cache.rs); ensure it is trusted"
+                "[mikrotik-zed] PATH lookup disabled by RSC_LS_ALLOW_PATH=0; using verified cache"
             );
-            self.cached_binary = Some(path.clone());
-            return Ok(zed::Command {
-                command: path,
-                args: vec![],
-                env: worktree.shell_env(),
-            });
         }
 
         // 2) Reuse cached binary from previous successful resolution in this session.
