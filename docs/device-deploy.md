@@ -32,16 +32,18 @@ MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret \
   python scripts/mikrotik-deploy.py demo.rsc --method rest
 ```
 
-## The 6 Zed tasks (`languages/rsc/tasks.json` → copy to `.zed/tasks.json`)
+## The 5 Zed tasks (`languages/rsc/tasks.json` → copy to `.zed/tasks.json`)
 
 | Task label | What it does |
 | --- | --- |
+| MikroTik: Validate RSC syntax (local only, no device) | size/UTF-8 sanity (≤5 MiB); semantics come from `rsc-ls` |
 | MikroTik: Check script (dry-run, no device) | deploy preview, no network |
+| MikroTik: Live — Check connectivity (opt-in) | prompts host/user, pass from env/keychain |
 | MikroTik: Deploy current file (REST) | `$ZED_FILE` via REST |
 | MikroTik: Deploy current file (SSH) | `$ZED_FILE` via SSH |
-| MikroTik: Validate RSC syntax (local only, no device) | size/UTF-8 sanity (≤5 MiB); semantics come from `rsc-ls` |
-| MikroTik: Live — Check connectivity (opt-in) | prompts host/user, pass from env/keychain |
-| MikroTik: Live — Enable enrichment (set RSC_LS_LIVE=1) | prints env setup hint, changes nothing |
+
+Live enrichment setup (env only, never stored in tasks):
+[live-enrichment.md](live-enrichment.md).
 
 See `python scripts/mikrotik-deploy.py --help` and the
 [device-operations skill](../.agents/skills/device-operations.md).

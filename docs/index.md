@@ -17,7 +17,7 @@ hover, and diagnostics. Live device enrichment is opt-in and in-memory only.
 
 `src/lib.rs` is the WASM shim Zed loads. It holds zero language logic —
 it only resolves `rsc-ls` at runtime (PATH → cache → GitHub Releases).
-See [quickstart.md](quickstart.md#2-binary-resolution).
+See [offline fallback](troubleshooting.md#offline-fallback).
 
 ## Start here
 

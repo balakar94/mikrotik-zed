@@ -44,7 +44,10 @@ fn test_stray_close_brace_reported_at_char() {
     let d = &diags[0];
     assert_eq!(d.code.as_deref(), Some("unmatched-brace"));
     assert_eq!(d.severity, Some(severity::ERROR));
-    assert_eq!(d.message, "Unmatched '}': no '{' is open at this point");
+    assert_eq!(
+        d.message,
+        "Unmatched '}' — remove it or open a block with '{'"
+    );
     assert_eq!(
         d.range.start,
         Position {

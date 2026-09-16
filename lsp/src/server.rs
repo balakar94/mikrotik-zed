@@ -676,23 +676,40 @@ impl Server {
                     _ => None,
                 };
                 let mut items = {
-                    // Narrow live-lock: held only for the synchronous cache
-                    // read inside `compute_completions_with_logical` (fresh-entry
-                    // `Arc` clones). A full snapshot clone under lock would
-                    // also work but `LiveCache` is not `Clone` and the
-                    // completion layer only needs `&LiveCache`, so scoping the
-                    // guard to this block is the smallest safe narrowing — the
-                    // long textEdit injection below runs lock-free.
-                    let live_guard = self.live_cache.lock().unwrap_or_else(|e| {
-                        log_warn!("live cache lock poisoned, recovering");
-                        e.into_inner()
-                    });
-                    completion::compute_completions_with_logical(
-                        &self.data,
-                        &before_cursor,
-                        logical_prefix_text.as_deref(),
-                        Some(&*live_guard as &LiveCache),
-                    )
+                    // Non-blocking live read: `try_lock` never waits for a
+                    // background fetch holding the cache. `WouldBlock` falls
+                    // back to the static snapshot (`None`); a poisoned mutex
+                    // recovers the inner guard as before. The guard lives only
+                    // for the synchronous cache read inside
+                    // `compute_completions_with_logical` (fresh-entry `Arc`
+                    // clones); the long textEdit injection below runs lock-free.
+                    match self.live_cache.try_lock() {
+                        Ok(live_guard) => completion::compute_completions_with_logical(
+                            &self.data,
+                            &before_cursor,
+                            logical_prefix_text.as_deref(),
+                            Some(&*live_guard as &LiveCache),
+                        ),
+                        Err(std::sync::TryLockError::WouldBlock) => {
+                            log_debug!("live cache busy, completing from static snapshot");
+                            completion::compute_completions_with_logical(
+                                &self.data,
+                                &before_cursor,
+                                logical_prefix_text.as_deref(),
+                                None,
+                            )
+                        }
+                        Err(std::sync::TryLockError::Poisoned(e)) => {
+                            log_warn!("live cache lock poisoned, recovering");
+                            let live_guard = e.into_inner();
+                            completion::compute_completions_with_logical(
+                                &self.data,
+                                &before_cursor,
+                                logical_prefix_text.as_deref(),
+                                Some(&*live_guard as &LiveCache),
+                            )
+                        }
+                    }
                 };
 
                 // ── textEdit injection (C-02 logical vs physical) ────────

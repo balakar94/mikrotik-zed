@@ -109,7 +109,7 @@ fn test_unknown_property_typo_appends_did_you_mean() {
         .expect("unknown-property must fire for 'adress'");
     assert_eq!(
         d.message,
-        "Unknown property 'adress' for '/ip/address'. Did you mean 'address'?"
+        "Unknown property 'adress=' for '/ip/address' — did you mean 'address'?"
     );
 }
 
@@ -123,7 +123,7 @@ fn test_unknown_property_garbage_has_no_suggestion_suffix() {
         .find(|d| d.code.as_deref() == Some("unknown-property"))
         .expect("unknown-property must fire for garbage key");
     assert!(
-        !d.message.contains("Did you mean"),
+        !d.message.contains("did you mean"),
         "garbage beyond threshold must not suggest, got {:?}",
         d.message
     );
@@ -139,7 +139,7 @@ fn test_unknown_menu_typo_appends_did_you_mean() {
         .find(|d| d.code.as_deref() == Some("unknown-menu"))
         .expect("unknown-menu must fire for '/ip/addres'");
     assert!(
-        d.message.contains("Did you mean '/ip/address'?"),
+        d.message.contains("did you mean '/ip/address'?"),
         "menu typo must suggest, got {:?}",
         d.message
     );
@@ -156,7 +156,7 @@ fn test_invalid_enum_typo_appends_did_you_mean() {
         .expect("invalid-enum-value must fire for 'inpt'");
     assert_eq!(d.severity, Some(severity::WARNING));
     assert!(
-        d.message.contains("Did you mean 'input'?"),
+        d.message.contains("did you mean 'input'?"),
         "enum typo must suggest, got {:?}",
         d.message
     );

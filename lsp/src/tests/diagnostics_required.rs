@@ -176,7 +176,10 @@ fn test_mixed_case_duplicate_property_keeps_original_casing() {
         .iter()
         .find(|d| d.code.as_deref() == Some("duplicate-property"))
         .expect("case-insensitive duplicate must fire");
-    assert_eq!(dup.message, "Duplicate property 'ADDRESS'");
+    assert_eq!(
+        dup.message,
+        "Duplicate property 'ADDRESS' — remove the duplicate"
+    );
 }
 
 #[test]

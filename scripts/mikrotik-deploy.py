@@ -126,6 +126,45 @@ _IMPORT_FAILURE_MARKERS = ("syntax error", "input does not match", "bad command 
 MAX_RESPONSE_BYTES = 512 * 1024
 
 
+# Local pre-push scan for destructive verbs. Narrow allowlist: only an
+# explicit --force-destructive bypasses this gate. Runs before any network
+# access and on --dry-run with the same verdict (exit 2 when blocked).
+_DESTRUCTIVE_RE = re.compile(r"^\s*(/)?(system reset|.*\b(remove|reset-configuration)\b)", re.IGNORECASE)
+
+
+def find_destructive_lines(content: str) -> list[tuple[int, str]]:
+    """Return (line number, line text) for lines matching the destructive scan."""
+    hits: list[tuple[int, str]] = []
+    for lineno, line in enumerate((content or "").splitlines(), start=1):
+        if _DESTRUCTIVE_RE.search(line):
+            hits.append((lineno, line.strip()))
+    return hits
+
+
+def check_destructive_or_exit(content: str, force_destructive: bool) -> None:
+    """Refuse destructive content unless explicitly acknowledged (exit 2).
+
+    Prints the offending line numbers and a backup hint. Never logs secrets.
+    """
+    hits = find_destructive_lines(content)
+    if not hits:
+        return
+    if force_destructive:
+        print(
+            f"warning: destructive content acknowledged ({len(hits)} line(s)); proceeding",
+            file=sys.stderr,
+        )
+        return
+    shown = ", ".join(f"line {n}: {t[:80]}" for n, t in hits[:5])
+    print(f"error: destructive content detected ({shown})", file=sys.stderr)
+    print(
+        "hint: take /export file=pre-<ts> before push"
+        " (e.g. /export file=pre-20260101-120000), then retry with --force-destructive",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def _match_import_failure_marker(output: str) -> str | None:
     """Return the first high-confidence failure marker found in /import output, or None."""
     lowered = output.lower()
@@ -229,7 +268,7 @@ def _deny_ssrf_host_or_exit(host: str) -> None:
         sys.exit(2)
 
 
-def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: bool, content: str, filename: str, dry_run: bool, force_http: bool = False, timeout: int = 30, fingerprint: bytes | None = None, ca_file: str = "") -> None:
+def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: bool, content: str, filename: str, dry_run: bool, force_http: bool = False, timeout: int = 30, fingerprint: bytes | None = None, ca_file: str = "", force_destructive: bool = False) -> None:
     # SSRF gate before any URL construction, logging, or network access —
     # enforced even on --dry-run.
     _deny_ssrf_host_or_exit(host)
@@ -237,6 +276,9 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
     scheme = resolve_scheme(port, force_http)
     # Sanitize filename before any URL construction — same gate for both transports.
     filename = _sanitize_and_validate_filename(filename)
+    # Local destructive pre-scan before any preview or network access.
+    # Same verdict on dry-run (exit 2 unless --force-destructive).
+    check_destructive_or_exit(content, force_destructive)
     # URL-encode validated filename for REST path segment (safe after allowlist).
     encoded_filename = urllib.parse.quote(filename, safe="")
     # Clamp per-request timeout to 1..300s (mirrors live 1..30 clamp, wider for file upload).
@@ -330,11 +372,14 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
         sys.exit(4)
 
 
-def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str, filename: str, dry_run: bool, accept_host_key: bool, timeout: int = 60) -> None:
+def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str, filename: str, dry_run: bool, accept_host_key: bool, timeout: int = 60, force_destructive: bool = False) -> None:
     # SSRF gate before any SSH dial — enforced even on --dry-run.
     _deny_ssrf_host_or_exit(host)
     # Sanitize filename before SFTP — same gate as REST.
     filename = _sanitize_and_validate_filename(filename)
+    # Local destructive pre-scan before any preview or network access.
+    # Same verdict on dry-run (exit 2 unless --force-destructive).
+    check_destructive_or_exit(content, force_destructive)
     if dry_run:
         log(f"DRY-RUN SSH: would scp {len(content)} bytes to {host}:{port} as {user} -> /{filename}")
         log(f"DRY-RUN SSH: would ssh {user}@{host} \"/import file={filename}\"")
@@ -463,6 +508,12 @@ def parse_args() -> argparse.Namespace:
         help="Trust unknown SSH host keys (trust-on-first-use). WARNING: vulnerable to MITM. Env: MIKROTIK_ACCEPT_HOST_KEY=1",
     )
     p.add_argument("--dry-run", action="store_true", help="Show what would be done without connecting")
+    p.add_argument(
+        "--force-destructive",
+        action="store_true",
+        default=os.getenv("MIKROTIK_FORCE_DESTRUCTIVE") == "1",
+        help="Allow content matching the destructive pre-scan (system reset, remove, reset-configuration). Without it the push is refused with exit 2 (env MIKROTIK_FORCE_DESTRUCTIVE=1)",
+    )
     p.add_argument("--filename", default=None, help="Remote filename (default: basename of file)")
     p.add_argument(
         "--fingerprint",
@@ -528,11 +579,9 @@ def main() -> None:
     if not content.strip():
         print(f"error: file is empty: {path}", file=sys.stderr)
         sys.exit(2)
-    if args.dry_run:
-        log(f"DRY-RUN: {path} -> {args.host} as {args.user} ({len(content)} bytes, method={args.method})")
-        # Show first 500 chars
-        preview = content[:500].replace("\n", "\\n")
-        log(f"Preview: {preview[:200]}...")
+    # Local destructive pre-scan before any preview or network access.
+    # Same verdict on dry-run (exit 2 unless --force-destructive).
+    check_destructive_or_exit(content, args.force_destructive)
 
     method = args.method
     port = args.port
@@ -542,8 +591,30 @@ def main() -> None:
         elif method == "rest":
             port = 443
         else:
-            # auto: prefer REST, so 443
-            port = int(os.getenv("MIKROTIK_PORT", "443")) if os.getenv("MIKROTIK_PORT") else 443
+            # auto: prefer REST, so 443; invalid env falls back with a warning.
+            port_raw = os.getenv("MIKROTIK_PORT")
+            if port_raw is not None and port_raw.strip():
+                try:
+                    port = int(port_raw.strip())
+                except ValueError:
+                    print(
+                        f"warning: invalid MIKROTIK_PORT={port_raw!r}, using default 443",
+                        file=sys.stderr,
+                    )
+                    port = 443
+            else:
+                port = 443
+
+    # Port guard mirrored from the live check: valid TCP ports are 1..65535.
+    if not 1 <= port <= 65535:
+        print(f"error: invalid port {port}", file=sys.stderr)
+        sys.exit(2)
+
+    if args.dry_run:
+        log(f"DRY-RUN: {path} -> {args.host} as {args.user} ({len(content)} bytes, method={args.method})")
+        # Show first 500 chars
+        preview = content[:500].replace("\n", "\\n")
+        log(f"Preview: {preview[:200]}...")
 
     ssl_verify = not args.no_ssl_verify
 
@@ -583,12 +654,14 @@ def main() -> None:
             sys.exit(3)
 
     if method == "rest":
-        deploy_via_rest(args.host, args.user, args.password or "", port, ssl_verify, content, filename, args.dry_run, force_http=args.http, timeout=args.timeout, fingerprint=fingerprint, ca_file=ca_file)
+        # POST /rest/execute and /import are never retried: only idempotent
+        # GETs retry (see the live check), so a repeated import cannot run twice.
+        deploy_via_rest(args.host, args.user, args.password or "", port, ssl_verify, content, filename, args.dry_run, force_http=args.http, timeout=args.timeout, fingerprint=fingerprint, ca_file=ca_file, force_destructive=args.force_destructive)
     elif method == "ssh":
         # For SSH, default port 22 if auto gave 443
         if args.port is None and port == 443:
             port = 22
-        deploy_via_ssh(args.host, args.user, args.password or "", port, content, filename, args.dry_run, args.accept_host_key, timeout=args.timeout)
+        deploy_via_ssh(args.host, args.user, args.password or "", port, content, filename, args.dry_run, args.accept_host_key, timeout=args.timeout, force_destructive=args.force_destructive)
     else:
         print(f"error: unknown method {method}", file=sys.stderr)
         sys.exit(2)

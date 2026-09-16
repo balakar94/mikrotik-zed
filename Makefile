@@ -12,6 +12,14 @@ PYTHON      ?= $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo 
 SKIP_SYSTEM ?=
 FILE        ?=
 VERSION     ?=
+UNLOCKED    ?=
+# Cargo lock: local recipes pass --locked to match CI; UNLOCKED=1 skips it
+# (e.g. while updating Cargo.lock).
+ifeq ($(UNLOCKED),1)
+LOCKED :=
+else
+LOCKED := --locked
+endif
 
 .PHONY: help generate generate-check test-grammar test-rust test-python test-all grammar-clone parse highlight extract sync sync-check check-manifest docs docs-check build build-lsp check check-wasm check-lsp fmt fmt-fix clippy audit install install-deps install-tools install-lsp install-dev bump clean clean-generated validate validate-fast _check-tools _clean-artifacts
 
@@ -42,7 +50,7 @@ test-grammar: ## Run tree-sitter grammar corpus tests
 	cd $(GRAMMAR_DIR) && npx tree-sitter test
 
 test-rust: ## Run Rust tests (all workspace members)
-	cargo test --workspace
+	cargo test $(LOCKED) --workspace
 
 test-python: ## Run Python test suite
 	@command -v $(PYTHON) >/dev/null || (echo "skip: $(PYTHON) not found" && exit 0)
@@ -83,18 +91,18 @@ docs-check: ## Lint docs (hygiene, links/anchors, index reachability, volatile b
 	$(PYTHON) scripts/check_docs.py
 # ── Build ────────────────────────────────────────────────────────
 build: ## Build WASM extension (wasm32-wasip2 component) and stage extension.wasm
-	cargo build --target $(WASM_TARGET) --release
+	cargo build $(LOCKED) --target $(WASM_TARGET) --release
 	cp $(WASM_OUT) extension.wasm
 	@echo "WASM component: extension.wasm ($$(stat -f%z extension.wasm 2>/dev/null || stat -c%s extension.wasm) bytes)"
 	@echo "Note: Rust 1.84+ emits a component directly for wasm32-wasip2; no wasm-tools step needed."
 build-lsp: ## Build native LSP binary (target/release/rsc-ls)
-	cargo build -p rsc-ls --release
+	cargo build $(LOCKED) -p rsc-ls --release
 	@echo "Binary: target/release/rsc-ls ($$(stat -f%z target/release/rsc-ls 2>/dev/null || stat -c%s target/release/rsc-ls) bytes)"
 check: check-wasm check-lsp ## Quick compile verification (wasm + lsp)
 check-wasm: ## Check WASM extension compiles
-	cargo check --target $(WASM_TARGET)
+	cargo check $(LOCKED) --target $(WASM_TARGET)
 check-lsp: ## Check LSP binary compiles
-	cargo check -p rsc-ls
+	cargo check $(LOCKED) -p rsc-ls
 fmt: ## Format Rust code (check)
 	cargo fmt --all -- --check
 	@echo "fmt ok (use 'make fmt-fix' to fix)"
@@ -102,8 +110,8 @@ fmt-fix: ## Format Rust code (write)
 	cargo fmt --all
 
 clippy: ## Lint with clippy (wasm + native, -D warnings)
-	cargo clippy --target $(WASM_TARGET) -- -D warnings
-	cargo clippy -p rsc-ls --all-targets -- -D warnings
+	cargo clippy $(LOCKED) --target $(WASM_TARGET) -- -D warnings
+	cargo clippy $(LOCKED) -p rsc-ls --all-targets -- -D warnings
 
 audit: ## Audit dependencies (requires cargo-audit)
 	@command -v cargo-audit >/dev/null 2>&1 || (echo "install: cargo install cargo-audit" && false)
@@ -198,8 +206,9 @@ install-dev: ## Point Zed to this directory (manual: Install Dev Extension)
 	@echo "Open Zed → Command Palette → 'Install Dev Extension' → select this directory"
 	@echo "Make sure rsc-ls binary is in PATH: make build-lsp && make install-lsp"
 
+# validate-fast is the lightweight pre-commit gate; validate is the full pre-push gate.
 validate: check-manifest docs-check generate-check fmt clippy test-all extract ## Offline gate (manifest, docs, generate-check, fmt, clippy, tests, extract); run make sync-check separately for upstream drift
-	@git diff --exit-code data/commands.toml || (echo "data/commands.toml stale — run 'make extract' and commit" && false)
+	@bash scripts/check_extract_fresh.sh
 	@echo "All checks passed. Ready to commit."
 
 validate-fast: check-manifest fmt clippy test-rust ## Quick gate (manifest, fmt, clippy, Rust tests)

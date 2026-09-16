@@ -43,7 +43,10 @@ import getpass
 import json
 import os
 import pathlib
+import random
+import socket
 import sys
+import time
 
 # Shared connection-setup helpers live in the sibling module. Make the
 # scripts/ directory importable regardless of CWD or how this file is loaded
@@ -72,6 +75,25 @@ try:
 except ImportError:
     requests = None  # type: ignore
     HAS_REQUESTS = False
+
+
+# Single retry with ~500 ms jitter for the idempotent GET only. POST
+# /rest/execute and /import paths (deploy companion) are never retried.
+RETRY_DELAY_S = 0.5
+RETRY_JITTER_S = 0.2
+
+
+def _retry_delay() -> float:
+    """Jittered delay around 500 ms for the one idempotent-GET retry."""
+    return RETRY_DELAY_S + random.uniform(0, RETRY_JITTER_S)
+
+
+def _is_plain_timeout(exc: BaseException) -> bool:
+    """Whether ``exc`` is a plain timeout (socket/timeout, not HTTP status)."""
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return True
+    reason = getattr(exc, "reason", None)
+    return isinstance(reason, (TimeoutError, socket.timeout))
 
 
 def parse_args() -> argparse.Namespace:
@@ -264,24 +286,37 @@ def main() -> None:
             # Streamed read with byte cap — prevents OOM on unbounded responses
             # (same 512 KiB limit as caps.rs MAX_LIVE_RESPONSE_BYTES).
             # Redirects are disabled: 3xx is a fail-closed error, never followed.
-            try:
-                resp = session.get(url, timeout=timeout, stream=True, allow_redirects=False)
-            except requests.exceptions.Timeout as e:  # type: ignore[union-attr]
-                msg = f"request timed out: {e}"
-                print(f"error: {msg}", file=sys.stderr)
-                if args.json:
-                    print(json.dumps({"ok": False, "error": msg, "host": host, "url": url}))
-                else:
-                    print(f"Live FAIL: {msg}")
-                sys.exit(4)
-            except requests.exceptions.RequestException as e:  # type: ignore[union-attr]
-                msg = redact_secrets(f"network error: {e}", password, user)
-                print(f"error: {msg}", file=sys.stderr)
-                if args.json:
-                    print(json.dumps({"ok": False, "error": msg, "host": host, "url": url}))
-                else:
-                    print(f"Live FAIL: {msg}")
-                sys.exit(4)
+            # One retry with ~500 ms jitter on timeout only: this GET is
+            # idempotent, so a single repeat is safe. Other errors fail fast.
+            resp = None
+            for attempt in (1, 2):
+                try:
+                    resp = session.get(url, timeout=timeout, stream=True, allow_redirects=False)
+                    break
+                except requests.exceptions.Timeout as e:  # type: ignore[union-attr]
+                    if attempt == 1:
+                        print(
+                            "warning: request timed out, retrying once after ~500 ms",
+                            file=sys.stderr,
+                        )
+                        time.sleep(_retry_delay())
+                        continue
+                    msg = f"request timed out: {e}"
+                    print(f"error: {msg}", file=sys.stderr)
+                    if args.json:
+                        print(json.dumps({"ok": False, "error": msg, "host": host, "url": url}))
+                    else:
+                        print(f"Live FAIL: {msg}")
+                    sys.exit(4)
+                except requests.exceptions.RequestException as e:  # type: ignore[union-attr]
+                    msg = redact_secrets(f"network error: {e}", password, user)
+                    print(f"error: {msg}", file=sys.stderr)
+                    if args.json:
+                        print(json.dumps({"ok": False, "error": msg, "host": host, "url": url}))
+                    else:
+                        print(f"Live FAIL: {msg}")
+                    sys.exit(4)
+            assert resp is not None
             status = resp.status_code
             if 300 <= status < 400:
                 msg = f"redirect blocked (status {status}); refusing to follow"
@@ -429,7 +464,27 @@ def main() -> None:
             )
             opener = urllib.request.build_opener(*handlers)
             try:
-                with opener.open(req, timeout=timeout) as r:
+                # One retry with ~500 ms jitter on timeout only: this GET is
+                # idempotent, so a single repeat is safe. HTTP statuses
+                # (including HTTPError) never retry.
+                raw = None
+                for attempt in (1, 2):
+                    try:
+                        raw = opener.open(req, timeout=timeout)
+                        break
+                    except urllib.error.HTTPError:
+                        raise
+                    except Exception as open_err:
+                        if _is_plain_timeout(open_err) and attempt == 1:
+                            print(
+                                "warning: request timed out, retrying once after ~500 ms",
+                                file=sys.stderr,
+                            )
+                            time.sleep(_retry_delay())
+                            continue
+                        raise
+                assert raw is not None
+                with raw as r:
                     status = r.status
                     # urllib does not support stream iteration like requests; still cap via limit
                     content = r.read(MAX_BYTES + 1)

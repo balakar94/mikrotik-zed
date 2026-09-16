@@ -1,43 +1,5 @@
 [
   {
-    "label": "MikroTik: Check script (dry-run, no device)",
-    "command": "python3",
-    "args": ["scripts/mikrotik-deploy.py", "$ZED_FILE", "--dry-run"],
-    "env": {},
-    "cwd": "$ZED_WORKTREE_ROOT",
-    "use_new_terminal": false,
-    "allow_concurrent_runs": true,
-    "reveal": "always",
-    "shell": "system",
-    "tags": ["mikrotik-check", "mikrotik-dry-run"]
-  },
-  {
-    "label": "MikroTik: Deploy current file (REST)",
-    "command": "python3",
-    "args": ["scripts/mikrotik-deploy.py", "$ZED_FILE", "--method", "rest"],
-    "env": {},
-    "cwd": "$ZED_WORKTREE_ROOT",
-    "use_new_terminal": true,
-    "allow_concurrent_runs": false,
-    "reveal": "always",
-    "hide": "on_success",
-    "shell": "system",
-    "tags": ["mikrotik-deploy", "mikrotik-rest"]
-  },
-  {
-    "label": "MikroTik: Deploy current file (SSH)",
-    "command": "python3",
-    "args": ["scripts/mikrotik-deploy.py", "$ZED_FILE", "--method", "ssh"],
-    "env": {},
-    "cwd": "$ZED_WORKTREE_ROOT",
-    "use_new_terminal": true,
-    "allow_concurrent_runs": false,
-    "reveal": "always",
-    "hide": "on_success",
-    "shell": "system",
-    "tags": ["mikrotik-deploy", "mikrotik-ssh"]
-  },
-  {
     "label": "MikroTik: Validate RSC syntax (local only, no device)",
     "command": "python3",
     "args": [
@@ -53,6 +15,18 @@
     "hide": "on_success",
     "shell": "system",
     "tags": ["mikrotik-validate", "mikrotik-check"]
+  },
+  {
+    "label": "MikroTik: Check script (dry-run, no device)",
+    "command": "python3",
+    "args": ["scripts/mikrotik-deploy.py", "$ZED_FILE", "--dry-run"],
+    "env": {},
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": true,
+    "reveal": "always",
+    "shell": "system",
+    "tags": ["mikrotik-check", "mikrotik-dry-run"]
   },
   {
     "label": "MikroTik: Live — Check connectivity (opt-in)",
@@ -89,17 +63,29 @@
     "tags": ["mikrotik-live", "mikrotik-verify"]
   },
   {
-    "label": "MikroTik: Live — Enable enrichment (set RSC_LS_LIVE=1)",
-    "command": "echo",
-    "args": [
-      "Set env RSC_LS_LIVE=1 MIKROTIK_HOST=... MIKROTIK_PASS=... and restart Zed. Live enrichment is in-memory only, never touches data/commands.toml. Pass via env/keychain only — never stored in tasks.json. See lsp/src/live.rs for caps/TTL."
-    ],
+    "label": "MikroTik: Deploy current file (REST)",
+    "command": "python3",
+    "args": ["scripts/mikrotik-deploy.py", "$ZED_FILE", "--method", "rest"],
     "env": {},
     "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": true,
-    "allow_concurrent_runs": true,
+    "allow_concurrent_runs": false,
     "reveal": "always",
+    "hide": "on_success",
     "shell": "system",
-    "tags": ["mikrotik-live"]
+    "tags": ["mikrotik-deploy", "mikrotik-rest"]
+  },
+  {
+    "label": "MikroTik: Deploy current file (SSH)",
+    "command": "python3",
+    "args": ["scripts/mikrotik-deploy.py", "$ZED_FILE", "--method", "ssh"],
+    "env": {},
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": true,
+    "allow_concurrent_runs": false,
+    "reveal": "always",
+    "hide": "on_success",
+    "shell": "system",
+    "tags": ["mikrotik-deploy", "mikrotik-ssh"]
   }
 ]

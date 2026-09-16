@@ -150,6 +150,22 @@ pub(crate) fn is_symlink(path: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Moves `src` onto `dst`, replacing `dst` when the platform requires it.
+///
+/// Unix rename replaces `dst` atomically. Windows (and some WASI hosts)
+/// refuse to rename over an existing file, so on the first failure this
+/// unlinks `dst` and retries once. Unlinking a symlink removes the link
+/// itself, never its target. Callers still re-verify `dst` after the move.
+pub(crate) fn atomic_replace(src: &str, dst: &str) -> std::result::Result<(), String> {
+    if std::fs::rename(src, dst).is_ok() {
+        return Ok(());
+    }
+    if std::fs::remove_file(dst).is_err() {
+        return Err(format!("could not replace {dst} with {src}"));
+    }
+    std::fs::rename(src, dst).map_err(|_| format!("could not replace {dst} with {src}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,6 +364,33 @@ mod tests {
         std::fs::write(&path, b"x").unwrap();
         assert!(!is_symlink(&path));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn atomic_replace_moves_and_replaces() {
+        let dir = std::env::temp_dir();
+        let tag = std::process::id();
+        let src = dir
+            .join(format!("rsc-zed-replace-{tag}-src.tmp"))
+            .to_string_lossy()
+            .into_owned();
+        let dst = dir
+            .join(format!("rsc-zed-replace-{tag}-dst.tmp"))
+            .to_string_lossy()
+            .into_owned();
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&dst);
+        std::fs::write(&src, b"new").unwrap();
+        atomic_replace(&src, &dst).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), b"new");
+        assert!(!std::fs::metadata(&src).is_ok());
+
+        // Replacing an existing destination works on every host.
+        std::fs::write(&src, b"newer").unwrap();
+        atomic_replace(&src, &dst).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), b"newer");
+        let _ = std::fs::remove_file(&dst);
+        let _ = std::fs::remove_file(&src);
     }
 
     #[cfg(unix)]

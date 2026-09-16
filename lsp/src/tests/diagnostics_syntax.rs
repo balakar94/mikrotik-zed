@@ -71,7 +71,10 @@ fn test_single_unclosed_brace_exact_range() {
     assert_eq!(d.code.as_deref(), Some("unclosed-brace"));
     assert_eq!(d.severity, Some(severity::ERROR));
     assert_eq!(d.source.as_deref(), Some("rsc-ls"));
-    assert_eq!(d.message, "Brace '{' opened here is never closed");
+    assert_eq!(
+        d.message,
+        "Missing closing '}' — add '}' to close the block opened here"
+    );
     // Range covers EXACTLY the brace character.
     assert_eq!(d.range.start.line, 0);
     assert_eq!(d.range.start.character, 24);
@@ -151,7 +154,7 @@ fn test_unterminated_quote_at_eof_reports_opening_quote_once() {
     let d = &diags[0];
     assert_eq!(d.code.as_deref(), Some("unclosed-quote"));
     assert_eq!(d.severity, Some(severity::ERROR));
-    assert_eq!(d.message, "Quoted string opened here is never closed");
+    assert_eq!(d.message, "Missing closing quote — add the closing quote");
     assert_eq!(d.range.start.line, 0);
     assert_eq!(d.range.start.character, 10);
     assert_eq!(d.range.end.character, 11);

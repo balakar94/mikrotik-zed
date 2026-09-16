@@ -60,6 +60,11 @@ fn test_hover_menu_path_full() {
     assert!(h.contents.value.contains("- **address** `ipPrefix`"));
     assert!(h.contents.value.contains("Flags:"));
     assert!(h.contents.value.contains("X — disabled"));
+    assert!(
+        h.contents.value.contains("Source: published reference"),
+        "menu card carries its source, got: {}",
+        h.contents.value
+    );
     assert_eq!(h.contents.kind, "markdown");
 }
 #[test]
@@ -208,8 +213,14 @@ fn test_hover_caps_flags_and_read_only() {
     assert!(!value.contains("f12"), "13th flag must be omitted");
     assert!(value.contains("r11"), "12th read-only must be shown");
     assert!(!value.contains("r12"), "13th read-only must be omitted");
-    let footers = value.matches("(+3 more — see completion)").count();
+    let footers = value
+        .matches("(+3 more — type Space after verb to list)")
+        .count();
     assert_eq!(footers, 2, "one footer per capped section, got {footers}");
+    assert!(
+        value.contains("Source: published reference"),
+        "menu card carries its source, got: {value}"
+    );
 }
 #[test]
 fn test_hover_menu_arg_shows_description() {
@@ -264,4 +275,30 @@ fn test_hover_menu_arg_description_truncated_single_line() {
         desc.chars().count() <= 120 + 8,
         "per-arg description stays near the 120-char cap, got: {line}"
     );
+}
+#[test]
+fn test_hover_menu_required_block_before_optional() {
+    // Required entries render under their own block ahead of optional ones.
+    let data = MenuData::from_toml_str(
+        r#"
+[[menus]]
+path = "/demo/req"
+type = "Directory"
+[[menus.arguments]]
+name = "zeta"
+type = "string"
+required = true
+[[menus.arguments]]
+name = "alpha"
+type = "string"
+"#,
+    );
+    let h = hover_at(&data, "/demo/req", 2).expect("menu hover");
+    let value = &h.contents.value;
+    let req_pos = value.find("**Required:**").expect("required block");
+    let opt_pos = value.find("**Optional:**").expect("optional block");
+    assert!(req_pos < opt_pos, "required block first, got: {value}");
+    assert!(value.contains("- **zeta** `string` (required)"));
+    assert!(value.contains("- **alpha** `string`"));
+    assert!(value.contains("Source: published reference"));
 }

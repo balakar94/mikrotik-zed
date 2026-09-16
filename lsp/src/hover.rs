@@ -185,28 +185,43 @@ pub fn compute_hover(
         );
 
         if !menu.arguments.is_empty() {
-            let mut args: Vec<_> = menu.arguments.iter().collect();
-            args.sort_by(|a, b| {
-                b.required
-                    .cmp(&a.required)
-                    .then_with(|| a.name.cmp(&b.name))
-            });
-            let total = args.len();
-            let shown = args.iter().take(MAX_HOVER_PROPERTIES);
-            md.push_str("\n\n**Arguments:**");
-            for arg in shown {
+            // Required entries render first under their own block, then
+            // optional ones; the shared display cap applies across both so
+            // the card stays bounded.
+            let mut required: Vec<_> = menu.arguments.iter().filter(|a| a.required).collect();
+            let mut optional: Vec<_> = menu.arguments.iter().filter(|a| !a.required).collect();
+            required.sort_by(|a, b| a.name.cmp(&b.name));
+            optional.sort_by(|a, b| a.name.cmp(&b.name));
+            let total = required.len() + optional.len();
+            let shown_required: Vec<_> = required.into_iter().take(MAX_HOVER_PROPERTIES).collect();
+            let rest = MAX_HOVER_PROPERTIES.saturating_sub(shown_required.len());
+            let shown_optional: Vec<_> = optional.into_iter().take(rest).collect();
+            let bullet = |arg: &crate::menus::ArgEntry| {
                 let typ = if arg.arg_type.is_empty() {
                     "any"
                 } else {
-                    &arg.arg_type
+                    arg.arg_type.as_str()
                 };
                 let req = if arg.required { " (required)" } else { "" };
                 let suffix = menu_arg_suffix(&arg.description);
-                md.push_str(&format!("\n- **{}** `{}`{}{}", arg.name, typ, req, suffix));
+                format!("\n- **{}** `{}`{}{}", arg.name, typ, req, suffix)
+            };
+            md.push_str("\n\n**Arguments:**");
+            if !shown_required.is_empty() {
+                md.push_str("\n\n**Required:**");
+                for arg in shown_required {
+                    md.push_str(&bullet(arg));
+                }
+            }
+            if !shown_optional.is_empty() {
+                md.push_str("\n\n**Optional:**");
+                for arg in shown_optional {
+                    md.push_str(&bullet(arg));
+                }
             }
             if total > MAX_HOVER_PROPERTIES {
                 md.push_str(&format!(
-                    "\n\n(+{} more — see completion)",
+                    "\n\n(+{} more — type Space after verb to list)",
                     total - MAX_HOVER_PROPERTIES
                 ));
             }
@@ -224,7 +239,7 @@ pub fn compute_hover(
             }
             if menu.flags.len() > MAX_HOVER_PROPERTIES {
                 md.push_str(&format!(
-                    "\n\n(+{} more — see completion)",
+                    "\n\n(+{} more — type Space after verb to list)",
                     menu.flags.len() - MAX_HOVER_PROPERTIES
                 ));
             }
@@ -242,11 +257,13 @@ pub fn compute_hover(
             }
             if menu.read_only.len() > MAX_HOVER_PROPERTIES {
                 md.push_str(&format!(
-                    "\n\n(+{} more — see completion)",
+                    "\n\n(+{} more — type Space after verb to list)",
                     menu.read_only.len() - MAX_HOVER_PROPERTIES
                 ));
             }
         }
+
+        md.push_str("\n\nSource: published reference");
 
         return Some(Hover {
             contents: HoverContents {

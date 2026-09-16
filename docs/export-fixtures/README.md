@@ -15,7 +15,7 @@ menu in the generated table (see
   the upstream CLI reference (manual.mikrotik.com), then verified against
   `data/commands.toml`. They illustrate shape, not a real device export.
 - **Coverage.** At least one fixture per top `REQUIRED_MENUS` area; current
-  set: `/ip/address`, `/ip/route`, `/system/scheduler`.
+  set: `/ip/address`, `/ip/route`, `/system/scheduler`, `/tool/fetch`.
 - **Format.** One menu section per file: a `/path` header line followed by
   `add` rows with `key=value` pairs (values quoted when they contain
   spaces). The test parses them with `shlex` and asserts every key exists

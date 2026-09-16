@@ -38,6 +38,12 @@
 // mapped from logical-line offsets back to original physical-line coordinates.
 //
 // Capped for large docs to prevent OOM / CPU blow-up.
+//
+// Message grammar: every finding reads as lead verb + target + fix
+// (`Missing required 'address=' for 'add' — add address=...`).
+// Severity is fixed: Error is syntax only, Warning is semantic,
+// Information is read-only writes plus truncation footers, Hint is
+// advisory shapes and unset targets.
 
 use crate::StructureEvent;
 use crate::menus::MenuData;
@@ -116,12 +122,12 @@ pub mod severity {
     pub const HINT: u8 = 4;
 }
 
-/// Append a `Did you mean 'x'?` suffix to a diagnostic message when a
-/// suggestion survived the length-aware threshold, else return `base`
-/// unchanged. Message-only UX: the quick-fix CodeAction edit is untouched.
+/// Append a fix suffix (` — did you mean 'x'?`) when a suggestion
+/// survived the length-aware threshold, else return `base` unchanged.
+/// Message-only UX: the quick-fix CodeAction edit is untouched.
 fn with_suggestion(base: String, suggestion: Option<String>) -> String {
     match suggestion {
-        Some(s) => format!("{base}. Did you mean '{s}'?"),
+        Some(s) => format!("{base} — did you mean '{s}'?"),
         None => base,
     }
 }
@@ -152,7 +158,7 @@ impl TypedHint {
     fn message(&self, key: &str, raw_value: &str) -> String {
         let shown = raw_value.trim().trim_matches('"').trim_matches('\'').trim();
         format!(
-            "Invalid value '{}' for '{}' (expected {})",
+            "Invalid value '{}' for '{}=' — expected {}",
             bounded_user_text(shown),
             bounded_user_text(key),
             self.expected
@@ -759,7 +765,10 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                         severity: Some(severity::WARNING),
                         code: Some("duplicate-property".to_string()),
                         source: Some(DIAGNOSTIC_SOURCE.to_string()),
-                        message: format!("Duplicate property '{}'", &line[s..e]),
+                        message: format!(
+                            "Duplicate property '{}' — remove the duplicate",
+                            &line[s..e]
+                        ),
                     },
                 );
             }
@@ -809,7 +818,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                             source: Some(DIAGNOSTIC_SOURCE.to_string()),
                             message: with_suggestion(
                                 format!(
-                                    "Unknown property '{}' for '{}'",
+                                    "Unknown property '{}=' for '{}'",
                                     bounded_user_text(&line[s..e]),
                                     bounded_user_text(&ctx.path)
                                 ),
@@ -852,10 +861,11 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                                 code: Some("missing-required".to_string()),
                                 source: Some(DIAGNOSTIC_SOURCE.to_string()),
                                 message: format!(
-                                    "Missing required property '{}' for '{} {}'",
+                                    "Missing required '{}=' for '{}' on '{}' — add {}=...",
                                     arg.name,
+                                    bounded_user_text(ctx.command.as_deref().unwrap_or("")),
                                     bounded_user_text(&ctx.path),
-                                    bounded_user_text(ctx.command.as_deref().unwrap_or(""))
+                                    arg.name
                                 ),
                             },
                         );
@@ -923,7 +933,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                                     source: Some(DIAGNOSTIC_SOURCE.to_string()),
                                     message: with_suggestion(
                                         format!(
-                                            "Invalid value '{}' for '{}' (expected one of: {})",
+                                            "Invalid value '{}' for '{}=' — expected one of: {}",
                                             bounded_user_text(val),
                                             bounded_user_text(key_display),
                                             allowed_vals.join(" | ")
@@ -1038,7 +1048,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                                     code: Some("non-unsettable-property".to_string()),
                                     source: Some(DIAGNOSTIC_SOURCE.to_string()),
                                     message: format!(
-                                        "Property '{}' cannot be unset (unsettable: no) for '{}'",
+                                        "Cannot unset '{}' for '{}' — unsettable: no",
                                         bounded_user_text(text),
                                         bounded_user_text(&ctx.path)
                                     ),
@@ -1074,7 +1084,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                                 code: Some("non-unsettable-property".to_string()),
                                 source: Some(DIAGNOSTIC_SOURCE.to_string()),
                                 message: format!(
-                                    "Property '{}' cannot be unset (unsettable: no) for '{}'",
+                                    "Cannot unset '{}' for '{}' — unsettable: no",
                                     bounded_user_text(&target),
                                     bounded_user_text(&ctx.path)
                                 ),
@@ -1111,7 +1121,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                                 code: Some("read-only-write".to_string()),
                                 source: Some(DIAGNOSTIC_SOURCE.to_string()),
                                 message: format!(
-                                    "Property '{}' is read-only and cannot be set with '{}' (output column only)",
+                                    "Cannot set read-only '{}' with '{}' — output column only",
                                     bounded_user_text(&line[s..e]),
                                     bounded_user_text(ctx.command.as_deref().unwrap_or(""))
                                 ),
@@ -1229,9 +1239,9 @@ impl SyntaxFindingKind {
 
     fn message(self) -> &'static str {
         match self {
-            Self::UnclosedBrace => "Brace '{' opened here is never closed",
-            Self::UnmatchedBrace => "Unmatched '}': no '{' is open at this point",
-            Self::UnclosedQuote => "Quoted string opened here is never closed",
+            Self::UnclosedBrace => "Missing closing '}' — add '}' to close the block opened here",
+            Self::UnmatchedBrace => "Unmatched '}' — remove it or open a block with '{'",
+            Self::UnclosedQuote => "Missing closing quote — add the closing quote",
         }
     }
 }

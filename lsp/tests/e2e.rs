@@ -110,6 +110,20 @@ const QUOTED_EQUALS_COMPLETION_DOC: &str = "/ip/address add comment=\"a=b\" ";
 /// keeps it silent — a leak would surface as `unknown-property`.
 const BRACKET_INERT_DOC: &str = "/ip/address set [find pool-name=digi-ipv6] address=1.1.1.1";
 
+/// Quarantined export-shape regression: one row per fixed value class — a
+/// long unquoted URL with port and query string, a block-valued `on-event`
+/// carrying a quoted variable, and a DoH URL with a boolean flag. The exact
+/// failing real-world export is not available in this repo, so this doc pins
+/// the most probable gap (interaction of the value-parsing fixes) without
+/// asserting any unverified device behavior. It mirrors the property set of
+/// `docs/export-fixtures/tool-fetch.rsc` in wire form and must publish with
+/// zero syntax diagnostics.
+const QUARANTINE_EXPORT_DOC: &str = concat!(
+    "/tool/fetch url=https://example.com:8443/list?key=value&other=1 mode=https dst-path=fetch.txt\n",
+    "/system/scheduler add name=nightly on-event={ :log info $\"my-var\" } interval=1d\n",
+    "/ip/dns set use-doh-server=https://cloudflare-dns.com/dns-query verify-doh-cert=yes\n",
+);
+
 // ── Small fixture helpers ────────────────────────────────────────────────
 
 /// UTF-16 code units of `s` — how LSP clients must count `character`
@@ -622,6 +636,31 @@ fn did_open_split_url_publishes_unknown_property_without_menu_false_positive() {
         assert!(
             !diags.iter().any(|d| d["code"] == banned),
             "{banned} must not fire on the hagezi split-URL pattern, got {diags:?}"
+        );
+    }
+}
+
+#[test]
+fn quarantined_export_shapes_publish_no_syntax_diagnostics() {
+    let mut client = initialized_client();
+    open_text_document(
+        &mut client,
+        "file:///e2e-quarantine-export.rsc",
+        QUARANTINE_EXPORT_DOC,
+    );
+    let publish = client.expect_notification("textDocument/publishDiagnostics");
+    let uri = publish["params"]["uri"].as_str().expect("publish uri");
+    assert_eq!(uri, "file:///e2e-quarantine-export.rsc");
+    let diags = publish["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+
+    // The quarantined value shapes (long query URL, block-valued param with
+    // a quoted variable, DoH URL) must not fabricate brace/quote breakage.
+    for banned in ["unclosed-brace", "unmatched-brace", "unclosed-quote"] {
+        assert!(
+            !diags.iter().any(|d| d["code"] == banned),
+            "{banned} must not fire on the quarantined export doc, got {diags:?}"
         );
     }
 }

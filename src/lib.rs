@@ -233,17 +233,24 @@ impl zed::Extension for RscExtension {
             &zed::LanguageServerInstallationStatus::Downloading,
         );
 
-        // Destination uses the versioned platform spawn name: on Windows the
-        // bytes must land in a `*.exe` file or the spawn will fail, and the
-        // version suffix isolates each extension release's artifact.
+        // Staged download: bytes land in `<stored>.part-<pid>-<counter>`
+        // and are verified and chmodded there, then renamed over the stored
+        // name. The stored path is never a download target, so a
+        // mid-transfer failure cannot leave a truncated file where the reuse
+        // gate looks.
+        let staging = cache::staging_path(&stored_name);
+        // Unlink stale residue first; this also drops a pre-existing symlink
+        // at the staging path (`remove_file` never follows links).
+        let _ = std::fs::remove_file(&staging);
         let download_result =
-            zed::download_file(&url, &stored_name, zed::DownloadedFileType::Uncompressed);
+            zed::download_file(&url, &staging, zed::DownloadedFileType::Uncompressed);
 
         if let Err(e) = download_result {
-            // The host writes downloads non-atomically: a mid-transfer failure
-            // can leave a TRUNCATED file at the final path. Remove it (and any
-            // stale marker) so neither this nor a later session mistakes
+            // The host writes downloads non-atomically: a mid-transfer
+            // failure can leave a truncated staging file. Remove it (and any
+            // stale stored pair) so neither this nor a later session mistakes
             // residue for a usable binary.
+            cache::remove_staging(&staging);
             remove_cached_artifacts(&stored_name);
             let msg = format!(
                 "Failed to download {BINARY_NAME} ({triple}) from {url}: {e}. \
@@ -259,16 +266,34 @@ impl zed::Extension for RscExtension {
             return Err(msg);
         }
 
-        // 5) Supply-chain verification: hash the downloaded binary against the
+        // Never verify through a link: the staging path must be a regular
+        // file the download just created.
+        if platform::is_symlink(&staging) {
+            let msg = format!(
+                "Downloaded {BINARY_NAME} ({triple}) but the staging file is a symlink; \
+                refusing to verify it."
+            );
+            cache::remove_staging(&staging);
+            remove_cached_artifacts(&stored_name);
+            eprintln!("[mikrotik-zed] {msg}");
+            zed::set_language_server_installation_status(
+                language_server_id,
+                &zed::LanguageServerInstallationStatus::Failed(msg.clone()),
+            );
+            return Err(msg);
+        }
+
+        // 5) Supply-chain verification: hash the staged binary against the
         // release's `.sha256` companion BEFORE it is made executable or run.
         // Fail closed on any verification problem — never fall back to
         // executing an unverified binary.
-        let verified_digest = match verify::verify_downloaded_binary(&stored_name, &url) {
+        let verified_digest = match verify::verify_downloaded_binary(&staging, &url) {
             Ok(digest) => digest,
             Err(failure) => {
                 let msg = failure.describe(&url);
                 // Best-effort cleanup so neither this session nor a later one
-                // can pick up the unverified binary from the work dir.
+                // can pick up the unverified bytes.
+                cache::remove_staging(&staging);
                 remove_cached_artifacts(&stored_name);
                 eprintln!("[mikrotik-zed] {msg}");
                 zed::set_language_server_installation_status(
@@ -283,15 +308,34 @@ impl zed::Extension for RscExtension {
             verify::short_digest(&verified_digest)
         );
 
-        if let Err(e) = zed::make_file_executable(&stored_name) {
-            let msg = format!("Downloaded {stored_name} but failed to make executable: {e}");
+        if let Err(e) = zed::make_file_executable(&staging) {
+            let msg = format!("Downloaded {staging} but failed to make executable: {e}");
             eprintln!("[mikrotik-zed] {msg}");
+            cache::remove_staging(&staging);
+            remove_cached_artifacts(&stored_name);
             zed::set_language_server_installation_status(
                 language_server_id,
                 &zed::LanguageServerInstallationStatus::Failed(msg.clone()),
             );
             return Err(msg);
         }
+
+        // Publish atomically: rename the verified staging file over the
+        // stored name. Chmod happened on the staging file, so the mode
+        // carries over with the rename.
+        if let Err(e) = platform::atomic_replace(&staging, &stored_name) {
+            let msg = format!("Verified {BINARY_NAME} ({triple}) but failed to install it: {e}");
+            eprintln!("[mikrotik-zed] {msg}");
+            cache::remove_staging(&staging);
+            remove_cached_artifacts(&stored_name);
+            zed::set_language_server_installation_status(
+                language_server_id,
+                &zed::LanguageServerInstallationStatus::Failed(msg.clone()),
+            );
+            return Err(msg);
+        }
+        // The rename consumes the staging file; drop any residue best-effort.
+        cache::remove_staging(&staging);
 
         // Record the integrity marker LAST: its presence certifies that these
         // exact bytes passed checksum verification. Writing it is part of the
@@ -303,6 +347,53 @@ impl zed::Extension for RscExtension {
                 "Verified {BINARY_NAME} ({triple}) but could not record its integrity marker: {e}. \
                 Refusing to keep an uncertifiable cached binary."
             );
+            cache::remove_staging(&staging);
+            remove_cached_artifacts(&stored_name);
+            eprintln!("[mikrotik-zed] {msg}");
+            zed::set_language_server_installation_status(
+                language_server_id,
+                &zed::LanguageServerInstallationStatus::Failed(msg.clone()),
+            );
+            return Err(msg);
+        }
+
+        // Re-check the gate immediately before spawn: a swap or truncation
+        // between publish and exec must fail closed instead of running
+        // unverified bytes. Symlinks are refused outright.
+        if platform::is_symlink(&stored_name) {
+            let msg = format!(
+                "Installed {BINARY_NAME} ({triple}) but the stored file is a symlink; \
+                refusing to run it."
+            );
+            cache::remove_staging(&staging);
+            remove_cached_artifacts(&stored_name);
+            eprintln!("[mikrotik-zed] {msg}");
+            zed::set_language_server_installation_status(
+                language_server_id,
+                &zed::LanguageServerInstallationStatus::Failed(msg.clone()),
+            );
+            return Err(msg);
+        }
+        if !platform::is_executable(&stored_name) {
+            let msg = format!(
+                "Installed {BINARY_NAME} ({triple}) but {stored_name} is not executable; \
+                refusing to run it."
+            );
+            cache::remove_staging(&staging);
+            remove_cached_artifacts(&stored_name);
+            eprintln!("[mikrotik-zed] {msg}");
+            zed::set_language_server_installation_status(
+                language_server_id,
+                &zed::LanguageServerInstallationStatus::Failed(msg.clone()),
+            );
+            return Err(msg);
+        }
+        if let Some(reason) = cache::integrity_problem(&stored_name) {
+            let msg = format!(
+                "Installed {BINARY_NAME} ({triple}) but it failed its integrity gate ({reason}); \
+                refusing to run it."
+            );
+            cache::remove_staging(&staging);
             remove_cached_artifacts(&stored_name);
             eprintln!("[mikrotik-zed] {msg}");
             zed::set_language_server_installation_status(

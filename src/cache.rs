@@ -18,8 +18,40 @@
 //! orchestration (status transitions, cleanup calls) in [`crate`], and the
 //! hash primitive in [`crate::sha256`].
 
+use crate::platform;
 use crate::sha256;
 use crate::verify::{MAX_VERIFIED_BINARY_BYTES, short_digest};
+
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Monotonic tag source for staging and marker temp names. Combined with the
+/// process id it keeps concurrent downloads and retries from sharing a path,
+/// without needing entropy or wall-clock access in the WASM component.
+static INSTALL_TAG: AtomicU64 = AtomicU64::new(0);
+
+/// Unique tag for one staging or temp file (`<pid>-<counter>`).
+fn unique_tag() -> String {
+    format!(
+        "{}-{}",
+        std::process::id(),
+        INSTALL_TAG.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// Staging path for a fresh download (`<stored>.part-<pid>-<counter>`).
+///
+/// The host writes downloads non-atomically, so bytes always land here first
+/// and move to `stored_name` only after verification and chmod.
+pub(crate) fn staging_path(stored_name: &str) -> String {
+    format!("{stored_name}.part-{}", unique_tag())
+}
+
+/// Best-effort removal of a staging file. Missing files are the common case
+/// (a successful install renames the staging file away), so failures stay
+/// silent: leftovers cost disk space, never correctness.
+pub(crate) fn remove_staging(path: &str) {
+    let _ = std::fs::remove_file(path);
+}
 
 /// Suffix appended to the stored binary name to form the marker file name.
 const MARKER_SUFFIX: &str = ".verified";
@@ -39,6 +71,10 @@ pub(crate) fn marker_path(stored_name: &str) -> String {
 
 /// Writes the integrity marker for `stored_name` as exactly
 /// `<64-char lowercase sha256 hex>\n`.
+///
+/// The write is atomic: bytes land in `<marker>.tmp-<pid>-<counter>` (mode
+/// 0600 on unix) and are renamed over the marker, so a crash never leaves a
+/// half-written marker behind.
 ///
 /// `digest_hex` must already be the normalized digest produced by the
 /// SHA-256 helper ([`crate::sha256::sha256_file_hex`]); the strict validation
@@ -60,8 +96,27 @@ pub(crate) fn write_marker(stored_name: &str, digest_hex: &str) -> std::result::
     if digest_hex.bytes().any(|b| b.is_ascii_uppercase()) {
         return Err("digest must be lowercase hexadecimal".to_string());
     }
-    std::fs::write(marker_path(stored_name), format!("{digest_hex}\n"))
-        .map_err(|e| format!("could not write integrity marker for {stored_name}: {e}"))
+    let marker = marker_path(stored_name);
+    let tmp = format!("{marker}.tmp-{}", unique_tag());
+    // Unlink residue first: `write` would otherwise truncate a symlink target
+    // through a pre-existing link at the temp path.
+    let _ = std::fs::remove_file(&tmp);
+    std::fs::write(&tmp, format!("{digest_hex}\n"))
+        .map_err(|e| format!("could not write integrity marker for {stored_name}: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!(
+                "could not secure integrity marker for {stored_name}"
+            ));
+        }
+    }
+    platform::atomic_replace(&tmp, &marker).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("could not record integrity marker for {stored_name}: {e}")
+    })
 }
 
 /// Reads the digest recorded in `stored_name`'s marker.
@@ -200,6 +255,20 @@ mod tests {
     fn marker_path_appends_verified_suffix() {
         assert_eq!(marker_path("rsc-ls-0.5.0"), "rsc-ls-0.5.0.verified");
         assert_eq!(marker_path("rsc-ls-0.5.0.exe"), "rsc-ls-0.5.0.exe.verified");
+    }
+
+    #[test]
+    fn staging_paths_are_unique_per_call() {
+        let first = staging_path("rsc-ls-0.5.0");
+        let second = staging_path("rsc-ls-0.5.0");
+        assert!(first.starts_with("rsc-ls-0.5.0.part-"));
+        assert!(second.starts_with("rsc-ls-0.5.0.part-"));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn remove_staging_tolerates_missing_files() {
+        remove_staging("definitely-missing-rsc-ls-part-file");
     }
 
     #[test]

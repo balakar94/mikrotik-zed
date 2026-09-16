@@ -205,7 +205,7 @@ fn test_continuation_range_maps_to_physical_lines() {
     // offset on line 0 ("/ip/address add " is 16 bytes).
     let bogus = ups
         .iter()
-        .find(|d| d.message.contains("'bogusprop'"))
+        .find(|d| d.message.contains("'bogusprop='"))
         .expect("bogusprop diag");
     assert_eq!(bogus.range.start.line, 0);
     assert_eq!(bogus.range.start.character, 16);
@@ -215,7 +215,7 @@ fn test_continuation_range_maps_to_physical_lines() {
     // starts at character 1 of line 1.
     let other = ups
         .iter()
-        .find(|d| d.message.contains("Unknown property 'other'"))
+        .find(|d| d.message.contains("Unknown property 'other='"))
         .expect("other diag");
     assert_eq!(other.range.start.line, 1);
     assert_eq!(other.range.start.character, 1);
