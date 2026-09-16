@@ -11,7 +11,7 @@
     "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": false,
     "allow_concurrent_runs": true,
-    "reveal": "on_error",
+    "reveal": "never",
     "hide": "on_success",
     "shell": "system",
     "tags": ["mikrotik-validate", "mikrotik-check"]

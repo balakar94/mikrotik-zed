@@ -624,8 +624,14 @@ class TestGrammar:
             f"shell must be 'system' on all 6 tasks, got {shells}"
         )
         validate = next(t for t in tasks if "Validate" in t.get("label", ""))
-        assert validate.get("reveal") in ("on_error", "always"), (
+        # `on_error` is not a Zed reveal variant (only always/no_focus/never);
+        # quiet-success Validate uses `never` with `hide: on_success`, so the
+        # tab stays behind exactly when the check fails.
+        assert validate.get("reveal") in ("never", "always"), (
             f"Validate reveal must surface failures, got {validate.get('reveal')!r}"
+        )
+        assert validate.get("hide") == "on_success", (
+            f"Validate hide must be on_success, got {validate.get('hide')!r}"
         )
         # Never store a password: no task may carry a MIKROTIK_PASS env entry.
         # (The enable-hint task names the variable in guidance text so users

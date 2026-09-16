@@ -575,6 +575,24 @@ class TestTasksJson:
                 assert "${input:mikrotik_host}" in str(task.get("args", []))
                 assert "${input:mikrotik_user}" in str(task.get("args", []))
 
+    def test_tasks_reveal_hide_schema(self):
+        # Mirror Zed's strict parser (crates/task TaskTemplate): unknown
+        # variants fail packaging, so pin the allowed sets here. `reveal`
+        # has no on-error variant — quiet-success tasks use `never` plus
+        # `hide: on_success`, leaving the tab behind only on failure.
+        allowed_reveal = {"always", "no_focus", "never"}
+        allowed_hide = {"never", "always", "on_success"}
+        for p in [ROOT / "languages" / "rsc" / "tasks.json", ROOT / ".zed" / "tasks.json"]:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            for task in data:
+                label = task.get("label", "")
+                assert task.get("reveal", "always") in allowed_reveal, (
+                    f"{p} task {label!r}: invalid reveal {task.get('reveal')!r}"
+                )
+                assert task.get("hide", "never") in allowed_hide, (
+                    f"{p} task {label!r}: invalid hide {task.get('hide')!r}"
+                )
+
     def test_tasks_labels(self):
         expected_substrings = ["REST", "SSH", "Dry-run", "Validate"]
         for p in [ROOT / "languages" / "rsc" / "tasks.json"]:

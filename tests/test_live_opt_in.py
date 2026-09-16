@@ -402,7 +402,7 @@ class TestTasksJsonLive:
             live_tasks = [t for t in data if "Live" in t.get("label", "")]
             assert len(live_tasks) == 2, f"expected 2 live tasks, got {live_tasks}"
             assert any("Check connectivity" in t.get("label", "") for t in live_tasks)
-            assert any("Enable enrichment" in t.get("label", "") for t in live_tasks)
+            assert any("--dry-run" in t.get("label", "") for t in live_tasks)
 
             # Check connectivity task: prompt inputs, no pass, tags, env empty, cwd, args
             check = next(t for t in data if "Check connectivity" in t.get("label", ""))
@@ -421,14 +421,14 @@ class TestTasksJsonLive:
             assert "--method" in str(check.get("args", []))
             assert "rest" in str(check.get("args", []))
 
-            # Enable enrichment task: echo, no pass, tag
-            enable = next(t for t in data if "Enable enrichment" in t.get("label", ""))
-            assert enable.get("command") == "echo"
-            assert "mikrotik-live" in enable.get("tags", [])
-            assert enable.get("env") == {}
-            # No pass stored in tasks.json except echo placeholder
+            # Live --dry-run task: same inputs, plus the dry-run flag
+            dry = next(t for t in data if "--dry-run" in t.get("label", ""))
+            assert "--dry-run" in dry.get("args", [])
+            assert "mikrotik-live" in dry.get("tags", [])
+            assert dry.get("env") == {}
+            # No pass stored in tasks.json
             text = p.read_text(encoding="utf-8")
-            assert text.count("MIKROTIK_PASS") <= 1
+            assert "MIKROTIK_PASS" not in text
 
     def test_no_pass_stored_in_tasks(self):
         for p in [TASKS_A, TASKS_B]:
