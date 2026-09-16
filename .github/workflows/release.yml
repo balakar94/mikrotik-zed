@@ -88,6 +88,23 @@ jobs:
             exit 1
           fi
 
+      - name: Require annotated tag (fail on lightweight)
+        run: |
+          set -eu
+          TAG="${{ steps.tag.outputs.tag }}"
+          # Annotated tags carry their own tag object; lightweight tags point
+          # directly at a commit. `git cat-file -t` reports `tag` vs `commit`,
+          # so anything but `tag` fails closed here. Signature enforcement
+          # itself lives in repository push rules (no keyring runs in this job);
+          # this gate only guarantees the tag shape that signatures require.
+          TYPE=$(git cat-file -t "$TAG" 2>/dev/null || echo "missing")
+          echo "Tag $TAG object type: $TYPE"
+          if [ "$TYPE" != "tag" ]; then
+            echo "::error::Tag '$TAG' is lightweight (type $TYPE) — recreate as annotated (git tag -a $TAG -m 'release $TAG' && git push origin $TAG); signatures are enforced by repository push rules"
+            exit 1
+          fi
+          echo "Annotated tag OK: $TAG"
+
       - name: Guard — workflow_dispatch tag must exist at this SHA
         if: github.event_name == 'workflow_dispatch'
         run: |
@@ -255,7 +272,6 @@ jobs:
           path: |
             extension.wasm
             extension.wasm.sha256
-            SHA256SUMS
           if-no-files-found: error
           retention-days: 14
 
@@ -333,7 +349,6 @@ jobs:
           path: |
             rsc-ls-x86_64-unknown-linux-gnu
             rsc-ls-x86_64-unknown-linux-gnu.sha256
-            SHA256SUMS
           if-no-files-found: error
           retention-days: 14
 
@@ -410,7 +425,6 @@ jobs:
           path: |
             rsc-ls-aarch64-unknown-linux-gnu
             rsc-ls-aarch64-unknown-linux-gnu.sha256
-            SHA256SUMS
           if-no-files-found: error
           retention-days: 14
 
@@ -487,7 +501,6 @@ jobs:
           path: |
             rsc-ls-aarch64-apple-darwin
             rsc-ls-aarch64-apple-darwin.sha256
-            SHA256SUMS
           if-no-files-found: error
           retention-days: 14
 
@@ -570,7 +583,6 @@ jobs:
           path: |
             rsc-ls-x86_64-apple-darwin
             rsc-ls-x86_64-apple-darwin.sha256
-            SHA256SUMS
           if-no-files-found: error
           retention-days: 14
 
@@ -646,7 +658,6 @@ jobs:
           path: |
             rsc-ls-x86_64-pc-windows-msvc
             rsc-ls-x86_64-pc-windows-msvc.sha256
-            SHA256SUMS
           if-no-files-found: error
           retention-days: 14
 
@@ -725,7 +736,6 @@ jobs:
           path: |
             rsc-ls-aarch64-pc-windows-msvc
             rsc-ls-aarch64-pc-windows-msvc.sha256
-            SHA256SUMS
           if-no-files-found: error
           retention-days: 14
 
@@ -799,20 +809,57 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Generate SBOM manifest
+        run: |
+          set -eu
+          TAG="${{ needs.meta.outputs.tag }}"
+          echo "Generating SBOM manifest for $TAG..."
+          {
+            echo "# SBOM manifest for $TAG"
+            echo "# Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "# Repo: ${{ github.repository }} SHA: ${{ github.sha }}"
+            echo ""
+            echo "## Rust dependencies (Cargo.lock)"
+            if [ -f Cargo.lock ]; then
+              grep -E '^name = |^version = ' Cargo.lock
+            else
+              echo "(Cargo.lock not found)"
+            fi
+            echo ""
+            echo "## Python dependencies (pip freeze)"
+            if command -v pip3 >/dev/null 2>&1; then
+              pip3 freeze 2>/dev/null || echo "(pip freeze failed)"
+            elif command -v pip >/dev/null 2>&1; then
+              pip freeze 2>/dev/null || echo "(pip freeze failed)"
+            else
+              echo "(pip not available)"
+            fi
+            echo ""
+            echo "## Release assets"
+            ls -lh dist/
+          } > dist/sbom.txt
+          cat dist/sbom.txt
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd dist && sha256sum sbom.txt > sbom.txt.sha256)
+          else
+            (cd dist && shasum -a 256 sbom.txt > sbom.txt.sha256)
+          fi
+          cat dist/sbom.txt.sha256
+
       - name: Build combined SHA256SUMS
         run: |
           set -eu
           echo "Artifacts in dist/:"
           ls -R dist
-          # Rebuild a single combined SHA256SUMS at top-level for convenience.
-          # Prefer pre-generated per-job SHA256SUMS, then supplement with per-file checksums.
+          # Build the single combined SHA256SUMS once here from per-file
+          # companions (per-job uploads carry only binary + binary.sha256).
           echo "# SHA256 checksums for ${{ needs.meta.outputs.tag }}" > SHA256SUMS
           echo "# Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> SHA256SUMS
           if ls dist/*.sha256 >/dev/null 2>&1; then
             cat dist/*.sha256 >> SHA256SUMS
           fi
           # Ensure every binary has an entry even if per-file sha missing.
-          for f in dist/rsc-ls-* dist/extension.wasm; do
+          for f in dist/rsc-ls-* dist/extension.wasm dist/sbom.txt; do
             [ -e "$f" ] || continue
             base=$(basename "$f")
             if ! grep -q "$base" SHA256SUMS 2>/dev/null; then
@@ -849,6 +896,9 @@ jobs:
           - `rsc-ls-aarch64-pc-windows-msvc` – Windows ARM64
 
           SHA256 checksums in `SHA256SUMS` and per-file `*.sha256`. Attestations are attached as build provenance.
+
+          ### SBOM
+          - `sbom.txt` (+ `sbom.txt.sha256`) – dependency manifest (Cargo.lock packages + pip freeze), covered by `SHA256SUMS` and the postflight checksum loop.
 
           ### WASM
           - `extension.wasm` – Zed extension (wasm32-wasip2, `mikrotik_zed.wasm`)

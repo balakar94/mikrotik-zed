@@ -12,6 +12,7 @@ Usage:
   python scripts/publish_grammar.py --dry-run   # show what would be done
   python scripts/publish_grammar.py --push      # push to remote + update rev
   python scripts/publish_grammar.py --push --remote grammar-bare  # local bare
+  python scripts/publish_grammar.py --push --no-commit  # stage allowlist only, print manual commit steps
 
 Steps:
   1) Ensure grammars/rsc is a git repo (init if needed)
@@ -36,6 +37,23 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 GRAMMAR_DIR = ROOT / "grammars" / "rsc"
 EXT_TOML = ROOT / "extension.toml"
 BARE_REPO = ROOT / "grammar-bare.git"
+
+# Explicit allowlist of grammar source paths staged for publish. Build
+# outputs and caches (target/, build/, node_modules/, *.log) are never
+# staged: a blanket add of every change could sweep local artifacts into the
+# grammar history. Only these versioned sources are published. The
+# extension.toml rev pointer is updated by this script only, never by hand.
+GRAMMAR_ALLOWLIST = [
+    "grammar.js",
+    "queries",
+    "src",
+    "test",
+    "bindings",
+    "tree-sitter.json",
+    "Cargo.toml",
+    "Cargo.lock",
+    "package.json",
+]
 
 def run(cmd, cwd=None, check=True):
     print(f"$ {' '.join(cmd)}", file=sys.stderr)
@@ -99,6 +117,7 @@ def main():
     p.add_argument("--remote", default="origin", help="Git remote name (default origin). Use 'grammar-bare' for local bare repo")
     p.add_argument("--remote-url", default="https://github.com/balakar94/tree-sitter-rsc", help="Remote URL if not yet added")
     p.add_argument("--skip-generate", action="store_true", help="Skip tree-sitter generate check")
+    p.add_argument("--no-commit", action="store_true", help="Do not auto-commit: stage nothing, print manual git add/commit steps instead")
     args = p.parse_args()
 
     if not GRAMMAR_DIR.exists():
@@ -132,16 +151,22 @@ def main():
                 except FileNotFoundError:
                     print("warn: npx not found, skipping generate", file=sys.stderr)
 
-    # Check dirty
+    # Check dirty: dry-run stays side-effect free and reports first.
     if is_dirty():
         print(f"Grammar repo has uncommitted changes in {GRAMMAR_DIR}:")
         run(["git", "status", "--short"], cwd=GRAMMAR_DIR, check=False)
+        staged = [p for p in GRAMMAR_ALLOWLIST if (GRAMMAR_DIR / p).exists()]
         if args.dry_run:
-            print("DRY-RUN: would commit and push")
+            print(f"DRY-RUN: would stage allowlist only: git add -- {' '.join(staged)}")
+            print("DRY-RUN: would commit and push (no changes made)")
+        elif args.no_commit:
+            print("Not auto-committing (--no-commit). To publish manually:")
+            print(f"  git -C {GRAMMAR_DIR} add -- {' '.join(staged)}")
+            print('  git -C {0} commit -m "chore: publish grammar"'.format(GRAMMAR_DIR))
+            print("Then re-run with --push (without --no-commit) or push manually.")
         else:
-            # Auto commit? Ask or do
-            print("Staging all changes...")
-            run(["git", "add", "-A"], cwd=GRAMMAR_DIR)
+            print("Staging allowlisted grammar sources only...")
+            run(["git", "add", "--", *staged], cwd=GRAMMAR_DIR)
             # Ensure user config exists
             try:
                 run(["git", "config", "user.name"], cwd=GRAMMAR_DIR)
