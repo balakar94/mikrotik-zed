@@ -1320,3 +1320,131 @@ class TestPinnedTlsSameConnection:
             with pytest.raises((urllib.error.URLError, OSError)):
                 _open(b"\x00" * 32)
             assert seen == []
+
+
+# ── Deploy --dry-run matrix (no network, no secret leaks) ─────────
+
+_MATRIX_PASSWORD = "s3cret-matrix-sentinel"
+
+
+class TestDeployDryRunMatrix:
+    """Matrix over deploy --dry-run: transports, timeout edges, bad hosts.
+
+    Every case runs the deploy entry point in-process with all network
+    syscalls disabled, so any connection attempt fails the test instead of
+    touching the network. A sentinel password sits in the environment and
+    must be absent from every captured byte.
+    """
+
+    @pytest.fixture()
+    def rsc_file(self, tmp_path):
+        p = tmp_path / "matrix.rsc"
+        p.write_text(
+            "/ip address add address=1.1.1.1/24 interface=ether1\n", encoding="utf-8"
+        )
+        return str(p)
+
+    @pytest.fixture()
+    def no_network(self, monkeypatch):
+        def _boom(*args, **kwargs):
+            raise AssertionError("network syscall attempted during --dry-run")
+
+        monkeypatch.setattr(socket, "socket", _boom)
+        monkeypatch.setattr(socket, "create_connection", _boom)
+        monkeypatch.setattr(socket, "getaddrinfo", _boom)
+
+    @pytest.fixture()
+    def clean_deploy_env(self, monkeypatch):
+        for var in (
+            "MIKROTIK_HOST",
+            "MIKROTIK_USER",
+            "MIKROTIK_PASS",
+            "MIKROTIK_PORT",
+            "MIKROTIK_SSL",
+            "MIKROTIK_HTTP",
+            "MIKROTIK_METHOD",
+            "MIKROTIK_TIMEOUT",
+            "MIKROTIK_ACCEPT_HOST_KEY",
+            "MIKROTIK_FINGERPRINT",
+            "MIKROTIK_CA_FILE",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("MIKROTIK_PASS", _MATRIX_PASSWORD)
+
+    def _run_main(self, monkeypatch, capsys, argv):
+        mod = _load_deploy_module()
+        monkeypatch.setattr(sys, "argv", ["mikrotik-deploy.py", *argv])
+        code = 0
+        try:
+            mod.main()
+        except SystemExit as exc:
+            code = exc.code if isinstance(exc.code, int) else 2
+        out, err = capsys.readouterr()
+        assert _MATRIX_PASSWORD not in out + err, "password leaked into dry-run output"
+        return code, out, err
+
+    @pytest.mark.parametrize("method", ["rest", "ssh"])
+    def test_dry_run_transports_exit_0(
+        self, method, rsc_file, no_network, clean_deploy_env, monkeypatch, capsys
+    ):
+        code, out, err = self._run_main(
+            monkeypatch,
+            capsys,
+            [rsc_file, "--dry-run", "--host", "192.168.88.1", "--method", method],
+        )
+        assert code == 0, f"method={method} out={out!r} err={err!r}"
+        assert "DRY-RUN" in out
+        marker = "/rest/execute" if method == "rest" else "/import"
+        assert marker in out, f"method={method} missing {marker!r}: {out!r}"
+
+    @pytest.mark.parametrize("timeout", ["0", "-5", "1", "300", "9999"])
+    def test_dry_run_timeout_edges_exit_0(
+        self, timeout, rsc_file, no_network, clean_deploy_env, monkeypatch, capsys
+    ):
+        # Clamp 1..300 holds on the dry-run path: edges exit 0, never hang.
+        code, out, err = self._run_main(
+            monkeypatch,
+            capsys,
+            [rsc_file, "--dry-run", "--host", "192.168.88.1", "--timeout", timeout],
+        )
+        assert code == 0, f"timeout={timeout} out={out!r} err={err!r}"
+        assert "DRY-RUN" in out
+
+    @pytest.mark.parametrize(
+        "host", ["169.254.169.254", "metadata.google.internal", "a/b", "a b"]
+    )
+    def test_dry_run_invalid_host_exit_2(
+        self, host, rsc_file, no_network, clean_deploy_env, monkeypatch, capsys
+    ):
+        code, out, err = self._run_main(
+            monkeypatch, capsys, [rsc_file, "--dry-run", "--host", host]
+        )
+        assert code == 2, f"host={host!r} out={out!r} err={err!r}"
+        assert "invalid host" in err.lower()
+
+    def test_dry_run_error_paths_redact_password(
+        self, tmp_path, rsc_file, no_network, clean_deploy_env, monkeypatch, capsys
+    ):
+        # Destructive content refuses with exit 2 and never echoes secrets.
+        bad = tmp_path / "destructive.rsc"
+        bad.write_text("/system reset-configuration no-confirm\n", encoding="utf-8")
+        code, out, err = self._run_main(
+            monkeypatch, capsys, [str(bad), "--dry-run", "--host", "192.168.88.1"]
+        )
+        assert code == 2, f"out={out!r} err={err!r}"
+        assert "destructive" in err.lower()
+        # Malformed TLS pin fails closed with exit 2, no leak either.
+        code, out, err = self._run_main(
+            monkeypatch,
+            capsys,
+            [
+                rsc_file,
+                "--dry-run",
+                "--host",
+                "192.168.88.1",
+                "--fingerprint",
+                "sha256:zzz",
+            ],
+        )
+        assert code == 2, f"out={out!r} err={err!r}"
+        assert "fingerprint" in err.lower()

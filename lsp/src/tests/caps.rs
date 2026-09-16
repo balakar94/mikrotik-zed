@@ -207,3 +207,78 @@ fn test_caps_table_values_match_consts() {
     assert_eq!(text_util::MAX_LABEL_TYPE_CHARS, 64);
     assert_eq!(text_util::MAX_SIGNATURE_LABEL_BYTES, 4096);
 }
+
+// ── Wire-contract mirrors (integration tests) ────────────────────────────
+//
+// `lsp/tests/perf_smoke.rs` and `lsp/tests/framing_chaos.rs` speak the raw
+// wire protocol and keep local `const` mirrors of the server caps (they
+// cannot import `caps.rs`: each integration target builds alone). The
+// mirrors pin the CONTRACT (bounded output, skip-and-stay-aligned) while
+// this test pins the VALUES: changing a cap here without updating the
+// mirror fails here, and changing a mirror without the cap fails the wire
+// test itself. Change both together, never one side alone.
+
+/// Read an integration-test mirror file from `lsp/tests/`.
+fn mirror_source(name: &str) -> String {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join(name);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cap mirror {name} unreadable at {}: {e}", path.display()))
+}
+
+/// Evaluate a mirror `const NAME: usize = <expr>;` where `<expr>` is a
+/// product of integer literals (`2000`, `32 * 1024`). Anything else fails
+/// loudly so a hand-edited mirror cannot silently stop asserting.
+fn mirror_value(src: &str, name: &str) -> usize {
+    let needle = format!("const {name}: usize =");
+    let start = src.find(&needle).unwrap_or_else(|| {
+        panic!("cap mirror const `{name}` missing; update the wire mirror when changing caps.rs")
+    });
+    let tail = &src[start + needle.len()..];
+    let end = tail
+        .find(';')
+        .expect("mirror const expression must end with `;`");
+    tail[..end]
+        .split('*')
+        .map(|part| {
+            part.trim().replace('_', "").parse::<usize>().unwrap_or_else(
+                |_| panic!("cap mirror const `{name}` has an unevaluatable expression; keep it a plain integer product"),
+            )
+        })
+        .product()
+}
+
+#[test]
+fn test_wire_mirrors_match_caps() {
+    // `perf_smoke.rs` mirrors use wire-side names; each assert maps the
+    // mirror name to its authoritative `caps.rs` const.
+    let perf = mirror_source("perf_smoke.rs");
+    assert_eq!(
+        mirror_value(&perf, "MAX_DOC_BYTES"),
+        MAX_DOC_SIZE,
+        "perf_smoke.rs MAX_DOC_BYTES drifted from caps.rs MAX_DOC_SIZE; change both together"
+    );
+    assert_eq!(
+        mirror_value(&perf, "MAX_DIAG_ITEMS"),
+        MAX_DIAGNOSTICS,
+        "perf_smoke.rs MAX_DIAG_ITEMS drifted from caps.rs MAX_DIAGNOSTICS; change both together"
+    );
+    assert_eq!(
+        mirror_value(&perf, "MAX_COMPLETION_ITEMS"),
+        MAX_COMPLETION_ITEMS,
+        "perf_smoke.rs MAX_COMPLETION_ITEMS drifted from caps.rs MAX_COMPLETION_ITEMS; change both together"
+    );
+    // `framing_chaos.rs` mirrors the framing caps.
+    let framing = mirror_source("framing_chaos.rs");
+    assert_eq!(
+        mirror_value(&framing, "MAX_HEADER_BYTES"),
+        MAX_HEADER_SIZE,
+        "framing_chaos.rs MAX_HEADER_BYTES drifted from caps.rs MAX_HEADER_SIZE; change both together"
+    );
+    assert_eq!(
+        mirror_value(&framing, "MAX_MESSAGE_BYTES"),
+        MAX_MESSAGE_SIZE,
+        "framing_chaos.rs MAX_MESSAGE_BYTES drifted from caps.rs MAX_MESSAGE_SIZE; change both together"
+    );
+}

@@ -458,6 +458,86 @@ class TestDeployScript:
         shared = (self.path.parent / "_mikrotik_shared.py").read_text(encoding="utf-8")
         assert "def redact_secrets" in shared
 
+    def _write_rsc(self, content="/ip address add address=1.1.1.1/24 interface=ether1\n"):
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".rsc", delete=False, encoding="utf-8")
+        f.write(content)
+        f.close()
+        return f.name
+
+    def _deploy_env(self, password):
+        env = {k: v for k, v in os.environ.items() if k != "MIKROTIK_HOST"}
+        env["MIKROTIK_PASS"] = password
+        return env
+
+    @pytest.mark.parametrize("method", ["rest", "ssh"])
+    def test_dry_run_matrix_transports_exit_0(self, method):
+        """--dry-run previews for both transports: exit 0, no network."""
+        tmp_path = self._write_rsc()
+        try:
+            result = subprocess.run(
+                [sys.executable, str(self.path), tmp_path, "--dry-run",
+                 "--host", "192.168.88.1", "--method", method],
+                capture_output=True, text=True, timeout=10,
+                env=self._deploy_env("s3cret-func-matrix"),
+            )
+            assert result.returncode == 0, f"method={method} stderr={result.stderr!r}"
+            combined = result.stdout + result.stderr
+            assert "DRY-RUN" in combined
+            marker = "/rest/execute" if method == "rest" else "/import"
+            assert marker in combined, f"method={method} missing {marker!r}: {combined!r}"
+            assert "s3cret-func-matrix" not in combined
+        finally:
+            os.unlink(tmp_path)
+
+    @pytest.mark.parametrize("timeout", ["0", "-5", "1", "300", "9999"])
+    def test_dry_run_matrix_timeout_edges_exit_0(self, timeout):
+        """Timeout clamp 1..300 holds on --dry-run: edges exit 0, never dial."""
+        tmp_path = self._write_rsc()
+        try:
+            result = subprocess.run(
+                [sys.executable, str(self.path), tmp_path, "--dry-run",
+                 "--host", "192.168.88.1", "--timeout", timeout],
+                capture_output=True, text=True, timeout=10,
+                env=self._deploy_env("s3cret-func-matrix"),
+            )
+            assert result.returncode == 0, f"timeout={timeout} stderr={result.stderr!r}"
+            assert "DRY-RUN" in result.stdout + result.stderr
+        finally:
+            os.unlink(tmp_path)
+
+    @pytest.mark.parametrize("host", ["169.254.169.254", "metadata.google.internal", "a/b"])
+    def test_dry_run_matrix_invalid_host_exit_2_redacted(self, host):
+        """Invalid hosts fail closed on --dry-run with exit 2, no leak."""
+        tmp_path = self._write_rsc()
+        try:
+            env = {k: v for k, v in os.environ.items() if k != "MIKROTIK_HOST"}
+            result = subprocess.run(
+                [sys.executable, str(self.path), tmp_path, "--dry-run",
+                 "--host", host, "--pass", "s3cret-func-matrix"],
+                capture_output=True, text=True, timeout=10, env=env,
+            )
+            assert result.returncode == 2, f"host={host!r} out={result.stdout!r} err={result.stderr!r}"
+            assert "invalid host" in result.stderr.lower()
+            assert "s3cret-func-matrix" not in result.stdout + result.stderr
+        finally:
+            os.unlink(tmp_path)
+
+    def test_dry_run_matrix_destructive_error_redacted(self):
+        """Destructive content refuses on --dry-run with exit 2, no leak."""
+        tmp_path = self._write_rsc("/system reset-configuration no-confirm\n")
+        try:
+            result = subprocess.run(
+                [sys.executable, str(self.path), tmp_path, "--dry-run",
+                 "--host", "192.168.88.1"],
+                capture_output=True, text=True, timeout=10,
+                env=self._deploy_env("s3cret-func-matrix"),
+            )
+            assert result.returncode == 2, f"out={result.stdout!r} err={result.stderr!r}"
+            assert "destructive" in result.stderr.lower()
+            assert "s3cret-func-matrix" not in result.stdout + result.stderr
+        finally:
+            os.unlink(tmp_path)
+
 
 # ── Tasks JSON ───────────────────────────────────────────────────────
 
@@ -466,32 +546,34 @@ class TestTasksJson:
         for p in [ROOT / "languages" / "rsc" / "tasks.json", ROOT / ".zed" / "tasks.json"]:
             assert p.exists(), f"{p} missing"
 
-    def test_tasks_have_4_tasks(self):
+    def test_tasks_have_6_tasks(self):
         for p in [ROOT / "languages" / "rsc" / "tasks.json", ROOT / ".zed" / "tasks.json"]:
             data = json.loads(p.read_text(encoding="utf-8"))
             assert isinstance(data, list), f"{p} should be a JSON array"
-            # 4 base tasks + 2 live opt-in tasks (feat/live-data: platform/runtime side)
-            # Keep backward-compatible: at least 4, but expected 6 with live enrichment opt-in
-            assert len(data) >= 4, f"{p} should have at least 4 tasks, found {len(data)}"
-            assert len(data) == 6, f"{p} should have 6 tasks (4 base + 2 live opt-in), found {len(data)}"
+            assert len(data) == 6, f"{p} should have 6 tasks, found {len(data)}"
             labels = [t.get("label", "") for t in data]
-            assert any("Live" in lbl and "Check connectivity" in lbl for lbl in labels), f"{p} missing live Check connectivity task"
-            assert any("Live" in lbl and "Enable enrichment" in lbl for lbl in labels), f"{p} missing live Enable enrichment task"
-            # Secrets must not be stored: only echo placeholder may mention MIKROTIK_PASS
+            assert "Validate" in labels[0], f"{p} first task should be Validate, found {labels[0]!r}"
+            assert "Deploy" in labels[-2] and "Deploy" in labels[-1], f"{p} last two tasks should be Deploy, found {labels[-2:]!r}"
+            assert any("Live" in lbl and "Check connectivity" in lbl and "--dry-run" not in lbl for lbl in labels), f"{p} missing Live Check connectivity task"
+            assert any("Live" in lbl and "Check connectivity" in lbl and "--dry-run" in lbl for lbl in labels), f"{p} missing Live Check connectivity --dry-run task"
+            assert not any("Enable enrichment" in lbl for lbl in labels), f"{p} should not contain Enable enrichment task"
+            # Secrets must not be stored anywhere in the task files.
             text = p.read_text(encoding="utf-8")
-            assert text.count("MIKROTIK_PASS") <= 1, f"{p} should not store MIKROTIK_PASS more than once (echo placeholder), found {text.count('MIKROTIK_PASS')}"
+            assert "MIKROTIK_PASS" not in text, f"{p} should not store MIKROTIK_PASS"
             for task in data:
-                if "Live" in task.get("label", "") and "Check connectivity" in task.get("label", ""):
-                    assert "inputs" in task, f"live Check connectivity task missing inputs"
-                    ids = [i.get("id") for i in task["inputs"]]
-                    assert "mikrotik_host" in ids, "live task missing mikrotik_host input"
-                    assert "mikrotik_user" in ids, "live task missing mikrotik_user input"
-                    assert not any("pass" in str(i).lower() for i in task["inputs"]), "live inputs must not include pass"
-                    assert "mikrotik-live" in task.get("tags", []), "live task missing mikrotik-live tag"
-                    assert task.get("env") == {}, "live task env must be empty (relies on shell_env passthrough)"
-                    assert task.get("cwd") == "$ZED_WORKTREE_ROOT"
-                    assert "${input:mikrotik_host}" in str(task.get("args", []))
-                    assert "${input:mikrotik_user}" in str(task.get("args", []))
+                assert task.get("env") == {}, f"task {task.get('label')!r} env must be empty (relies on shell_env passthrough)"
+            live_tasks = [t for t in data if "Live" in t.get("label", "") and "Check connectivity" in t.get("label", "")]
+            assert len(live_tasks) == 2, f"{p} should have exactly 2 Live Check connectivity tasks, found {len(live_tasks)}"
+            for task in live_tasks:
+                assert "inputs" in task, f"live Check connectivity task missing inputs"
+                ids = [i.get("id") for i in task["inputs"]]
+                assert "mikrotik_host" in ids, "live task missing mikrotik_host input"
+                assert "mikrotik_user" in ids, "live task missing mikrotik_user input"
+                assert not any("pass" in str(i).lower() for i in task["inputs"]), "live inputs must not include pass"
+                assert "mikrotik-live" in task.get("tags", []), "live task missing mikrotik-live tag"
+                assert task.get("cwd") == "$ZED_WORKTREE_ROOT"
+                assert "${input:mikrotik_host}" in str(task.get("args", []))
+                assert "${input:mikrotik_user}" in str(task.get("args", []))
 
     def test_tasks_labels(self):
         expected_substrings = ["REST", "SSH", "Dry-run", "Validate"]

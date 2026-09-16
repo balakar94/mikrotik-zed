@@ -69,6 +69,9 @@ mod diagnostics_continuation;
 mod diagnostics_enums;
 
 #[cfg(test)]
+mod diagnostics_fuzz;
+
+#[cfg(test)]
 mod diagnostics_logical_lines;
 
 #[cfg(test)]
