@@ -102,8 +102,12 @@ The extension resolves the server in this order:
    `RSC_LS_PATH_SHA256` to pin it; a mismatch falls through to the cache.
 2. Verified work-dir cache — a previously downloaded binary, re-hashed
    before spawn; tampered, truncated, or symlinked entries are refused.
-3. Auto-download from GitHub Releases, staged, checksum-verified, made
-   executable, and only then installed.
+3. Auto-download from GitHub Releases — the release tagged with this
+   extension's own version (`v<version>`) first, falling back to the latest
+   stable release only when that release is missing or lacks this platform's
+   asset. Downloads are staged, checksum-verified, made executable, and only
+   then installed. A pinned extension version therefore keeps its matching
+   server binary even after a newer release is published.
 
 The checksum companion is same-origin and unsigned: it detects corruption
 and binds the digest to the expected asset name, but it is **not release

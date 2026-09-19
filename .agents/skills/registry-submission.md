@@ -25,6 +25,12 @@ must agree at all times, otherwise review stalls or installs break silently:
 deleting its tag/Release, or pinning a non-tag commit whose binaries were built
 elsewhere does.
 
+Runtime note: since 0.7.0 the shim resolves the release tagged with its own
+version first, so publishing a newer stable no longer changes the binary an
+already-pinned extension downloads. Shims shipped up to 0.6.1 still prefer the
+latest stable release and cannot be patched retroactively — with an older pin
+live, publish newer stables only once you are ready to move the pin.
+
 ## Ordering: Fix Before Bump, Tag After Green
 
 Canonical commit order on `main` per release:

@@ -3,6 +3,7 @@ use zed_extension_api::{self as zed, LanguageServerId, Result, Worktree};
 mod cache;
 mod path_gate;
 mod platform;
+mod release;
 mod sha256;
 mod verify;
 
@@ -247,65 +248,108 @@ impl zed::Extension for RscExtension {
             "[mikrotik-zed] {BINARY_NAME} not in PATH, attempting auto-download for {triple} (asset {asset_name})"
         );
 
-        // Try GitHub API first (latest release), then fallback to versioned URL.
-        let mut download_url: Option<String> = None;
+        // Release resolution order (immutability first): the release tagged
+        // for THIS extension version is tried before `latest_github_release`,
+        // so publishing a newer stable release can never swap the language
+        // server under an already-published extension snapshot. The latest
+        // stable release is only a fallback (pinned release absent, or it
+        // lacks this platform's asset); the final fallback is a direct URL
+        // built from pinned constants. See `release.rs` for the pure rules.
+        let tag = release::tag_for_version(version);
+        let pinned_url = platform::pinned_asset_url(&tag, &asset_name);
+        let latest_opts = zed::GithubReleaseOptions {
+            require_assets: true,
+            pre_release: false,
+        };
 
-        // Attempt latest_github_release
         zed::set_language_server_installation_status(
             language_server_id,
             &zed::LanguageServerInstallationStatus::CheckingForUpdate,
         );
 
-        let github_opts = zed::GithubReleaseOptions {
-            require_assets: true,
-            pre_release: false,
-        };
-
-        if let Ok(release) = zed::latest_github_release(GITHUB_REPO, github_opts) {
-            for asset in &release.assets {
-                if asset.name == asset_name {
+        // 1) Release tagged for the extension version. The tag is known on
+        //    this path, so the URL is always built from pinned constants —
+        //    API-supplied `download_url` values are never trusted here.
+        let mut pinned_has_asset = false;
+        match zed::github_release_by_tag_name(GITHUB_REPO, &tag) {
+            Ok(release) => {
+                if release
+                    .assets
+                    .iter()
+                    .any(|asset| release::asset_matches(&asset.name, &asset_name))
+                {
+                    pinned_has_asset = true;
                     eprintln!(
-                        "[mikrotik-zed] found asset in latest release {}: {}",
-                        release.version, asset.name
+                        "[mikrotik-zed] found asset {asset_name} in release {tag} (pinned to extension version)"
                     );
-                    // Only trust API-supplied URLs that are exactly this
-                    // repo's download URL for the selected asset; anything
-                    // else falls back to the URL constructed below.
-                    download_url = platform::pinned_release_url(&asset.download_url, &asset_name);
-                    break;
+                } else {
+                    eprintln!(
+                        "[mikrotik-zed] release {tag} has no asset {asset_name}, falling back to latest stable"
+                    );
                 }
             }
-            if download_url.is_none() {
+            Err(e) => {
                 eprintln!(
-                    "[mikrotik-zed] usable asset {asset_name} not in latest release {}, trying tag v{version}",
-                    release.version
+                    "[mikrotik-zed] release {tag} not found ({e}), falling back to latest stable"
                 );
             }
-        } else {
-            eprintln!("[mikrotik-zed] latest_github_release failed, trying tag lookup");
         }
 
-        // Fallback: github_release_by_tag_name for current version
-        if download_url.is_none() {
-            let tag = format!("v{version}");
-            if let Ok(release) = zed::github_release_by_tag_name(GITHUB_REPO, &tag) {
-                for asset in &release.assets {
-                    if asset.name == asset_name {
-                        eprintln!("[mikrotik-zed] found asset in tag {tag}: {}", asset.name);
-                        // The tag is known on this path, so build the URL
-                        // from pinned constants instead of trusting the
-                        // API-supplied download_url at all.
-                        download_url = Some(platform::pinned_asset_url(&tag, &asset_name));
-                        break;
+        // 2) Latest stable release, only when the pinned release was unusable.
+        let mut latest_has_asset = false;
+        let mut latest_url: Option<String> = None;
+        if !pinned_has_asset {
+            match zed::latest_github_release(GITHUB_REPO, latest_opts) {
+                Ok(release) => {
+                    for asset in &release.assets {
+                        if release::asset_matches(&asset.name, &asset_name) {
+                            latest_has_asset = true;
+                            eprintln!(
+                                "[mikrotik-zed] found asset in latest release {}: {}",
+                                release.version, asset.name
+                            );
+                            // Only trust API-supplied URLs that are exactly
+                            // this repo's download URL for the selected asset;
+                            // anything else leaves `latest_url` as `None` and
+                            // the source selection falls to the direct URL.
+                            latest_url =
+                                platform::pinned_release_url(&asset.download_url, &asset_name);
+                            break;
+                        }
                     }
+                    if !latest_has_asset {
+                        eprintln!(
+                            "[mikrotik-zed] usable asset {asset_name} not in latest release {}; using direct URL fallback",
+                            release.version
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[mikrotik-zed] latest_github_release failed ({e}); using direct URL fallback"
+                    );
                 }
             }
         }
 
-        // Final fallback: construct direct download URL (no API)
-        let url = download_url.unwrap_or_else(|| {
-            format!("https://github.com/{GITHUB_REPO}/releases/download/v{version}/{asset_name}")
-        });
+        // 3) Select the source and its URL (pure, unit-tested in `release.rs`).
+        let source =
+            release::choose_source(pinned_has_asset, latest_has_asset, latest_url.is_some());
+        let direct_url =
+            format!("https://github.com/{GITHUB_REPO}/releases/download/{tag}/{asset_name}");
+        let url = match source {
+            release::Source::PinnedTag => pinned_url,
+            release::Source::LatestStable => latest_url.unwrap_or_else(|| {
+                // Unreachable by construction (`choose_source` requires a
+                // verified URL); degrade to the direct URL rather than panic.
+                eprintln!(
+                    "[mikrotik-zed] internal: latest-stable selected without a verified URL; using direct URL"
+                );
+                direct_url.clone()
+            }),
+            release::Source::DirectUrl => direct_url,
+        };
+        eprintln!("[mikrotik-zed] download source: {} ({url})", source.label());
 
         eprintln!("[mikrotik-zed] downloading {BINARY_NAME} from {url}");
         zed::set_language_server_installation_status(

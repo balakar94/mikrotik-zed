@@ -16,9 +16,10 @@ Symptom-first. For configuration mechanics see
 
 ## PATH and GUI Zed
 
-The default resolution order is **verified cache → auto-download → no PATH**
-(PATH is denied by default). Most users never need PATH at all — the shim
-downloads a verified binary on first use.
+The default resolution order is **verified cache → auto-download
+(version-pinned release, latest-stable fallback) → no PATH** (PATH is denied
+by default). Most users never need PATH at all — the shim downloads a
+verified binary on first use.
 
 For local/developer builds:
 
