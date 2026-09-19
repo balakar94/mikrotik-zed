@@ -35,6 +35,7 @@ LSP_SYMBOLS = REPO_ROOT / "lsp" / "src" / "symbols.rs"
 TASKS_JSON = REPO_ROOT / "languages" / "rsc" / "tasks.json"
 HIGHLIGHTS_A = REPO_ROOT / "languages" / "rsc" / "highlights.scm"
 HIGHLIGHTS_B = REPO_ROOT / "grammars" / "rsc" / "queries" / "highlights.scm"
+CONFIG_TOML = REPO_ROOT / "languages" / "rsc" / "config.toml"
 CORPUS_DIR = REPO_ROOT / "grammars" / "rsc" / "test" / "corpus"
 COMMANDS_TOML = REPO_ROOT / "data" / "commands.toml"
 CI_YML = REPO_ROOT / ".github" / "workflows" / "ci.yml"
@@ -537,6 +538,74 @@ class TestGrammar:
             f"STANDARD_VERBS missing from highlights.scm action verbs: {missing}"
         )
 
+    def test_highlights_variable_precedence(self):
+        """Zed resolves overlapping captures in query order (later wins), so
+        the whole-node @variable fallback must precede the `$`/identifier
+        parts, and @function for `$func` must follow both. Verified with
+        `tree-sitter query` against a temp copy during the 0.7.0 audit."""
+        code = "\n".join(
+            line for line in _read(HIGHLIGHTS_A).splitlines()
+            if not line.strip().startswith(";")
+        )
+        whole = code.index("(variable_reference) @variable")
+        parts = code.index('"$" @punctuation.special')
+        function = code.index("(function_call")
+        assert whole < parts < function, (
+            "capture order must be: whole-node @variable < $/identifier parts "
+            f"< function_call @function (got {whole}, {parts}, {function})"
+        )
+
+    def test_highlights_boolean_overrides_target_literals(self):
+        """yes/no and :return true/false parse as literal(boolean_literal),
+        not identifiers (verified with tree-sitter parse); the identifier
+        forms were dead and must not come back."""
+        txt = _read(HIGHLIGHTS_A)
+        assert "(literal (boolean_literal) @diff.plus)" in txt
+        assert "(literal (boolean_literal) @diff.minus)" in txt
+        # The dead identifier-based yes/no forms must not come back. The
+        # `comment=<identifier>` red pattern legitimately uses
+        # `value: (identifier) @diff.minus`, so target the yes/no guards.
+        assert "value: (identifier) @diff.plus" not in txt
+        assert re.search(
+            r'value: \(identifier\) @diff\.minus\)\s*\n\s*\(#eq\? '
+            r'@diff\.minus "no"\)',
+            txt,
+        ) is None, "dead identifier-based no-override pattern returned"
+
+    def test_highlights_control_flow_tokens(self):
+        """F7 (0.7.0): clause tokens and loop variables must be captured."""
+        code = "\n".join(
+            line for line in _read(HIGHLIGHTS_A).splitlines()
+            if not line.strip().startswith(";")
+        )
+        for needle in (
+            '(for_in_clause',
+            '"in" @keyword',
+            '(while_condition',
+            '(array_access "->" @operator)',
+            '#eq? @keyword "where"',
+            "^(foreach|for|onerror)$",
+        ):
+            assert needle in code, f"highlights.scm missing {needle!r}"
+
+    def test_config_quote_brackets_and_continuation_indent(self):
+        """F13/F15 (0.7.0): both quote styles autoclose only outside strings
+        and comments, and trailing-backslash lines indent the next line."""
+        try:
+            import tomli
+        except ImportError:
+            import tomllib as tomli  # type: ignore
+        parsed = tomli.loads(_read(CONFIG_TOML))
+        assert parsed["increase_indent_pattern"] == r"[\\]\s*$", (
+            f"continuation indent regex drift: {parsed.get('increase_indent_pattern')!r}"
+        )
+        quote_pairs = [p for p in parsed["brackets"] if p["start"] in ('"', "'")]
+        assert len(quote_pairs) == 2, f"expected \" and ' bracket pairs, got {quote_pairs}"
+        for pair in quote_pairs:
+            assert pair.get("not_in") == ["string", "comment"], (
+                f"quote pair {pair['start']!r} must not autoclose in strings/comments"
+            )
+
     def test_indents_outline_modern_captures(self):
         """Outline/indents stay on the modern Zed query contract (test-only;
         no @outdent/@end fix applied: single @indent per bracketing node
@@ -624,15 +693,27 @@ class TestGrammar:
             f"shell must be 'system' on all 6 tasks, got {shells}"
         )
         validate = next(t for t in tasks if "Validate" in t.get("label", ""))
-        # `on_error` is not a Zed reveal variant (only always/no_focus/never);
-        # quiet-success Validate uses `never` with `hide: on_success`, so the
-        # tab stays behind exactly when the check fails.
-        assert validate.get("reveal") in ("never", "always"), (
+        # `on_error` is not a Zed reveal variant (only always/no_focus/never).
+        # Validate uses `no_focus` with `hide: on_success`: a failing check
+        # reveals the pane without stealing focus; a passing one hides it.
+        # `never` is intentionally disallowed — it can leave a failed check
+        # invisible while the terminal dock is closed.
+        assert validate.get("reveal") in ("always", "no_focus"), (
             f"Validate reveal must surface failures, got {validate.get('reveal')!r}"
         )
         assert validate.get("hide") == "on_success", (
             f"Validate hide must be on_success, got {validate.get('hide')!r}"
         )
+        # File-reading tasks must save the buffer first, or they silently
+        # validate/deploy the previous on-disk content.
+        for label_fragment in ("Validate", "Check script", "Deploy current file"):
+            affected = [t for t in tasks if label_fragment in t.get("label", "")]
+            assert affected, f"no task matching {label_fragment!r}"
+            for task in affected:
+                assert task.get("save") == "current", (
+                    f"task {task.get('label')!r} must set save=current, "
+                    f"got {task.get('save')!r}"
+                )
         # Never store a password: no task may carry a MIKROTIK_PASS env entry.
         # (The enable-hint task names the variable in guidance text so users
         # pass it via env/keychain — that is documentation, not storage.)

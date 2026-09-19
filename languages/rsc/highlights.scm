@@ -48,21 +48,21 @@
 ; modify/query state.  Must come LAST so they win over @string/@constant.
 ((sub_menu
    (identifier) @keyword)
-  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve|check|cancel|flush|run|info|warning|error|debug|unset)$"))
+  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve|check|cancel|flush|run|info|warning|error|debug|unset|scan|reboot|shutdown|backup|save|restore|update|install|renew|release|torch|sniffer|connect|disconnect)$"))
 
 ((menu_command
    (identifier) @keyword)
-  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve|check|cancel|flush|run|info|warning|error|debug|unset)$"))
+  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve|check|cancel|flush|run|info|warning|error|debug|unset|scan|reboot|shutdown|backup|save|restore|update|install|renew|release|torch|sniffer|connect|disconnect)$"))
 
 ; Action commands inside [...] → purple
 ((command_substitution
    (identifier) @keyword)
-  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve|check|cancel|flush|run|info|warning|error|debug|unset)$"))
+  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve|check|cancel|flush|run|info|warning|error|debug|unset|scan|reboot|shutdown|backup|save|restore|update|install|renew|release|torch|sniffer|connect|disconnect)$"))
 
 ; Action commands in continuation → purple
 ((menu_continuation
    (identifier) @keyword)
-  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve|check|cancel|flush|run|info|warning|error|debug|unset)$"))
+  (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve|check|cancel|flush|run|info|warning|error|debug|unset|scan|reboot|shutdown|backup|save|restore|update|install|renew|release|torch|sniffer|connect|disconnect)$"))
 
 ; ── Named parameters — property=value ──────────────────────────
 ; Property name → yellow (like the MikroTik terminal)
@@ -83,28 +83,42 @@
 ((global_command
    (global_command_name (identifier) @_cmd)
    (identifier) @variable.parameter)
- (#match? @_cmd "^(local|global|set)$"))
+  (#match? @_cmd "^(local|global|set)$"))
+
+; ── Loop variables (:foreach i, :for i, :onerror e) ─────────────
+((global_command
+   (global_command_name (identifier) @_cmd)
+   (identifier) @variable.parameter)
+  (#match? @_cmd "^(foreach|for|onerror)$"))
 
 ; ── :return true / :return false ────────────────────────────────
-((global_command
-   (global_command_name (identifier) @_cmd)
-   (identifier) @diff.plus)
- (#eq? @_cmd "return")
- (#eq? @diff.plus "true"))
-
-((global_command
-   (global_command_name (identifier) @_cmd)
-   (identifier) @diff.minus)
- (#eq? @_cmd "return")
- (#eq? @diff.minus "false"))
+; `true`/`false` parse as literal(boolean_literal), not identifiers.
+; The override patterns live in the final overrides section so they win
+; over the generic (boolean_literal) @boolean capture below.
+; ─────────────────────────────────────────────────────────────────
 
 ; ── Control flow keywords ───────────────────────────────────────
 "do" @keyword
 "else" @keyword
 "while" @keyword
 
+; `where` in query clauses (`print where …`, `[find where …]`) parses as
+; a sub_menu identifier; promote it to a keyword.
+((sub_menu
+   (identifier) @keyword)
+  (#eq? @keyword "where"))
+
 (do_block "=" @operator)
 (else_block "=" @operator)
+
+; `in=` (foreach / onerror) and `while=` share the named_param `=` shape
+; but are parsed as dedicated clauses, so they need their own captures.
+(for_in_clause
+  "in" @keyword
+  "=" @operator)
+
+(while_condition
+  "=" @operator)
 
 ; ── Booleans ────────────────────────────────────────────────────
 (boolean_literal) @boolean
@@ -112,17 +126,22 @@
 ; ── Nil ─────────────────────────────────────────────────────────
 (nil_literal) @constant.builtin
 
-; ── Function calls ──────────────────────────────────────────────
-(function_call
-  (variable_reference
-    (identifier) @function))
-
 ; ── Variables ───────────────────────────────────────────────────
+; Whole-node fallback FIRST: later patterns win, so the `$`/identifier
+; parts below (and the function-call pattern after them) override it for
+; their own ranges.
+(variable_reference) @variable
+
 (variable_reference
   "$" @punctuation.special
   (identifier) @variable.parameter)
 
-(variable_reference) @variable
+; ── Function calls ──────────────────────────────────────────────
+; Must come AFTER the variable captures so `$func` in `$func arg`
+; renders as @function instead of the whole-node @variable.
+(function_call
+  (variable_reference
+    (identifier) @function))
 
 ; ── Strings ────────────────────────────────────────────────────
 (string) @string
@@ -149,6 +168,10 @@
 
 ; ── Operators ───────────────────────────────────────────────────
 (operator) @operator
+
+; ── Array access arrow ──────────────────────────────────────────
+; `->` is an anonymous token in array_access, not the operator rule.
+(array_access "->" @operator)
 
 ; ── Brackets ────────────────────────────────────────────────────
 [
@@ -193,14 +216,35 @@
    value: (identifier) @diff.minus)
  (#eq? @_comment_prop "comment"))
 
-; yes → green (on), no → red (off).
-; NOTE: in value position the lexer resolves yes/no as identifiers (lexical
-; conflict with `identifier`), so these match named_param identifier values,
-; not boolean_literal nodes. true/false stay plain values.
+; yes → green (on), no → red (off). `yes`/`no` parse as
+; literal(boolean_literal) in value position (verified with
+; `tree-sitter parse`), so the identifier-based form never matched.
+; true/false stay plain @boolean values.
 ((named_param
-   value: (identifier) @diff.plus)
+   value: (literal (boolean_literal) @diff.plus))
  (#eq? @diff.plus "yes"))
 
 ((named_param
-   value: (identifier) @diff.minus)
+   value: (literal (boolean_literal) @diff.minus))
  (#eq? @diff.minus "no"))
+
+; comment=yes / comment=no: red regardless of on/off wording; kept after
+; the generic yes/no patterns so comment values always win.
+((named_param
+   name: (identifier) @_comment_prop
+   value: (literal (boolean_literal) @diff.minus))
+ (#eq? @_comment_prop "comment"))
+
+; :return true / :return false — same literal(boolean_literal) shape;
+; placed last so they win over the generic @boolean capture above.
+((global_command
+   (global_command_name (identifier) @_cmd)
+   (literal (boolean_literal) @diff.plus))
+ (#eq? @_cmd "return")
+ (#eq? @diff.plus "true"))
+
+((global_command
+   (global_command_name (identifier) @_cmd)
+   (literal (boolean_literal) @diff.minus))
+ (#eq? @_cmd "return")
+ (#eq? @diff.minus "false"))

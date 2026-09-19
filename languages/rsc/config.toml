@@ -8,10 +8,18 @@ autoclose_before = ";:.,=}])>\"' \t\n"
 # `/ip/address` menu paths whole. Brackets/autoclose above are unaffected.
 word_characters = ["_", "-", "$", "@", ":", "/"]
 
+# A physical line ending in the RouterOS line-continuation backslash indents
+# the following line by one level (Zed language-extension docs:
+# increase_indent_pattern). TOML literal string keeps the regex readable:
+# `[\\]` is a single backslash, `\s*$` allows trailing spaces before EOL.
+increase_indent_pattern = '[\\]\s*$'
+
 brackets = [
     { start = "{", end = "}", close = true, newline = true },
     { start = "[", end = "]", close = true, newline = false },
     { start = "(", end = ")", close = true, newline = false },
-    # `"` bracket handled via config with not_in string guard (see brackets.scm comment)
-    { start = "\"", end = "\"", close = true, newline = false, not_in = ["string"] },
+    # Quote brackets handled via config with not_in guards so autoclosing
+    # never fires inside strings or comments (see brackets.scm comment).
+    { start = "\"", end = "\"", close = true, newline = false, not_in = ["string", "comment"] },
+    { start = "'", end = "'", close = true, newline = false, not_in = ["string", "comment"] },
 ]
