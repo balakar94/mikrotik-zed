@@ -119,8 +119,10 @@ fn test_parse_enum_values_malformed_no_parens() {
 
 #[test]
 fn test_parse_enum_values_empty() {
+    // Upstream user-defined values use `enum ()`; an empty body means NO
+    // members (a `[""]` list used to flag every user-defined name).
     let vals = parse_enum_values("enum ()");
-    assert_eq!(vals, vec![""]);
+    assert!(vals.is_empty(), "got {vals:?}");
 }
 
 #[test]
@@ -200,23 +202,22 @@ fn test_real_data_arg_completions_ip_address() {
 
 #[test]
 fn test_real_data_value_completions_chain_and_action() {
-    // Real embedded data: `chain` is a bare "enum" upstream (chains are
-    // user-definable) → no documented members, so the curated common
-    // hints (input/forward/output) apply instead of silence. `action`
-    // embeds the complete member list extracted from the raw docs type
-    // string, so value completions work even though its display type is
-    // truncated.
+    // Real embedded data: `chain` now carries documented `enum_values`
+    // (input/forward/output), so value completion uses the enum-member tier.
+    // `action` embeds its complete member list extracted from the raw docs
+    // type string, so value completions work even though its display type
+    // is truncated.
     let data = MenuData::load();
     let chain_items = compute_completions(&data, "/ip/firewall/filter add chain=");
     let chain_labels: Vec<&str> = chain_items.iter().map(|i| i.label.as_str()).collect();
-    // Unfiltered menus keep curated order (stable sort over tier-only
-    // keys) — this pins construction order, not alphabetical order.
+    // Unfiltered menus keep construction order (stable sort over tier-only
+    // keys) — this pins member order, not alphabetical order.
     assert_eq!(chain_labels, vec!["input", "forward", "output"]);
     for item in &chain_items {
-        assert_eq!(item.detail.as_deref(), Some(COMMON_HINT_DETAIL));
+        assert_eq!(item.detail.as_deref(), Some("enum value — enum"));
         assert!(
-            item.sort_text.as_deref().unwrap_or("").starts_with('5'),
-            "common hint tier 5, got {:?}",
+            item.sort_text.as_deref().unwrap_or("").starts_with('4'),
+            "documented enum tier 4, got {:?}",
             item.sort_text
         );
     }

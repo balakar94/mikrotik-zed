@@ -30,22 +30,21 @@ fn apply_edit(line: &str, edit: &TextEdit) -> String {
 // ── /ip/firewall/filter chain ────────────────────────────────────────────
 
 #[test]
-fn test_golden_filter_chain_empty_gives_common_hints() {
+fn test_golden_filter_chain_empty_lists_documented_members() {
+    // The refreshed dataset embeds `enum_values` for `/ip/firewall/filter
+    // chain` (input/forward/output), so the documented members — not the
+    // curated common hints — back the empty-prefix list.
     let data = MenuData::load();
     let line = "/ip/firewall/filter add chain=";
     let items = compute_completions(&data, line);
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(labels, vec!["input", "forward", "output"]);
     for item in &items {
-        assert_eq!(item.detail.as_deref(), Some(COMMON_HINT_DETAIL));
+        assert_eq!(item.detail.as_deref(), Some("enum value — enum"));
         assert_eq!(
             item.sort_text.as_deref(),
-            Some(match item.label.as_str() {
-                "input" => "5",
-                "forward" => "5",
-                "output" => "5",
-                other => panic!("unexpected hint {other}"),
-            })
+            Some("4"),
+            "documented members share the tier-4 key when unfiltered"
         );
         assert_eq!(item.filter_text.as_deref(), Some(item.label.as_str()));
         // Empty suffix → zero-length insertion edit at the cursor.
@@ -62,8 +61,8 @@ fn test_golden_filter_chain_partial_replaces_suffix() {
     assert_eq!(items.len(), 1);
     let item = &items[0];
     assert_eq!(item.label, "input");
-    // Exact-tier common hint rank: tier 5, prefix match.
-    assert_eq!(item.sort_text.as_deref(), Some("51_input"));
+    // Exact-tier documented member rank: tier 4, prefix match.
+    assert_eq!(item.sort_text.as_deref(), Some("41_input"));
     let edit = item.text_edit.as_ref().expect("value textEdit");
     // The ininput regression guard: accepting `input` over typed `in`
     // must REPLACE, not append.

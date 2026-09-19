@@ -117,13 +117,22 @@ impl ArgEntry {
 /// Fallback only: the display string may be truncated (trailing `...`) by the
 /// generator, in which case this returns whatever fits or nothing at all.
 /// Complete members come from [`ArgEntry::enum_values`] instead.
+///
+/// Empty members are dropped: upstream marks user-defined values with a bare
+/// `enum ()` (e.g. `new-connection-mark`, `new-routing-mark`), and treating
+/// that as a one-member list containing `""` would flag every real mark name
+/// as invalid. No members means no validation.
 pub(crate) fn parse_enum_values(type_str: &str) -> Vec<String> {
     let inner = type_str
         .strip_prefix("enum")
         .and_then(|s| s.trim().strip_prefix('('))
         .and_then(|s| s.strip_suffix(')'));
     match inner {
-        Some(body) => body.split('|').map(|s| s.trim().to_string()).collect(),
+        Some(body) => body
+            .split('|')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
         None => Vec::new(),
     }
 }

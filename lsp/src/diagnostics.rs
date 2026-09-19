@@ -946,6 +946,17 @@ pub(crate) fn compute_diagnostics_with_logicals(
                         if val.is_empty() {
                             continue;
                         }
+                        // Dynamic values (`$var`, `[find ...]`, `(expr)`) resolve at
+                        // runtime; their enum validity is unknowable statically.
+                        if val.contains(['$', '[', ']', '(', ')']) {
+                            continue;
+                        }
+                        // RouterOS negation prefix (`!member`) is not part of the
+                        // member name — validate the remainder.
+                        let val = val.strip_prefix('!').map(str::trim).unwrap_or(val);
+                        if val.is_empty() {
+                            continue;
+                        }
                         // Comma-separated enum lists (e.g. address-list=foo,bar):
                         // split on ',' and trim each member; single-value path keeps
                         // strict equality, list path is lenient — only emit when NO

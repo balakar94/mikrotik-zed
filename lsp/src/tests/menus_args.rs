@@ -183,6 +183,38 @@ fn test_enum_members_fallback_empty_on_truncated_type() {
 }
 
 #[test]
+fn test_parse_enum_values_bare_parens_yield_no_members() {
+    // Upstream user-defined values use `enum ()` (e.g. the mangle
+    // `new-connection-mark` / `new-routing-mark` marks). A parsed empty
+    // member must become NO members: a one-element `[""]` list would flag
+    // every legitimate user-defined mark as an invalid enum value.
+    assert!(parse_enum_values("enum ()").is_empty());
+    assert!(parse_enum_values("enum").is_empty());
+    assert!(parse_enum_values("enum ( )").is_empty());
+    assert!(parse_enum_values("enum (a |  | b)").eq(&["a".to_string(), "b".to_string()]));
+}
+
+#[test]
+fn test_real_data_user_defined_marks_have_no_enum_members() {
+    let data = MenuData::load();
+    let mangle = data
+        .menu_by_path
+        .get("/ipv6/firewall/mangle")
+        .expect("mangle menu");
+    for name in ["new-connection-mark", "new-routing-mark"] {
+        let arg = mangle
+            .arguments
+            .iter()
+            .find(|a| a.name == name)
+            .expect("mark argument");
+        assert!(
+            arg.enum_values.is_empty() && arg.enum_members().is_empty(),
+            "{name} is a user-defined `enum ()` and must validate nothing"
+        );
+    }
+}
+
+#[test]
 fn test_real_data_action_has_complete_enum_values() {
     // Root fix verification: the regenerated command table carries a
     // complete member list for /ip/firewall/filter action, whose display

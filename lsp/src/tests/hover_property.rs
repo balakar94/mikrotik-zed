@@ -229,3 +229,39 @@ fn test_hover_real_data_menu_and_property() {
     let h2 = compute_hover(&data, line2, pos, line2, 0).expect("real prop");
     assert!(h2.contents.value.contains("address"));
 }
+
+// ── Slash-joined commands (runtime regression) ───────────────────────────
+
+#[test]
+fn test_hover_slash_joined_property_resolves() {
+    // `/ipv6/address/add advertise=no`: the slash-joined verb must be split
+    // before the bare partial property can steal the command slot.
+    let data = MenuData::load();
+    let line = "/ipv6/address/add advertise=no";
+    let pos = line.find("advertise").unwrap() + 2;
+    let h = compute_hover(&data, line, pos, line, 0).expect("property hover");
+    assert!(
+        h.contents.value.contains("**advertise**"),
+        "got: {}",
+        h.contents.value
+    );
+    assert!(
+        h.contents.value.contains("in `/ipv6/address add`"),
+        "property must name its slash-joined command context, got: {}",
+        h.contents.value
+    );
+}
+
+#[test]
+fn test_hover_continuation_property_on_slash_joined_command() {
+    let data = MenuData::load();
+    let doc = "/ipv6/address/add advertise=no \\\n  comment=test\n";
+    let line0 = doc.lines().next().unwrap();
+    let pos = line0.find("advertise").unwrap() + 2;
+    let h = compute_hover(&data, line0, pos, doc, 0).expect("continuation property hover");
+    assert!(
+        h.contents.value.contains("**advertise**"),
+        "got: {}",
+        h.contents.value
+    );
+}

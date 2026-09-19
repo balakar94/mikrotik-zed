@@ -761,7 +761,23 @@ pub(crate) fn parse_line_from_tokens(data: &MenuData, tokens: &[SpanToken]) -> L
             if is_sub_menu {
                 path_parts.push(token.to_string());
             } else if command.is_none() && is_command_leader(token) {
-                command = Some(token.to_string());
+                // A slash-joined command may already carry its verb as the
+                // path's final segment (`/ipv6/address/add`). Split it BEFORE
+                // this bare token — a partial property name being typed
+                // (`advertise` in `... add advertise=`) — can claim the
+                // command slot and strand `context.path` on the unknown full
+                // path, which breaks hover and completion context resolution.
+                match split_trailing_verb(&current_path, data) {
+                    Some((parent, verb)) => {
+                        path_parts = parent
+                            .split('/')
+                            .filter(|segment| !segment.is_empty())
+                            .map(str::to_string)
+                            .collect();
+                        command = Some(verb);
+                    }
+                    None => command = Some(token.to_string()),
+                }
             }
             depth = depth.saturating_add(opens).saturating_sub(closes).min(32);
             continue;

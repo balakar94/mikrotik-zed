@@ -327,3 +327,60 @@ type = "string"
     assert!(value.contains("- **alpha** `string`"));
     assert!(value.contains("Source: published reference"));
 }
+
+// ── Slash-joined commands (runtime regression) ───────────────────────────
+
+#[test]
+fn test_hover_slash_joined_menu_segment_resolves() {
+    // `/ipv6/address/remove` is one token; hovering the `address` segment
+    // must show the menu card the space-joined form shows.
+    let data = MenuData::load();
+    let line = "/ipv6/address/remove";
+    let h = hover_at(&data, line, 8).expect("menu segment hover");
+    assert!(
+        h.contents.value.contains("### /ipv6/address"),
+        "got: {}",
+        h.contents.value
+    );
+}
+
+#[test]
+fn test_hover_slash_joined_verb_segment_shows_verb_card() {
+    let data = MenuData::load();
+    let line = "/ipv6/address/remove";
+    let h = hover_at(&data, line, 16).expect("verb segment hover");
+    assert!(
+        h.contents.value.contains("**remove**"),
+        "got: {}",
+        h.contents.value
+    );
+    assert!(
+        h.contents.value.contains("Deletes entries"),
+        "verb role missing: {}",
+        h.contents.value
+    );
+}
+
+#[test]
+fn test_hover_slash_joined_path_inside_block_resolves() {
+    let data = MenuData::load();
+    let line = ":do { /ipv6/address/remove [find] } on-error={}";
+    let h = hover_at(&data, line, 14).expect("block path hover");
+    assert!(
+        h.contents.value.contains("### /ipv6/address"),
+        "got: {}",
+        h.contents.value
+    );
+}
+
+#[test]
+fn test_hover_slash_joined_add_verb_segment() {
+    let data = MenuData::load();
+    let line = "/ipv6/address/add";
+    let h = hover_at(&data, line, 15).expect("add verb hover");
+    assert!(
+        h.contents.value.contains("**add**"),
+        "got: {}",
+        h.contents.value
+    );
+}

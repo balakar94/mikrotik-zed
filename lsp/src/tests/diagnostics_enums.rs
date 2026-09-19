@@ -219,3 +219,73 @@ fn test_oversized_invalid_enum_value_yields_bounded_message() {
         "raw oversized value must not survive into the message"
     );
 }
+
+// ── User-defined enum marks & dynamic values (runtime regression) ────────
+
+#[test]
+fn test_user_defined_mark_and_dynamic_values_stay_silent() {
+    // Shapes copied from a real IPv6 policy-routing script: the dataset
+    // declares `new-connection-mark`/`new-routing-mark` as `enum ()` with no
+    // members (user-defined names), and `$V6Table` is resolved at runtime.
+    // Neither may produce an invalid-enum-value warning.
+    let data = MenuData::load();
+    let doc = concat!(
+        "/ipv6/firewall/mangle/add chain=prerouting action=mark-connection \\\n",
+        "  new-connection-mark=vpn_conn6 passthrough=yes dst-address-type=!local\n",
+        "/ipv6/firewall/mangle/add chain=prerouting action=mark-routing \\\n",
+        "  new-routing-mark=$V6Table passthrough=no connection-mark=vpn_conn6\n",
+    );
+    let diags = compute_diagnostics(&data, doc, "file:///marks.rsc");
+    let enum_diags: Vec<&Diagnostic> = diags
+        .iter()
+        .filter(|d| d.code.as_deref() == Some("invalid-enum-value"))
+        .collect();
+    assert!(
+        enum_diags.is_empty(),
+        "user-defined/dynamic marks must stay silent, got {enum_diags:?}"
+    );
+}
+
+#[test]
+fn test_genuine_enum_and_bool_errors_still_fire() {
+    // The empty-enum and dynamic-value guards must not silence real typos.
+    let data = MenuData::load();
+    let bad_enum = compute_diagnostics(
+        &data,
+        "/ipv6/firewall/filter/add chain=forward action=maybe",
+        "file:///bad.rsc",
+    );
+    assert!(
+        bad_enum
+            .iter()
+            .any(|d| d.code.as_deref() == Some("invalid-enum-value")),
+        "a genuine enum typo must still warn"
+    );
+    let bad_bool = compute_diagnostics(
+        &data,
+        "/ipv6/address/add advertise=maybe",
+        "file:///bool.rsc",
+    );
+    assert!(
+        bad_bool
+            .iter()
+            .any(|d| d.code.as_deref() == Some("invalid-bool-value")),
+        "a genuine bool typo must still hint"
+    );
+}
+
+#[test]
+fn test_negation_prefixed_enum_member_is_accepted() {
+    let data = MenuData::load();
+    let diags = compute_diagnostics(
+        &data,
+        "/ipv6/firewall/filter/add chain=forward action=!accept",
+        "file:///neg.rsc",
+    );
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code.as_deref() == Some("invalid-enum-value")),
+        "`!member` must validate as the member itself"
+    );
+}

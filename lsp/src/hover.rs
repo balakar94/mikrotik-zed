@@ -175,6 +175,91 @@ fn find_menu<'a>(data: &'a MenuData, path: &str) -> Option<&'a MenuEntry> {
     data.menu_by_path.get(&normalize_path(path))
 }
 
+/// Render the standard-verb card for a verb token.
+fn verb_hover(verb: &str) -> Hover {
+    let role = verb_role(verb);
+    let mut sentence = role.to_string();
+    if let Some(first) = sentence.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    Hover {
+        contents: HoverContents {
+            kind: "markdown".to_string(),
+            value: format!("**{verb}**\n\n{sentence}.{}", hover_source_line()),
+        },
+    }
+}
+
+/// Resolve a slash-joined token (`/a/b/verb`) whose whole text is not a menu.
+///
+/// RouterOS accepts both `/a/b verb` and `/a/b/verb`, but only the former
+/// makes the verb a separate word; the segment under the cursor decides what
+/// to show: on a trailing standard verb whose parent resolves, render the
+/// same verb card a space-joined command gets; otherwise render the deepest
+/// known menu prefix ending at the cursor segment. Returns `None` when no
+/// prefix resolves — hover never invents a menu for an unknown path.
+fn hover_slash_path(
+    data: &MenuData,
+    word: &str,
+    word_start: usize,
+    character: usize,
+) -> Option<Hover> {
+    let segments = slash_segment_spans(word);
+    if segments.is_empty() {
+        return None;
+    }
+    // Byte offset within `word`; a cursor on a `/` or past the end belongs
+    // to the segment it follows.
+    let rel = character.saturating_sub(word_start).min(word.len());
+    let mut cursor_seg = segments.len() - 1;
+    for (idx, &(_, end)) in segments.iter().enumerate() {
+        if rel <= end {
+            cursor_seg = idx;
+            break;
+        }
+    }
+
+    if cursor_seg + 1 == segments.len() {
+        let (start, end) = segments[cursor_seg];
+        let verb = &word[start..end];
+        let parent = &word[..start];
+        if MenuData::STANDARD_VERBS
+            .iter()
+            .any(|v| v.eq_ignore_ascii_case(verb))
+            && find_menu(data, parent).is_some()
+        {
+            return Some(verb_hover(verb));
+        }
+    }
+
+    for idx in (0..=cursor_seg).rev() {
+        let end = segments[idx].1;
+        if let Some(menu) = find_menu(data, &word[..end]) {
+            return Some(menu_hover_card(&menu.path, menu));
+        }
+    }
+    None
+}
+
+/// `(start, end)` byte spans of the non-empty `/`-segments in `word`.
+fn slash_segment_spans(word: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut start: Option<usize> = None;
+    for (idx, byte) in word.bytes().enumerate() {
+        if byte == b'/' {
+            if let Some(s) = start.take() {
+                spans.push((s, idx));
+            }
+        } else if start.is_none() {
+            start = Some(idx);
+        }
+    }
+    if let Some(s) = start {
+        spans.push((s, word.len()));
+    }
+    spans
+}
+
 /// Example value line for the most common scalar types.
 fn example_for(arg_type: &str) -> Option<&'static str> {
     if arg_type.starts_with("ipPrefix") {
@@ -269,10 +354,15 @@ pub fn compute_hover(
         };
 
     // Check if it's a menu path (case-insensitive; display keeps typed casing)
-    if word.starts_with('/')
-        && let Some(menu) = find_menu(data, word)
-    {
-        return Some(menu_hover_card(word, menu));
+    if word.starts_with('/') {
+        if let Some(menu) = find_menu(data, word) {
+            return Some(menu_hover_card(word, menu));
+        }
+        // A slash-joined command packs path + verb into one token, so the
+        // whole word never matches a menu; peel segments around the cursor.
+        if let Some(card) = hover_slash_path(data, word, word_start, character) {
+            return Some(card);
+        }
     }
 
     // Check if it's a property name for the current menu.
@@ -379,18 +469,7 @@ pub fn compute_hover(
         .iter()
         .any(|v| word.eq_ignore_ascii_case(v))
     {
-        let role = verb_role(word);
-        let mut sentence = role.to_string();
-        if let Some(first) = sentence.get_mut(..1) {
-            first.make_ascii_uppercase();
-        }
-        let md = format!("**{word}**\n\n{sentence}.{}", hover_source_line());
-        return Some(Hover {
-            contents: HoverContents {
-                kind: "markdown".to_string(),
-                value: md,
-            },
-        });
+        return Some(verb_hover(word));
     }
 
     // `:`-prefixed script keywords (`:put`, `:if`, ...). The extracted `word`

@@ -356,3 +356,66 @@ fn test_completion_is_incomplete_when_item_cap_hit() {
         "a capped list must be marked incomplete: {result}"
     );
 }
+
+#[test]
+fn test_server_hover_slash_joined_commands_real_data() {
+    // Runtime regression: slash-joined paths (menu + verb in one token),
+    // commands inside `:do { }`, and properties on a `\`-continued
+    // slash-joined command must all hover through the wire handler. Each
+    // scenario gets its own document so the backward context walk cannot
+    // join unrelated commands (a separate, documented limitation).
+    let mut server = Server::new(Arc::new(MenuData::load()));
+    let block_doc = ":do { /ipv6/address/remove [find] } on-error={}\n";
+    let cont_doc = "/ipv6/address/add advertise=no \\\n  comment=test\n";
+    for (uri, text) in [
+        ("file:///slash-block.rsc", block_doc),
+        ("file:///slash-cont.rsc", cont_doc),
+    ] {
+        let open = serde_json::json!({
+            "params": {"textDocument": {"uri": uri, "text": text}}
+        });
+        server.handle_message("textDocument/didOpen", &open);
+    }
+    let req = |id: i64, uri: &str, line: u64, character: u64| {
+        serde_json::json!({
+            "id": id,
+            "params": {
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": character}
+            }
+        })
+    };
+    let menu = server
+        .handle_message(
+            "textDocument/hover",
+            &req(1, "file:///slash-block.rsc", 0, 14),
+        )
+        .unwrap();
+    let menu_val = menu["result"]["contents"]["value"].as_str().unwrap_or("");
+    assert!(
+        menu_val.contains("### /ipv6/address"),
+        "block menu hover: {menu_val}"
+    );
+    let verb = server
+        .handle_message(
+            "textDocument/hover",
+            &req(2, "file:///slash-block.rsc", 0, 22),
+        )
+        .unwrap();
+    let verb_val = verb["result"]["contents"]["value"].as_str().unwrap_or("");
+    assert!(
+        verb_val.contains("**remove**"),
+        "block verb hover: {verb_val}"
+    );
+    let prop = server
+        .handle_message(
+            "textDocument/hover",
+            &req(3, "file:///slash-cont.rsc", 0, 20),
+        )
+        .unwrap();
+    let prop_val = prop["result"]["contents"]["value"].as_str().unwrap_or("");
+    assert!(
+        prop_val.contains("**advertise**"),
+        "continued property hover: {prop_val}"
+    );
+}
