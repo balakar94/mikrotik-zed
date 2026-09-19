@@ -115,5 +115,6 @@ Untracked locals: `llms.txt`, `llms-full.txt` (`make sync`), `extension.wasm`, b
 | `zed-extension-dev.md` | Manifest, packaging, publishing to `zed-industries/extensions` |
 | `device-operations.md` | Deploy, live health-check, REST/SSH env, task wiring |
 | `qa-ci-release.md` | Tests, CI gates, docs-drift, release validation |
+| `registry-submission.md` | Registry PRs, version/tag/release/pin coherence, fork rebase flow |
 | `docs-maintenance.md` | Docs edits, volatile facts, docs gate |
 | `language-convention.md` | English-only convention, RouterOS naming |
