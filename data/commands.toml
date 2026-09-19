@@ -2,9 +2,9 @@
 # Auto-generated from llms-full.txt
 # Covers: /app, /beep, /blink, /caps-man, /certificate, /console, /container, /disk, /dude, /environment, /file, /import, … (1077 menus)
 # RouterOS version: 7.23.2
-# Generated: 2026-09-19T12:44:24.190625Z
+# Generated: 2026-09-19T13:00:18.810573Z
 # Source hash (sha256[:16]): a25b13ef01b09646
-# overrides_applied = 9 (data/overrides.toml)
+# overrides_applied = 11 (data/overrides.toml)
 # generics_applied = 1944 (comment/disabled universal; place-before/copy-from ordered-only)
 
 [[menus]]
@@ -6893,6 +6893,7 @@ type = "switch"
 [[menus.arguments]]
 name = "chain"
 type = "enum"
+enum_values = ["input", "forward", "output"]
 required = true
 [[menus.arguments]]
 name = "action"
@@ -7378,6 +7379,7 @@ type = "switch"
 [[menus.arguments]]
 name = "chain"
 type = "enum"
+enum_values = ["srcnat", "dstnat"]
 required = true
 [[menus.arguments]]
 name = "action"

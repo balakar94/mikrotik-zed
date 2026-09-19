@@ -46,6 +46,13 @@
 #   configuration are accessible from the /ipv6/... menus too; the IPv6 NAT
 #   container example uses srcnat/dstnat), so the same module sets apply.
 #   No values are invented, and upstream type/description rows stay as-is.
+# - Bridge firewall `chain` enums (2 menus): /interface/bridge/{filter,nat}
+#   carry the same empty `chain (enum)` declaration. The upstream "Bridge
+#   Firewall" page documents three predefined filter chains (input, output,
+#   forward) and exactly two built-in NAT chains (srcnat, dstnat) — no v7
+#   input/output additions for the bridge NAT table. Sets below; the filter
+#   order matches the sibling /interface/bridge/calea inline enum
+#   (input, forward, output), the prose lists the same three chains.
 
 [[overrides]]
 path = "/ip/route"
@@ -96,3 +103,15 @@ enum_values = ["prerouting", "output"]
 path = "/ipv6/firewall/raw"
 property = "chain"
 enum_values = ["prerouting", "output"]
+
+# bridge filter: input, forward, output
+[[overrides]]
+path = "/interface/bridge/filter"
+property = "chain"
+enum_values = ["input", "forward", "output"]
+
+# bridge nat: srcnat, dstnat (bridge NAT has no v7 input/output chains)
+[[overrides]]
+path = "/interface/bridge/nat"
+property = "chain"
+enum_values = ["srcnat", "dstnat"]

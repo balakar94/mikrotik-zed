@@ -585,11 +585,11 @@ class TestFirewallChainEnums:
     """Curated chain enums for the firewall menus in the generated table.
 
     Upstream's CLI reference declares `chain (enum)` with no members for the
-    IPv4/IPv6 firewall menus, so live completion fell back to a generic
-    3-value list. data/overrides.toml fills the real built-in chain sets.
-    These sets are stable RouterOS built-ins, so exact equality is intended:
-    a failure means regeneration drifted or upstream started shipping values
-    of its own (then retire the redundant override).
+    IPv4/IPv6 firewall menus and the bridge firewall menus, so live completion
+    fell back to a generic 3-value list. data/overrides.toml fills the real
+    built-in chain sets. These sets are stable RouterOS built-ins, so exact
+    equality is intended: a failure means regeneration drifted or upstream
+    started shipping values of its own (then retire the redundant override).
     """
 
     EXPECTED = {
@@ -601,6 +601,10 @@ class TestFirewallChainEnums:
         "/ipv6/firewall/nat": ["srcnat", "dstnat", "input", "output"],
         "/ip/firewall/raw": ["prerouting", "output"],
         "/ipv6/firewall/raw": ["prerouting", "output"],
+        # Bridge firewall: three filter chains, two NAT chains (no v7
+        # input/output for the bridge NAT table).
+        "/interface/bridge/filter": ["input", "forward", "output"],
+        "/interface/bridge/nat": ["srcnat", "dstnat"],
     }
 
     def test_chain_enums_are_populated(self):
@@ -623,4 +627,13 @@ class TestFirewallChainEnums:
                 a for a in BY_PATH[path]["arguments"] if a.get("name") == "chain"
             )
             assert chain.get("type") == "enum", f"{path} chain type changed"
+        # Menus whose upstream ArgTable ships a chain description (the bridge
+        # CLI table does not; enrichment must not invent one).
+        upstream_described = [
+            p for p in self.EXPECTED if p.startswith(("/ip/", "/ipv6/"))
+        ]
+        for path in upstream_described:
+            chain = next(
+                a for a in BY_PATH[path]["arguments"] if a.get("name") == "chain"
+            )
             assert chain.get("description", "").strip(), f"{path} chain description emptied"

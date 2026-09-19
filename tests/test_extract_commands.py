@@ -3094,11 +3094,12 @@ class TestFirewallChainEnums:
     """Curated chain enums vs the real upstream corpus.
 
     Upstream's CLI reference declares `chain (enum)` with no members for the
-    IPv4/IPv6 firewall menus; data/overrides.toml fills them. These tests pin
-    the curated sets against the real llms-full.txt corpus and prove that
-    regeneration is idempotent and still matches the tracked artifact — the
-    same guarantee scripts/check_extract_fresh.sh gives once the change is
-    committed (it compares against HEAD, so it cannot pass pre-commit).
+    IPv4/IPv6 firewall menus and the bridge firewall menus; data/overrides.toml
+    fills them. These tests pin the curated sets against the real llms-full.txt
+    corpus and prove that regeneration is idempotent and still matches the
+    tracked artifact — the same guarantee scripts/check_extract_fresh.sh gives
+    once the change is committed (it compares against HEAD, so it cannot pass
+    pre-commit).
     """
 
     ROOT = Path(__file__).resolve().parents[1]
@@ -3115,6 +3116,8 @@ class TestFirewallChainEnums:
         "/ipv6/firewall/nat": ["srcnat", "dstnat", "input", "output"],
         "/ip/firewall/raw": ["prerouting", "output"],
         "/ipv6/firewall/raw": ["prerouting", "output"],
+        "/interface/bridge/filter": ["input", "forward", "output"],
+        "/interface/bridge/nat": ["srcnat", "dstnat"],
     }
 
     def _regenerate(self) -> tuple[str, int]:
@@ -3142,8 +3145,8 @@ class TestFirewallChainEnums:
     )
     def test_chain_sets_survive_the_real_pipeline(self):
         generated, applied = self._regenerate()
-        assert applied == len(load_overrides(self.OVERRIDES)) == 9, (
-            "expected all 9 curated overrides (1 additive + 8 chain) to apply"
+        assert applied == len(load_overrides(self.OVERRIDES)) == 11, (
+            "expected all 11 curated overrides (1 additive + 10 chain) to apply"
         )
         parsed = tomllib.loads(generated)
         by_path = {m["path"]: m for m in parsed["menus"]}
@@ -3151,7 +3154,10 @@ class TestFirewallChainEnums:
             chain = next(a for a in by_path[path]["arguments"] if a["name"] == "chain")
             assert chain["enum_values"] == expected, f"{path}: {chain['enum_values']!r}"
             assert chain["type"] == "enum", f"{path}: upstream type changed"
-            assert chain["description"], f"{path}: upstream description lost"
+            if path.startswith(("/ip/", "/ipv6/")):
+                # The bridge CLI table ships no chain description; the IP/IPv6
+                # firewall tables do, and enrichment must keep it.
+                assert chain["description"], f"{path}: upstream description lost"
 
     @pytest.mark.skipif(
         not LLMS_FULL.exists(), reason="llms-full.txt not synced (make sync)"
