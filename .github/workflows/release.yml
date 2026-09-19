@@ -16,7 +16,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}-${{ github.event_name }}-${{ inputs.tag }}
+  # Keyed by tag identity: a tag push and a workflow_dispatch for the same tag
+  # must serialize on the same group instead of racing on the same release.
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
@@ -116,7 +118,7 @@ jobs:
             exit 1
           fi
           if ! git tag -l "$TAG" | grep -qx "$TAG"; then
-            echo "::error::Dispatch tag '$TAG' does not exist — push it first (git tag $TAG && git push origin $TAG)"
+            echo "::error::Dispatch tag '$TAG' does not exist — push it first (git tag -a $TAG -m 'release $TAG' && git push origin $TAG)"
             exit 1
           fi
           TAG_SHA=$(git rev-parse "$TAG^{commit}")
@@ -126,6 +128,19 @@ jobs:
             exit 1
           fi
           echo "Dispatch guard OK: $TAG == ${{ github.sha }}"
+
+      - name: Guard — tag commit is on main
+        run: |
+          set -eu
+          TAG="${{ steps.tag.outputs.tag }}"
+          # Releases ship from main only: a correctly-versioned tag on an
+          # unreleased feature branch must not publish public binaries.
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "$TAG^{commit}" FETCH_HEAD; then
+            echo "::error::Tag '$TAG' is not an ancestor of origin/main — publish releases from main"
+            exit 1
+          fi
+          echo "Ancestry OK: $TAG is on main"
 
   # ── Preflight: test + lint + manifest + grammar on the release SHA ──
   preflight:
@@ -157,7 +172,9 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+          # Main-only saves: caches written on a tag ref are not restorable by
+          # main (cache scope), so tag builds only restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Tests (cargo test --workspace --locked)
         run: cargo test --workspace --locked
@@ -228,7 +245,9 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: wasm-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
-          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+          # Main-only saves: caches written on a tag ref are not restorable by
+          # main (cache scope), so tag builds only restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build WASM
         run: cargo build --locked --target wasm32-wasip2 --release
@@ -307,7 +326,9 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: x86_64-unknown-linux-gnu-${{ hashFiles('Cargo.lock') }}
-          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+          # Main-only saves: caches written on a tag ref are not restorable by
+          # main (cache scope), so tag builds only restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build rsc-ls
         run: cargo build -p rsc-ls --locked --release --target x86_64-unknown-linux-gnu
       - name: Prepare binary + checksums
@@ -383,7 +404,9 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: aarch64-unknown-linux-gnu-${{ hashFiles('Cargo.lock') }}
-          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+          # Main-only saves: caches written on a tag ref are not restorable by
+          # main (cache scope), so tag builds only restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build rsc-ls
         run: cargo build -p rsc-ls --locked --release --target aarch64-unknown-linux-gnu
       - name: Prepare binary + checksums
@@ -459,7 +482,9 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: aarch64-apple-darwin-${{ hashFiles('Cargo.lock') }}
-          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+          # Main-only saves: caches written on a tag ref are not restorable by
+          # main (cache scope), so tag builds only restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build rsc-ls
         run: cargo build -p rsc-ls --locked --release --target aarch64-apple-darwin
       - name: Prepare binary + checksums
@@ -535,7 +560,9 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: x86_64-apple-darwin-${{ hashFiles('Cargo.lock') }}
-          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+          # Main-only saves: caches written on a tag ref are not restorable by
+          # main (cache scope), so tag builds only restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build rsc-ls
         run: cargo build -p rsc-ls --locked --release --target x86_64-apple-darwin
       - name: Prepare binary + checksums
@@ -617,7 +644,9 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: x86_64-pc-windows-msvc-${{ hashFiles('Cargo.lock') }}
-          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+          # Main-only saves: caches written on a tag ref are not restorable by
+          # main (cache scope), so tag builds only restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build rsc-ls
         run: cargo build -p rsc-ls --locked --release --target x86_64-pc-windows-msvc
       - name: Prepare binary + checksums
@@ -692,7 +721,9 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: aarch64-pc-windows-msvc-${{ hashFiles('Cargo.lock') }}
-          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+          # Main-only saves: caches written on a tag ref are not restorable by
+          # main (cache scope), so tag builds only restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build rsc-ls
         run: cargo build -p rsc-ls --locked --release --target aarch64-pc-windows-msvc
       - name: Prepare binary + checksums
@@ -768,7 +799,7 @@ jobs:
           echo "Publish checklist:"
           echo "  1. Ensure grammar rev is pushed: python scripts/publish_grammar.py --push"
           echo "  2. Bump version: make bump VERSION=${{ needs.meta.outputs.version }} && cargo check && git diff"
-          echo "  3. Tag: git tag ${{ needs.meta.outputs.tag }} && git push origin --tags"
+          echo "  3. Tag (annotated; lightweight is rejected by the meta job): git tag -a ${{ needs.meta.outputs.tag }} -m 'release ${{ needs.meta.outputs.tag }}' && git push origin ${{ needs.meta.outputs.tag }}"
           echo "  4. Wait for Release workflow to publish assets, then distribute per README 'Release' section"
 
   # ── Create GitHub Release with all binaries ────────────────────────
@@ -778,10 +809,13 @@ jobs:
     timeout-minutes: 10
     needs: [meta, wasm, build-linux-x86, build-linux-arm64, build-macos-arm64, build-macos-x86, build-windows-x86, build-windows-arm64, validations]
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    # Manual-approval gate: configure required reviewers on the `release`
+    # environment in repository settings to pause here before a draft exists.
+    environment: release
     permissions:
+      # Attestations are produced in the build jobs; this job only creates and
+      # updates the draft release, so contents: write is the whole surface.
       contents: write
-      id-token: write
-      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -797,11 +831,16 @@ jobs:
           TAG="${{ needs.meta.outputs.tag }}"
           echo "Checking if release $TAG already exists..."
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::warning::Release $TAG already exists — softprops/action-gh-release will update it (idempotent). Continuing."
-            gh release view "$TAG" --json tagName,createdAt,url --jq '{tag:.tagName, url:.url, createdAt}'
+            echo "::warning::Release $TAG already exists — softprops/action-gh-release will update it (idempotent, draft stays draft until the publish job). Continuing."
+            gh release view "$TAG" --json tagName,isDraft,createdAt,url --jq '{tag:.tagName, isDraft, url:.url, createdAt}'
           else
-            echo "No existing release for $TAG — will create new."
+            echo "No existing release for $TAG — will create new draft."
           fi
+          # Rollback / withdrawal (see the publish job for the same note):
+          #   gh release edit "$TAG" --draft=true   # withdraw from users
+          #   gh release delete "$TAG" --yes        # remove entirely
+          # Draft releases are invisible to the WASM shim, so nothing is
+          # downloaded until the publish job flips the draft after postflight.
 
       - name: Download all artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -809,42 +848,48 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Generate SBOM manifest
+      - name: Install SBOM tool (pinned)
+        uses: taiki-e/install-action@6cd13508893c0e7eab5f273c2575d3859bd7229a # v2.86.6
+        with:
+          tool: cargo-cyclonedx@0.5.9
+
+      # MSRV — toolchain channel from rust-toolchain.toml (single source of
+      # truth); cargo-cyclonedx shells out to `cargo metadata`.
+      - name: Resolve Rust toolchain
+        id: toolchain
+        run: |
+          CH=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])' 2>/dev/null || python -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml","rb"))["toolchain"]["channel"])' 2>/dev/null || grep -E 'channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$CH" ]; then echo "::error::failed to resolve toolchain"; exit 1; fi
+          echo "channel=$CH" >> "$GITHUB_OUTPUT"
+          echo "Resolved toolchain: $CH"
+
+      - name: Install Rust ${{ steps.toolchain.outputs.channel }} (MSRV)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 6c977a6
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+
+      - name: Generate CycloneDX SBOMs (cargo metadata)
         run: |
           set -eu
-          TAG="${{ needs.meta.outputs.tag }}"
-          echo "Generating SBOM manifest for $TAG..."
-          {
-            echo "# SBOM manifest for $TAG"
-            echo "# Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "# Repo: ${{ github.repository }} SHA: ${{ github.sha }}"
-            echo ""
-            echo "## Rust dependencies (Cargo.lock)"
-            if [ -f Cargo.lock ]; then
-              grep -E '^name = |^version = ' Cargo.lock
-            else
-              echo "(Cargo.lock not found)"
+          # One CycloneDX JSON SBOM per workspace member (root WASM crate and
+          # rsc-ls) from cargo metadata at this exact SHA. Default output names
+          # are `<package>.cdx.json` next to each member's Cargo.toml.
+          cargo cyclonedx --manifest-path Cargo.toml --format json
+          for f in mikrotik-zed.cdx.json lsp/rsc-ls.cdx.json; do
+            if [ ! -f "$f" ]; then
+              echo "::error::expected SBOM $f not produced by cargo cyclonedx"
+              ls -l . lsp || true
+              exit 1
             fi
-            echo ""
-            echo "## Python dependencies (pip freeze)"
-            if command -v pip3 >/dev/null 2>&1; then
-              pip3 freeze 2>/dev/null || echo "(pip freeze failed)"
-            elif command -v pip >/dev/null 2>&1; then
-              pip freeze 2>/dev/null || echo "(pip freeze failed)"
-            else
-              echo "(pip not available)"
-            fi
-            echo ""
-            echo "## Release assets"
-            ls -lh dist/
-          } > dist/sbom.txt
-          cat dist/sbom.txt
-          if command -v sha256sum >/dev/null 2>&1; then
-            (cd dist && sha256sum sbom.txt > sbom.txt.sha256)
-          else
-            (cd dist && shasum -a 256 sbom.txt > sbom.txt.sha256)
-          fi
-          cat dist/sbom.txt.sha256
+          done
+          cp mikrotik-zed.cdx.json dist/sbom-mikrotik-zed.cdx.json
+          cp lsp/rsc-ls.cdx.json dist/sbom-rsc-ls.cdx.json
+          # Per-file companions so the combined SHA256SUMS and postflight cover
+          # the SBOMs like every other release asset.
+          (cd dist && sha256sum sbom-mikrotik-zed.cdx.json > sbom-mikrotik-zed.cdx.json.sha256)
+          (cd dist && sha256sum sbom-rsc-ls.cdx.json > sbom-rsc-ls.cdx.json.sha256)
+          cat dist/sbom-mikrotik-zed.cdx.json.sha256 dist/sbom-rsc-ls.cdx.json.sha256
+          # NOTE: never list dist/ from inside a file being written into dist/.
 
       - name: Build combined SHA256SUMS
         run: |
@@ -858,8 +903,8 @@ jobs:
           if ls dist/*.sha256 >/dev/null 2>&1; then
             cat dist/*.sha256 >> SHA256SUMS
           fi
-          # Ensure every binary has an entry even if per-file sha missing.
-          for f in dist/rsc-ls-* dist/extension.wasm dist/sbom.txt; do
+          # Ensure every artifact has an entry even if its per-file sha missing.
+          for f in dist/rsc-ls-* dist/extension.wasm dist/sbom-*.cdx.json; do
             [ -e "$f" ] || continue
             base=$(basename "$f")
             if ! grep -q "$base" SHA256SUMS 2>/dev/null; then
@@ -898,7 +943,7 @@ jobs:
           SHA256 checksums in `SHA256SUMS` and per-file `*.sha256`. Attestations are attached as build provenance.
 
           ### SBOM
-          - `sbom.txt` (+ `sbom.txt.sha256`) – dependency manifest (Cargo.lock packages + pip freeze), covered by `SHA256SUMS` and the postflight checksum loop.
+          - `sbom-mikrotik-zed.cdx.json`, `sbom-rsc-ls.cdx.json` – CycloneDX JSON SBOMs generated from cargo metadata (one per workspace member), each with a `.sha256` companion covered by `SHA256SUMS` and the postflight checksum loop.
 
           ### WASM
           - `extension.wasm` – Zed extension (wasm32-wasip2, `mikrotik_zed.wasm`)
@@ -923,8 +968,11 @@ jobs:
           tag_name: ${{ needs.meta.outputs.tag }}
           name: ${{ needs.meta.outputs.tag }}
           body_path: release-notes.md
-          draft: false
-          prerelease: false
+          # Draft until the postflight+publish jobs verify every asset; a
+          # version with a hyphen (0.7.0-rc.1) is flagged as prerelease so the
+          # shim's pre_release: false lookup can never auto-select it.
+          draft: true
+          prerelease: ${{ contains(needs.meta.outputs.version, '-') }}
           fail_on_unmatched_files: true
           files: |
             dist/*
@@ -932,22 +980,24 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # ── Postflight: prove the download contract from the live release ──
+  # ── Postflight: prove the download contract from the draft release ──
+  # The release is still a draft here; the publish job flips it only after
+  # every check below passes. Rollback: gh release delete TAG --yes.
   postflight:
     name: Postflight verify
     needs: [meta, release]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
-      - name: Download published assets from release
+      - name: Download draft assets from release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
           TAG="${{ needs.meta.outputs.tag }}"
-          echo "Downloading every asset + .sha256 companion from $TAG..."
+          echo "Downloading every asset + .sha256 companion from draft $TAG..."
           mkdir -p verify
           gh release download "$TAG" --repo "${{ github.repository }}" --dir verify
           echo "Downloaded:"
@@ -986,4 +1036,68 @@ jobs:
             exit 1
           fi
           echo "Postflight OK: every companion verified."
+
+      # Verify the published bytes actually run — checksums alone do not prove
+      # the Linux x64 artifact is executable on a glibc host.
+      - name: Smoke — execute the published Linux x86_64 binary
+        run: |
+          set -eu
+          cd verify
+          VERSION="${{ needs.meta.outputs.version }}"
+          BIN="rsc-ls-x86_64-unknown-linux-gnu"
+          chmod +x "$BIN"
+          OUT=$(./"$BIN" --version)
+          echo "$OUT"
+          case "$OUT" in
+            *"$VERSION"*) echo "Published $BIN reports expected version $VERSION" ;;
+            *)
+              echo "::error::published $BIN version mismatch: '$OUT' does not contain '$VERSION'"
+              exit 1
+              ;;
+          esac
+
+      - name: Install wasm-tools (pinned)
+        uses: taiki-e/install-action@6cd13508893c0e7eab5f273c2575d3859bd7229a # v2.86.6
+        with:
+          tool: wasm-tools@1.259.0
+
+      - name: Validate the published WASM component
+        run: |
+          set -eu
+          cd verify
+          file extension.wasm
+          wasm-tools validate --features all extension.wasm
+          echo "extension.wasm is a valid WebAssembly component"
+
+  # ── Publish: flip the verified draft to public (environment-gated) ──
+  # Kept separate from the release job so a postflight failure leaves the
+  # release as a draft: the shim's `latest_github_release` lookup ignores
+  # drafts, so no user can download an unverified build.
+  publish:
+    name: Publish release
+    needs: [meta, release, postflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    # Manual-approval gate: configure required reviewers on the `release`
+    # environment in repository settings.
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the verified draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          TAG="${{ needs.meta.outputs.tag }}"
+          gh release edit "$TAG" --draft=false --repo "${{ github.repository }}"
+          gh release view "$TAG" --repo "${{ github.repository }}" \
+            --json tagName,isDraft,isPrerelease,url --jq '{tag:.tagName, isDraft, isPrerelease, url}'
+          echo "Published $TAG (draft=false)."
+          # Rollback / withdrawal:
+          #   gh release edit "$TAG" --draft=true   # withdraw from users
+          #   gh release delete "$TAG" --yes        # remove the release entirely
+          # While the release is a draft it is invisible to installs; nothing
+          # is served until this job succeeds.
 

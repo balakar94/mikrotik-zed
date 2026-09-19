@@ -1,0 +1,9 @@
+# Pinned CI dependencies (exact versions).
+#
+# Install: pip install -r requirements-ci.txt
+#
+# Base test/runtime deps live in requirements-dev.txt; this file adds the
+# audit tool used by .github/workflows/security-audit.yml. Keep every pin
+# exact so CI runs are reproducible; bump deliberately and re-run make validate.
+-r requirements-dev.txt
+pip-audit==2.10.1

@@ -9,11 +9,18 @@ name: Supply Audit
 # entries against the locked Cargo.lock are already curated to actionable).
 # No Dependabot config by policy — do not re-add it here.
 # Runs Mondays and on demand; failure means a gated advisory matches.
+#
+# Scheduling caveat: GitHub disables scheduled workflows after 60 days without
+# repository activity — if this job has not run for a while, use
+# workflow_dispatch (or push any commit) to re-arm the cron.
+#
+# Failure routing: the notify job opens/comments the `supply-audit` issue on
+# failure and closes it on the next green run, so a red scheduled run is not
+# silent.
 
 on:
   schedule:
-    - cron: "17 6 * * 1" # Mondays 06:17 UTC (Rust job slot)
-    - cron: "27 6 * * 1" # Mondays 06:27 UTC (adjacent slot; triggers whole workflow)
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
   workflow_dispatch:
 
 permissions:
@@ -59,6 +66,10 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements-ci.txt
+            requirements-dev.txt
 
       - name: Setup Node 24
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -71,11 +82,11 @@ jobs:
         run: |
           set -eu
           python -m pip install --upgrade pip
-          # No requirements.txt in repo: audit the effective env with the
-          # network-facing surface installed (scripts/mikrotik-deploy.py uses
-          # requests for REST and paramiko for SSH; tests run on pytest).
-          pip install pip-audit requests paramiko pytest
-          pip freeze | grep -Ei "pip-audit|requests|paramiko|^pytest==" || true
+          # Exact pins: requirements-ci.txt includes requirements-dev.txt plus
+          # pip-audit. requests+paramiko mirror `make install-tools`: the
+          # network-facing deploy/live-check surface is what we audit.
+          pip install -r requirements-ci.txt
+          python -m pip freeze | grep -Ei "pip-audit|requests|paramiko|^pytest==" || true
           # pip-audit has no native severity gate, so capture JSON and fail
           # only on HIGH/CRITICAL markers; LOW/MODERATE stay log-visible.
           # The exit code is decided by the gate below, not by pip-audit.
@@ -141,3 +152,67 @@ jobs:
           # dev would audit nothing. --audit-level=high implements the
           # HIGH/CRITICAL-only policy (LOW/MODERATE stay log-visible).
           npm audit --audit-level=high
+
+  # ── Failure routing: open/comment a labeled issue, close it on recovery ──
+  # Mirrors the docs-drift watchdog pattern so a red scheduled run is visible
+  # without relying on GitHub's default notification settings.
+  notify:
+    name: Audit failure routing
+    needs: [cargo-audit, py-npm-audit]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Failure — open or update the supply-audit issue
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          gh label create supply-audit --color B60205 \
+            --description "Supply audit failed (RustSec / pip-audit / npm audit)" >/dev/null 2>&1 || true
+          number=$(gh issue list --state open --label supply-audit \
+            --json number,title \
+            --jq '.[] | select(.title | startswith("Supply audit failing")) | .number' \
+            | head -n1)
+          {
+            echo "Failed at (UTC): $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo ""
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo ""
+            echo "Results: cargo-audit=${{ needs.cargo-audit.result }} py-npm-audit=${{ needs.py-npm-audit.result }}"
+            echo ""
+            echo "Fix the gated advisory (any RustSec advisory; HIGH/CRITICAL for pip/npm),"
+            echo "then re-run the workflow — this issue closes automatically once both jobs pass."
+          } > "$RUNNER_TEMP/body.md"
+          if [ -n "$number" ]; then
+            echo "Open issue #$number found — appending this run's report."
+            gh issue comment "$number" --body-file "$RUNNER_TEMP/body.md"
+          else
+            echo "No open issue — creating one."
+            gh issue create --title "Supply audit failing" --label supply-audit --body-file "$RUNNER_TEMP/body.md"
+          fi
+          echo "::warning::Supply audit failed — issue updated"
+
+      - name: Recovery — close the supply-audit issue if open
+        if: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          number=$(gh issue list --state open --label supply-audit \
+            --json number,title \
+            --jq '.[] | select(.title | startswith("Supply audit failing")) | .number' \
+            | head -n1)
+          if [ -z "$number" ]; then
+            echo "No open supply-audit issue — nothing to close."
+            exit 0
+          fi
+          echo "Closing #$number (both audit jobs passed)."
+          gh issue comment "$number" --body "Recovered: both audit jobs passed on $(date -u '+%Y-%m-%dT%H:%M:%SZ')."
+          gh issue close "$number" --reason completed

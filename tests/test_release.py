@@ -342,6 +342,82 @@ class TestReleaseYml:
         assert ".sha256" in self.text, "postflight must reference .sha256 companions"
 
 
+# ── release.yml v0.7.0 hardening ─────────────────────────────────────
+
+
+class TestReleaseHardening:
+    """Prerelease flag, draft->publish flow, environment gate, SBOM, guards."""
+
+    @pytest.fixture(autouse=True)
+    def _load(self):
+        self.path = ROOT / ".github" / "workflows" / "release.yml"
+        assert self.path.exists(), ".github/workflows/release.yml missing"
+        self.text = self.path.read_text(encoding="utf-8")
+
+    def _job_block(self, name: str) -> str:
+        """Return the YAML text of a two-space-indented job block."""
+        m = re.search(rf"^  {re.escape(name)}:\s*$", self.text, re.MULTILINE)
+        assert m, f"job {name!r} missing"
+        start = m.end()
+        nxt = re.search(r"^  [a-z0-9-]+:\s*$", self.text[start:], re.MULTILINE)
+        end = start + (nxt.start() if nxt else len(self.text) - start)
+        return self.text[m.start():end]
+
+    def test_prerelease_flag_tracks_hyphenated_versions(self):
+        assert "prerelease: ${{ contains(needs.meta.outputs.version, '-') }}" in self.text
+        assert "prerelease: false" not in self.text, "hardcoded prerelease: false must be gone"
+
+    def test_release_is_draft_until_publish_job(self):
+        assert "draft: true" in self.text
+        publish = self._job_block("publish")
+        assert "gh release edit" in publish
+        assert "--draft=false" in publish
+        assert "needs: [meta, release, postflight]" in publish
+
+    def test_release_and_publish_jobs_are_environment_gated(self):
+        assert "environment: release" in self._job_block("release")
+        assert "environment: release" in self._job_block("publish")
+
+    def test_release_job_permissions_are_contents_write_only(self):
+        release = self._job_block("release")
+        assert "contents: write" in release
+        assert "id-token" not in release, "release job must not carry id-token (no attest step)"
+        assert "attestations: write" not in release
+
+    def test_ancestry_guard_present(self):
+        meta = self._job_block("meta")
+        assert "merge-base --is-ancestor" in meta
+        assert "origin/main" in meta
+
+    def test_concurrency_is_keyed_by_tag_identity(self):
+        assert "group: release-${{ inputs.tag || github.ref_name }}" in self.text
+
+    def test_cache_save_if_excludes_tags(self):
+        save_ifs = [line for line in self.text.splitlines() if "save-if:" in line]
+        assert save_ifs, "expected at least one save-if line in release.yml"
+        for line in save_ifs:
+            assert "refs/tags" not in line, f"tag-scoped cache save still present: {line.strip()}"
+
+    def test_sbom_is_cyclonedx_and_not_pip_freeze(self):
+        assert "cargo cyclonedx" in self.text
+        assert "cargo-cyclonedx@0.5.9" in self.text
+        assert "sbom-mikrotik-zed.cdx.json" in self.text
+        assert "sbom-rsc-ls.cdx.json" in self.text
+        assert "pip3 freeze" not in self.text
+        assert "pip freeze" not in self.text
+        assert "sbom.txt" not in self.text
+
+    def test_postflight_runs_binary_and_validates_wasm(self):
+        post = self._job_block("postflight")
+        assert "rsc-ls-x86_64-unknown-linux-gnu" in post
+        assert 'OUT=$(./"$BIN" --version)' in post
+        assert "wasm-tools validate" in post
+        assert "--features all" in post
+
+    def test_publish_job_is_last(self):
+        assert self.text.index("  publish:") > self.text.index("  postflight:")
+
+
 # ── Makefile bump target ─────────────────────────────────────────────
 
 class TestMakefileBump:

@@ -406,6 +406,89 @@ class TestCIWorkflows:
 
 
 # ---------------------------------------------------------------------------
+# 23b: workflow hygiene (pins, change detection, requirements, failure routing)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkflowHygiene:
+    WORKFLOWS = PROJECT_ROOT / ".github" / "workflows"
+
+    def test_all_uses_are_pinned_or_local(self):
+        import re
+
+        for p in sorted(self.WORKFLOWS.glob("*.yml")):
+            for line in _read_text(p).splitlines():
+                m = re.search(r"uses:\s+(\S+)", line)
+                if not m or m.group(1).startswith("./"):
+                    continue
+                assert re.search(r"@[0-9a-f]{40}$", m.group(1)), (
+                    f"{p.name}: unpinned action {m.group(1)} (must be a 40-hex SHA or local)"
+                )
+
+    def test_ci_change_detection_gates_rust_jobs(self):
+        import re
+
+        text = _read_text(self.WORKFLOWS / "ci.yml")
+        assert re.search(r"^\s{2}changes:", text, re.MULTILINE), "ci.yml missing changes job"
+        for job in ("rust", "windows", "macos"):
+            m = re.search(
+                rf"^\s{{2}}{job}:\s*\n(.*?)(?=^\s{{2}}[a-z0-9-]+:\s*$|\Z)",
+                text,
+                re.MULTILINE | re.DOTALL,
+            )
+            assert m, f"ci.yml missing {job} job"
+            block = m.group(1)
+            assert "needs: changes" in block, f"{job} must need the changes job"
+            assert "needs.changes.outputs.code != 'false'" in block, f"{job} must be skip-gated"
+
+    def test_windows_and_macos_run_workspace_tests(self):
+        text = _read_text(self.WORKFLOWS / "ci.yml")
+        assert text.count("cargo test --workspace --locked") >= 3, (
+            "docs/uploads require workspace tests on Linux, Windows and macOS"
+        )
+
+    def test_cross_target_ci_builds_instead_of_check_only(self):
+        import re
+
+        text = _read_text(self.WORKFLOWS / "ci.yml")
+        assert "cargo check -p rsc-ls --locked --target aarch64-pc-windows-msvc" not in text
+        assert "cargo build -p rsc-ls --locked --target aarch64-pc-windows-msvc" in text
+        assert "cargo build -p rsc-ls --locked --target x86_64-apple-darwin" in text
+        assert re.search(r"file .*rsc-ls\.exe \| grep -Ei 'ARM64\|AArch64'", text), (
+            "PE-arch check missing"
+        )
+
+    def test_requirements_pins_are_exact(self):
+        for name in ("requirements-ci.txt", "requirements-dev.txt"):
+            p = PROJECT_ROOT / name
+            assert p.is_file(), f"missing {name}"
+            for line in p.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or line.startswith("-r "):
+                    continue
+                assert "==" in line, f"{name}: unpinned requirement {line!r}"
+
+    def test_scheduled_workflows_have_failure_routing(self):
+        for name, label in (
+            ("security-audit.yml", "supply-audit"),
+            ("perf.yml", "perf-budget"),
+        ):
+            text = _read_text(self.WORKFLOWS / name)
+            assert "issues: write" in text, f"{name}: missing issues: write"
+            assert label in text, f"{name}: missing {label} issue routing"
+            assert "if: always()" in text, f"{name}: notify job must use if: always()"
+        sec = _read_text(self.WORKFLOWS / "security-audit.yml")
+        assert sec.count("cron:") == 1, "security-audit must have exactly one cron entry"
+
+    def test_perf_runs_on_main_pushes(self):
+        import re
+
+        text = _read_text(self.WORKFLOWS / "perf.yml")
+        assert re.search(r"^\s{2}push:\s*$", text, re.MULTILINE), "perf.yml missing push trigger"
+        assert "branches: [main]" in text
+
+
+# ---------------------------------------------------------------------------
 # 24: cargo check for wasm (real opt-in + file existence)
 # ---------------------------------------------------------------------------
 

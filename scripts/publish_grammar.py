@@ -12,16 +12,22 @@ Usage:
   python scripts/publish_grammar.py --dry-run   # show what would be done
   python scripts/publish_grammar.py --push      # push to remote + update rev
   python scripts/publish_grammar.py --push --remote grammar-bare  # local bare
+  python scripts/publish_grammar.py --push --branch release/0.7.0  # non-main target
   python scripts/publish_grammar.py --push --no-commit  # stage allowlist only, print manual commit steps
 
 Steps:
-  1) Ensure grammars/rsc is a git repo (init if needed)
-  2) Check tree-sitter generate freshness (optional)
-  3) Commit any changes in grammars/rsc (if dirty)
-  4) Push to remote (origin / grammar-bare)
-  5) Get new HEAD SHA
-  6) Update extension.toml [grammars.rsc].rev
-  7) (Optional) bump Cargo.lock handling: run cargo generate-lockfile, keep Cargo.lock committed
+  1) Ensure grammars/rsc is a git repo (init if needed; never in --dry-run)
+  2) Fail-closed generation gate: npx tree-sitter generate + git diff --exit-code
+     on src/parser.c, src/grammar.json and src/node-types.json
+  3) Fail-closed corpus gate: npx tree-sitter test
+  4) Commit any changes in grammars/rsc (if dirty)
+  5) Push HEAD to the target branch (--branch, default main)
+  6) Get new HEAD SHA
+  7) Update extension.toml [grammars.rsc].rev
+  8) (Optional) bump Cargo.lock handling: run cargo generate-lockfile, keep Cargo.lock committed
+
+--dry-run is strictly side-effect free: no git init, no remote add, no
+generate/test, no commit, no push, no extension.toml write.
 
 Version bumps are manual: edit grammars/rsc/Cargo.toml, grammars/rsc/package.json, extension.toml version together.
 """
@@ -65,6 +71,24 @@ def run(cmd, cwd=None, check=True):
     if check and result.returncode != 0:
         raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
     return result
+
+def _run_npx(subcommand, label):
+    """Run a tree-sitter-cli subcommand via npx; fail closed when npx is absent.
+
+    Unlike a plain ``run`` call, a missing npx is mapped to a clear error and
+    exit 1 instead of an uncaught FileNotFoundError traceback. The caller uses
+    ``--skip-generate`` only when it deliberately wants to bypass the gate.
+    """
+    try:
+        run(["npx", *subcommand], cwd=GRAMMAR_DIR)
+    except FileNotFoundError:
+        print(
+            f"error: npx not found — cannot run tree-sitter {label}; "
+            "install Node.js/tree-sitter-cli or pass --skip-generate",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
 
 def ensure_grammar_repo():
     if (GRAMMAR_DIR / ".git").exists():
@@ -116,13 +140,21 @@ def main():
     p.add_argument("--push", action="store_true", help="Actually push to remote")
     p.add_argument("--remote", default="origin", help="Git remote name (default origin). Use 'grammar-bare' for local bare repo")
     p.add_argument("--remote-url", default="https://github.com/balakar94/tree-sitter-rsc", help="Remote URL if not yet added")
-    p.add_argument("--skip-generate", action="store_true", help="Skip tree-sitter generate check")
+    p.add_argument("--skip-generate", action="store_true", help="Skip the tree-sitter generate + corpus gates (explicit bypass)")
     p.add_argument("--no-commit", action="store_true", help="Do not auto-commit: stage nothing, print manual git add/commit steps instead")
+    p.add_argument("--branch", default="main", help="Target branch on the remote (default: main)")
     args = p.parse_args()
 
     if not GRAMMAR_DIR.exists():
         print(f"error: {GRAMMAR_DIR} not found", file=sys.stderr)
         sys.exit(1)
+
+    if args.dry_run and not (GRAMMAR_DIR / ".git").exists():
+        # Strictly side-effect free: report what a real run would do instead of
+        # initializing the repo (ensure_grammar_repo would run `git init`).
+        print(f"DRY-RUN: {GRAMMAR_DIR} is not a git repo; would run 'git init' and first commit")
+        print(f"DRY-RUN: would push HEAD:{args.branch} to {args.remote} and update {EXT_TOML} rev")
+        return
 
     ensure_grammar_repo()
 
@@ -137,19 +169,22 @@ def main():
         if not args.dry_run:
             run(["git", "remote", "add", args.remote, url], cwd=GRAMMAR_DIR)
 
-    # Optional: verify parser.c freshness
-    if not args.skip_generate:
-        if (GRAMMAR_DIR / "grammar.js").exists():
-            if args.dry_run:
-                # Dry-run must be side-effect free: generating would overwrite
-                # grammars/rsc/src/* (generated outputs).
-                print("DRY-RUN: would run 'npx tree-sitter generate'")
-            else:
-                print("Checking tree-sitter generate freshness...")
-                try:
-                    run(["npx", "tree-sitter", "generate"], cwd=GRAMMAR_DIR, check=False)
-                except FileNotFoundError:
-                    print("warn: npx not found, skipping generate", file=sys.stderr)
+    # Fail-closed publish gates, part 1: generation must succeed and the corpus
+    # must pass before anything is committed or pushed. The generated-output
+    # freshness diff runs as part 2 AFTER the commit below: a dirty pre-commit
+    # tree legitimately differs from HEAD, so diffing here would reject every
+    # real grammar change.
+    if not args.skip_generate and (GRAMMAR_DIR / "grammar.js").exists():
+        if args.dry_run:
+            # Dry-run must be side-effect free: generating would overwrite
+            # grammars/rsc/src/* (generated outputs).
+            print("DRY-RUN: would run 'npx tree-sitter generate'")
+            print("DRY-RUN: would run 'npx tree-sitter test'")
+        else:
+            print("Running tree-sitter generate...")
+            _run_npx(["tree-sitter", "generate"], "generate")
+            print("Running tree-sitter corpus tests before publish...")
+            _run_npx(["tree-sitter", "test"], "test")
 
     # Check dirty: dry-run stays side-effect free and reports first.
     if is_dirty():
@@ -177,11 +212,50 @@ def main():
     else:
         print("Grammar repo clean, no commit needed")
 
+    # Fail-closed publish gates, part 2: re-generate and assert zero drift
+    # against the committed outputs. Catches a stale parser.c that was not
+    # regenerated and non-deterministic generation before anything is pushed.
+    # Skipped with --no-commit (the tree intentionally stays dirty then).
+    if (
+        not args.skip_generate
+        and (GRAMMAR_DIR / "grammar.js").exists()
+        and not is_dirty()
+    ):
+        if args.dry_run:
+            print(
+                "DRY-RUN: would re-run 'npx tree-sitter generate' and assert no "
+                "generated-output drift"
+            )
+        else:
+            print("Checking generated-output freshness against the commit...")
+            _run_npx(["tree-sitter", "generate"], "generate")
+            freshness = run(
+                [
+                    "git",
+                    "diff",
+                    "--exit-code",
+                    "--",
+                    "src/parser.c",
+                    "src/grammar.json",
+                    "src/node-types.json",
+                ],
+                cwd=GRAMMAR_DIR,
+                check=False,
+            )
+            if freshness.returncode != 0:
+                print(
+                    "error: generated outputs differ from the committed revision after "
+                    "'tree-sitter generate' — regenerate and commit grammars/rsc/src/* "
+                    "before publishing",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
     head = get_head_sha()
     print(f"Grammar HEAD: {head}")
 
     if args.dry_run:
-        print(f"DRY-RUN: would push to {args.remote} and update extension.toml rev to {head}")
+        print(f"DRY-RUN: would push HEAD:{args.branch} to {args.remote} and update extension.toml rev to {head}")
         update_extension_toml(head, dry_run=True)
         return
 
@@ -191,8 +265,8 @@ def main():
         print(f"Next: git add extension.toml && git commit -m 'chore: bump grammar rev to {head[:7]}'")
         return
 
-    print(f"Pushing to {args.remote}...")
-    run(["git", "push", args.remote, "HEAD:main"], cwd=GRAMMAR_DIR)
+    print(f"Pushing to {args.remote} (HEAD -> {args.branch})...")
+    run(["git", "push", args.remote, f"HEAD:{args.branch}"], cwd=GRAMMAR_DIR)
 
     new_head = get_head_sha()
     print(f"Pushed, new HEAD {new_head}")

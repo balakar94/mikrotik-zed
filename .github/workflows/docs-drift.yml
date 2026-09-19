@@ -16,6 +16,10 @@ name: Upstream Watchdog
 #     (streak reset). Transient network failures must not paint the repo red,
 #     so the error path never exits non-zero and never opens a PR.
 # Scheduled workflows only run on the default branch.
+#
+# Scheduling caveat: GitHub disables scheduled workflows after 60 days without
+# repository activity — use workflow_dispatch (or push any commit) to re-arm
+# the weekly cron after a quiet period.
 
 on:
   schedule:

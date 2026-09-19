@@ -21,7 +21,7 @@ else
 LOCKED := --locked
 endif
 
-.PHONY: help generate generate-check test-grammar test-rust test-python test-all grammar-clone parse highlight extract sync sync-check check-manifest docs docs-check build build-lsp check check-wasm check-lsp fmt fmt-fix clippy audit install install-deps install-tools install-lsp install-dev bump clean clean-generated validate validate-fast _check-tools _clean-artifacts
+.PHONY: help doctor generate generate-check test-grammar test-rust test-python test-all grammar-clone parse highlight extract sync sync-check check-manifest docs docs-check build build-lsp check check-wasm check-lsp fmt fmt-fix clippy audit install install-deps install-tools install-lsp install-dev bump clean clean-generated validate validate-fast _check-tools _clean-artifacts
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -33,6 +33,10 @@ _check-tools:
 	@command -v rustup >/dev/null && rustup target list --installed | grep -q $(WASM_TARGET) || echo "hint: rustup target add $(WASM_TARGET)"
 	@command -v npx >/dev/null || echo "hint: npm install -g tree-sitter-cli (for grammar)"
 	@command -v $(PYTHON) >/dev/null || echo "hint: $(PYTHON) not found — Python 3.11+ needed (run 'make install-tools')"
+	@test -d $(GRAMMAR_DIR) || echo "hint: $(GRAMMAR_DIR) missing — run 'make grammar-clone'"
+
+doctor: _check-tools ## Check local toolchain readiness (cargo, wasm target, npx, Python, grammar)
+	@echo "doctor: toolchain hints above (if any); run 'make install' to bootstrap"
 
 # ── Tree-sitter grammar ──────────────────────────────────────────
 generate: ## Regenerate parser.c from grammar.js (requires tree-sitter-cli)
@@ -150,7 +154,8 @@ install-tools: ## Install toolchains: rustup+wasm32-wasip2, Python venv (.venv) 
 		echo "==> Creating Python venv at $(VENV_DIR)"; \
 		python3 -m venv $(VENV_DIR); \
 	fi
-	$(VENV_DIR)/bin/pip install --upgrade pip pytest requests paramiko
+	$(VENV_DIR)/bin/pip install --upgrade pip
+	$(VENV_DIR)/bin/pip install -r requirements-dev.txt
 	@if [ ! -d "$(GRAMMAR_DIR)" ]; then \
 		echo "hint: $(GRAMMAR_DIR) not present — skipping tree-sitter-cli (run 'make grammar-clone')"; \
 	elif command -v npm >/dev/null 2>&1; then \
@@ -185,7 +190,7 @@ bump: ## Bump version (usage: make bump VERSION=0.2.0)
 	# Section-aware edit via scripts/bump_version.py (tomllib-verified): [package]
 	# version in Cargo.toml + lsp/Cargo.toml, root version in extension.toml — then
 	# cargo check refreshes Cargo.lock and the script asserts the lock carries it.
-	@python3 scripts/bump_version.py "$(VERSION)" Cargo.toml lsp/Cargo.toml extension.toml
+	@$(PYTHON) scripts/bump_version.py "$(VERSION)" Cargo.toml lsp/Cargo.toml extension.toml
 	@echo "Note: grammars/rsc versions live in the separate tree-sitter-rsc repo (untracked working copy)"
 	@echo "      never bumped from here — publish_grammar.py handles that repo."
 	@echo "Note: Cargo.lock refreshed via cargo check above — commit it with the bumps."
@@ -194,15 +199,15 @@ bump: ## Bump version (usage: make bump VERSION=0.2.0)
 # ── Cleanup ──────────────────────────────────────────────────────
 _clean-artifacts:
 	rm -rf target/; rm -f extension.wasm
-	cd $(GRAMMAR_DIR) && rm -f parser.dylib tree-sitter-rsc.wasm
+	@if [ -d "$(GRAMMAR_DIR)" ]; then cd $(GRAMMAR_DIR) && rm -f parser.dylib tree-sitter-rsc.wasm; fi
 
 clean: _clean-artifacts ## Remove build artifacts (preserves Cargo.lock and parser.c)
-	cd $(GRAMMAR_DIR) && rm -rf target/ build/ node_modules/ 2>/dev/null || true
+	@if [ -d "$(GRAMMAR_DIR)" ]; then cd $(GRAMMAR_DIR) && rm -rf target/ build/ node_modules/; fi
 
 clean-generated: ## Remove ALL generated files including parser.c (asks confirmation)
 	@read -p "Remove parser.c, grammar.json, node-types.json? [y/N] " confirm && [ "$$confirm" = "y" ] || (echo "aborted" && exit 1)
 	@$(MAKE) --no-print-directory _clean-artifacts
-	cd $(GRAMMAR_DIR) && rm -rf target/ build/ src/grammar.json src/node-types.json src/parser.c
+	@if [ -d "$(GRAMMAR_DIR)" ]; then cd $(GRAMMAR_DIR) && rm -rf target/ build/ src/grammar.json src/node-types.json src/parser.c; fi
 	@echo "Note: parser.c removed — run 'make generate' to regenerate"
 
 # ── Development ──────────────────────────────────────────────────

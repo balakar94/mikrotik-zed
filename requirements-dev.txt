@@ -1,0 +1,10 @@
+# Pinned development/test dependencies (exact versions).
+#
+# Install: make install-tools
+#     or: .venv/bin/pip install -r requirements-dev.txt
+#
+# Python 3.11+ only (tomllib is in the standard library), so no tomli
+# backport pin is needed. Bump a pin deliberately, then re-run make validate.
+pytest==9.1.1
+requests==2.34.2
+paramiko==5.0.0

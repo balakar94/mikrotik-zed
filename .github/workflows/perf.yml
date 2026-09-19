@@ -8,13 +8,23 @@ name: Perf
 # on a weekly schedule plus on demand. Failure means a real perf regression
 # or a wedged server loop, not CI noise.
 #
-# Cost control: schedule-only + manual dispatch (no per-PR runs), single
-# ubuntu-latest job, 30 min timeout, 7-day artifact retention (logs only).
+# Cost control: no per-PR runs; the budgets run on pushes to main (per merge),
+# on a weekly schedule, and on manual dispatch — a single ubuntu-latest job,
+# 30 min timeout.
+#
+# Scheduling caveat: GitHub disables scheduled workflows after 60 days without
+# repository activity; the push-to-main trigger keeps the workflow exercised on
+# active repos and workflow_dispatch re-arms the cron after a quiet period.
+#
+# Failure routing: the notify job opens/comments the `perf-budget` issue on
+# failure and closes it on the next green run, so a red run is not silent.
 
 on:
+  push:
+    branches: [main]
   schedule:
-    # Tuesdays 05:17 UTC — deliberately off the Monday 06:1x/06:2x
-    # security-audit slots so the two scheduled workflows never overlap.
+    # Tuesdays 05:17 UTC — deliberately off the Monday security-audit slot so
+    # the two scheduled workflows never overlap.
     - cron: "17 5 * * 2"
   workflow_dispatch:
 
@@ -69,3 +79,67 @@ jobs:
       # --test perf_smoke target keeps this job off the rest of the suite.
       - name: Perf budgets — release timing (ignored)
         run: cargo test -p rsc-ls --locked --release --test perf_smoke -- --ignored --nocapture
+
+  # ── Failure routing: open/comment a labeled issue, close it on recovery ──
+  notify:
+    name: Perf failure routing
+    needs: [perf-budgets]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Failure — open or update the perf-budget issue
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          gh label create perf-budget --color D93F0B \
+            --description "Perf budget regression (lsp/tests/perf_smoke.rs)" >/dev/null 2>&1 || true
+          number=$(gh issue list --state open --label perf-budget \
+            --json number,title \
+            --jq '.[] | select(.title | startswith("Perf budgets failing")) | .number' \
+            | head -n1)
+          {
+            echo "Failed at (UTC): $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo ""
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo ""
+            echo "Job result: ${{ needs.perf-budgets.result }}"
+            echo ""
+            echo "A failure means a real release-mode regression or a wedged server loop."
+            echo "Check the timing lines, fix the regression (or adjust the budget in"
+            echo "lsp/tests/perf_smoke.rs deliberately), then re-run — this issue closes"
+            echo "automatically on the next green run."
+          } > "$RUNNER_TEMP/body.md"
+          if [ -n "$number" ]; then
+            echo "Open issue #$number found — appending this run's report."
+            gh issue comment "$number" --body-file "$RUNNER_TEMP/body.md"
+          else
+            echo "No open issue — creating one."
+            gh issue create --title "Perf budgets failing" --label perf-budget --body-file "$RUNNER_TEMP/body.md"
+          fi
+          echo "::warning::Perf budgets failed — issue updated"
+
+      - name: Recovery — close the perf-budget issue if open
+        if: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          number=$(gh issue list --state open --label perf-budget \
+            --json number,title \
+            --jq '.[] | select(.title | startswith("Perf budgets failing")) | .number' \
+            | head -n1)
+          if [ -z "$number" ]; then
+            echo "No open perf-budget issue — nothing to close."
+            exit 0
+          fi
+          echo "Closing #$number (perf budgets passed)."
+          gh issue comment "$number" --body "Recovered: perf budgets passed on $(date -u '+%Y-%m-%dT%H:%M:%SZ')."
+          gh issue close "$number" --reason completed

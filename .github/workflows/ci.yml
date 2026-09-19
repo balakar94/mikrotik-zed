@@ -19,9 +19,62 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ── Change detection: docs-only updates skip the Rust OS matrix ──
+  # python/grammar always run (docs lint, extraction, grammar corpus). Plain
+  # git diff, no third-party path filter action. Fail-safe: an indeterminate
+  # diff (empty, shallow, first commit) runs the full matrix.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed files
+        id: filter
+        run: |
+          set -eu
+          CHANGED=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --quiet origin "${{ github.base_ref }}" || true
+            BASE="origin/${{ github.base_ref }}"
+            if git rev-parse --verify --quiet "$BASE" >/dev/null; then
+              CHANGED=$(git diff --name-only "$BASE"...HEAD || true)
+            fi
+          fi
+          if [ -z "$CHANGED" ] && git rev-parse --verify --quiet HEAD~1 >/dev/null; then
+            CHANGED=$(git diff --name-only HEAD~1 HEAD || true)
+          fi
+          echo "Changed files:"
+          echo "$CHANGED"
+          printf '%s\n' "$CHANGED" > "$RUNNER_TEMP/changed.txt"
+          code=true
+          if [ -s "$RUNNER_TEMP/changed.txt" ] && [ -n "$CHANGED" ]; then
+            docs_only=true
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              case "$f" in
+                docs/*|*.md|LICENSE) ;;
+                *) docs_only=false ;;
+              esac
+            done < "$RUNNER_TEMP/changed.txt"
+            if [ "$docs_only" = "true" ]; then
+              code=false
+            fi
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "code=$code"
+
   # ── Linux: compile & check (fmt, clippy, tests, WASM + rsc-ls) ──
   rust:
     name: Linux • check
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -99,9 +152,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-  # ── Windows: compile & check (rsc-ls on MSVC) ──
+  # ── Windows: compile & check (workspace on MSVC) ──
   windows:
     name: Windows • check
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -131,27 +186,32 @@ jobs:
           # publish, so a fork PR cannot poison the shared cache.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Tests (cargo test -p rsc-ls)
-        run: cargo test -p rsc-ls --locked
+      - name: Tests (cargo test --workspace --locked, shim included)
+        run: cargo test --workspace --locked
 
       - name: Build LSP (rsc-ls.exe)
         run: cargo build -p rsc-ls --locked --release
 
-      # Cross-compile smoke: the release workflow ships aarch64-pc-windows-msvc
-      # built exactly this way on the same runner image — catch toolchain or
-      # link breakage here before a tag, not during a release.
-      - name: Smoke — cross aarch64-pc-windows-msvc
+      # Cross-compile build (not `cargo check`): debug builds link, so
+      # toolchain or linker breakage on the aarch64-pc-windows-msvc target is
+      # caught here before a tag instead of mid-release. Same runner image the
+      # release workflow uses for that target.
+      - name: Build — cross aarch64-pc-windows-msvc (links)
         run: |
           rustup target add aarch64-pc-windows-msvc
-          cargo check -p rsc-ls --locked --target aarch64-pc-windows-msvc
+          cargo build -p rsc-ls --locked --target aarch64-pc-windows-msvc
+          file target/aarch64-pc-windows-msvc/debug/rsc-ls.exe
+          file target/aarch64-pc-windows-msvc/debug/rsc-ls.exe | grep -Ei 'ARM64|AArch64'
 
       - name: Smoke — artifact size
         shell: bash
         run: ls -lh target/release/rsc-ls.exe || ls -lh target/release/rsc-ls
 
-  # ── macOS: compile & check (rsc-ls on Apple Silicon/Intel) ──
+  # ── macOS: compile & check (workspace on Apple Silicon/Intel) ──
   macos:
     name: macOS • check
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -178,22 +238,25 @@ jobs:
           # publish, so a fork PR cannot poison the shared cache.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Tests (cargo test -p rsc-ls)
-        run: cargo test -p rsc-ls --locked
+      - name: Tests (cargo test --workspace --locked, shim included)
+        run: cargo test --workspace --locked
 
       - name: Build LSP (rsc-ls)
         run: cargo build -p rsc-ls --locked --release
 
-      - name: Smoke — cross check aarch64/x86_64
+      # Cross-compile builds (not `cargo check`): debug builds link, so
+      # toolchain or linker breakage on either darwin target is caught here
+      # before a tag instead of mid-release.
+      - name: Build — cross aarch64/x86_64-apple-darwin (links)
         run: |
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
-          cargo check -p rsc-ls --locked --target aarch64-apple-darwin
-          cargo check -p rsc-ls --locked --target x86_64-apple-darwin
+          cargo build -p rsc-ls --locked --target aarch64-apple-darwin
+          cargo build -p rsc-ls --locked --target x86_64-apple-darwin
 
       - name: Smoke — artifact sizes
         run: |
           ls -lh target/release/rsc-ls || true
-          ls -lh target/aarch64-apple-darwin/release/rsc-ls 2>/dev/null || echo "cross aarch64 not built (check only)"
+          ls -lh target/aarch64-apple-darwin/debug/rsc-ls target/x86_64-apple-darwin/debug/rsc-ls
 
   # ── Docs: extraction & requirements checker ──
   python:
@@ -223,10 +286,12 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-          # No pip cache: repo has no requirements.txt/pyproject.toml, so the default
-          # cache-dependency-path (**/requirements.txt) would fail with "No file matched".
-          # pip install is just pytest+tomli+requests+paramiko (tiny), so caching
-          # is not worth the complexity.
+          # Exact pins live in requirements-ci.txt (which includes
+          # requirements-dev.txt); cache both so edits to either invalidate it.
+          cache: pip
+          cache-dependency-path: |
+            requirements-ci.txt
+            requirements-dev.txt
 
       - name: Install Python deps
         run: |
@@ -235,8 +300,8 @@ jobs:
           # scripts/mikrotik-live-check.py prefers requests (urllib fallback) and
           # scripts/mikrotik-deploy.py needs both, so the live-check requests-path
           # tests exercise the real transport instead of false-failing/skipping.
-          pip install pytest tomli requests paramiko
-          pip freeze | grep -Ei "pytest|tomli|requests|paramiko" || true
+          pip install -r requirements-ci.txt
+          python -m pip freeze | grep -Ei "pytest|requests|paramiko|pip-audit" || true
 
       - name: Manifest schema check (make check-manifest)
         run: make check-manifest
