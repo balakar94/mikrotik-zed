@@ -4,6 +4,12 @@
 //! Used by the auto-download path in [`crate`] to verify GitHub Release
 //! binaries against their `<asset>.sha256` companions before execution.
 //!
+//! Integrity scope: the companion is fetched from the same origin as the
+//! artifact and is not independently signed, so a match proves corruption
+//! detection and asset binding (the digest names the expected file), not
+//! release provenance. Sigstore build attestations are published by the
+//! release workflow but are not verified here (see [`crate::verify`]).
+//!
 //! Scope guard: this module owns everything digest-shaped — the hash itself,
 //! parsing of `sha256sum`-format companion files, and digest comparison.
 //! Anything involving I/O, the network, or the Zed API stays in [`crate`].
@@ -211,27 +217,73 @@ fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
 
 /// Parses the expected digest out of a `sha256sum`-format companion file.
 ///
-/// Accepts the standard layout `<lowercase-hex>␠␠<filename>` and tolerates a
-/// trailing newline or CRLF, any run of whitespace around the digest, and
-/// uppercase hex digits (normalized to lowercase). Anything else — empty
-/// content, whitespace-only content, wrong length, non-hex characters — is
-/// rejected so that HTML error pages and truncated downloads fail closed.
+/// Accepted grammar (strict, fail-closed):
+///
+/// ```text
+/// <64 lowercase hex chars>  <filename>        # sha256sum text mode
+/// <64 lowercase hex chars> *<filename>        # sha256sum binary mode
+/// ```
+///
+/// followed by at most one trailing line ending (`\n` or `\r\n`). The
+/// filename must equal `expected_filename` exactly. Everything else is
+/// rejected: uppercase or non-hex digits, a short or long digest, leading
+/// whitespace, a single-space or tab separator, extra tokens, a second line,
+/// a trailing space after the filename, and any filename mismatch.
+///
+/// Strictness matters because this companion is the trust anchor for the
+/// downloaded artifact: a lenient parse would let a renamed or swapped asset
+/// (or an HTML error page) pass verification. The digest itself is corruption
+/// detection, not provenance — see the module docs.
 ///
 /// Returns the normalized 64-character lowercase hex digest.
-pub(crate) fn parse_digest_companion(content: &str) -> Result<String, String> {
-    let Some(token) = content.split_whitespace().next() else {
-        return Err("companion content is empty or whitespace-only".to_string());
+pub(crate) fn parse_digest_companion(
+    content: &str,
+    expected_filename: &str,
+) -> Result<String, String> {
+    /// Exact length of a SHA-256 digest rendered as lowercase hex.
+    const HEX_LEN: usize = 64;
+
+    let bytes = content.as_bytes();
+    // Tolerate exactly one trailing line ending; the rest of the line is
+    // parsed strictly so CRLF cannot smuggle a second line or a stray CR.
+    let body = if let Some(stripped) = bytes.strip_suffix(b"\r\n") {
+        stripped
+    } else if let Some(stripped) = bytes.strip_suffix(b"\n") {
+        stripped
+    } else {
+        bytes
     };
-    if token.len() != 64 {
+    if body.contains(&b'\n') || body.contains(&b'\r') {
+        return Err("companion contains more than one line".to_string());
+    }
+    if body.is_empty() {
+        return Err("companion content is empty".to_string());
+    }
+    if body.len() < HEX_LEN {
         return Err(format!(
-            "digest token is {} characters, expected 64",
-            token.len()
+            "companion is {} bytes, shorter than the {HEX_LEN}-character digest",
+            body.len()
         ));
     }
-    if !token.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err("digest token contains non-hexadecimal characters".to_string());
+    let hex = &body[..HEX_LEN];
+    if !hex.iter().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return Err("digest is not 64 lowercase hexadecimal characters".to_string());
     }
-    Ok(token.to_ascii_lowercase())
+    let rest = &body[HEX_LEN..];
+    let filename = if let Some(rest) = rest.strip_prefix(b"  ") {
+        rest
+    } else if let Some(rest) = rest.strip_prefix(b" *") {
+        rest
+    } else {
+        return Err("expected two spaces or space-asterisk after the digest".to_string());
+    };
+    if filename != expected_filename.as_bytes() {
+        return Err(format!(
+            "companion filename does not match expected asset {expected_filename:?}"
+        ));
+    }
+    // `hex` passed the lowercase-hex check, so it is ASCII by construction.
+    Ok(hex.iter().map(|b| *b as char).collect())
 }
 
 /// Compares two digest strings after trimming surrounding whitespace and
@@ -320,64 +372,153 @@ mod tests {
         // Standard sha256sum output: "<hex>␠␠<filename>".
         assert_eq!(
             parse_digest_companion(
-                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  rsc-ls-aarch64-apple-darwin"
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  rsc-ls-aarch64-apple-darwin",
+                "rsc-ls-aarch64-apple-darwin"
             )
             .unwrap(),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn parses_binary_mode_space_asterisk_layout() {
+        // `sha256sum --binary` (and `shasum -b`) emit "<hex>␠*<filename>".
+        assert_eq!(
+            parse_digest_companion(
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad *rsc-ls-x86_64-unknown-linux-gnu",
+                "rsc-ls-x86_64-unknown-linux-gnu"
+            )
+            .unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
 
     #[test]
     fn parses_companion_with_trailing_newline_and_crlf() {
-        let lf = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  rsc-ls\n";
-        let crlf = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  rsc-ls\r\n";
+        let digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let lf = format!("{digest}  rsc-ls\n");
+        let crlf = format!("{digest}  rsc-ls\r\n");
+        let bare = format!("{digest}  rsc-ls");
         assert_eq!(
-            parse_digest_companion(lf).unwrap(),
-            parse_digest_companion(crlf).unwrap()
+            parse_digest_companion(&lf, "rsc-ls").unwrap(),
+            parse_digest_companion(&crlf, "rsc-ls").unwrap()
+        );
+        assert_eq!(
+            parse_digest_companion(&bare, "rsc-ls").unwrap(),
+            parse_digest_companion(&lf, "rsc-ls").unwrap()
         );
     }
 
     #[test]
-    fn parses_companion_with_single_space_and_surrounding_whitespace() {
-        assert_eq!(
-            parse_digest_companion(
-                "  \n 248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1 rsc-ls\t"
-            )
-            .unwrap(),
-            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
-        );
+    fn accepts_the_published_release_asset_names() {
+        // The exact asset names the release workflow publishes (and that the
+        // shim requests) must parse against their own companion lines.
+        let digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        for asset in [
+            "rsc-ls-aarch64-apple-darwin",
+            "rsc-ls-x86_64-apple-darwin",
+            "rsc-ls-aarch64-unknown-linux-gnu",
+            "rsc-ls-x86_64-unknown-linux-gnu",
+            "rsc-ls-x86_64-pc-windows-msvc",
+            "rsc-ls-aarch64-pc-windows-msvc",
+        ] {
+            let content = format!("{digest}  {asset}\n");
+            assert_eq!(
+                parse_digest_companion(&content, asset).unwrap(),
+                digest,
+                "asset {asset} must parse"
+            );
+        }
     }
 
     #[test]
-    fn normalizes_uppercase_hex_to_lowercase() {
+    fn rejects_uppercase_hex_fail_closed() {
+        // sha256sum always emits lowercase; accepting uppercase would widen
+        // the accepted grammar for no benefit.
         let upper = "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  rsc-ls";
-        assert_eq!(
-            parse_digest_companion(upper).unwrap(),
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        assert!(parse_digest_companion(upper, "rsc-ls").is_err());
+        // A single uppercase digit anywhere is enough to reject.
+        let mixed = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85A  rsc-ls";
+        assert!(parse_digest_companion(mixed, "rsc-ls").is_err());
+    }
+
+    #[test]
+    fn rejects_filename_mismatch() {
+        let digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        // Same length, different asset: must not be accepted.
+        let other_asset = format!("{digest}  rsc-ls-aarch64-apple-darwin");
+        assert!(parse_digest_companion(&other_asset, "rsc-ls-x86_64-apple-darwin").is_err());
+        // Prefix/suffix look-alikes.
+        assert!(parse_digest_companion(&format!("{digest}  rsc-ls"), "rsc-ls-2").is_err());
+        assert!(parse_digest_companion(&format!("{digest}  rsc-ls-2"), "rsc-ls").is_err());
+        // Missing filename entirely.
+        assert!(parse_digest_companion(&format!("{digest}  "), "rsc-ls").is_err());
+    }
+
+    #[test]
+    fn rejects_wrong_separators() {
+        let digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        // Single space is not sha256sum format (GNU uses two, or space+`*`).
+        assert!(parse_digest_companion(&format!("{digest} rsc-ls"), "rsc-ls").is_err());
+        // Tab separator.
+        assert!(parse_digest_companion(&format!("{digest}\trsc-ls"), "rsc-ls").is_err());
+        // Asterisk without the leading space.
+        assert!(parse_digest_companion(&format!("{digest}*rsc-ls"), "rsc-ls").is_err());
+        // More than two spaces before the filename.
+        assert!(parse_digest_companion(&format!("{digest}   rsc-ls"), "rsc-ls").is_err());
+    }
+
+    #[test]
+    fn rejects_leading_and_trailing_whitespace() {
+        let digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert!(parse_digest_companion(&format!("  {digest}  rsc-ls"), "rsc-ls").is_err());
+        assert!(parse_digest_companion(&format!(" {digest}  rsc-ls"), "rsc-ls").is_err());
+        // Trailing space becomes part of the filename and must mismatch.
+        assert!(parse_digest_companion(&format!("{digest}  rsc-ls "), "rsc-ls").is_err());
+    }
+
+    #[test]
+    fn rejects_extra_tokens_and_second_lines() {
+        let digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert!(
+            parse_digest_companion(&format!("{digest}  rsc-ls extra"), "rsc-ls").is_err(),
+            "trailing token must be rejected"
+        );
+        let two_lines = format!("{digest}  rsc-ls\n{digest}  rsc-ls\n");
+        assert!(
+            parse_digest_companion(&two_lines, "rsc-ls").is_err(),
+            "second line must be rejected"
+        );
+        assert!(
+            parse_digest_companion(&format!("{digest}  rsc-ls\rmore"), "rsc-ls").is_err(),
+            "stray CR must be rejected"
         );
     }
 
     #[test]
     fn rejects_empty_companion() {
-        assert!(parse_digest_companion("").is_err());
+        assert!(parse_digest_companion("", "rsc-ls").is_err());
     }
 
     #[test]
     fn rejects_whitespace_only_companion() {
-        assert!(parse_digest_companion(" \r\n\t ").is_err());
+        assert!(parse_digest_companion(" \r\n\t ", "rsc-ls").is_err());
+        assert!(parse_digest_companion("\n", "rsc-ls").is_err());
     }
 
     #[test]
     fn rejects_wrong_length_digest() {
-        let short = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8  x";
-        assert!(parse_digest_companion(short).is_err());
+        let short = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8  rsc-ls";
+        assert!(parse_digest_companion(short, "rsc-ls").is_err());
+        let long = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8550  rsc-ls";
+        assert!(parse_digest_companion(long, "rsc-ls").is_err());
     }
 
     #[test]
     fn rejects_non_hex_token() {
         // What a GitHub HTML error page would look like if fetched by mistake.
         let garbage = "<!DOCTYPE html>  404";
-        assert!(parse_digest_companion(garbage).is_err());
+        assert!(parse_digest_companion(garbage, "rsc-ls").is_err());
     }
 
     #[test]

@@ -2,11 +2,21 @@
 //!
 //! Policy: a freshly downloaded binary may only be made executable after its
 //! SHA-256 digest matches the release's `<asset>.sha256` companion file
-//! (`sha256sum` format: `<lowercase-hex>␠␠<filename>`). Any problem along the
-//! way — companion fetch error, unparseable companion, unreadable artifact,
-//! size cap exceeded, or digest mismatch — fails closed: the caller deletes
-//! the artifact and refuses to run it. There is deliberately no fallback to
+//! (strict `sha256sum` format: `<lowercase-hex>` + two spaces or space+`*`,
+//! then the exact expected asset filename). Any problem along the way —
+//! companion fetch error, unparseable companion, unreadable artifact, size
+//! cap exceeded, or digest mismatch — fails closed: the caller deletes the
+//! artifact and refuses to run it. There is deliberately no fallback to
 //! executing unverified bytes.
+//!
+//! Integrity scope (accepted residual): the companion is fetched from the
+//! same origin as the artifact and carries no independent signature, so a
+//! match detects corruption and binds the digest to the expected asset name —
+//! it does not prove release provenance. The release workflow publishes
+//! Sigstore build attestations (`actions/attest-build-provenance`), but
+//! verifying them from the WASM component would add a large dependency
+//! surface; the checksum remains corruption detection only. See the release
+//! runbook for attestation verification by operators.
 //!
 //! This module owns verification *policy* (what to fetch, what to compare,
 //! how failures are worded). Orchestration (installation status transitions,
@@ -92,7 +102,14 @@ pub(crate) fn companion_url(download_url: &str) -> String {
 
 /// Fetches `{download_url}.sha256` through the Zed extension host HTTP client
 /// and returns the expected digest parsed from the companion content.
-fn fetch_companion_digest(download_url: &str) -> std::result::Result<String, VerificationFailure> {
+///
+/// `asset_name` is the exact release asset filename the companion must name;
+/// a companion for a different asset is rejected (see
+/// [`crate::sha256::parse_digest_companion`]).
+fn fetch_companion_digest(
+    download_url: &str,
+    asset_name: &str,
+) -> std::result::Result<String, VerificationFailure> {
     let companion_url = companion_url(download_url);
     let request = HttpRequest::builder()
         .method(HttpMethod::Get)
@@ -108,7 +125,7 @@ fn fetch_companion_digest(download_url: &str) -> std::result::Result<String, Ver
         .map_err(VerificationFailure::CompanionFetch)?;
     let content = std::str::from_utf8(&response.body)
         .map_err(|_| VerificationFailure::CompanionParse("companion is not valid UTF-8".into()))?;
-    sha256::parse_digest_companion(content).map_err(VerificationFailure::CompanionParse)
+    sha256::parse_digest_companion(content, asset_name).map_err(VerificationFailure::CompanionParse)
 }
 
 /// Hashes `binary_name` in streaming chunks under `max_bytes`.
@@ -134,15 +151,22 @@ fn hash_binary_capped(
 /// Verifies the just-downloaded binary against its `.sha256` companion.
 ///
 /// `binary_name` is the work-dir-relative path `download_file` wrote to.
-/// Read-back stays within the extension work dir (repo hard rule #7).
+/// `asset_name` is the expected release asset filename; the companion must
+/// name exactly that asset (a digest for a different file is rejected even
+/// when it is valid hex). Read-back stays within the extension work dir
+/// (repo hard rule #7).
+///
+/// The comparison is corruption detection and asset binding, not release
+/// provenance: the companion is same-origin and unsigned (see module docs).
 ///
 /// On success returns the verified digest (full lowercase hex); on any
 /// failure returns a [`VerificationFailure`] — callers must fail closed.
 pub(crate) fn verify_downloaded_binary(
     binary_name: &str,
     download_url: &str,
+    asset_name: &str,
 ) -> std::result::Result<String, VerificationFailure> {
-    let expected = fetch_companion_digest(download_url)?;
+    let expected = fetch_companion_digest(download_url, asset_name)?;
 
     // Cap before reading: refuse absurdly large artifacts instead of
     // buffering them inside the WASM component. The streaming hash below
@@ -229,6 +253,27 @@ mod tests {
                 "fail-closed wording missing: {msg}"
             );
         }
+    }
+
+    #[test]
+    fn companion_filename_mismatch_is_companion_parse_failure() {
+        // Regression (SEC-03a): a valid digest that names a different asset
+        // must fail as CompanionParse, so the caller deletes the staged
+        // binary and cached pair instead of executing it.
+        let detail = sha256::parse_digest_companion(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  rsc-ls-other-asset",
+            "rsc-ls-x86_64-unknown-linux-gnu",
+        )
+        .expect_err("filename mismatch must fail closed");
+        assert!(
+            detail.contains("filename"),
+            "unexpected failure detail: {detail}"
+        );
+        let msg = VerificationFailure::CompanionParse(detail).describe(
+            "https://github.com/balakar94/mikrotik-zed/releases/download/v0.7.0/rsc-ls-x86_64-unknown-linux-gnu",
+        );
+        assert!(msg.contains("invalid .sha256 companion"));
+        assert!(msg.contains("Refusing to run unverified"));
     }
 
     #[test]

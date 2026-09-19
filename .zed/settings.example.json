@@ -1,0 +1,25 @@
+// Example Zed project settings for the MikroTik RSC extension.
+//
+// Copy to `.zed/settings.json` and edit the values for your device.
+// That file is gitignored — never commit it.
+//
+// SECURITY: do NOT put MIKROTIK_PASS (or any secret) here. Project settings
+// travel with the repository, and `lsp.rsc-ls.binary.env` values become the
+// language server's process environment. Export the password in your shell
+// profile, or let the deploy / live-check tasks prompt for it.
+{
+  "lsp": {
+    "rsc-ls": {
+      "binary": {
+        "env": {
+          "RSC_LS_LIVE": "1",
+          "MIKROTIK_HOST": "192.168.88.1",
+          "MIKROTIK_USER": "admin",
+          "MIKROTIK_PORT": "443",
+          "MIKROTIK_SSL": "1",
+          "RSC_LS_LOG": "info"
+        }
+      }
+    }
+  }
+}

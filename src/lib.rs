@@ -1,6 +1,7 @@
 use zed_extension_api::{self as zed, LanguageServerId, Result, Worktree};
 
 mod cache;
+mod path_gate;
 mod platform;
 mod sha256;
 mod verify;
@@ -55,23 +56,20 @@ impl zed::Extension for RscExtension {
         // cleanup, spawn — goes through this variable, never a bare constant.
         let stored_name = platform::stored_binary_name(os, version);
 
-        // 1) Fast path: binary in PATH (developer local build or manual install).
-        //    PATH wins over auto-download by design so local iterations are
-        //    picked up without a release round-trip. The plain name is probed
-        //    everywhere; Windows manual installs keep the `.exe` suffix, so
-        //    probe that there too (no-op elsewhere).
-        //
-        //    Supply-chain gate `RSC_LS_ALLOW_PATH` (read via
-        //    `worktree.shell_env()`, never `std::env`, so the WASM component
-        //    stays sandboxed): default `1` preserves compatibility and keeps
-        //    PATH first; `0` skips PATH entirely and forces the verified
+        // 1) Fast path: binary in PATH (developer local build or manual
+        //    install). PATH execution is OPT-IN since 0.7.0: the default is
+        //    deny, so a fresh install always uses the checksum-verified
         //    work-dir cache / auto-download path below. Set
-        //    `RSC_LS_ALLOW_PATH=0` in the shell environment when only
-        //    checksum-verified binaries may run.
+        //    `RSC_LS_ALLOW_PATH=1` in the shell environment to allow running
+        //    an unversioned `rsc-ls` from PATH (read via
+        //    `worktree.shell_env()`, never `std::env`, so the WASM component
+        //    stays sandboxed). The plain name is probed everywhere; Windows
+        //    manual installs keep the `.exe` suffix, so probe that there too
+        //    (no-op elsewhere).
         //
-        //    Optional hash pin for developers: set `RSC_LS_PATH_SHA256` to the
-        //    expected 64-character lowercase hex digest of the PATH binary
-        //    (compare with `sha256sum "$(which rsc-ls)"`). When present and
+        //    PATH binaries bypass the `.sha256`/`.verified` integrity gate used
+        //    by the auto-download path, so the optional `RSC_LS_PATH_SHA256`
+        //    pin is the only verification available there: when set and
         //    well-formed, a PATH hit whose bytes hash differently is refused
         //    and resolution falls through to the verified cache path; a
         //    malformed pin value is treated the same way (fail closed, never
@@ -81,11 +79,7 @@ impl zed::Extension for RscExtension {
         //    for the binary version (probing it from the shim would require a
         //    spawn, which is not cheap here).
         let shell_env = worktree.shell_env();
-        let allow_path = shell_env
-            .iter()
-            .find(|(k, _)| k == "RSC_LS_ALLOW_PATH")
-            .map(|(_, v)| v.trim() != "0")
-            .unwrap_or(true);
+        let allow_path = path_gate::path_lookup_allowed(&shell_env);
         if allow_path {
             if let Some(path) = worktree
                 .which(BINARY_NAME)
@@ -133,7 +127,7 @@ impl zed::Extension for RscExtension {
                             crate::verify::short_digest(digest)
                         );
                         eprintln!(
-                            "[mikrotik-zed] warning: PATH binary bypasses the checksum/.verified gate used by the auto-download path (see verify.rs/cache.rs); ensure it is trusted (set RSC_LS_ALLOW_PATH=0 to force verified cache, or pin with RSC_LS_PATH_SHA256)"
+                            "[mikrotik-zed] warning: RSC_LS_ALLOW_PATH=1 is set: PATH binaries bypass the checksum/.verified gate used by the auto-download path (see verify.rs/cache.rs); ensure it is trusted (unset it or set it to 0 to force the verified cache, or pin with RSC_LS_PATH_SHA256)"
                         );
                         usable = Some(path);
                     }
@@ -142,7 +136,7 @@ impl zed::Extension for RscExtension {
                             "[mikrotik-zed] using {BINARY_NAME} from PATH: {path} (extension v{version}; binary could not be hashed for logging, confirm with `rsc-ls --version`)"
                         );
                         eprintln!(
-                            "[mikrotik-zed] warning: PATH binary bypasses the checksum/.verified gate used by the auto-download path (see verify.rs/cache.rs); ensure it is trusted (set RSC_LS_ALLOW_PATH=0 to force verified cache, or pin with RSC_LS_PATH_SHA256)"
+                            "[mikrotik-zed] warning: RSC_LS_ALLOW_PATH=1 is set: PATH binaries bypass the checksum/.verified gate used by the auto-download path (see verify.rs/cache.rs); ensure it is trusted (unset it or set it to 0 to force the verified cache, or pin with RSC_LS_PATH_SHA256)"
                         );
                         usable = Some(path);
                     }
@@ -158,7 +152,7 @@ impl zed::Extension for RscExtension {
             }
         } else {
             eprintln!(
-                "[mikrotik-zed] PATH lookup disabled by RSC_LS_ALLOW_PATH=0; using verified cache"
+                "[mikrotik-zed] PATH lookup disabled (default; set RSC_LS_ALLOW_PATH=1 to opt in); using verified cache"
             );
         }
 
@@ -371,9 +365,14 @@ impl zed::Extension for RscExtension {
 
         // 5) Supply-chain verification: hash the staged binary against the
         // release's `.sha256` companion BEFORE it is made executable or run.
-        // Fail closed on any verification problem — never fall back to
-        // executing an unverified binary.
-        let verified_digest = match verify::verify_downloaded_binary(&staging, &url) {
+        // The companion must name this exact asset (`asset_name`), so a valid
+        // digest for a different file is rejected too. The companion is
+        // same-origin and unsigned: this is corruption detection and asset
+        // binding, not release provenance (attestations are published by the
+        // release workflow but are not consumed here). Fail closed on any
+        // verification problem — never fall back to executing unverified
+        // binary.
+        let verified_digest = match verify::verify_downloaded_binary(&staging, &url, &asset_name) {
             Ok(digest) => digest,
             Err(failure) => {
                 let msg = failure.describe(&url);
@@ -390,7 +389,7 @@ impl zed::Extension for RscExtension {
             }
         };
         eprintln!(
-            "[mikrotik-zed] sha256 verified {} ({triple})",
+            "[mikrotik-zed] sha256 checksum verified {} ({triple}); corruption check only, no provenance",
             verify::short_digest(&verified_digest)
         );
 

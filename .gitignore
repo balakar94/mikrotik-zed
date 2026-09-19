@@ -18,8 +18,11 @@ grammar-bare.git/
 /llms-full.txt
 
 # IDE / editor
+# `.zed/settings.json` stays ignored (it can hold machine-local env such as
+# MIKROTIK_*); only the secret-free example and tasks are tracked.
 .zed/*
 !.zed/tasks.json
+!.zed/settings.example.json
 .vscode/
 .idea/
 *.swp
