@@ -72,7 +72,11 @@ fn test_server_completion_identical_cold_and_warm() {
 }
 
 #[test]
-fn test_server_did_change_invalidates_parse_cache() {
+fn test_server_did_change_reparses_without_explicit_invalidation() {
+    // Edits rely on the cache's length+hash guard, not on an explicit
+    // invalidation: the stale entry must no longer be served, and the
+    // didChange publish path already warms the parse for the NEW text so
+    // the next request (completion, symbols, …) hits it.
     let mut server = Server::new(synthetic_data());
     let open = serde_json::json!({
         "params": {"textDocument": {"uri": "file:///evict.rsc", "text": ":put $a\n"}}
@@ -101,9 +105,37 @@ fn test_server_did_change_invalidates_parse_cache() {
     assert!(
         server
             .parse_cache
-            .lookup("file:///evict.rsc", &stored)
+            .lookup("file:///evict.rsc", ":put $a\n")
             .is_none(),
-        "edits must invalidate the cached parse"
+        "stale parse must never be served after an edit"
+    );
+    assert!(
+        server
+            .parse_cache
+            .lookup("file:///evict.rsc", &stored)
+            .is_some(),
+        "the didChange publish must warm the cache for the new text"
+    );
+}
+
+#[test]
+fn test_cached_and_legacy_diagnostics_are_identical() {
+    // The cached path (used by didOpen/didChange/pull) and the explicit-text
+    // path (tests/legacy) must emit byte-identical diagnostics for a doc
+    // within the byte cap.
+    let mut server = Server::new(synthetic_data());
+    let text = "/ip/address add \\\naddress=1.1.1.1 interface=ether1\n";
+    let uri = "file:///same.rsc";
+    let open = serde_json::json!({
+        "params": {"textDocument": {"uri": uri, "text": text}}
+    });
+    server.handle_message("textDocument/didOpen", &open);
+    let cached = server.encoded_diagnostics_cached(uri);
+    let legacy = server.encoded_diagnostics(text, uri);
+    assert_eq!(
+        serde_json::to_value(&cached).unwrap(),
+        serde_json::to_value(&legacy).unwrap(),
+        "cached and legacy diagnostics must agree"
     );
 }
 

@@ -528,27 +528,52 @@ fn is_valid_ip_or_prefix(value: &str) -> bool {
 
 /// Compute diagnostics for a document.
 /// `uri` is unused for logic but kept for API compatibility (publish needs it).
+///
+/// Test/legacy entry point: the server uses
+/// [`compute_diagnostics_with_logicals`] so it can share the parse cache.
+#[allow(dead_code)]
 pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagnostic> {
-    // Cap large docs
-    let bytes_to_process = if doc.len() > MAX_DIAG_BYTES {
-        // Truncate at char boundary
-        let idx = crate::floor_char_boundary(doc, MAX_DIAG_BYTES);
-        &doc[..idx]
-    } else {
-        doc
+    compute_diagnostics_with_logicals(data, doc, None)
+}
+
+/// [`compute_diagnostics`] with an optional caller-supplied logical-line join.
+///
+/// `cached_logicals` must be the FULL-document join (`logical_lines(doc)`).
+/// It is honored only while the document fits [`MAX_DIAG_BYTES`], where the
+/// local build below would produce a byte-identical slice; over-cap
+/// documents keep their own byte-capped join so the truncation semantics
+/// (and therefore the emitted diagnostics) stay unchanged. The caller owns
+/// the cache lifetime (see `Server::encoded_diagnostics_cached`).
+pub(crate) fn compute_diagnostics_with_logicals(
+    data: &MenuData,
+    doc: &str,
+    cached_logicals: Option<&[LogicalLine]>,
+) -> Vec<Diagnostic> {
+    // Over-cap documents derive their logicals from the capped byte slice
+    // (truncating at a char boundary), exactly as before this function was
+    // split; within-cap documents can reuse the caller's full-document join.
+    let local_logicals;
+    let logical_lines: &[LogicalLine] = match cached_logicals {
+        Some(logicals) if doc.len() <= MAX_DIAG_BYTES => logicals,
+        _ => {
+            let bytes_to_process = if doc.len() > MAX_DIAG_BYTES {
+                let idx = crate::floor_char_boundary(doc, MAX_DIAG_BYTES);
+                &doc[..idx]
+            } else {
+                doc
+            };
+            let raw_lines: Vec<&str> = bytes_to_process.lines().collect();
+            // Join backslash continuations FIRST, then cap: MAX_DIAG_LINES
+            // therefore applies to the LOGICAL line count (one diagnostic
+            // unit per command), not the physical line count.
+            local_logicals = build_logical_lines(&raw_lines);
+            &local_logicals
+        }
     };
-
-    let raw_lines: Vec<&str> = bytes_to_process.lines().collect();
-
-    // Join backslash continuations FIRST, then cap: MAX_DIAG_LINES therefore
-    // applies to the LOGICAL line count (one diagnostic unit per command), not
-    // the physical line count. The pre-existing cap tests feed one-line
-    // logicals, so their expectations remain valid.
-    let logical_lines = build_logical_lines(&raw_lines);
     let iter_lines: &[LogicalLine] = if logical_lines.len() > MAX_DIAG_LINES {
         &logical_lines[..MAX_DIAG_LINES]
     } else {
-        &logical_lines[..]
+        logical_lines
     };
 
     let mut diagnostics = Vec::new();
@@ -556,6 +581,10 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
     // Set when a semantic push is blocked by MAX_DIAGNOSTICS; drives the
     // count-only truncation footer and stops all further property work.
     let mut count_truncated = false;
+    // Allowed-property sets memoized per menu path for THIS publish: a dump
+    // of identical `/ip/firewall/filter add …` lines rebuilds the set once
+    // instead of once per line.
+    let mut allowed_by_path: HashMap<String, HashSet<String>> = HashMap::new();
 
     for ll in iter_lines {
         if count_truncated {
@@ -583,10 +612,11 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             continue;
         }
 
-        // Quick check: does line contain '/'? If not, likely not a menu command, skip unknown-menu
-        // check.
-        // But we still parse to detect path.
-        let ctx = crate::parse_line(data, line);
+        // Single tokenization per logical line: `parse_line_from_tokens`
+        // consumes the same span-carrying stream the rules below use for
+        // exact occurrence ranges, instead of each tokenizing independently.
+        let tokens = crate::tokenize_with_spans(line);
+        let ctx = crate::parser::parse_line_from_tokens(data, &tokens);
 
         // If path is empty and command is None and no properties, skip
         if ctx.path.is_empty() && ctx.command.is_none() && ctx.properties.is_empty() {
@@ -641,20 +671,25 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
         // For unknown property / missing required, we require a known Directory menu with
         // arguments.
 
-        // ---- Tokenize with spans for duplicate and precise range detection ----
-        // Property occurrences are recorded DURING tokenization, so diagnostic
-        // ranges point at the exact occurrence instead of the first textual
-        // match (which could sit inside the menu path or an earlier value).
-        // Lookup keys are case-folded (RouterOS properties are
-        // case-insensitive); the ORIGINAL key text rides along in
+        // ---- Property spans for duplicate and precise range detection ----
+        // Property occurrences are recorded from the single tokenization
+        // above, so diagnostic ranges point at the exact occurrence instead
+        // of the first textual match (which could sit inside the menu path or
+        // an earlier value). Lookup keys are case-folded (RouterOS properties
+        // are case-insensitive); the ORIGINAL key text rides along in
         // `key_values` so messages keep the user's casing and `key_spans`
         // offsets still address the original bytes.
-        let tokens = crate::tokenize_with_spans(line);
         let mut key_counts: HashMap<String, usize> = HashMap::new();
         // normalized key → ordered byte spans (start, end) of each KEY occurrence.
         let mut key_spans: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
         // normalized key → (original key, value text, full-token span) of the LAST occurrence.
         let mut key_values: HashMap<String, (String, String, (usize, usize))> = HashMap::new();
+        // Normalized keys in first-seen (token) order. Every rule below
+        // iterates THIS vector instead of the maps so the emitted diagnostic
+        // order — and, at the MAX_DIAGNOSTICS cap, the retained subset — is
+        // byte-identical across processes (HashMap iteration order is
+        // randomized per process).
+        let mut key_order: Vec<String> = Vec::new();
 
         // Bracket regions (`[find ...]`, `[/sys/clock/get ...]`) are inert:
         // inner `key=value` pairs must not leak into outer Rule 2/4 state,
@@ -669,7 +704,11 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             if let Some((key, value)) = crate::parser::split_key_value(&token.text) {
                 let key_key = normalize_key(key);
                 let eq_idx = key.len();
-                *key_counts.entry(key_key.clone()).or_insert(0) += 1;
+                let count = key_counts.entry(key_key.clone()).or_insert(0);
+                if *count == 0 {
+                    key_order.push(key_key.clone());
+                }
+                *count += 1;
                 key_spans
                     .entry(key_key.clone())
                     .or_default()
@@ -748,11 +787,12 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
         // legitimate definition; repeats are the anomaly. Spans come from
         // tokenization, so a key that also appears inside the menu path (e.g.
         // "address" in "/ip/address") never gets squiggled by accident.
-        for (key, count) in &key_counts {
+        for key in &key_order {
             if count_truncated {
                 break;
             }
-            if *count > 1
+            let count = key_counts.get(key).copied().unwrap_or(0);
+            if count > 1
                 && let Some(&(s, e)) = key_spans
                     .get(key)
                     .and_then(|spans| spans.get(1).or_else(|| spans.first()))
@@ -776,18 +816,21 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
 
         // If we have a known menu with arguments/flags, continue with property checks
         if let Some(menu) = menu {
-            // Build allowed property set (case-folded keys; RouterOS
-            // properties are case-insensitive).
-            let mut allowed: HashSet<String> = HashSet::new();
-            for arg in &menu.arguments {
-                allowed.insert(normalize_key(&arg.name));
-            }
-            for flag in &menu.flags {
-                allowed.insert(normalize_key(&flag.name));
-            }
-            for ro in &menu.read_only {
-                allowed.insert(normalize_key(&ro.name));
-            }
+            // Allowed property set (case-folded keys; RouterOS properties are
+            // case-insensitive), memoized per path for this publish.
+            let allowed = allowed_by_path.entry(path_key.clone()).or_insert_with(|| {
+                let mut allowed: HashSet<String> = HashSet::new();
+                for arg in &menu.arguments {
+                    allowed.insert(normalize_key(&arg.name));
+                }
+                for flag in &menu.flags {
+                    allowed.insert(normalize_key(&flag.name));
+                }
+                for ro in &menu.read_only {
+                    allowed.insert(normalize_key(&ro.name));
+                }
+                allowed
+            });
 
             // ---- Rule 2: Unknown property ----
             // The named `unset` form (`... unset 0 value-name=<prop>`) is
@@ -797,13 +840,16 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                 .command
                 .as_deref()
                 .is_some_and(|c| c.eq_ignore_ascii_case("unset"));
-            for (key, spans) in &key_spans {
+            for key in &key_order {
                 if count_truncated {
                     break;
                 }
                 if is_unset && key == "value-name" {
                     continue;
                 }
+                let Some(spans) = key_spans.get(key) else {
+                    continue;
+                };
                 if !allowed.contains(key)
                     && let Some(&(s, e)) = spans.first()
                 {
@@ -878,10 +924,13 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             // (complete even for display-truncated types); the type-string
             // parser is only a fallback. When neither yields members, the
             // check stays silent rather than guessing.
-            for (key, (key_display, value, span)) in &key_values {
+            for key in &key_order {
                 if count_truncated {
                     break;
                 }
+                let Some((key_display, value, span)) = key_values.get(key) else {
+                    continue;
+                };
                 // Find argument definition (case-insensitive key match).
                 if let Some(arg) = menu
                     .arguments
@@ -889,7 +938,7 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                     .find(|a| normalize_key(&a.name) == *key)
                     && arg.arg_type.starts_with("enum")
                 {
-                    let allowed_vals = arg.enum_members();
+                    let allowed_vals = arg.enum_members_ref();
                     if !allowed_vals.is_empty() {
                         // Strip outer quotes and whitespace; empty remains non-error (completion).
                         let raw = value.trim().trim_matches('"').trim_matches('\'');
@@ -951,10 +1000,13 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
             // Syntactic plausibility only — never Error, never Warning — so
             // an incomplete upstream type table degrades to silence instead
             // of false positives. `enum` types stay owned by Rule 5 above.
-            for (key, (key_display, value, span)) in &key_values {
+            for key in &key_order {
                 if count_truncated {
                     break;
                 }
+                let Some((key_display, value, span)) = key_values.get(key) else {
+                    continue;
+                };
                 // The named `unset` form is owned by Rule 10 below.
                 if key == "value-name" {
                     continue;
@@ -1102,10 +1154,13 @@ pub fn compute_diagnostics(data: &MenuData, doc: &str, _uri: &str) -> Vec<Diagno
                 .as_deref()
                 .is_some_and(|c| c.eq_ignore_ascii_case("add") || c.eq_ignore_ascii_case("set"))
             {
-                for (key, spans) in &key_spans {
+                for key in &key_order {
                     if count_truncated {
                         break;
                     }
+                    let Some(spans) = key_spans.get(key) else {
+                        continue;
+                    };
                     if menu
                         .read_only
                         .iter()

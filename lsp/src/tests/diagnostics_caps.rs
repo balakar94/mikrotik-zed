@@ -290,3 +290,33 @@ fn test_comma_separated_enum_list_valid() {
         "empty value must not hint"
     );
 }
+
+// ── Deterministic finding order (token order, not HashMap order) ─────────
+
+#[test]
+fn test_unknown_property_diagnostics_follow_token_order() {
+    // Distinct unknown keys on one line: findings must follow token order
+    // (first-seen), not randomized HashMap iteration, so repeated publishes —
+    // and the retained subset at MAX_DIAGNOSTICS — are reproducible.
+    let data = synthetic_data();
+    let doc = "/ip/address add address=1.1.1.1/24 interface=ether1 zzz=1 aaa=2 mmm=3";
+    let first = compute_diagnostics(&data, doc, "file:///order.rsc");
+    let unknown: Vec<u32> = first
+        .iter()
+        .filter(|d| d.code.as_deref() == Some("unknown-property"))
+        .map(|d| d.range.start.character)
+        .collect();
+    assert_eq!(unknown.len(), 3, "three unknown keys, got {unknown:?}");
+    let mut sorted = unknown.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        unknown, sorted,
+        "findings must be emitted in token order, got {unknown:?}"
+    );
+    let second = compute_diagnostics(&data, doc, "file:///order.rsc");
+    assert_eq!(
+        serde_json::to_value(&first).unwrap(),
+        serde_json::to_value(&second).unwrap(),
+        "repeat publishes must be byte-identical"
+    );
+}

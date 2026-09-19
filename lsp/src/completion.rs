@@ -49,6 +49,7 @@
 use crate::caps::MAX_COMPLETION_ITEMS;
 use crate::live::{LiveCache, live_resource_values_for_property};
 use crate::menus::{ArgEntry, LineContext, MenuData};
+use crate::parser::SpanToken;
 
 /// LSP CompletionItemKind values (mirrors the LSP spec)
 pub(crate) mod kind {
@@ -145,7 +146,7 @@ impl CompletionItem {
 // Shared text helpers live in `crate::text_util` (single owner).
 use crate::text_util::{
     MAX_DETAIL_TYPE_CHARS, normalize_key, normalize_path, sanitize_detail_text,
-    sanitize_markdown_for_hover,
+    sanitize_markdown_for_hover, type_gloss,
 };
 
 /// Relevance tier of a completion candidate.
@@ -330,15 +331,25 @@ pub fn compute_completions_with_logical(
     logical_prefix: Option<&str>,
     live_cache: Option<&LiveCache>,
 ) -> Vec<CompletionItem> {
-    let context = crate::parse_line(data, before_cursor);
+    // One tokenization per request: `parse_line_from_tokens` and the
+    // colon/statement helpers below share this span-carrying stream instead
+    // of each re-tokenizing the same prefix.
+    let tokens = crate::parser::tokenize_with_spans(before_cursor);
+    let context = crate::parser::parse_line_from_tokens(data, &tokens);
 
-    let mut items =
-        match_context_with_live(data, &context, before_cursor, logical_prefix, live_cache);
+    let mut items = match_context_with_live(
+        data,
+        &context,
+        before_cursor,
+        logical_prefix,
+        live_cache,
+        tokens.last(),
+    );
 
     // The partially typed `:`-prefixed token under the cursor, if any.
     // `:` fires completion requests; detecting it here (instead of earlier)
     // keeps every non-colon context byte-for-byte unchanged.
-    let colon_token = colon_typed_token(before_cursor);
+    let colon_token = colon_typed_token_tokens(before_cursor, &tokens);
 
     // Statement-start snippets: structural `:if` / `:foreach` / `:for` /
     // `:do` templates offered ONLY where a new statement may begin. Two
@@ -349,12 +360,29 @@ pub fn compute_completions_with_logical(
     //   (`:`, `:i`, …) — the statement-start question then applies to
     //   whatever precedes the partial token.
     let at_start = if colon_token.is_some() {
-        at_statement_start_before_last_token(before_cursor)
+        at_statement_start_before_last_token_tokens(&tokens)
     } else {
-        at_statement_start(before_cursor)
+        at_statement_start_tokens(&tokens)
     };
     if context.path.is_empty() && !before_cursor.ends_with('/') && at_start {
         items.extend(statement_snippet_items());
+    }
+
+    // `:`-prefixed script globals (`:put`, `:local`, …) complete while a
+    // colon token is being typed. They share the curated
+    // [`crate::script_globals`] table with hover, so documentation cannot
+    // drift; statement snippets (richer insert bodies) win over a plain
+    // global carrying the same label via the dedupe below.
+    if let Some(typed) = colon_token.as_deref() {
+        items.extend(script_global_items(typed));
+    }
+
+    // Colon context may offer the same label twice (snippet + global):
+    // keep the first, which is the snippet. Only colon requests can contain
+    // such duplicates, so non-colon payloads stay byte-for-byte unchanged.
+    if colon_token.is_some() {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        items.retain(|item| seen.insert(item.label.clone()));
     }
 
     // Colon filtering: keep only candidates whose label starts with the
@@ -406,6 +434,7 @@ fn match_context_with_live(
     before_cursor: &str,
     logical_prefix: Option<&str>,
     live_cache: Option<&LiveCache>,
+    last_token: Option<&SpanToken>,
 ) -> Vec<CompletionItem> {
     // No path yet (or a bare "/") → suggest root menus. "/" parses to path
     // "/" which has no child index entry of its own, so it must be treated
@@ -422,12 +451,8 @@ fn match_context_with_live(
     // the cursor to sit strictly inside the token. If the suffix is already
     // non-empty and the cursor sits AFTER whitespace ("chain=input "), the
     // token is considered finished and we fall through to argument completions.
-    let trimmed = before_cursor.trim_end();
-    let has_trailing_ws = trimmed.len() != before_cursor.len();
-    let trimmed_last = crate::parser::tokenize(trimmed)
-        .last()
-        .cloned()
-        .unwrap_or_default();
+    let has_trailing_ws = before_cursor.ends_with(char::is_whitespace);
+    let trimmed_last = last_token.map(|t| t.text.clone()).unwrap_or_default();
     if let Some((key_part, value_part)) = crate::parser::split_key_value(&trimmed_last) {
         let trimmed_suffix = value_part.trim_matches(|c| c == '"' || c == '\'');
         // If trailing whitespace present with a non-empty value, the value
@@ -532,8 +557,17 @@ fn match_context_with_live(
 /// - `"…{…"` quoted braces never split into a `{` token;
 /// - `x=1;` is one token ≠ `;` → no snippets after an inline separator that
 ///   still sits inside a larger token.
+///
+/// Test/legacy entry point that tokenizes the prefix itself; the request
+/// path calls the token-based helper so one prefix is tokenized once.
+#[allow(dead_code)]
 pub(crate) fn at_statement_start(before_cursor: &str) -> bool {
-    match crate::tokenize_with_spans(before_cursor).last() {
+    at_statement_start_tokens(&crate::parser::tokenize_with_spans(before_cursor))
+}
+
+/// [`at_statement_start`] over an already-tokenized prefix.
+fn at_statement_start_tokens(tokens: &[SpanToken]) -> bool {
+    match tokens.last() {
         None => true,
         Some(last) => last.text == "{" || last.text == ";",
     }
@@ -548,8 +582,8 @@ pub(crate) fn at_statement_start(before_cursor: &str) -> bool {
 /// equality rule as [`at_statement_start`] — only a bare `{` or `;` opens a
 /// statement slot (`x=1; :put` stays mid-command, exactly like `x=1; `
 /// does for the space-fired path).
-fn at_statement_start_before_last_token(before_cursor: &str) -> bool {
-    match crate::tokenize_with_spans(before_cursor).split_last() {
+fn at_statement_start_before_last_token_tokens(tokens: &[SpanToken]) -> bool {
+    match tokens.split_last() {
         None => true,
         Some((_, head)) => match head.last() {
             None => true,
@@ -564,11 +598,11 @@ fn at_statement_start_before_last_token(before_cursor: &str) -> bool {
 /// whitespace says the previous token finished and a new one is starting,
 /// which must stay an unfiltered completion case. Quote-aware tokenization
 /// keeps quoted colons (`"a:b`) out of script-word territory.
-fn colon_typed_token(before_cursor: &str) -> Option<String> {
+fn colon_typed_token_tokens(before_cursor: &str, tokens: &[SpanToken]) -> Option<String> {
     if before_cursor.ends_with(char::is_whitespace) {
         return None;
     }
-    crate::tokenize_with_spans(before_cursor)
+    tokens
         .last()
         .filter(|t| t.text.starts_with(':'))
         .map(|t| t.text.clone())
@@ -585,22 +619,22 @@ struct StatementSnippet {
 const STATEMENT_SNIPPETS: [StatementSnippet; 4] = [
     StatementSnippet {
         label: ":if",
-        snippet: ":if (${1:condition}) do={\n\t${2}\n} else={\n\t${3}\n}$0",
+        snippet: ":if (${1:condition}) do={\n    ${2}\n} else={\n    ${3}\n}$0",
         doc: "`:if` — conditional block with `do=` / `else=` branches.",
     },
     StatementSnippet {
         label: ":foreach",
-        snippet: ":foreach ${1:i} in=[${2:find expression}] do={\n\t${3}\n}$0",
+        snippet: ":foreach ${1:i} in=[${2:find expression}] do={\n    ${3}\n}$0",
         doc: "`:foreach` — iterate over a list or `find` result.",
     },
     StatementSnippet {
         label: ":for",
-        snippet: ":for ${1:i} from=${2:1} to=${3:10} do={\n\t${4}\n}$0",
+        snippet: ":for ${1:i} from=${2:1} to=${3:10} do={\n    ${4}\n}$0",
         doc: "`:for` — counted loop from `from=` to `to=`.",
     },
     StatementSnippet {
         label: ":do",
-        snippet: ":do {\n\t${1}\n} while=(${2:condition})$0",
+        snippet: ":do {\n    ${1}\n} while=(${2:condition})$0",
         doc: "`:do` — run block once, repeat while `while=` holds.",
     },
 ];
@@ -622,6 +656,30 @@ pub(crate) fn statement_snippet_items() -> Vec<CompletionItem> {
             item.documentation = Some(Documentation {
                 kind: "markdown",
                 value: s.doc.to_string(),
+            });
+            item
+        })
+        .collect()
+}
+
+/// Completion items for the curated [`crate::script_globals`] table.
+///
+/// Labels carry their `:` prefix (that is how they are typed). `sortText`
+/// uses the Verb tier so a script global ranks under menu/property items
+/// (tiers `0`/`1`) while staying deterministic; `filterText` is backfilled
+/// from the label by the caller, exactly like every other item.
+fn script_global_items(typed_prefix: &str) -> Vec<CompletionItem> {
+    crate::script_globals::SCRIPT_GLOBALS
+        .iter()
+        .map(|g| {
+            let mut item = CompletionItem::new(g.label.to_string(), kind::FUNCTION);
+            item.detail = Some(g.detail.to_string());
+            item.insert_text = Some(g.label.to_string());
+            item.insert_text_format = Some(1);
+            item.sort_text = Some(rank(RankTier::Verb, g.label, typed_prefix));
+            item.documentation = Some(Documentation {
+                kind: "markdown",
+                value: g.docs.to_string(),
             });
             item
         })
@@ -721,29 +779,36 @@ fn line_zero_edit(start_byte: usize, end_byte: usize, new_text: String) -> TextE
 ///
 /// Returns `(typed_text, byte_start, byte_end)` relative to the current
 /// line when the cursor sits mid-token (no trailing whitespace) and the
-/// last token looks like a partial property/verb/sub-menu name: it carries
-/// no `=`, and does not start with `/ : " ' ( [ $`. Quote-aware spans keep
-/// quoted text and block syntax out of name territory.
+/// last token looks like a partial property/verb/sub-menu name. Thin
+/// wrapper over [`partial_name_span`], the shared guard the server's
+/// `textEdit` mapping also uses so the two cannot disagree about which
+/// token an edit may replace.
 pub(crate) fn partial_name_token(before_cursor: &str) -> Option<(String, usize, usize)> {
-    if before_cursor.ends_with(char::is_whitespace) {
+    partial_name_span(current_line(before_cursor))
+}
+
+/// Partial bare-word span of `text`'s last token, if any.
+///
+/// Returns `(typed_text, byte_start, byte_end)` relative to `text` when the
+/// cursor sits mid-token (no trailing whitespace) and the last token looks
+/// like a partial property/verb/sub-menu name: it carries no `=`, and does
+/// not start with `/ : " ' ( [ $`. Quote-aware spans keep quoted text and
+/// block syntax out of name territory. Shared by [`partial_name_token`]
+/// (completion context detection) and the server's `textEdit` range
+/// mapping, so both agree on the replaceable span.
+pub(crate) fn partial_name_span(text: &str) -> Option<(String, usize, usize)> {
+    if text.is_empty() || text.ends_with(char::is_whitespace) {
         return None;
     }
-    let line = current_line(before_cursor);
-    if line.is_empty() {
-        return None;
-    }
-    let tokens = crate::parser::tokenize_with_spans(line);
+    let tokens = crate::parser::tokenize_with_spans(text);
     let tok = tokens.last().cloned()?;
-    if tok.text.contains('=') {
+    if tok.text.is_empty() || tok.text.contains('=') {
         return None;
     }
     if tok.text.starts_with(['/', ':', '"', '\'', '(', '[', '$']) {
         return None;
     }
-    if tok.text.is_empty() {
-        return None;
-    }
-    let end = tok.end.min(line.len());
+    let end = tok.end.min(text.len());
     let start = tok.start.min(end);
     Some((tok.text, start, end))
 }
@@ -1290,6 +1355,12 @@ pub(crate) fn get_detail(arg: &crate::menus::ArgEntry) -> String {
             .chars()
             .take(MAX_DETAIL_TYPE_CHARS)
             .collect();
-        sanitize_detail_text(&format!("type: {capped}"))
+        // Append the shared human gloss when the raw type has one, so the
+        // completion detail explains `iface_enum`/`ipPrefix`/`bool` exactly
+        // like the hover card does.
+        match type_gloss(&arg.arg_type) {
+            Some(gloss) => sanitize_detail_text(&format!("type: {capped} — {gloss}")),
+            None => sanitize_detail_text(&format!("type: {capped}")),
+        }
     }
 }

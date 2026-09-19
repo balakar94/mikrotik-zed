@@ -164,7 +164,23 @@ pub(crate) struct MenuEntry {
 /// symbols appear in document order. An empty document yields an empty list.
 /// Consecutive identical menu path + verb lines collapse into one
 /// `(×N)` symbol; `:local`/`:global` declarations stay individual.
+///
+/// Test/legacy entry point that builds its own logical-line join; the
+/// server calls [`compute_document_symbols_with_logicals`].
+#[allow(dead_code)]
 pub(crate) fn compute_document_symbols(data: &MenuData, doc: &str) -> Vec<DocumentSymbol> {
+    let logicals = diagnostics::logical_lines(doc);
+    compute_document_symbols_with_logicals(data, &logicals)
+}
+
+/// [`compute_document_symbols`] over an already-joined logical-line slice.
+///
+/// Callers that own a [`crate::parser::ParseCache`] pass the cached join so
+/// one document parse serves symbols, diagnostics, and navigation.
+pub(crate) fn compute_document_symbols_with_logicals(
+    data: &MenuData,
+    logicals: &[diagnostics::LogicalLine],
+) -> Vec<DocumentSymbol> {
     let mut symbols = Vec::new();
     // Pending run of identical menu names: (entry of first line, count,
     // end range of last line). Flushed when a different name, a
@@ -204,7 +220,7 @@ pub(crate) fn compute_document_symbols(data: &MenuData, doc: &str) -> Vec<Docume
         }
     };
 
-    for line in diagnostics::logical_lines(doc) {
+    for line in logicals {
         if symbols.len() >= MAX_SYMBOLS {
             break;
         }
@@ -226,7 +242,7 @@ pub(crate) fn compute_document_symbols(data: &MenuData, doc: &str) -> Vec<Docume
                 flush(&mut pending, &mut symbols);
                 continue;
             }
-            if let Some(entry) = menu_command_entry(data, &line, &tokens, span) {
+            if let Some(entry) = menu_command_entry(data, line, &tokens, span) {
                 match pending.take() {
                     Some((prev, count, last_range)) if prev.name == entry.name => {
                         // Extend the run: keep first entry, bump count, move
@@ -259,7 +275,7 @@ pub(crate) fn compute_document_symbols(data: &MenuData, doc: &str) -> Vec<Docume
             }
             // Unclassifiable menu line breaks the run.
             flush(&mut pending, &mut symbols);
-        } else if let Some(sym) = script_command_symbol(&line, &tokens, span) {
+        } else if let Some(sym) = script_command_symbol(line, &tokens, span) {
             // Script rows (Variable landmarks and :verb Functions) never
             // merge: flush any open run first. The shared
             // `declared_variable` primitive also catches brace-prefixed

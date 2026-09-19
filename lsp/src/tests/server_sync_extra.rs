@@ -1,5 +1,7 @@
 // Server — document sync (extra).
-use crate::caps::{MAX_DOC_SIZE, MAX_DOCS, MAX_HEADER_SIZE, MAX_MESSAGE_SIZE};
+use crate::caps::{
+    MAX_CHANGES_PER_NOTIFICATION, MAX_DOC_SIZE, MAX_DOCS, MAX_HEADER_SIZE, MAX_MESSAGE_SIZE,
+};
 use crate::menus::MenuData;
 use crate::server::{Server, is_valid_file_uri};
 use std::sync::Arc;
@@ -80,6 +82,7 @@ fn test_caps_constants_values() {
     assert_eq!(MAX_DOC_SIZE, 5 * 1024 * 1024);
     assert_eq!(MAX_DOCS, 100);
     assert_eq!(MAX_HEADER_SIZE, 32 * 1024);
+    assert_eq!(MAX_CHANGES_PER_NOTIFICATION, 512);
 }
 
 // ── URI validation ───────────────────────────────────────────────────────
@@ -187,6 +190,25 @@ fn test_did_change_multiple_changes_last_wins_for_full() {
     // Check final is one of them and not panic
     let doc = s.docs.get("file:///a.rsc").unwrap();
     assert!(doc == "second" || doc == "first");
+}
+
+#[test]
+fn test_did_change_rejects_oversized_batch_and_keeps_doc() {
+    let mut s = make_server();
+    s.handle_message(
+        "textDocument/didOpen",
+        &serde_json::json!({"params": {"textDocument": {"uri": "file:///batch.rsc", "text": "stable"}}}),
+    );
+    // One element above the cap: the whole notification is rejected so the
+    // server copy never silently diverges from the client's document.
+    let changes: Vec<serde_json::Value> = (0..=MAX_CHANGES_PER_NOTIFICATION)
+        .map(|i| serde_json::json!({"text": format!("v{i}")}))
+        .collect();
+    s.handle_message(
+        "textDocument/didChange",
+        &serde_json::json!({"params": {"textDocument": {"uri": "file:///batch.rsc"}, "contentChanges": changes}}),
+    );
+    assert_eq!(s.docs.get("file:///batch.rsc").unwrap(), "stable");
 }
 
 #[test]

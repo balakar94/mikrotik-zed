@@ -198,6 +198,21 @@ pub(crate) fn lsp_position_to_offset(
     enc: PositionEncoding,
 ) -> Result<usize, EditError> {
     let starts = line_starts(doc);
+    lsp_position_to_offset_with_starts(doc, &starts, line, character, enc)
+}
+
+/// [`lsp_position_to_offset`] against an already-computed line-start table.
+///
+/// [`apply_incremental_edit`] resolves both endpoints of one range, so it
+/// builds the O(doc) table once and calls this twice; the public
+/// single-position entry point above builds its own table.
+fn lsp_position_to_offset_with_starts(
+    doc: &str,
+    starts: &[usize],
+    line: usize,
+    character: usize,
+    enc: PositionEncoding,
+) -> Result<usize, EditError> {
     if line >= starts.len() {
         return Err(EditError::OutOfBounds);
     }
@@ -246,8 +261,12 @@ pub(crate) fn apply_incremental_edit(
         .and_then(|v| v.as_u64())
         .ok_or(EditError::InvalidRange)? as usize;
 
-    let start_offset = lsp_position_to_offset(doc, start_line, start_char, enc)?;
-    let end_offset = lsp_position_to_offset(doc, end_line, end_char, enc)?;
+    // One line-start table per edited document serves both endpoints; the
+    // per-position entry point would rebuild the O(doc) table for each.
+    let starts = line_starts(doc);
+    let start_offset =
+        lsp_position_to_offset_with_starts(doc, &starts, start_line, start_char, enc)?;
+    let end_offset = lsp_position_to_offset_with_starts(doc, &starts, end_line, end_char, enc)?;
 
     if start_offset > end_offset || end_offset > doc.len() {
         return Err(EditError::OutOfBounds);

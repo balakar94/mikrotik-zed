@@ -104,6 +104,72 @@ fn test_server_shutdown() {
 }
 
 #[test]
+fn test_requests_after_shutdown_error_invalid_request() {
+    // LSP 3.17 lifecycle: after shutdown, requests must be rejected with
+    // InvalidRequest (-32600) until `exit`.
+    let mut server = make_server();
+    let shutdown = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "shutdown",
+        "params": {}
+    });
+    assert!(server.handle_message("shutdown", &shutdown).is_some());
+
+    let hover = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": {"uri": "file:///a.rsc"},
+            "position": {"line": 0, "character": 0}
+        }
+    });
+    let resp = server.handle_message("textDocument/hover", &hover).unwrap();
+    assert_eq!(resp["error"]["code"], -32600);
+    assert_eq!(resp["id"], 3, "error response must echo the request id");
+
+    // Notifications after shutdown are ignored: no id, no response.
+    let did_close = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didClose",
+        "params": {"textDocument": {"uri": "file:///a.rsc"}}
+    });
+    assert!(
+        server
+            .handle_message("textDocument/didClose", &did_close)
+            .is_none()
+    );
+}
+
+#[test]
+fn test_cancel_request_is_notification_noop() {
+    // `$/cancelRequest` is a documented no-op on this single-threaded
+    // server: the in-flight request has already finished by the time the
+    // cancellation is read, so there is nothing to interrupt.
+    let mut server = make_server();
+    let cancel = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "$/cancelRequest",
+        "params": {"id": 99}
+    });
+    assert!(server.handle_message("$/cancelRequest", &cancel).is_none());
+
+    // Tolerate the non-conforming request form: answer with null so the
+    // client never waits for a response.
+    let cancel_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "$/cancelRequest",
+        "params": {"id": 99}
+    });
+    let resp = server
+        .handle_message("$/cancelRequest", &cancel_request)
+        .unwrap();
+    assert_eq!(resp["result"], serde_json::Value::Null);
+}
+
+#[test]
 fn test_exit_code_lsp_317() {
     // LSP 3.17: exit status 0 only after a `shutdown` request; else 1.
     assert_eq!(exit_code(true), 0);
@@ -245,4 +311,48 @@ fn test_server_completion_malformed_params_returns_32602() {
         .unwrap();
     assert_eq!(resp["error"]["code"], -32602);
     assert_eq!(resp["id"], 9);
+}
+
+#[test]
+fn test_completion_is_incomplete_when_item_cap_hit() {
+    // A value list larger than MAX_COMPLETION_ITEMS is truncated; the
+    // response must say so (`isIncomplete: true`) or clients cache the
+    // truncated list as final.
+    use crate::caps::MAX_COMPLETION_ITEMS;
+    let mut toml = String::from(
+        "[[menus]]\npath = \"/demo/many\"\ntype = \"Directory\"\n\
+         [[menus.arguments]]\nname = \"mode\"\ntype = \"enum\"\nenum_values = [",
+    );
+    let values: Vec<String> = (0..(MAX_COMPLETION_ITEMS + 20))
+        .map(|i| format!("\"v{i}\""))
+        .collect();
+    toml.push_str(&values.join(", "));
+    toml.push_str("]\n");
+    let data = Arc::new(MenuData::from_toml_str(&toml));
+    let mut server = Server::new(data);
+    let doc = "/demo/many add mode=";
+    let open = serde_json::json!({
+        "params": {"textDocument": {"uri": "file:///many.rsc", "text": doc}}
+    });
+    server.handle_message("textDocument/didOpen", &open);
+    let req = serde_json::json!({
+        "id": 5,
+        "params": {
+            "textDocument": {"uri": "file:///many.rsc"},
+            "position": {"line": 0, "character": doc.len()}
+        }
+    });
+    let resp = server
+        .handle_message("textDocument/completion", &req)
+        .unwrap();
+    let result = &resp["result"];
+    assert_eq!(
+        result["items"].as_array().unwrap().len(),
+        MAX_COMPLETION_ITEMS,
+        "list must be capped"
+    );
+    assert_eq!(
+        result["isIncomplete"], true,
+        "a capped list must be marked incomplete: {result}"
+    );
 }

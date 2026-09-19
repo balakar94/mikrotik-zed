@@ -162,8 +162,8 @@ fn test_signature_after_verb_lists_required_first_with_offset_labels() {
 
     let params = sigs[0]["parameters"].as_array().unwrap();
     assert_eq!(params.len(), 4);
-    // Each ParameterInformation label is [start, end] INTO the label
-    // string; slicing must reproduce the intended `name=type` segment.
+    // Each ParameterInformation label is a [start, end) UTF-16 offset pair
+    // INTO the label string; slicing must reproduce the `name=type` segment.
     let segments: Vec<&str> = params
         .iter()
         .map(|p| {

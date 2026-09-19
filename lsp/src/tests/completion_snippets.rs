@@ -138,17 +138,20 @@ fn test_snippet_bodies_match_spec() {
     };
     assert_eq!(
         by_label(":if"),
-        ":if (${1:condition}) do={\n\t${2}\n} else={\n\t${3}\n}$0"
+        ":if (${1:condition}) do={\n    ${2}\n} else={\n    ${3}\n}$0"
     );
     assert_eq!(
         by_label(":foreach"),
-        ":foreach ${1:i} in=[${2:find expression}] do={\n\t${3}\n}$0"
+        ":foreach ${1:i} in=[${2:find expression}] do={\n    ${3}\n}$0"
     );
     assert_eq!(
         by_label(":for"),
-        ":for ${1:i} from=${2:1} to=${3:10} do={\n\t${4}\n}$0"
+        ":for ${1:i} from=${2:1} to=${3:10} do={\n    ${4}\n}$0"
     );
-    assert_eq!(by_label(":do"), ":do {\n\t${1}\n} while=(${2:condition})$0");
+    assert_eq!(
+        by_label(":do"),
+        ":do {\n    ${1}\n} while=(${2:condition})$0"
+    );
 }
 
 #[test]

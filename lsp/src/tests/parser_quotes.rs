@@ -209,3 +209,34 @@ fn test_parse_cache_no_reparse_on_repeat_lookup_or_insert() {
         "edited text must reparse into a new allocation"
     );
 }
+
+// ── Continuation quote-state propagation ─────────────────────────────────
+
+#[test]
+fn test_build_before_cursor_keeps_continued_string_hash_line() {
+    // A `\`-continued string may split so that a later physical line starts
+    // with `#`. Fresh-per-line comment detection would treat that line as a
+    // comment and drop it from the backward walk; the carried quote state
+    // must keep it as string content.
+    let doc = ":put \"abc\\\n#def\"\\\n:put x";
+    let lines: Vec<&str> = doc.lines().collect();
+    let before = build_before_cursor_from_lines(&lines, 2, lines[2].len());
+    assert!(
+        before.contains("#def"),
+        "continued string tail must survive the backward walk, got {before:?}"
+    );
+    assert!(
+        before.contains(":put \"abc"),
+        "the string head must survive too, got {before:?}"
+    );
+}
+
+#[test]
+fn test_line_start_quote_states_tracks_split_strings() {
+    let lines = [":put \"abc\\", "#def\"", ":put x"];
+    let states = line_start_quote_states(&lines, 2);
+    assert_eq!(states.len(), 3);
+    assert!(!states[0].is_in_quote(), "line 0 starts fresh");
+    assert!(states[1].is_in_quote(), "line 1 starts inside the string");
+    assert!(!states[2].is_in_quote(), "line 2 closes the string");
+}

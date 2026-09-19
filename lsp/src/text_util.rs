@@ -21,8 +21,10 @@ pub(crate) const MAX_DETAIL_CHARS: usize = 256;
 /// Max chars kept for the type half embedded in a completion `detail`.
 pub(crate) const MAX_DETAIL_TYPE_CHARS: usize = 64;
 
-/// Cap on properties shown in a menu hover card; the remainder collapses
-/// into a "(+N more — see completion)" footer.
+/// Cap on list entries shown PER SECTION of a menu hover card
+/// (`arguments`, `flags`, `read-only`). Each section folds its own surplus
+/// into a section-accurate footer, so a card can carry at most three footers
+/// and the total bullet count stays bounded.
 pub(crate) const MAX_HOVER_PROPERTIES: usize = 12;
 
 /// Max description chars embedded in hover markdown after sanitizing.
@@ -173,6 +175,16 @@ pub(crate) fn sanitize_label_segment(name: &str, typ: &str) -> String {
 ///
 /// Pure, no I/O; normal prose passes through unchanged.
 pub(crate) fn sanitize_markdown_for_hover(desc: &str) -> String {
+    sanitize_markdown_for_hover_with_truncation(desc).0
+}
+
+/// [`sanitize_markdown_for_hover`] plus whether the char cap cut the input.
+///
+/// Callers that surface the result as a dedicated card section (hover
+/// property docs) append an explicit `(truncated)` marker when the flag is
+/// set, so a silently shortened description is visible to the user.
+pub(crate) fn sanitize_markdown_for_hover_with_truncation(desc: &str) -> (String, bool) {
+    let truncated = desc.chars().count() > MAX_HOVER_DESC_CHARS;
     let pre = truncate_chars(desc, MAX_HOVER_DESC_CHARS);
     let no_images = strip_markdown_images(&pre);
     let no_links = strip_markdown_links(&no_images);
@@ -182,7 +194,7 @@ pub(crate) fn sanitize_markdown_for_hover(desc: &str) -> String {
         .filter(|c| !c.is_ascii_control() || *c == '\n')
         .collect();
     let collapsed = collapse_newlines(&no_controls);
-    truncate_chars(&collapsed, MAX_HOVER_DESC_CHARS)
+    (truncate_chars(&collapsed, MAX_HOVER_DESC_CHARS), truncated)
 }
 
 /// Drop `![alt](url)` spans entirely.

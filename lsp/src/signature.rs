@@ -34,9 +34,11 @@ pub(crate) const MAX_SIGNATURE_PROPERTIES: usize = 40;
 
 /// One `name=type` entry inside the signature label.
 ///
-/// `label` holds BYTE offsets `[start, end]` of the segment inside the
-/// constructed [`SignatureInformation::label`] string (LSP allows the
-/// offset form precisely so labels need no per-parameter escaping).
+/// `label` holds UTF-16 code-unit offsets `[start, end)` of the segment
+/// inside the constructed [`SignatureInformation::label`] string, as the
+/// LSP 3.17 `ParameterInformation.label` offset form requires. Byte offsets
+/// would misplace segments after a non-ASCII byte (the verb is client-typed
+/// and may contain one).
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct ParameterInformation {
     pub(crate) label: [usize; 2],
@@ -397,17 +399,23 @@ pub(crate) fn compute_signature_help(
         raw_verb
     };
     let mut label = format!("{} {}", menu.path, verb);
+    // Running UTF-16 length of `label`: parameter-label offsets are UTF-16
+    // code units, so a non-ASCII verb (the one client-typed, hence
+    // non-ASCII-capable, label part) must not shift them.
+    let mut label_utf16_len = label.encode_utf16().count();
     let mut parameters = Vec::with_capacity(properties.len());
     for arg in &properties {
         let typ = label_type(arg);
         let segment = sanitize_label_segment(&arg.name, &typ);
-        // Total-label budget: stop before exceeding ~4KiB so offsets stay exact.
+        // Total-label budget: stop before exceeding ~4KiB; segments are
+        // appended whole, so offsets stay exact.
         if label.len() + ' '.len_utf8() + segment.len() > MAX_SIGNATURE_LABEL_BYTES {
             break;
         }
-        let start = label.len() + ' '.len_utf8();
+        let start = label_utf16_len + 1; // the separating space
         label.push(' ');
         label.push_str(&segment);
+        label_utf16_len = start + segment.encode_utf16().count();
 
         let mut documentation = String::new();
         if arg.required {
@@ -424,7 +432,7 @@ pub(crate) fn compute_signature_help(
         }
 
         parameters.push(ParameterInformation {
-            label: [start, start + segment.len()],
+            label: [start, label_utf16_len],
             documentation,
         });
     }

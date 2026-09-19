@@ -63,6 +63,10 @@ fn cleaned_new_name(name: &str) -> Option<&str> {
 /// request: a single-document `WorkspaceEdit` (`{"changes": {uri: [...]}}`
 /// with one `{range, newText}` per occurrence in document order), or
 /// `Null` when no variable sits under the cursor or `new_name` is unusable.
+///
+/// Test/legacy entry point that builds its own logical-line join; the
+/// server calls [`rename_result_with_logicals`] with the shared parse.
+#[allow(dead_code)]
 pub(crate) fn rename_result(
     doc: &str,
     enc: PositionEncoding,
@@ -71,16 +75,33 @@ pub(crate) fn rename_result(
     character: usize,
     new_name: &str,
 ) -> serde_json::Value {
+    let logicals = diagnostics::logical_lines(doc);
+    rename_result_with_logicals(doc, enc, uri, line, character, new_name, &logicals)
+}
+
+/// [`rename_result`] over an already-joined logical-line slice.
+///
+/// The server passes the shared [`crate::parser::ParseCache`] join so a
+/// rename request does not reparse the document; the test/legacy wrapper
+/// above builds its own.
+pub(crate) fn rename_result_with_logicals(
+    doc: &str,
+    enc: PositionEncoding,
+    uri: &str,
+    line: usize,
+    character: usize,
+    new_name: &str,
+    logicals: &[diagnostics::LogicalLine],
+) -> serde_json::Value {
     let Some(replacement) = cleaned_new_name(new_name) else {
         return serde_json::Value::Null;
     };
-    // ONE continuation-aware join per request, feeding both the index and
-    // the cursor resolution — the same pipeline definition/references use,
-    // so rename can never disagree with navigation about what is where.
-    let logicals = diagnostics::logical_lines(doc);
-    let index = navigation::build_variable_index(&logicals);
+    // The caller's continuation-aware join feeds both the index and the
+    // cursor resolution — the same pipeline definition/references use, so
+    // rename can never disagree with navigation about what is where.
+    let index = navigation::build_variable_index(logicals);
     let Some(occ) =
-        crate::server::resolve_cursor_occurrence(doc, &logicals, &index, enc, line, character)
+        crate::server::resolve_cursor_occurrence(doc, logicals, &index, enc, line, character)
     else {
         return serde_json::Value::Null;
     };

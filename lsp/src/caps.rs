@@ -25,8 +25,10 @@
 // |-----------------------------------|----------------|-----------------|----------------------------------------------------------------|
 // | `MAX_HEADER_SIZE`                 | 32 KiB         | caps.rs         | Content-Length header section cap per frame                      |
 // | `MAX_MESSAGE_SIZE`                | 10 MiB         | caps.rs         | JSON-RPC body cap per frame                                    |
+// | `MAX_DRAIN_SIZE`                  | 20 MiB         | caps.rs         | Declared body above this terminates (no unbounded drain)       |
 // | `MAX_DOC_SIZE`                    | 5 MiB          | caps.rs         | Tracked document size (truncate at char boundary)              |
 // | `MAX_DOCS`                        | 100            | caps.rs         | Tracked open-document count                                    |
+// | `MAX_CHANGES_PER_NOTIFICATION`    | 512            | caps.rs         | `contentChanges` entries accepted per `didChange`              |
 // | `MAX_CODE_ACTIONS`                | 8              | caps.rs         | Quick-fix actions per codeAction response                      |
 // | `MAX_DIAG_LINES`                  | 3000           | caps.rs         | Logical lines considered for diagnostics per doc               |
 // | `MAX_DIAG_BYTES`                  | 500 000        | caps.rs         | Bytes considered for diagnostics per doc                       |
@@ -57,7 +59,7 @@
 // | `MAX_SUGGESTIONS_PER_PUBLISH`     | 100            | suggest.rs      | Did-you-mean evaluations per diagnostics publish               |
 // | `MAX_DETAIL_CHARS`                | 256            | text_util.rs    | Single-line completion `detail` cap                            |
 // | `MAX_DETAIL_TYPE_CHARS`           | 64             | text_util.rs    | Type half embedded in a completion `detail`                    |
-// | `MAX_HOVER_PROPERTIES`            | 12             | text_util.rs    | Properties per menu hover card (rest folds into a footer)      |
+// | `MAX_HOVER_PROPERTIES`            | 12             | text_util.rs    | List entries per hover section (args/flags/read-only)           |
 // | `MAX_HOVER_DESC_CHARS`            | 800            | text_util.rs    | Description chars embedded in hover markdown                   |
 // | `MAX_LABEL_TYPE_CHARS`            | 64             | text_util.rs    | Type half of a signature `name=type` label segment             |
 // | `MAX_SIGNATURE_LABEL_BYTES`       | 4096           | text_util.rs    | Total signature label budget (stop appends, never cut mid-seg) |
@@ -75,8 +77,30 @@ pub(crate) const MAX_HEADER_SIZE: usize = 32 * 1024; // 32 KiB
 /// Cap on one JSON-RPC message body; larger bodies are drained and skipped.
 pub(crate) const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
 
+/// Maximum declared `Content-Length` the framing layer will drain and
+/// discard before treating the frame as unrecoverable.
+///
+/// A declared length above [`MAX_MESSAGE_SIZE`] but at or below this bound
+/// is still drained (bounded work when the peer actually sends the bytes)
+/// so the stream can be resynchronized. Anything larger is hostile or
+/// broken: the reader would block on an unbounded, possibly never-arriving
+/// body, so the connection terminates with a protocol error instead.
+pub(crate) const MAX_DRAIN_SIZE: usize = 2 * MAX_MESSAGE_SIZE;
+
 pub(crate) const MAX_DOC_SIZE: usize = 5 * 1024 * 1024; // 5 MiB per document — prevents single-file OOM
 pub(crate) const MAX_DOCS: usize = 100; // cap number of tracked documents
+
+/// Cap on `contentChanges` entries accepted in one `textDocument/didChange`.
+///
+/// Each incremental edit resolves two positions against the current
+/// document, and each position resolution scans the document for line
+/// starts (O(doc) per edit), so an unbounded batch is an O(edits × doc)
+/// CPU sink on the single-threaded request loop. Real clients send one
+/// edit per keystroke; 512 leaves generous headroom for multi-cursor
+/// batches while keeping the worst case bounded. An oversized batch is
+/// rejected whole (and logged): partially applying it would silently
+/// desync the server's copy from the client's document.
+pub(crate) const MAX_CHANGES_PER_NOTIFICATION: usize = 512;
 /// Cap on quick-fix actions returned per `textDocument/codeAction` request.
 ///
 /// Bounds the response even when a client echoes hundreds of eligible

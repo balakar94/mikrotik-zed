@@ -298,9 +298,22 @@ where
 /// diagnostics continuation detection uses; centralizing it here means the
 /// three consumers cannot drift apart. The returned offset is always a char
 /// boundary (`#` is a standalone ASCII byte).
+///
+/// Starts from a fresh quote state; callers walking a multi-line block use
+/// [`effective_content_end_with_state`] so a string opened on an earlier
+/// physical line keeps its `#` characters literal.
 pub(crate) fn effective_content_end(line: &str) -> usize {
+    effective_content_end_with_state(line, QuoteState::new())
+}
+
+/// [`effective_content_end`] with a caller-supplied initial quote state.
+///
+/// The state must be the quote state at the START of `line` (see
+/// [`line_start_quote_states`]). `escaped` and comment state are per-line
+/// and intentionally not carried.
+pub(crate) fn effective_content_end_with_state(line: &str, state: QuoteState) -> usize {
     let bytes = line.as_bytes();
-    let mut q = QuoteState::new();
+    let mut q = state;
     let mut i = 0usize;
     while i < bytes.len() {
         let adv = q.advance_byte(bytes[i]);
@@ -326,6 +339,32 @@ pub(crate) fn effective_content_end(line: &str) -> usize {
         }
     }
     bytes.len()
+}
+
+/// Quote state at the start of each physical line up to and including
+/// `up_to`, computed with one forward pass.
+///
+/// RouterOS `\` continuations can split a string across physical lines, so
+/// per-line comment detection must know whether the line begins inside a
+/// quoted string. Comment state ends with its line and escape state resets
+/// per line, matching [`walk_structure`].
+pub(crate) fn line_start_quote_states(lines: &[&str], up_to: usize) -> Vec<QuoteState> {
+    let end = up_to.min(lines.len().saturating_sub(1));
+    let mut states = Vec::with_capacity(end + 1);
+    let mut state = QuoteState::new();
+    let mut scanning = 0usize;
+    while scanning <= end {
+        states.push(state);
+        let line = lines[scanning];
+        for c in line.chars() {
+            if let QuoteAdvance::CommentStart = state.advance_char(c) {
+                break;
+            }
+        }
+        state.reset_line();
+        scanning += 1;
+    }
+    states
 }
 
 /// Split a line into tokens with spans: quoted strings, /-prefixed paths, or
@@ -405,16 +444,22 @@ pub fn build_before_cursor_from_lines(
 
     let mut parts = vec![current_part];
 
+    // Quote state at each physical line start, so a `#` on a continuation
+    // line inside a string opened earlier in the block is literal content,
+    // not a comment start (the pre-fix behavior dropped such lines).
+    let quote_states = line_start_quote_states(lines, cursor_line);
+
     for i in (0..cursor_line).rev() {
         // Blank physical lines still separate commands (unchanged rule).
         let trimmed = lines[i].trim();
         if trimmed.is_empty() {
             break;
         }
-        // Effective content: cut the comment tail quote-aware, then remove
-        // a trailing backslash run only when it is odd (a continuation
-        // marker; an even run is an escaped literal pair).
-        let content = &lines[i][..effective_content_end(lines[i])];
+        // Effective content: cut the comment tail quote-aware (carrying the
+        // block's quote state), then remove a trailing backslash run only
+        // when it is odd (a continuation marker; an even run is an escaped
+        // literal pair).
+        let content = &lines[i][..effective_content_end_with_state(lines[i], quote_states[i])];
         let content = content.trim_end();
         let run = content.bytes().rev().take_while(|&b| b == b'\\').count();
         let body = if run % 2 == 1 {
@@ -625,6 +670,16 @@ pub(crate) fn split_trailing_verb(path: &str, data: &MenuData) -> Option<(String
 /// Parse a line of RouterOS script into structural components.
 pub fn parse_line(data: &MenuData, before_cursor: &str) -> LineContext {
     let tokens = tokenize_with_spans(before_cursor);
+    parse_line_from_tokens(data, &tokens)
+}
+
+/// [`parse_line`] over an already-tokenized line.
+///
+/// Shared with consumers that need the same token stream for their own
+/// span-based work (diagnostics records property spans during its single
+/// tokenization and passes the tokens here), so one line is tokenized once
+/// per publish instead of twice.
+pub(crate) fn parse_line_from_tokens(data: &MenuData, tokens: &[SpanToken]) -> LineContext {
     let mut path_parts: Vec<String> = Vec::new();
     let mut command: Option<String> = None;
     let mut properties: HashMap<String, String> = HashMap::new();
@@ -633,7 +688,7 @@ pub fn parse_line(data: &MenuData, before_cursor: &str) -> LineContext {
     // `[find pool-name=x]`) never leak into the outer context.
     let mut depth: u32 = 0;
 
-    for tok in &tokens {
+    for tok in tokens {
         let token = tok.text.as_str();
         let (opens, closes) = bracket_counts(token);
         if depth > 0 || opens > 0 {

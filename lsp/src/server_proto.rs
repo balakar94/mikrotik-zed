@@ -156,6 +156,21 @@ pub(crate) fn invalid_params_response(id: &serde_json::Value, message: &str) -> 
     })
 }
 
+/// Build a JSON-RPC `-32600 Invalid Request` error response for a REQUEST.
+///
+/// Used for requests that arrive after `shutdown`: LSP 3.17 requires the
+/// server to reject them until the client sends `exit`.
+pub(crate) fn invalid_request_response(id: &serde_json::Value, message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32600,
+            "message": message,
+        },
+    })
+}
+
 /// Build a JSON-RPC `-32700 Parse error` response.
 ///
 /// Used when the framed body is not valid JSON. Per JSON-RPC 2.0 the `id`
@@ -385,12 +400,13 @@ pub(crate) fn goto_definition_result(
     uri: &str,
     line: usize,
     character: usize,
+    logicals: &[diagnostics::LogicalLine],
 ) -> serde_json::Value {
-    // ONE continuation-aware join per request, feeding both the index and
-    // the cursor resolution below.
-    let logicals = diagnostics::logical_lines(doc);
-    let index = navigation::build_variable_index(&logicals);
-    let Some(occ) = resolve_cursor_occurrence(doc, &logicals, &index, enc, line, character) else {
+    // ONE continuation-aware join per request (owned by the caller, usually
+    // the shared parse cache), feeding both the index and the cursor
+    // resolution below.
+    let index = navigation::build_variable_index(logicals);
+    let Some(occ) = resolve_cursor_occurrence(doc, logicals, &index, enc, line, character) else {
         return serde_json::Value::Null;
     };
     let Some(decl) =
@@ -401,7 +417,7 @@ pub(crate) fn goto_definition_result(
         return serde_json::Value::Null;
     };
     let lines: Vec<&str> = doc.lines().collect();
-    navigation_location_value(uri, &lines, &logicals, decl, enc)
+    navigation_location_value(uri, &lines, logicals, decl, enc)
 }
 
 /// Compute the `textDocument/references` RESULT: the chosen declaration
@@ -414,12 +430,12 @@ pub(crate) fn references_result(
     line: usize,
     character: usize,
     include_declaration: bool,
+    logicals: &[diagnostics::LogicalLine],
 ) -> Vec<serde_json::Value> {
-    // ONE continuation-aware join per request, feeding both the index and
-    // the cursor resolution below.
-    let logicals = diagnostics::logical_lines(doc);
-    let index = navigation::build_variable_index(&logicals);
-    let Some(occ) = resolve_cursor_occurrence(doc, &logicals, &index, enc, line, character) else {
+    // ONE continuation-aware join per request (owned by the caller), feeding
+    // both the index and the cursor resolution below.
+    let index = navigation::build_variable_index(logicals);
+    let Some(occ) = resolve_cursor_occurrence(doc, logicals, &index, enc, line, character) else {
         return Vec::new();
     };
     let declaration = if include_declaration {
@@ -430,7 +446,7 @@ pub(crate) fn references_result(
     let refs = navigation::collect_references(&index, &occ.name, declaration);
     let lines: Vec<&str> = doc.lines().collect();
     refs.iter()
-        .map(|h| navigation_location_value(uri, &lines, &logicals, h, enc))
+        .map(|h| navigation_location_value(uri, &lines, logicals, h, enc))
         .collect()
 }
 

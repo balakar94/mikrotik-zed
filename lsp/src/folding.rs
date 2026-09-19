@@ -43,10 +43,24 @@ pub(crate) struct FoldingRange {
 /// Compute all folding ranges for a script document.
 ///
 /// Pure function over the document text; deterministic output sorted by
-/// `startLine`. An empty document yields an empty list.
+/// `startLine`. An empty document yields an empty list. Test/legacy entry
+/// point: the server calls [`compute_folding_ranges_with_logicals`].
+#[allow(dead_code)]
 pub(crate) fn compute_folding_ranges(doc: &str) -> Vec<FoldingRange> {
+    let logicals = diagnostics::logical_lines(doc);
+    compute_folding_ranges_with_logicals(doc, &logicals)
+}
+
+/// [`compute_folding_ranges`] over an already-joined logical-line slice.
+///
+/// Callers that own a [`crate::parser::ParseCache`] pass the cached join so
+/// one document parse serves folding and its sibling features.
+pub(crate) fn compute_folding_ranges_with_logicals(
+    doc: &str,
+    logicals: &[diagnostics::LogicalLine],
+) -> Vec<FoldingRange> {
     let mut out = brace_regions(doc);
-    out.extend(continuation_ranges(doc));
+    out.extend(continuation_ranges(logicals));
 
     // Deterministic order: by start line; ties broken by end line so the
     // outer (longer) region of two same-start ranges sorts first, then kind
@@ -112,8 +126,8 @@ fn brace_regions(doc: &str) -> Vec<FoldingRange> {
 }
 
 /// Continuation folds: logical lines spanning more than one physical line.
-fn continuation_ranges(doc: &str) -> Vec<FoldingRange> {
-    diagnostics::logical_lines(doc)
+fn continuation_ranges(logicals: &[diagnostics::LogicalLine]) -> Vec<FoldingRange> {
+    logicals
         .iter()
         .filter_map(|ll| {
             let first = ll.first_physical_line() as u32;

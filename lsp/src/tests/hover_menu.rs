@@ -193,8 +193,10 @@ fn test_hover_menu_without_read_only_no_section() {
 
 #[test]
 fn test_hover_caps_flags_and_read_only() {
-    // MAX_HOVER_PROPERTIES is applied consistently to flags and read_only
-    // too: the surplus folds into a per-section footer, never rendered.
+    // MAX_HOVER_PROPERTIES applies per section: flags and read-only each
+    // show at most 12 entries and fold the surplus into their OWN footer.
+    // Flags are completable, so that footer points at Space; read-only
+    // columns are not, so their footer says so without promising a list.
     let mut toml = String::from("[[menus]]\npath = \"/demo/many\"\ntype = \"Directory\"\n");
     for i in 0..15 {
         toml.push_str(&format!(
@@ -213,10 +215,18 @@ fn test_hover_caps_flags_and_read_only() {
     assert!(!value.contains("f12"), "13th flag must be omitted");
     assert!(value.contains("r11"), "12th read-only must be shown");
     assert!(!value.contains("r12"), "13th read-only must be omitted");
-    let footers = value
-        .matches("(+3 more — type Space after verb to list)")
-        .count();
-    assert_eq!(footers, 2, "one footer per capped section, got {footers}");
+    assert_eq!(
+        value
+            .matches("(+3 more — type Space after verb to list)")
+            .count(),
+        1,
+        "flags footer points at completion, got: {value}"
+    );
+    assert_eq!(
+        value.matches("(+3 more read-only columns)").count(),
+        1,
+        "read-only footer must not promise completion, got: {value}"
+    );
     assert!(
         value.contains("Source: published reference"),
         "menu card carries its source, got: {value}"
@@ -276,6 +286,21 @@ fn test_hover_menu_arg_description_truncated_single_line() {
         "per-arg description stays near the 120-char cap, got: {line}"
     );
 }
+#[test]
+fn test_hover_space_separated_submenu_segment_resolves() {
+    // `/interface bridge`: parse_line folds `bridge` into the path, so the
+    // bare word cannot resolve on its own. Hover resolves it through
+    // context.path to the child menu card.
+    let data = synthetic_data();
+    let line = "/interface bridge";
+    let h = hover_at(&data, line, line.find("bridge").unwrap() + 2).expect("segment hover");
+    assert!(
+        h.contents.value.contains("### /interface/bridge"),
+        "space-separated sub-menu segment must show the child card, got: {}",
+        h.contents.value
+    );
+}
+
 #[test]
 fn test_hover_menu_required_block_before_optional() {
     // Required entries render under their own block ahead of optional ones.

@@ -145,6 +145,42 @@ type = "string"
 }
 
 #[test]
+fn test_parameter_label_offsets_are_utf16_units() {
+    // A client-typed non-ASCII verb (`adé`: 3 UTF-16 units, 4 bytes) must
+    // not shift parameter offsets: they are UTF-16 code units, so slicing
+    // the label's UTF-16 view by them reproduces each `name=type` segment.
+    let data = MenuData::from_toml_str(
+        r#"
+[[menus]]
+path = "/m"
+type = "Directory"
+[[menus.arguments]]
+name = "alpha"
+type = "string"
+[[menus.arguments]]
+name = "beta"
+type = "string"
+"#,
+    );
+    let menu = data.menu_by_path.get("/m").expect("menu");
+    let line = "/m adé alpha=x";
+    let tokens = tokenize_with_spans(line);
+    let verb_idx = resolve_verb_token(&data, &tokens).expect("verb");
+    let help = compute_signature_help(menu, &tokens, verb_idx, line.len()).expect("help");
+    let sig = &help.signatures[0];
+    assert_eq!(
+        sig.parameters[0].label[0], 7,
+        "byte offset would be 8; UTF-16 offset is 7"
+    );
+    let units: Vec<u16> = sig.label.encode_utf16().collect();
+    for p in &sig.parameters {
+        let seg: String =
+            String::from_utf16(&units[p.label[0]..p.label[1]]).expect("valid segment");
+        assert!(seg.contains('='), "segment must be name=type, got {seg:?}");
+    }
+}
+
+#[test]
 fn test_param_documentation_markdown_sanitized() {
     let data = MenuData::from_toml_str(
         r#"

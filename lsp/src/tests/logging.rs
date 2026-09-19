@@ -64,6 +64,25 @@ fn redact_secrets_covers_password_and_base64() {
 }
 
 #[test]
+fn sanitize_strips_c0_c1_and_escape() {
+    // ESC (C0) and DEL/C1 controls disappear; printable tail survives.
+    assert_eq!(sanitize_for_log("a\u{1b}[31mred\u{7f}b"), "a[31mredb");
+    assert_eq!(sanitize_for_log("x\u{85}y"), "xy");
+    assert_eq!(truncate_command_for_log("a\u{1b}b\u{9}c"), "abc");
+    assert!(!sanitize_for_log("esc\u{1b}]0;title\u{7}").contains('\u{1b}'));
+}
+
+#[test]
+fn redact_secrets_strips_controls_after_redaction() {
+    let out = redact_secrets("pass=\u{1b}[31ms3cret\u{0}done", "s3cret", "admin");
+    assert!(!out.contains('\u{1b}'));
+    assert!(!out.contains('\u{0}'));
+    assert!(out.contains("[REDACTED]"));
+    // Empty password still strips controls from the text.
+    assert_eq!(redact_secrets("a\u{1b}b", "", "u"), "ab");
+}
+
+#[test]
 fn truncate_command_caps_at_256_and_strips_newlines() {
     let long = "c".repeat(300);
     assert_eq!(truncate_command_for_log(&long).chars().count(), 256);

@@ -94,3 +94,32 @@ fn test_hover_verb_without_menu_also_works() {
     let h = hover_at(&data, "print", 2).expect("bare verb");
     assert!(h.contents.value.contains("print"));
 }
+
+#[test]
+fn test_hover_verb_and_colon_cards_carry_source_line() {
+    let data = synth();
+    let verb = hover_at(&data, "print", 2).expect("verb hover");
+    assert!(
+        verb.contents
+            .value
+            .contains("Source: published reference — RouterOS"),
+        "verb card must carry the dataset source, got: {}",
+        verb.contents.value
+    );
+    // `:put x`: word extraction drops the colon; the colon branch re-attaches
+    // it and must carry the same source footer.
+    let colon = hover_at(&data, ":put x", 2).expect("colon hover");
+    assert!(
+        colon.contents.value.contains("**:put**"),
+        "got: {}",
+        colon.contents.value
+    );
+    assert!(
+        colon
+            .contents
+            .value
+            .contains("Source: published reference — RouterOS"),
+        "colon card must carry the dataset source, got: {}",
+        colon.contents.value
+    );
+}

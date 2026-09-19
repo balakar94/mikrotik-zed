@@ -143,18 +143,28 @@ pub(crate) fn uri_for_log(uri: &str) -> String {
     format!("len={} hash={}", uri.len(), uri_hash(uri))
 }
 
-/// Sanitize a JSON-RPC method token for a log line.
+/// Strip C0/C1 control characters (including ESC and the C1 CSI range) and
+/// cap at `max` chars.
 ///
-/// Strips every ASCII control character (including `\r`/`\n`, so a crafted
-/// `method` cannot forge log lines) and caps the result at 64 chars.
-/// `request_suffix` must use this rather than interpolating `method` raw.
-pub(crate) fn sanitize_method_for_log(m: &str) -> String {
-    let stripped: String = m.chars().filter(|c| !c.is_control()).collect();
-    if stripped.chars().count() > 64 {
-        stripped.chars().take(64).collect()
+/// Terminal escapes (`ESC [ 31 m` …) lose their ESC byte, so a crafted log
+/// value can neither drive the terminal nor forge a line break.
+fn strip_controls_capped(s: &str, max: usize) -> String {
+    let stripped: String = s.chars().filter(|c| !c.is_control()).collect();
+    if stripped.chars().count() > max {
+        stripped.chars().take(max).collect()
     } else {
         stripped
     }
+}
+
+/// Sanitize a JSON-RPC method token for a log line.
+///
+/// Strips every C0/C1 control character (including `\r`/`\n` and ESC, so a
+/// crafted `method` cannot forge log lines or drive the terminal) and caps
+/// the result at 64 chars. `request_suffix` must use this rather than
+/// interpolating `method` raw.
+pub(crate) fn sanitize_method_for_log(m: &str) -> String {
+    strip_controls_capped(m, 64)
 }
 
 pub(crate) fn request_suffix(m: &str, uri: Option<&str>, d: u64, enc: &str) -> String {
@@ -167,51 +177,43 @@ pub(crate) fn request_suffix(m: &str, uri: Option<&str>, d: u64, enc: &str) -> S
 
 /// Sanitize a value before interpolating it into a log line.
 ///
-/// Strips `\r` and `\n` (log-injection defense) and truncates to 128
-/// chars. Apply to every host/user/url/path interpolation in
-/// `log_info!`/`log_warn!`/`log_debug!` paths. Never applied to `pass`.
+/// Strips every C0/C1 control character (`\r`, `\n`, `\t`, NUL, ESC, …) so a
+/// crafted value can neither forge log lines nor emit terminal escapes, and
+/// truncates to 128 chars. Apply to every host/user/url/path interpolation
+/// in `log_info!`/`log_warn!`/`log_debug!` paths. Never applied to `pass`.
 pub(crate) fn sanitize_for_log(s: &str) -> String {
-    let stripped: String = s.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-    if stripped.chars().count() > 128 {
-        stripped.chars().take(128).collect()
-    } else {
-        stripped
-    }
+    strip_controls_capped(s, 128)
 }
 
-/// Truncate a command name for log lines (256-char cap, no newline).
+/// Truncate a command name for log lines (256-char cap, no control bytes).
 pub(crate) fn truncate_command_for_log(s: &str) -> String {
-    let stripped: String = s.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-    if stripped.chars().count() > 256 {
-        stripped.chars().take(256).collect()
-    } else {
-        stripped
-    }
+    strip_controls_capped(s, 256)
 }
 
 /// Redact credential material from log/error text (mirrors
 /// `scripts/_mikrotik_shared.py::redact_secrets`).
 ///
 /// Replaces the password, the base64 of `user:password` (HTTP Basic), and
-/// the base64 of the password alone with `[REDACTED]`. Never returns
-/// credential material; safe to apply unconditionally before logging or
-/// embedding in `LiveError::Network`.
+/// the base64 of the password alone with `[REDACTED]`, then strips every
+/// C0/C1 control character (including ESC) from the result so redacted
+/// device text can never drive the terminal or forge a log line. Never
+/// returns credential material; safe to apply unconditionally before
+/// logging or embedding in `LiveError::Network`.
 pub(crate) fn redact_secrets(text: &str, pass: &str, user: &str) -> String {
     use base64::Engine;
     let mut out = text.to_string();
-    if pass.is_empty() {
-        return out;
-    }
-    let mut secrets = vec![pass.to_string()];
-    let creds = format!("{user}:{pass}");
-    secrets.push(base64::engine::general_purpose::STANDARD.encode(creds.as_bytes()));
-    secrets.push(base64::engine::general_purpose::STANDARD.encode(pass.as_bytes()));
-    for secret in secrets {
-        if !secret.is_empty() && out.contains(&secret) {
-            out = out.replace(&secret, "[REDACTED]");
+    if !pass.is_empty() {
+        let mut secrets = vec![pass.to_string()];
+        let creds = format!("{user}:{pass}");
+        secrets.push(base64::engine::general_purpose::STANDARD.encode(creds.as_bytes()));
+        secrets.push(base64::engine::general_purpose::STANDARD.encode(pass.as_bytes()));
+        for secret in secrets {
+            if !secret.is_empty() && out.contains(&secret) {
+                out = out.replace(&secret, "[REDACTED]");
+            }
         }
     }
-    out
+    out.chars().filter(|c| !c.is_control()).collect()
 }
 
 macro_rules! log_error {

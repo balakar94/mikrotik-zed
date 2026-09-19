@@ -72,13 +72,14 @@ fn snippet_items(items: &[CompletionItem]) -> Vec<&CompletionItem> {
 #[test]
 fn test_colon_bare_at_statement_start_returns_only_colon_items() {
     let data = synthetic();
-    // ':' alone at a fresh statement fires mid-token: the four
-    // statement snippets are the colon-prefixed candidates today, and
-    // NOTHING else (no root menus, no verbs) may leak into the menu.
+    // ':' alone at a fresh statement fires mid-token: the four statement
+    // snippets plus the shared SCRIPT_GLOBALS entries are the colon-prefixed
+    // candidates, and NOTHING else (no root menus, no verbs) may leak in.
     let items = compute_completions(&data, ":");
+    let globals = crate::script_globals::SCRIPT_GLOBALS.len();
     assert_eq!(
         items.len(),
-        4,
+        globals,
         "got {:?}",
         items.iter().map(|i| &i.label).collect::<Vec<_>>()
     );
@@ -89,6 +90,7 @@ fn test_colon_bare_at_statement_start_returns_only_colon_items() {
             i.label
         );
     }
+    // The four structural snippets survive the dedupe (richer insert text).
     assert_eq!(snippet_items(&items).len(), 4);
 }
 
@@ -103,14 +105,31 @@ fn test_colon_prefix_filters_to_matching_script_items() {
     let items = compute_completions(&data, ":fo");
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(labels, vec![":foreach", ":for"]);
-    // …and a fully typed unknown script word completes to NOTHING — no
+    // …and a fully typed script global completes to itself only — no
     // fallback to menu noise after a colon.
     let items = compute_completions(&data, ":put");
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(labels, vec![":put"]);
+}
+
+#[test]
+fn test_colon_global_items_rank_under_menu_tiers() {
+    let data = synthetic();
+    let items = compute_completions(&data, ":put");
+    assert_eq!(items.len(), 1);
+    let item = &items[0];
+    assert_eq!(item.label, ":put");
+    assert_eq!(item.kind, Some(kind::FUNCTION));
     assert!(
-        items.is_empty(),
-        "no fallback after ':put', got {:?}",
-        items.iter().map(|i| &i.label).collect::<Vec<_>>()
+        item.sort_text.as_deref().unwrap_or("").starts_with('2'),
+        "script global uses the Verb tier (2), got {:?}",
+        item.sort_text
     );
+    assert!(
+        item.documentation.is_some(),
+        "script global carries the shared docs"
+    );
+    assert_eq!(item.filter_text.as_deref(), Some(":put"));
 }
 
 #[test]
@@ -126,13 +145,27 @@ fn test_colon_after_block_opener_still_offers_snippets() {
 }
 
 #[test]
-fn test_colon_mid_statement_returns_no_menu_noise() {
+fn test_colon_mid_statement_returns_only_script_globals() {
     let data = synthetic();
-    // A colon word after a verb is NOT a statement start: no snippets,
-    // and filtering the argument names leaves an intentionally quiet
-    // (empty) result instead of irrelevant property suggestions.
+    // A colon word after a verb is NOT a statement start: no structural
+    // snippets, but the script globals (`:put`, …) still apply — and no
+    // property or menu noise may leak through the colon filter.
     let items = compute_completions(&data, "/ip/address print :");
-    assert!(items.is_empty());
+    assert!(!items.is_empty());
+    assert!(
+        items.iter().all(|i| i.label.starts_with(':')),
+        "colon context leaked {}",
+        items
+            .iter()
+            .find(|i| !i.label.starts_with(':'))
+            .map(|i| &i.label)
+            .unwrap()
+    );
+    assert!(items.iter().any(|i| i.label == ":put"));
+    assert!(
+        !items.iter().any(|i| i.kind == Some(kind::SNIPPET)),
+        "mid-statement colon must not offer structural snippets"
+    );
 }
 
 #[test]

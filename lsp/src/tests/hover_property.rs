@@ -73,6 +73,39 @@ fn test_hover_property_without_description_has_no_trailing_gap() {
     );
 }
 #[test]
+fn test_hover_property_card_carries_dataset_source_line() {
+    let data = synthetic_data();
+    let line = "/ip/address add address=1.1.1.1";
+    let pos = line.rfind("address=").unwrap() + 2;
+    let h = compute_hover(&data, line, pos, line, 0).expect("property hover");
+    assert!(
+        h.contents
+            .value
+            .contains("Source: published reference — RouterOS"),
+        "property card must name its dataset source, got: {}",
+        h.contents.value
+    );
+}
+
+#[test]
+fn test_hover_long_description_marks_truncated() {
+    use crate::text_util::MAX_HOVER_DESC_CHARS;
+    let long = "x".repeat(MAX_HOVER_DESC_CHARS + 50);
+    let toml = format!(
+        "[[menus]]\npath = \"/demo/long\"\ntype = \"Directory\"\n\
+         [[menus.arguments]]\nname = \"token\"\ntype = \"string\"\ndescription = \"{long}\"\n"
+    );
+    let data = MenuData::from_toml_str(&toml);
+    let line = "/demo/long set token=1";
+    let pos = line.find("token").unwrap() + 1;
+    let h = compute_hover(&data, line, pos, line, 0).expect("property hover");
+    assert!(
+        h.contents.value.contains("(truncated)"),
+        "a description cut at MAX_HOVER_DESC_CHARS must be marked, got: {}",
+        h.contents.value
+    );
+}
+#[test]
 fn test_hover_property_shows_embedded_enum_values() {
     let data = MenuData::from_toml_str(
         r#"

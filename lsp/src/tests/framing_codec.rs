@@ -1,6 +1,6 @@
 // Framing — codec and limits.
 use crate::caps::MAX_DOC_SIZE;
-use crate::caps::{MAX_HEADER_SIZE, MAX_MESSAGE_SIZE};
+use crate::caps::{MAX_DRAIN_SIZE, MAX_HEADER_SIZE, MAX_MESSAGE_SIZE};
 use crate::folding;
 use crate::framing::*;
 use crate::menus::MenuData;
@@ -198,6 +198,23 @@ fn test_read_message_oversized_body_drained_and_stream_usable() {
         read_message(&mut stream).unwrap(),
         Frame::Message(ref b) if b == br#"{"id":2}"#
     ));
+}
+
+#[test]
+fn test_read_message_declared_length_far_above_cap_is_terminal() {
+    // A declared length beyond MAX_DRAIN_SIZE is hostile or broken:
+    // terminate before reading the body instead of blocking on an unbounded
+    // drain. No body bytes are supplied, so a draining implementation would
+    // return Eof/Io here rather than Protocol.
+    let header = format!("Content-Length: {}\r\n\r\n", MAX_DRAIN_SIZE + 1);
+    let mut stream = Cursor::new(header.into_bytes());
+    match read_message(&mut stream).unwrap_err() {
+        FrameError::Protocol(why) => assert!(
+            why.contains("MAX_DRAIN_SIZE"),
+            "error should name the drain cap, got: {why}"
+        ),
+        other => panic!("expected Protocol error, got {other:?}"),
+    }
 }
 
 #[test]

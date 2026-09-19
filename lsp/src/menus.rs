@@ -87,6 +87,19 @@ impl ArgEntry {
         parse_enum_values(&self.arg_type)
     }
 
+    /// Borrowed/owned variant of [`ArgEntry::enum_members`].
+    ///
+    /// Hot paths (diagnostics, quick-fixes) only iterate the members, so the
+    /// embedded list is borrowed instead of cloned; the display-string
+    /// fallback still allocates.
+    pub fn enum_members_ref(&self) -> std::borrow::Cow<'_, [String]> {
+        if !self.enum_values.is_empty() {
+            std::borrow::Cow::Borrowed(&self.enum_values)
+        } else {
+            std::borrow::Cow::Owned(parse_enum_values(&self.arg_type))
+        }
+    }
+
     /// Ubit members usable for Hint-only validation.
     ///
     /// Ubit entries carry no embedded member array (the generator only
@@ -190,6 +203,15 @@ pub struct DatasetProvenance {
 /// header output; unknown fields degrade to `"unknown"` (never panic).
 pub fn dataset_provenance() -> DatasetProvenance {
     parse_provenance(COMMANDS_TOML)
+}
+
+/// Process-wide cached [`dataset_provenance`] for hover footers and logs.
+///
+/// The embedded table is immutable, so parsing its header once is enough;
+/// hover builds one footer per request and must not reparse there.
+pub(crate) fn dataset_provenance_cached() -> &'static DatasetProvenance {
+    static DATASET_PROVENANCE: std::sync::OnceLock<DatasetProvenance> = std::sync::OnceLock::new();
+    DATASET_PROVENANCE.get_or_init(dataset_provenance)
 }
 
 pub(crate) fn parse_provenance(text: &str) -> DatasetProvenance {

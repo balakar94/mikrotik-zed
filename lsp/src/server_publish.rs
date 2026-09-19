@@ -23,12 +23,39 @@ impl Server {
     /// from internal byte-offset semantics to the negotiated position
     /// encoding. Shared by both push paths (didOpen / didChange) and the
     /// pull handler so they can never diverge.
+    ///
+    /// Test/legacy entry point over an explicit text; the server uses
+    /// [`Server::encoded_diagnostics_cached`] so the parse cache is shared.
+    #[allow(dead_code)]
     pub(crate) fn encoded_diagnostics(
         &self,
         doc_text: &str,
         uri: &str,
     ) -> Vec<diagnostics::Diagnostic> {
         let diags = diagnostics::compute_diagnostics(&self.data, doc_text, uri);
+        convert_diagnostic_ranges(diags, doc_text, self.position_encoding)
+    }
+
+    /// Production diagnostics entry point: reads the tracked document and
+    /// shares its logical-line join with the [`crate::parser::ParseCache`].
+    ///
+    /// Completions, navigation, and symbols issued right after a keystroke
+    /// then hit a warm cache instead of rejoining the whole document; the
+    /// cache's length+hash guard already invalidates stale entries, so
+    /// `didChange` needs no explicit invalidation (the parse itself is what
+    /// changes, not the cache key). Over-cap documents fall back to the
+    /// self-contained path so byte-cap truncation semantics stay identical.
+    pub(crate) fn encoded_diagnostics_cached(&mut self, uri: &str) -> Vec<diagnostics::Diagnostic> {
+        let Some(doc_text) = self.docs.get(uri) else {
+            return Vec::new();
+        };
+        let cached_logicals = if doc_text.len() <= crate::caps::MAX_DIAG_BYTES {
+            Some(self.parse_cache.lookup_or_insert(uri, doc_text))
+        } else {
+            None
+        };
+        let diags =
+            diagnostics::compute_diagnostics_with_logicals(&self.data, doc_text, cached_logicals);
         convert_diagnostic_ranges(diags, doc_text, self.position_encoding)
     }
 
@@ -66,18 +93,21 @@ impl Server {
     ///
     /// Total actions are capped at [`MAX_CODE_ACTIONS`].
     pub(crate) fn compute_code_actions(
-        &self,
+        &mut self,
         uri: &str,
-        doc: &str,
         client_diags: &[serde_json::Value],
     ) -> Vec<serde_json::Value> {
         let mut actions = Vec::new();
         if client_diags.is_empty() {
             return actions;
         }
+        let Some(doc) = self.docs.get(uri) else {
+            return actions;
+        };
         // One continuation-aware logical-line join per REQUEST, shared by
-        // every diagnostic below — not one join per diagnostic.
-        let logicals = diagnostics::logical_lines(doc);
+        // every diagnostic below — not one join per diagnostic — and shared
+        // with the parse cache so sibling requests reuse it.
+        let logicals = self.parse_cache.lookup_or_insert(uri, doc);
 
         for diag in client_diags {
             if actions.len() >= MAX_CODE_ACTIONS {
@@ -121,7 +151,7 @@ impl Server {
                 // guess across all menus.
                 "unknown-property" => {
                     let Some(menu) =
-                        diagnostics::resolve_menu_for_line(&self.data, &logicals, start_line)
+                        diagnostics::resolve_menu_for_line(&self.data, logicals, start_line)
                     else {
                         continue;
                     };
@@ -148,11 +178,11 @@ impl Server {
                 // performs.
                 "invalid-enum-value" => {
                     let Some(menu) =
-                        diagnostics::resolve_menu_for_line(&self.data, &logicals, start_line)
+                        diagnostics::resolve_menu_for_line(&self.data, logicals, start_line)
                     else {
                         continue;
                     };
-                    let Some(ll) = diagnostics::covering_logical_line(&logicals, start_line) else {
+                    let Some(ll) = diagnostics::covering_logical_line(logicals, start_line) else {
                         continue;
                     };
                     // Wire characters → byte offsets within their own
@@ -188,11 +218,18 @@ impl Server {
                     };
                     // Mirror the Rule 5 emitter: only `arguments` carry
                     // enum-typed values, and an argument without resolvable
-                    // members never guesses.
-                    let Some(arg) = menu.arguments.iter().find(|a| a.name == *key) else {
+                    // members never guesses. The diagnostic matched the
+                    // argument case-insensitively (`normalize_key`), so this
+                    // lookup must too or a mixed-case spelling (`Comment=`)
+                    // would publish a diagnostic without its quick-fix.
+                    let Some(arg) = menu
+                        .arguments
+                        .iter()
+                        .find(|a| a.name.eq_ignore_ascii_case(key))
+                    else {
                         continue;
                     };
-                    let members = arg.enum_members();
+                    let members = arg.enum_members_ref();
                     if members.is_empty() {
                         continue;
                     }
@@ -290,8 +327,12 @@ impl Server {
                         .and_then(|_| stdout.flush())
                     {
                         // Non-fatal by policy — see the doc comment above.
+                        // `uri_for_log` keeps the client-controlled path out
+                        // of the log (hash + length only), matching every
+                        // other URI log site.
                         log_error!(
-                            "failed to write publishDiagnostics notification for {uri:?}: {e}"
+                            "failed to write publishDiagnostics notification for {}: {e}",
+                            crate::logging::uri_for_log(uri)
                         );
                     }
                 }

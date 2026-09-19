@@ -9,7 +9,10 @@ use crate::menus::{MenuData, MenuEntry};
 // Shared text helpers live in `crate::text_util` (single owner); the
 // re-exports below keep historical `hover::` paths resolving for tests.
 pub(crate) use crate::text_util::{MAX_HOVER_PROPERTIES, sanitize_markdown_for_hover};
-use crate::text_util::{normalize_key, normalize_path, truncate_chars, type_gloss, verb_role};
+use crate::text_util::{
+    normalize_key, normalize_path, sanitize_markdown_for_hover_with_truncation, truncate_chars,
+    type_gloss, verb_role,
+};
 
 /// Max chars for one argument description inside a menu hover card.
 ///
@@ -35,6 +38,131 @@ fn menu_arg_suffix(description: &str) -> String {
     }
     let short = truncate_chars(&single, MAX_MENU_ARG_DESC_CHARS);
     format!(" — {short}")
+}
+
+/// One-line provenance footer shared by every hover card.
+///
+/// The embedded dataset's RouterOS version comes from the generated
+/// `data/commands.toml` header via [`crate::menus::dataset_provenance_cached`]
+/// (cached process-wide: the table is immutable).
+fn hover_source_line() -> String {
+    let prov = crate::menus::dataset_provenance_cached();
+    format!(
+        "\n\nSource: published reference — RouterOS {}",
+        prov.version
+    )
+}
+
+/// Render the menu card for `menu`, headed by `display`.
+///
+/// Section budgets are applied per section (`arguments`, `flags`,
+/// `read-only`), each with its own footer naming exactly what that section
+/// hid — see `MAX_HOVER_PROPERTIES`. Flags are completable, so their footer
+/// points at completion; read-only columns are not, so their footer says so
+/// without promising a Space-triggered list.
+fn menu_hover_card(display: &str, menu: &MenuEntry) -> Hover {
+    let mut md = format!(
+        "### {}\n\n**Type:** {}",
+        display,
+        if menu.menu_type.is_empty() {
+            "Directory"
+        } else {
+            &menu.menu_type
+        }
+    );
+
+    if !menu.arguments.is_empty() {
+        // Required entries render first under their own block, then
+        // optional ones; the shared per-section cap applies across both so
+        // the card stays bounded.
+        let mut required: Vec<_> = menu.arguments.iter().filter(|a| a.required).collect();
+        let mut optional: Vec<_> = menu.arguments.iter().filter(|a| !a.required).collect();
+        required.sort_by(|a, b| a.name.cmp(&b.name));
+        optional.sort_by(|a, b| a.name.cmp(&b.name));
+        let total = required.len() + optional.len();
+        let shown_required: Vec<_> = required.into_iter().take(MAX_HOVER_PROPERTIES).collect();
+        let rest = MAX_HOVER_PROPERTIES.saturating_sub(shown_required.len());
+        let shown_optional: Vec<_> = optional.into_iter().take(rest).collect();
+        let shown = shown_required.len() + shown_optional.len();
+        let bullet = |arg: &crate::menus::ArgEntry| {
+            let typ = if arg.arg_type.is_empty() {
+                "any"
+            } else {
+                arg.arg_type.as_str()
+            };
+            let req = if arg.required { " (required)" } else { "" };
+            let suffix = menu_arg_suffix(&arg.description);
+            format!("\n- **{}** `{}`{}{}", arg.name, typ, req, suffix)
+        };
+        md.push_str("\n\n**Arguments:**");
+        if !shown_required.is_empty() {
+            md.push_str("\n\n**Required:**");
+            for arg in shown_required {
+                md.push_str(&bullet(arg));
+            }
+        }
+        if !shown_optional.is_empty() {
+            md.push_str("\n\n**Optional:**");
+            for arg in shown_optional {
+                md.push_str(&bullet(arg));
+            }
+        }
+        if total > shown {
+            md.push_str(&format!(
+                "\n\n(+{} more — type Space after verb to list)",
+                total - shown
+            ));
+        }
+    }
+
+    if !menu.flags.is_empty() {
+        let shown = menu.flags.len().min(MAX_HOVER_PROPERTIES);
+        md.push_str("\n\n**Flags:**");
+        for flag in menu.flags.iter().take(shown) {
+            let desc = if flag.description.is_empty() {
+                String::new()
+            } else {
+                sanitize_markdown_for_hover(&flag.description)
+            };
+            md.push_str(&format!("\n  {} — {}", flag.name, desc));
+        }
+        if menu.flags.len() > shown {
+            md.push_str(&format!(
+                "\n\n(+{} more — type Space after verb to list)",
+                menu.flags.len() - shown
+            ));
+        }
+    }
+
+    if !menu.read_only.is_empty() {
+        let shown = menu.read_only.len().min(MAX_HOVER_PROPERTIES);
+        md.push_str("\n\n**Read-only:**");
+        for ro in menu.read_only.iter().take(shown) {
+            let desc = if ro.description.is_empty() {
+                String::new()
+            } else {
+                sanitize_markdown_for_hover(&ro.description)
+            };
+            md.push_str(&format!("\n  {} — {}", ro.name, desc));
+        }
+        if menu.read_only.len() > shown {
+            // Read-only columns are never offered by completion, so the
+            // footer must not promise a Space-triggered list.
+            md.push_str(&format!(
+                "\n\n(+{} more read-only columns)",
+                menu.read_only.len() - shown
+            ));
+        }
+    }
+
+    md.push_str(&hover_source_line());
+
+    Hover {
+        contents: HoverContents {
+            kind: "markdown".to_string(),
+            value: md,
+        },
+    }
 }
 
 /// Case/separator-insensitive menu lookup.
@@ -110,40 +238,11 @@ pub struct Hover {
 /// One-line help for `:`-prefixed script keywords (`:put`, `:if`, ...).
 /// `find_word_start` deliberately excludes `:` so word extraction stays
 /// shared with navigation; hover re-attaches the prefix locally instead.
+///
+/// Documentation comes from the shared [`crate::script_globals`] table so
+/// hover and completion can never disagree about a builtin.
 fn colon_builtin_doc(colon_word: &str) -> Option<&'static str> {
-    if colon_word.eq_ignore_ascii_case(":put") {
-        Some("`:put <value> — output values to the console.")
-    } else if colon_word.eq_ignore_ascii_case(":if") {
-        Some("`:if (<cond>) do={...} — conditional execution.")
-    } else if colon_word.eq_ignore_ascii_case(":foreach") {
-        Some("`:foreach <var> in=<list> do={...} — iterate over a list.")
-    } else if colon_word.eq_ignore_ascii_case(":for") {
-        Some("`:for <var> from=<n> to=<m> do={...} — counted loop.")
-    } else if colon_word.eq_ignore_ascii_case(":do") {
-        Some("`:do {...} while=(<cond>) — group commands.")
-    } else if colon_word.eq_ignore_ascii_case(":local") {
-        Some("`:local <name> [<value>] — declare a local variable.")
-    } else if colon_word.eq_ignore_ascii_case(":global") {
-        Some("`:global <name> [<value>] — declare or access a global variable.")
-    } else if colon_word.eq_ignore_ascii_case(":delay") {
-        Some("`:delay <seconds> — pause execution.")
-    } else if colon_word.eq_ignore_ascii_case(":error") {
-        Some("`:error <message> — raise a script error.")
-    } else if colon_word.eq_ignore_ascii_case(":return") {
-        Some("`:return [<value>] — return a value from a script.")
-    } else if colon_word.eq_ignore_ascii_case(":resolve") {
-        Some("`:resolve <host> — resolve a DNS name to an address.")
-    } else if colon_word.eq_ignore_ascii_case(":parse") {
-        Some("`:parse <text> — parse console commands from text.")
-    } else if colon_word.eq_ignore_ascii_case(":pick") {
-        Some("`:pick <value> <start> [<end>] — slice a string or array.")
-    } else if colon_word.eq_ignore_ascii_case(":tonum") {
-        Some("`:tonum <value> — convert a value to a number.")
-    } else if colon_word.eq_ignore_ascii_case(":totime") {
-        Some("`:totime <value> — convert a value to a time interval.")
-    } else {
-        None
-    }
+    crate::script_globals::lookup(colon_word).map(|g| g.docs)
 }
 
 pub fn compute_hover(
@@ -170,107 +269,10 @@ pub fn compute_hover(
         };
 
     // Check if it's a menu path (case-insensitive; display keeps typed casing)
-    // let chains (requires Rust 1.88+, MSRV is 1.94) — collapsed for clippy collapsible_if
     if word.starts_with('/')
         && let Some(menu) = find_menu(data, word)
     {
-        let mut md = format!(
-            "### {}\n\n**Type:** {}",
-            word,
-            if menu.menu_type.is_empty() {
-                "Directory"
-            } else {
-                &menu.menu_type
-            }
-        );
-
-        if !menu.arguments.is_empty() {
-            // Required entries render first under their own block, then
-            // optional ones; the shared display cap applies across both so
-            // the card stays bounded.
-            let mut required: Vec<_> = menu.arguments.iter().filter(|a| a.required).collect();
-            let mut optional: Vec<_> = menu.arguments.iter().filter(|a| !a.required).collect();
-            required.sort_by(|a, b| a.name.cmp(&b.name));
-            optional.sort_by(|a, b| a.name.cmp(&b.name));
-            let total = required.len() + optional.len();
-            let shown_required: Vec<_> = required.into_iter().take(MAX_HOVER_PROPERTIES).collect();
-            let rest = MAX_HOVER_PROPERTIES.saturating_sub(shown_required.len());
-            let shown_optional: Vec<_> = optional.into_iter().take(rest).collect();
-            let bullet = |arg: &crate::menus::ArgEntry| {
-                let typ = if arg.arg_type.is_empty() {
-                    "any"
-                } else {
-                    arg.arg_type.as_str()
-                };
-                let req = if arg.required { " (required)" } else { "" };
-                let suffix = menu_arg_suffix(&arg.description);
-                format!("\n- **{}** `{}`{}{}", arg.name, typ, req, suffix)
-            };
-            md.push_str("\n\n**Arguments:**");
-            if !shown_required.is_empty() {
-                md.push_str("\n\n**Required:**");
-                for arg in shown_required {
-                    md.push_str(&bullet(arg));
-                }
-            }
-            if !shown_optional.is_empty() {
-                md.push_str("\n\n**Optional:**");
-                for arg in shown_optional {
-                    md.push_str(&bullet(arg));
-                }
-            }
-            if total > MAX_HOVER_PROPERTIES {
-                md.push_str(&format!(
-                    "\n\n(+{} more — type Space after verb to list)",
-                    total - MAX_HOVER_PROPERTIES
-                ));
-            }
-        }
-
-        if !menu.flags.is_empty() {
-            md.push_str("\n\n**Flags:**");
-            for flag in menu.flags.iter().take(MAX_HOVER_PROPERTIES) {
-                let desc = if flag.description.is_empty() {
-                    String::new()
-                } else {
-                    sanitize_markdown_for_hover(&flag.description)
-                };
-                md.push_str(&format!("\n  {} — {}", flag.name, desc));
-            }
-            if menu.flags.len() > MAX_HOVER_PROPERTIES {
-                md.push_str(&format!(
-                    "\n\n(+{} more — type Space after verb to list)",
-                    menu.flags.len() - MAX_HOVER_PROPERTIES
-                ));
-            }
-        }
-
-        if !menu.read_only.is_empty() {
-            md.push_str("\n\n**Read-only:**");
-            for ro in menu.read_only.iter().take(MAX_HOVER_PROPERTIES) {
-                let desc = if ro.description.is_empty() {
-                    String::new()
-                } else {
-                    sanitize_markdown_for_hover(&ro.description)
-                };
-                md.push_str(&format!("\n  {} — {}", ro.name, desc));
-            }
-            if menu.read_only.len() > MAX_HOVER_PROPERTIES {
-                md.push_str(&format!(
-                    "\n\n(+{} more — type Space after verb to list)",
-                    menu.read_only.len() - MAX_HOVER_PROPERTIES
-                ));
-            }
-        }
-
-        md.push_str("\n\nSource: published reference");
-
-        return Some(Hover {
-            contents: HoverContents {
-                kind: "markdown".to_string(),
-                value: md,
-            },
-        });
+        return Some(menu_hover_card(word, menu));
     }
 
     // Check if it's a property name for the current menu.
@@ -307,14 +309,17 @@ pub fn compute_hover(
                 md.push_str(&format!("\n\nValues: {}", arg.enum_values.join(" | ")));
             }
             if !arg.description.is_empty() {
-                md.push_str(&format!(
-                    "\n\n{}",
-                    sanitize_markdown_for_hover(&arg.description)
-                ));
+                let (clean, was_truncated) =
+                    sanitize_markdown_for_hover_with_truncation(&arg.description);
+                md.push_str(&format!("\n\n{clean}"));
+                if was_truncated {
+                    md.push_str(" (truncated)");
+                }
             }
             if let Some(ex) = example_for(&arg.arg_type) {
                 md.push_str(&format!("\n\n{ex}"));
             }
+            md.push_str(&hover_source_line());
             return Some(Hover {
                 contents: HoverContents {
                     kind: "markdown".to_string(),
@@ -329,7 +334,7 @@ pub fn compute_hover(
         {
             // Hygiene: ~28% flags have empty description upstream; fallback to type so card never
             // empty
-            let md = if flag.description.is_empty() {
+            let mut md = if flag.description.is_empty() {
                 if flag.arg_type.is_empty() {
                     format!("**{}**", flag.name)
                 } else {
@@ -342,12 +347,30 @@ pub fn compute_hover(
                     sanitize_markdown_for_hover(&flag.description)
                 )
             };
+            md.push_str(&hover_source_line());
             return Some(Hover {
                 contents: HoverContents {
                     kind: "markdown".to_string(),
                     value: md,
                 },
             });
+        }
+    }
+
+    // Space-separated sub-menu segment (`/interface bridge`): `parse_line`
+    // folds a COMPLETE segment into `context.path`, while a mid-word hover
+    // sees only the partial token as a command. Resolve the word against the
+    // context path's children first, then against the path's final segment.
+    if !word.starts_with('/') && !context.path.is_empty() {
+        let child_path = format!("{}/{}", context.path.trim_end_matches('/'), word);
+        if let Some(menu) = find_menu(data, &child_path) {
+            return Some(menu_hover_card(&menu.path, menu));
+        }
+        if let Some(last) = context.path.rsplit('/').next()
+            && last.eq_ignore_ascii_case(word)
+            && let Some(menu) = find_menu(data, &context.path)
+        {
+            return Some(menu_hover_card(&menu.path, menu));
         }
     }
 
@@ -361,7 +384,7 @@ pub fn compute_hover(
         if let Some(first) = sentence.get_mut(..1) {
             first.make_ascii_uppercase();
         }
-        let md = format!("**{word}**\n\n{sentence}.");
+        let md = format!("**{word}**\n\n{sentence}.{}", hover_source_line());
         return Some(Hover {
             contents: HoverContents {
                 kind: "markdown".to_string(),
@@ -377,7 +400,7 @@ pub fn compute_hover(
             return Some(Hover {
                 contents: HoverContents {
                     kind: "markdown".to_string(),
-                    value: format!("**{cw}**\n\n{doc}"),
+                    value: format!("**{cw}**\n\n{doc}{}", hover_source_line()),
                 },
             });
         }
@@ -385,7 +408,7 @@ pub fn compute_hover(
         return Some(Hover {
             contents: HoverContents {
                 kind: "markdown".to_string(),
-                value: format!("**{cw}**\n\nScript command."),
+                value: format!("**{cw}**\n\nScript command.{}", hover_source_line()),
             },
         });
     }

@@ -205,3 +205,72 @@ fn test_code_actions_mixed_codes_still_capped_at_eight() {
         );
     }
 }
+
+#[test]
+fn test_code_actions_invalid_enum_mixed_case_key_still_fixes() {
+    // The diagnostic matches arguments case-insensitively; the quick-fix
+    // must use the same rule or a mixed-case property spelling (`Chain=`)
+    // publishes a finding with no repair.
+    let mut s = make_server();
+    let diags = opened_wire_diagnostics(
+        &mut s,
+        "file:///case.rsc",
+        "/ip/firewall/filter add Chain=inpt",
+    );
+    let target = diags
+        .iter()
+        .find(|d| d["code"] == "invalid-enum-value")
+        .expect("invalid enum diagnostic");
+    let resp = s
+        .handle_message(
+            "textDocument/codeAction",
+            &code_action_request(9, "file:///case.rsc", std::slice::from_ref(target)),
+        )
+        .unwrap();
+    let actions = resp["result"].as_array().expect("actions array");
+    assert_eq!(
+        actions.len(),
+        1,
+        "mixed-case key must still resolve the argument: {actions:?}"
+    );
+    assert_eq!(
+        actions[0]["edit"]["changes"]["file:///case.rsc"][0]["newText"], "input",
+        "repair must splice the suggested member"
+    );
+}
+
+#[test]
+fn test_code_actions_respects_context_only_filter() {
+    // LSP 3.17: `context.only` restricts the kinds returned. This server
+    // produces only `quickfix`, so any other request gets an empty list.
+    let mut s = make_server();
+    let diags =
+        opened_wire_diagnostics(&mut s, "file:///only.rsc", "/ip/address add adress=1.1.1.1");
+    let target = diags
+        .iter()
+        .find(|d| d["code"] == "unknown-property")
+        .expect("unknown-property diagnostic");
+
+    let mut refactor = code_action_request(10, "file:///only.rsc", std::slice::from_ref(target));
+    refactor["params"]["context"]["only"] = serde_json::json!(["refactor"]);
+    let resp = s
+        .handle_message("textDocument/codeAction", &refactor)
+        .unwrap();
+    assert_eq!(
+        resp["result"],
+        serde_json::json!([]),
+        "only=refactor must not receive quickfixes"
+    );
+
+    let mut quickfix = code_action_request(11, "file:///only.rsc", std::slice::from_ref(target));
+    quickfix["params"]["context"]["only"] = serde_json::json!(["quickfix"]);
+    let resp = s
+        .handle_message("textDocument/codeAction", &quickfix)
+        .unwrap();
+    assert!(
+        resp["result"]
+            .as_array()
+            .is_some_and(|actions| !actions.is_empty()),
+        "only=quickfix must keep the action, got {resp}"
+    );
+}

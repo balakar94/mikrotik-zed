@@ -178,7 +178,12 @@ fn test_get_detail_with_type() {
         required: false,
         unset: false,
     };
-    assert_eq!(get_detail(&arg), "type: bool");
+    // The shared type gloss is appended after the capped raw type so the
+    // detail explains the type like the hover card does.
+    assert_eq!(
+        get_detail(&arg),
+        "type: bool — yes | no (true/false/on/off also accepted)"
+    );
 }
 
 // ── Real data sanity checks ──────────────────────────────────────────────

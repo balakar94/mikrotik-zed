@@ -13,7 +13,7 @@
 //   cannot be resynchronized, so continuing would interpret body bytes as
 //   headers (permanent desync cascade).
 
-use crate::{MAX_HEADER_SIZE, MAX_MESSAGE_SIZE, log_error, log_warn};
+use crate::{MAX_DRAIN_SIZE, MAX_HEADER_SIZE, MAX_MESSAGE_SIZE, log_error, log_warn};
 use std::io::{BufRead, Read};
 
 pub(crate) fn parse_content_length(headers: &str) -> Option<usize> {
@@ -218,8 +218,14 @@ pub(crate) fn read_message<R: BufRead>(reader: &mut R) -> Result<Frame, FrameErr
     if header_too_large {
         // If we overflowed, attempt to discard a body if Content-Length was
         // present before overflow detection completed; otherwise the headers
-        // are unusable → unrecoverable.
+        // are unusable → unrecoverable. A declared length beyond
+        // MAX_DRAIN_SIZE is unrecoverable for the same reason the main path
+        // rejects it: draining it would block on an unbounded body.
         return match parse_content_length(&header_buf) {
+            Some(cl) if cl > MAX_DRAIN_SIZE => Err(FrameError::Protocol(format!(
+                "declared Content-Length {cl} exceeds MAX_DRAIN_SIZE ({MAX_DRAIN_SIZE}) \
+                 after oversized headers — terminating instead of draining"
+            ))),
             Some(cl) if cl > 0 => {
                 discard_bytes(reader, cl).map_err(FrameError::from)?;
                 Ok(Frame::Skipped)
@@ -243,6 +249,19 @@ pub(crate) fn read_message<R: BufRead>(reader: &mut R) -> Result<Frame, FrameErr
     }
 
     if content_length > MAX_MESSAGE_SIZE {
+        // Bounded overshoot stays recoverable (drain + resync); a declared
+        // length beyond MAX_DRAIN_SIZE would block on an unbounded body, so
+        // fail fast instead — the stream cannot be trusted anymore.
+        if content_length > MAX_DRAIN_SIZE {
+            log_error!(
+                "declared Content-Length {content_length} exceeds MAX_DRAIN_SIZE \
+                 ({MAX_DRAIN_SIZE}) — terminating instead of draining"
+            );
+            return Err(FrameError::Protocol(format!(
+                "declared Content-Length {content_length} exceeds MAX_DRAIN_SIZE \
+                 ({MAX_DRAIN_SIZE})"
+            )));
+        }
         log_warn!(
             "message too large: {content_length} bytes (limit {MAX_MESSAGE_SIZE}), discarding"
         );
