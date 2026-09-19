@@ -46,6 +46,7 @@
 - **Grammar publishing (`scripts/publish_grammar.py`)**: `--branch` target (default `main`) and a strictly side-effect-free `--dry-run` (no `git init`, generate, commit, push, or `extension.toml` write).
 - **Release gating (`.github/workflows/release.yml`)**: the tag commit must be an ancestor of `origin/main`; the GitHub Release is created as a **draft** and flipped public only after postflight re-downloads and verifies every asset (checksums, published-binary version smoke, WASM validation) from a `release` environment job (manual approval if configured). A hyphenated version is flagged as a prerelease, so the shim's non-prerelease lookup never auto-selects it. Per-member CycloneDX SBOMs replace the plain-text dependency manifest and carry their own checksum companions.
 - **CI (`.github/workflows/ci.yml`, `perf.yml`, `security-audit.yml`)**: docs-only changes skip the Rust OS matrix while Python/grammar checks still run; Python dependency caching; supply-audit workflow refreshed.
+- **Firewall chain values (`data/overrides.toml`, `data/commands.toml`, `scripts/extract_commands.py`)**: all eight `/ip{,v6}/firewall/{filter,mangle,nat,raw}` menus declare their upstream-documented `chain` values, so `chain=` completion returns the real chains (mangle: prerouting/input/forward/output/postrouting; filter: input/forward/output; nat: srcnat/dstnat/input/output; raw: prerouting/output) instead of a generic fallback. The curated override mechanism now supports enriching an existing plain `enum` without touching upstream type/description text.
 
 ### Changed
 
@@ -54,6 +55,7 @@
 - **Completion detail (`lsp/src/completion.rs`)**: the raw dataset type is followed by the shared plain-language gloss (`iface` → "interface name — from device (Live) or type manually"), matching hover.
 - **Signature labels (`lsp/src/signature.rs`)**: parameter-label offsets are emitted as UTF-16 code units, as LSP 3.17 requires.
 - **Data pipeline (`docs/data-pipeline.md`, `scripts/check_extract_fresh.sh`)**: `make validate` checks extract freshness with the timestamp-agnostic script (the generated `# Generated:` header is ignored), tolerating shallow clones.
+- **Highlight portability (`languages/rsc/highlights.scm`)**: theme-dependent captures now carry documented fallbacks (`yes`/`no` and `:return true|false` → `@boolean` + `@diff.plus|minus`; `comment=` values → `@string` + `@diff.minus`; `nil` → `@constant` + `@constant.builtin`; `$var` → `@variable` + `@variable.parameter`; property keys → `@type` + `@property`), and the palette header now describes semantic intent instead of literal colors, which were inaccurate (`@type` renders cyan, not yellow, on One Dark/One Light).
 
 ### Fixed
 
@@ -61,6 +63,8 @@
 - **Internal parse sharing (`lsp/src/folding.rs`, `lsp/src/rename.rs`, `lsp/src/server.rs`, `lsp/src/parser.rs`)**: folding and rename reuse the request's logical-line parse instead of re-splitting the document; no observable output change.
 - **Framing drain bound (`lsp/src/framing.rs`, `lsp/src/caps.rs`)**: `MAX_DRAIN_SIZE` caps the declared `Content-Length` the framing layer will drain — oversized bodies terminate with a protocol error instead of blocking on an unbounded stream, including on the oversized-header recovery path.
 - **Position conversion (`lsp/src/encoding.rs`)**: one line-start table per edited document serves both range endpoints; no wire behavior change.
+- **Hover on slash-joined commands (`lsp/src/hover.rs`, `lsp/src/parser.rs`)**: `/ipv6/address/remove` (and paths inside `:do { … }` or on `\`-continued lines) no longer returns null — the segment under the cursor resolves to the deepest known menu prefix or to the trailing standard verb, matching the space-joined behavior; a bare partial property after a slash-joined verb no longer steals the command slot.
+- **Free-form value validation (`lsp/src/menus.rs`, `lsp/src/diagnostics.rs`)**: `enum ()` properties (user-defined marks such as `new-connection-mark`/`new-routing-mark`) no longer emit `invalid-enum-value` with an empty expected list, dynamic values (`$var`, subexpressions) skip enum validation, and one leading `!` is stripped before member matching; genuine enum and boolean errors still fire.
 
 ## [0.6.1] - 2026-09-16
 
