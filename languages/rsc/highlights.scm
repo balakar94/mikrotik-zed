@@ -191,6 +191,16 @@
 ((string) @_url_str @string.special
   (#match? @_url_str "^['\"]?[A-Za-z][A-Za-z0-9+.-]*://"))
 
+; ── Regexp values ───────────────────────────────────────────────
+; `regexp`/`regex` properties hold regular expressions; the value is a plain
+; (string) node. @string.regex is the preferred capture with @string as the
+; theme-portable fallback (rightmost wins). Placed after the string/URL
+; patterns so a regexp value cannot be claimed by them.
+((named_param
+   name: (identifier) @_regex_prop
+   value: (literal (string) @string @string.regex))
+  (#match? @_regex_prop "^(regexp|regex)$"))
+
 ; ── Mixed scalars (time, classifier, client-id, account) ───────
 (mixed_value) @number
 

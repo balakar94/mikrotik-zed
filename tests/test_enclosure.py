@@ -661,6 +661,24 @@ class TestGrammar:
         )
         assert "[A-Za-z0-9+.-]*://" in code, "scheme regex drift"
 
+    def test_highlights_regex_typed_values_use_string_regex(self):
+        """Regex-typed properties (`regexp`/`regex`) carry @string.regex with
+        @string as the rightmost-order fallback so themes that style regex
+        distinctly can do so; plain strings stay @string."""
+        code = "\n".join(
+            line for line in _read(HIGHLIGHTS_A).splitlines()
+            if not line.strip().startswith(";")
+        )
+        assert re.search(
+            r"\(\(named_param\s*\n\s*name: \(identifier\) @_regex_prop\s*\n\s*"
+            r"value: \(literal \(string\) @string @string\.regex\)\)\s*\n\s*"
+            r"\(#match\? @_regex_prop \"\^\(regexp\|regex\)\$\"\)\)",
+            code,
+        ), "regex-typed value pattern with @string @string.regex chain missing"
+        assert "@_regex_prop" in code, (
+            "predicate must reference a capture defined in the same pattern"
+        )
+
     def test_config_quote_brackets_and_continuation_indent(self):
         """F13/F15 (0.7.0): both quote styles autoclose only outside strings
         and comments, and trailing-backslash lines indent the next line."""
