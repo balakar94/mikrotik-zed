@@ -185,8 +185,11 @@ fn best_candidate_rejects_very_long_input_quickly() {
     let picked = best_candidate(&long, ["address", "interface"].into_iter());
     let elapsed = started.elapsed();
     assert_eq!(picked, None);
+    // Order-of-magnitude bound (10x the old 1 s): the fixed path is
+    // sub-millisecond, while a lost input-cap short-circuit runs the
+    // O(n x m) scan for seconds and still fails here.
     assert!(
-        elapsed < std::time::Duration::from_secs(1),
+        elapsed < std::time::Duration::from_secs(10),
         "over-long input must short-circuit, took {elapsed:?}"
     );
 }
@@ -340,8 +343,8 @@ fn best_candidate_256_byte_unknown_path_skips_menu_paths() {
 fn flood_of_256_byte_unknown_paths_stays_fast() {
     // Smoke guard, not a micro-benchmark: before the length
     // short-circuit this flood cost ~22 s in debug builds (100 × 256-char
-    // O(n × m) scans). The 3 s bound tolerates slow CI while still
-    // failing the unfixed quadratic path.
+    // O(n × m) scans). The 10 s bound keeps a ~2x margin under that
+    // regression while leaving ample headroom on shared CI runners.
     let input = format!("/{}", "x".repeat(MAX_SUGGEST_INPUT_BYTES - 1));
     let mut budget = SuggestBudget::new();
     let started = std::time::Instant::now();
@@ -351,7 +354,7 @@ fn flood_of_256_byte_unknown_paths_stays_fast() {
     let elapsed = started.elapsed();
     eprintln!("100 × 256-byte flood: {elapsed:?}");
     assert!(
-        elapsed < std::time::Duration::from_secs(3),
+        elapsed < std::time::Duration::from_secs(10),
         "100 × 256-byte flood took {elapsed:?}; length short-circuit regressed"
     );
 }

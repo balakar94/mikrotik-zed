@@ -373,6 +373,9 @@ fn perf_completion_capped_at_200_and_relevance_sorted() {
 /// 5 MiB open latency budget. Ignored in the default suite (debug
 /// builds are slow and CI machines vary); run explicitly in release:
 /// `cargo test -p rsc-ls --release --test perf_smoke -- --ignored`.
+///
+/// 3 s is ~10x the measured release time, so it catches order-of-magnitude
+/// regressions (a wedged or quadratic path) without flaking on shared runners.
 #[test]
 #[ignore]
 fn perf_5mib_open_within_release_budget() {
@@ -385,12 +388,13 @@ fn perf_5mib_open_within_release_budget() {
     let _ = client.expect_diagnostics();
     let elapsed = start.elapsed();
     assert!(
-        elapsed < Duration::from_secs(20),
-        "5 MiB open+publish took {elapsed:?} (> 20 s release budget)"
+        elapsed < Duration::from_secs(3),
+        "5 MiB open+publish took {elapsed:?} (> 3 s release budget)"
     );
 }
 
-/// 3500-line publish latency budget. Same release-only policy as above.
+/// 3500-line publish latency budget. Same release-only policy as above;
+/// 2 s is ~10x the measured release time.
 #[test]
 #[ignore]
 fn perf_3000line_publish_within_release_budget() {
@@ -404,7 +408,7 @@ fn perf_3000line_publish_within_release_budget() {
     let elapsed = start.elapsed();
     let count = notif["params"]["diagnostics"].as_array().map(Vec::len);
     assert!(
-        elapsed < Duration::from_secs(10),
-        "3500-line publish took {elapsed:?} (> 10 s release budget, {count:?} diags)"
+        elapsed < Duration::from_secs(2),
+        "3500-line publish took {elapsed:?} (> 2 s release budget, {count:?} diags)"
     );
 }
