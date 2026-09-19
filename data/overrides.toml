@@ -1,21 +1,31 @@
-# Curated additive overrides for data/commands.toml.
+# Curated overrides for data/commands.toml.
 #
-# Each entry adds ONE property that upstream docs (llms-full.txt) omit but a
-# real RouterOS device exposes. Rules:
-# - Verifiable only: every entry must be confirmable against a real device
-#   via /export (e.g. /ip/route/export showing comment=...). Never invent a
-#   menu path, property name, or type from memory.
-# - Additive only: applied AFTER upstream parsing by
-#   scripts/extract_commands.py (apply_overrides). An override whose property
-#   is already documented upstream, or whose path is unknown, is skipped with
-#   a stderr warning — upstream entries are never modified.
-# - Keep this list tiny and rock-solid. If upstream starts documenting a
-#   property listed here, the extractor warns on every run: delete the
+# Two entry forms, both applied AFTER upstream parsing by
+# scripts/extract_commands.py (apply_overrides) and counted in the
+# `# overrides_applied = N` header:
+#
+# 1. Additive: adds ONE property that upstream docs (llms-full.txt) omit but a
+#    real RouterOS device exposes. Verifiable only — confirm via /export
+#    (e.g. /ip/route/export showing comment=...). Never invent a menu path,
+#    property name, or type from memory.
+# 2. Enum enrichment: `enum_values = [...]` fills the members of an already
+#    documented `enum` property whose upstream CLI declaration carries no
+#    values (e.g. firewall `chain`). Only the values are filled — upstream
+#    `type`/`description` text is never modified, so such entries must not
+#    set either key.
+#
+# Rules for both forms:
+# - An override is skipped with a stderr warning when its property is already
+#   documented (additive form), when its target already carries values or is
+#   not a plain enum (enrichment form), or when its path/target is unknown.
+#   Upstream entries are never modified. Keep this list tiny and rock-solid;
+#   if upstream later ships the same data, the warning tells you to delete the
 #   now-redundant entry.
-# - Generics overlap: scripts/extract_commands.py now injects `comment` /
-#   `disabled` universally, so an override naming a generic property is kept
-#   ONLY for a richer description. A fully-subsumed override (same name, no
-#   richer description than the generic) warns on every run — retire it.
+# - Generics overlap: scripts/extract_commands.py injects `comment` /
+#   `disabled` universally, so an additive override naming a generic property
+#   is kept ONLY for a richer description. A fully-subsumed override (same
+#   name, no richer description than the generic) warns on every run —
+#   retire it.
 #
 # Why each entry exists:
 # - /ip/route + comment (string): KEPT FOR DESCRIPTION QUALITY. The generic
@@ -24,9 +34,65 @@
 #   on-device text below (export visibility note) is richer than the generic
 #   sentence. If the generic text ever matches this, the extractor's
 #   fully-subsumed warning fires and this entry should be retired.
+# - Firewall `chain` enums (8 menus): upstream's CLI reference declares
+#   `chain (enum)` with no members for /ip/firewall/{filter,mangle,nat,raw}
+#   and their /ipv6/firewall/* counterparts, so live completion fell back to
+#   a generic 3-value list. The values below are quoted from the upstream
+#   Firewall page "Chains" section (llms-full.txt: "Each firewall module has
+#   its own pre-defined chains"), corroborated per module: filter "consists of
+#   three predefined chains", mangle "consists of five predefined chains",
+#   NAT adds input/output since RouterOS v7, raw is listed as
+#   prerouting/output. IPv6 menus mirror IPv4 (upstream: filter and raw
+#   configuration are accessible from the /ipv6/... menus too; the IPv6 NAT
+#   container example uses srcnat/dstnat), so the same module sets apply.
+#   No values are invented, and upstream type/description rows stay as-is.
 
 [[overrides]]
 path = "/ip/route"
 property = "comment"
 type = "string"
 description = "Descriptive comment for the route (shown by /ip/route/export as comment=...; omitted from upstream docs, verified on-device)"
+
+# filter: input, forward, output (both families)
+[[overrides]]
+path = "/ip/firewall/filter"
+property = "chain"
+enum_values = ["input", "forward", "output"]
+
+[[overrides]]
+path = "/ipv6/firewall/filter"
+property = "chain"
+enum_values = ["input", "forward", "output"]
+
+# mangle: prerouting, input, forward, output, postrouting (both families)
+[[overrides]]
+path = "/ip/firewall/mangle"
+property = "chain"
+enum_values = ["prerouting", "input", "forward", "output", "postrouting"]
+
+[[overrides]]
+path = "/ipv6/firewall/mangle"
+property = "chain"
+enum_values = ["prerouting", "input", "forward", "output", "postrouting"]
+
+# nat: srcnat, dstnat plus v7 input/output (both families)
+[[overrides]]
+path = "/ip/firewall/nat"
+property = "chain"
+enum_values = ["srcnat", "dstnat", "input", "output"]
+
+[[overrides]]
+path = "/ipv6/firewall/nat"
+property = "chain"
+enum_values = ["srcnat", "dstnat", "input", "output"]
+
+# raw: prerouting, output (both families)
+[[overrides]]
+path = "/ip/firewall/raw"
+property = "chain"
+enum_values = ["prerouting", "output"]
+
+[[overrides]]
+path = "/ipv6/firewall/raw"
+property = "chain"
+enum_values = ["prerouting", "output"]

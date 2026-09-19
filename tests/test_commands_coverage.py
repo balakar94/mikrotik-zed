@@ -579,3 +579,48 @@ class TestExportFixtures:
                 if real_ip.search(stripped):
                     offenders.append(f"{fixture.name}: RFC1918 address in {stripped!r}")
         assert not offenders, f"fixture hygiene violations: {offenders}"
+
+
+class TestFirewallChainEnums:
+    """Curated chain enums for the firewall menus in the generated table.
+
+    Upstream's CLI reference declares `chain (enum)` with no members for the
+    IPv4/IPv6 firewall menus, so live completion fell back to a generic
+    3-value list. data/overrides.toml fills the real built-in chain sets.
+    These sets are stable RouterOS built-ins, so exact equality is intended:
+    a failure means regeneration drifted or upstream started shipping values
+    of its own (then retire the redundant override).
+    """
+
+    EXPECTED = {
+        "/ip/firewall/filter": ["input", "forward", "output"],
+        "/ipv6/firewall/filter": ["input", "forward", "output"],
+        "/ip/firewall/mangle": ["prerouting", "input", "forward", "output", "postrouting"],
+        "/ipv6/firewall/mangle": ["prerouting", "input", "forward", "output", "postrouting"],
+        "/ip/firewall/nat": ["srcnat", "dstnat", "input", "output"],
+        "/ipv6/firewall/nat": ["srcnat", "dstnat", "input", "output"],
+        "/ip/firewall/raw": ["prerouting", "output"],
+        "/ipv6/firewall/raw": ["prerouting", "output"],
+    }
+
+    def test_chain_enums_are_populated(self):
+        for path, chains in self.EXPECTED.items():
+            menu = BY_PATH.get(path)
+            assert menu is not None, f"menu missing from generated table: {path}"
+            chain = next(
+                (a for a in menu.get("arguments", []) if a.get("name") == "chain"),
+                None,
+            )
+            assert chain is not None, f"{path} lost its chain argument"
+            assert chain.get("enum_values") == chains, (
+                f"{path} chain enum_values drifted: {chain.get('enum_values')!r}"
+            )
+
+    def test_chain_enrichment_kept_upstream_text(self):
+        # Enum enrichment fills values only; type/description stay upstream's.
+        for path in self.EXPECTED:
+            chain = next(
+                a for a in BY_PATH[path]["arguments"] if a.get("name") == "chain"
+            )
+            assert chain.get("type") == "enum", f"{path} chain type changed"
+            assert chain.get("description", "").strip(), f"{path} chain description emptied"

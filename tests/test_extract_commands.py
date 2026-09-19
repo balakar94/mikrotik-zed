@@ -2,6 +2,7 @@
 import sys
 import os
 import tempfile
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -1626,6 +1627,198 @@ class TestOverrides:
         assert by_name["comment"]["description"] == "Route note"
         assert by_name["gateway"]["type"] == "ipAddr"
 
+    def test_enum_override_fills_existing_plain_enum(self):
+        upstream = {
+            "name": "chain",
+            "type": "enum",
+            "required": True,
+            "unset": False,
+            "description": "Specifies to which chain the rule will be added.",
+        }
+        menus = [self._menu("/ip/firewall/mangle", [dict(upstream)])]
+        applied = apply_overrides(
+            menus,
+            [
+                {
+                    "path": "/ip/firewall/mangle",
+                    "property": "chain",
+                    "type": "",
+                    "description": "",
+                    "enum_values": ["prerouting", "input", "forward", "output", "postrouting"],
+                }
+            ],
+        )
+        assert applied == 1
+        chain = menus[0]["arguments"][0]
+        assert chain["enum_values"] == [
+            "prerouting",
+            "input",
+            "forward",
+            "output",
+            "postrouting",
+        ]
+        # Upstream text is never modified by an enrichment entry.
+        assert chain["type"] == "enum"
+        assert chain["description"] == upstream["description"]
+        assert chain["required"] is True
+
+    def test_enum_override_skips_when_values_already_present(self, capsys):
+        upstream = {
+            "name": "chain",
+            "type": "enum",
+            "required": True,
+            "unset": False,
+            "description": "d",
+            "enum_values": ["input", "forward", "output"],
+        }
+        menus = [self._menu("/ip/firewall/filter", [dict(upstream)])]
+        applied = apply_overrides(
+            menus,
+            [
+                {
+                    "path": "/ip/firewall/filter",
+                    "property": "chain",
+                    "type": "",
+                    "description": "",
+                    "enum_values": ["input", "forward", "output"],
+                }
+            ],
+        )
+        assert applied == 0
+        assert menus[0]["arguments"] == [upstream]
+        assert "already carries enum_values" in capsys.readouterr().err
+
+    def test_enum_override_skips_non_enum_type(self, capsys):
+        upstream = {"name": "chain", "type": "string", "required": False, "unset": False, "description": ""}
+        menus = [self._menu("/ip/firewall/filter", [dict(upstream)])]
+        applied = apply_overrides(
+            menus,
+            [
+                {
+                    "path": "/ip/firewall/filter",
+                    "property": "chain",
+                    "type": "",
+                    "description": "",
+                    "enum_values": ["input"],
+                }
+            ],
+        )
+        assert applied == 0
+        assert "not a plain 'enum'" in capsys.readouterr().err
+
+    def test_enum_override_skips_missing_argument(self, capsys):
+        menus = [self._menu("/ip/firewall/filter")]
+        applied = apply_overrides(
+            menus,
+            [
+                {
+                    "path": "/ip/firewall/filter",
+                    "property": "chain",
+                    "type": "",
+                    "description": "",
+                    "enum_values": ["input"],
+                }
+            ],
+        )
+        assert applied == 0
+        assert "no argument" in capsys.readouterr().err
+
+    def test_load_overrides_parses_enum_values(self):
+        path = self._write_temp(
+            '[[overrides]]\npath = "/ip/firewall/nat"\nproperty = "chain"\n'
+            'enum_values = ["srcnat", "dstnat", "input", "output"]\n'
+        )
+        try:
+            assert load_overrides(path) == [
+                {
+                    "path": "/ip/firewall/nat",
+                    "property": "chain",
+                    "type": "",
+                    "description": "",
+                    "enum_values": ["srcnat", "dstnat", "input", "output"],
+                }
+            ]
+        finally:
+            os.unlink(path)
+
+    def test_load_overrides_rejects_enum_enrichment_with_type_or_description(self):
+        bad_inputs = [
+            '[[overrides]]\npath = "/ip/firewall/nat"\nproperty = "chain"\n'
+            'type = "enum"\nenum_values = ["srcnat"]\n',
+            '[[overrides]]\npath = "/ip/firewall/nat"\nproperty = "chain"\n'
+            'description = "text"\nenum_values = ["srcnat"]\n',
+        ]
+        for content in bad_inputs:
+            path = self._write_temp(content)
+            try:
+                try:
+                    load_overrides(path)
+                except OverrideError:
+                    pass
+                else:
+                    raise AssertionError(f"expected OverrideError for {content!r}")
+            finally:
+                os.unlink(path)
+
+    def test_load_overrides_rejects_malformed_enum_values(self):
+        bad_inputs = [
+            '[[overrides]]\npath = "/ip/firewall/nat"\nproperty = "chain"\nenum_values = "srcnat"\n',
+            '[[overrides]]\npath = "/ip/firewall/nat"\nproperty = "chain"\nenum_values = []\n',
+            '[[overrides]]\npath = "/ip/firewall/nat"\nproperty = "chain"\nenum_values = ["ok", 7]\n',
+            '[[overrides]]\npath = "/ip/firewall/nat"\nproperty = "chain"\nenum_values = ["ok", ""]\n',
+            '[[overrides]]\npath = "/ip/firewall/nat"\nproperty = "chain"\nenum_values = ["has space"]\n',
+        ]
+        for content in bad_inputs:
+            path = self._write_temp(content)
+            try:
+                try:
+                    load_overrides(path)
+                except OverrideError:
+                    pass
+                else:
+                    raise AssertionError(f"expected OverrideError for {content!r}")
+            finally:
+                os.unlink(path)
+
+    def test_enum_override_flows_into_generated_toml(self):
+        import tomllib
+
+        menus = finalize_menus(
+            [
+                self._menu(
+                    "/ipv6/firewall/raw",
+                    [
+                        {
+                            "name": "chain",
+                            "type": "enum",
+                            "required": True,
+                            "unset": False,
+                            "description": "Specifies to which chain the rule will be added.",
+                        }
+                    ],
+                )
+            ]
+        )
+        applied = apply_overrides(
+            menus,
+            [
+                {
+                    "path": "/ipv6/firewall/raw",
+                    "property": "chain",
+                    "type": "",
+                    "description": "",
+                    "enum_values": ["prerouting", "output"],
+                }
+            ],
+        )
+        assert applied == 1
+        parsed = tomllib.loads(generate_toml(menus, overrides_applied=applied))
+        raw = next(m for m in parsed["menus"] if m["path"] == "/ipv6/firewall/raw")
+        chain = next(a for a in raw["arguments"] if a["name"] == "chain")
+        assert chain["enum_values"] == ["prerouting", "output"]
+        assert chain["type"] == "enum"
+        assert chain["description"] == "Specifies to which chain the rule will be added."
+
 
 class TestGenericItemProps:
     """Universal add-item generics (Common commands prose, not per-menu tables).
@@ -2895,3 +3088,82 @@ class TestMarkdownSkipLevels:
         assert _markdown_table_has_real_delta(covered, menu_names) is False
         generic_only = {"rows": [{"name": "disabled"}, {"name": "comment"}]}
         assert _markdown_table_has_real_delta(generic_only, menu_names) is False
+
+
+class TestFirewallChainEnums:
+    """Curated chain enums vs the real upstream corpus.
+
+    Upstream's CLI reference declares `chain (enum)` with no members for the
+    IPv4/IPv6 firewall menus; data/overrides.toml fills them. These tests pin
+    the curated sets against the real llms-full.txt corpus and prove that
+    regeneration is idempotent and still matches the tracked artifact — the
+    same guarantee scripts/check_extract_fresh.sh gives once the change is
+    committed (it compares against HEAD, so it cannot pass pre-commit).
+    """
+
+    ROOT = Path(__file__).resolve().parents[1]
+    LLMS_FULL = ROOT / "llms-full.txt"
+    OVERRIDES = ROOT / "data" / "overrides.toml"
+    TRACKED = ROOT / "data" / "commands.toml"
+
+    EXPECTED_CHAINS = {
+        "/ip/firewall/filter": ["input", "forward", "output"],
+        "/ipv6/firewall/filter": ["input", "forward", "output"],
+        "/ip/firewall/mangle": ["prerouting", "input", "forward", "output", "postrouting"],
+        "/ipv6/firewall/mangle": ["prerouting", "input", "forward", "output", "postrouting"],
+        "/ip/firewall/nat": ["srcnat", "dstnat", "input", "output"],
+        "/ipv6/firewall/nat": ["srcnat", "dstnat", "input", "output"],
+        "/ip/firewall/raw": ["prerouting", "output"],
+        "/ipv6/firewall/raw": ["prerouting", "output"],
+    }
+
+    def _regenerate(self) -> tuple[str, int]:
+        """Replicate extract_commands.main()'s pipeline without writing."""
+        menus = parse_llms_full(str(self.LLMS_FULL))
+        unique = finalize_menus(menus)
+        overrides = load_overrides(self.OVERRIDES)
+        applied = apply_overrides(unique, overrides)
+        return generate_toml(unique, llms_path=self.LLMS_FULL, overrides_applied=applied), applied
+
+    def test_overrides_file_declares_each_firewall_chain(self):
+        overrides = load_overrides(self.OVERRIDES)
+        found = {
+            (o["path"], o["property"]): o.get("enum_values")
+            for o in overrides
+            if o.get("enum_values")
+        }
+        expected = {(path, "chain"): values for path, values in self.EXPECTED_CHAINS.items()}
+        assert found == expected, (
+            "data/overrides.toml chain enrichment entries drifted from the curated sets"
+        )
+
+    @pytest.mark.skipif(
+        not LLMS_FULL.exists(), reason="llms-full.txt not synced (make sync)"
+    )
+    def test_chain_sets_survive_the_real_pipeline(self):
+        generated, applied = self._regenerate()
+        assert applied == len(load_overrides(self.OVERRIDES)) == 9, (
+            "expected all 9 curated overrides (1 additive + 8 chain) to apply"
+        )
+        parsed = tomllib.loads(generated)
+        by_path = {m["path"]: m for m in parsed["menus"]}
+        for path, expected in self.EXPECTED_CHAINS.items():
+            chain = next(a for a in by_path[path]["arguments"] if a["name"] == "chain")
+            assert chain["enum_values"] == expected, f"{path}: {chain['enum_values']!r}"
+            assert chain["type"] == "enum", f"{path}: upstream type changed"
+            assert chain["description"], f"{path}: upstream description lost"
+
+    @pytest.mark.skipif(
+        not LLMS_FULL.exists(), reason="llms-full.txt not synced (make sync)"
+    )
+    def test_regeneration_is_idempotent_and_matches_tracked_file(self):
+        first, _ = self._regenerate()
+        second, _ = self._regenerate()
+        assert _strip_generated_line(first) == _strip_generated_line(second), (
+            "regeneration is not deterministic"
+        )
+        tracked = self.TRACKED.read_text(encoding="utf-8")
+        assert _strip_generated_line(first) == _strip_generated_line(tracked), (
+            "data/commands.toml differs from a fresh regeneration — run 'make extract' "
+            "and commit (check_extract_fresh.sh equivalent)"
+        )

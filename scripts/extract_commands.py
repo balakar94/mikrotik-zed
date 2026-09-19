@@ -1617,16 +1617,24 @@ def apply_generic_item_props(menus: list[dict]) -> int:
     return applied
 
 
-# Curated additive overrides (data/overrides.toml) — properties the upstream
-# docs omit but real devices expose (verifiable via /export). Applied AFTER
-# upstream parsing, recorded in the commands.toml header provenance
-# (`# overrides_applied = N`). Additive ONLY: an override never modifies an
-# upstream-derived entry. Conflict policy is ignore-with-warning (stderr):
-# an override whose property already exists on the menu, or whose path is
-# unknown upstream, is skipped with a warning so `make extract` stays green
-# when upstream eventually documents the property (the warning tells the
-# maintainer to drop the now-redundant entry). A malformed overrides file
-# fails loudly via OverrideError (non-zero exit from main()).
+# Curated overrides (data/overrides.toml). Two forms, both applied AFTER
+# upstream parsing and recorded in the commands.toml header provenance
+# (`# overrides_applied = N`):
+#
+# 1. Additive — a property the upstream docs omit but real devices expose
+#    (verifiable via /export). Appended to the menu's `arguments`.
+# 2. Enum enrichment — `enum_values = [...]` fills the members of an
+#    already-documented `enum` property whose upstream declaration carries no
+#    values (e.g. firewall `chain`). Only the values are filled: upstream
+#    `type`/`description` text is never modified.
+#
+# Conflict policy is ignore-with-warning (stderr): an additive override whose
+# property already exists (also as flag/read-only), or an enrichment override
+# whose property is missing, non-enum, or already carries values, is skipped
+# with a warning so `make extract` stays green when upstream eventually
+# documents the property (the warning tells the maintainer to drop the
+# now-redundant entry). A malformed overrides file fails loudly via
+# OverrideError (non-zero exit from main()).
 _OVERRIDES_FILENAME = "overrides.toml"
 
 
@@ -1639,8 +1647,11 @@ def load_overrides(overrides_path: Path) -> list[dict]:
 
     A missing file is fine (upstream-only output). Malformed TOML, a
     non-list `overrides` key, or an entry missing/invalid `path`/`property`
-    raises OverrideError. Optional per-entry keys: `type` and `description`
-    (both default to "").
+    raises OverrideError. Optional per-entry keys for the additive form:
+    `type` and `description` (both default to ""). An entry may instead carry
+    `enum_values` (non-empty list of whitespace-free strings) to fill an
+    already-documented `enum` property; such entries must not carry
+    `type`/`description`, because upstream text stays untouched.
     """
     try:
         raw = overrides_path.read_bytes()
@@ -1677,20 +1688,54 @@ def load_overrides(overrides_path: Path) -> list[dict]:
             raise OverrideError(
                 f"malformed {overrides_path}: overrides[{i}] 'type'/'description' must be strings"
             )
+        enum_values = entry.get("enum_values")
+        if enum_values is not None:
+            # Enum-enrichment form: fills values only, so upstream text stays.
+            if typ or desc:
+                raise OverrideError(
+                    f"malformed {overrides_path}: overrides[{i}] with 'enum_values' must not set "
+                    "'type'/'description' (upstream type/description text is preserved)"
+                )
+            if not isinstance(enum_values, list) or not enum_values:
+                raise OverrideError(
+                    f"malformed {overrides_path}: overrides[{i}] 'enum_values' must be a non-empty list"
+                )
+            for member in enum_values:
+                if not isinstance(member, str) or not member or any(ch.isspace() for ch in member):
+                    raise OverrideError(
+                        f"malformed {overrides_path}: overrides[{i}] 'enum_values' members must be "
+                        f"non-empty strings without whitespace (got {member!r})"
+                    )
+            overrides.append(
+                {
+                    "path": path,
+                    "property": prop,
+                    "type": "",
+                    "description": "",
+                    "enum_values": list(enum_values),
+                }
+            )
+            continue
         overrides.append({"path": path, "property": prop, "type": typ, "description": desc})
     return overrides
 
 
 def apply_overrides(menus: list[dict], overrides: list[dict]) -> int:
-    """Append override properties to matching menus; return the count applied.
+    """Apply curated overrides to matching menus; return the count applied.
 
-    Additive-only: new properties go to the menu's `arguments` list. Skipped
-    with a stderr warning (never modified): unknown paths (no invented
-    menus) and properties already present in `arguments`/`flags`/`read_only`.
-    Applied overrides that overlap a generic name keep precedence (generics
-    only fill still-missing names downstream); an overlap is noted on stderr
-    as info, and a fully-subsumed overlap (no richer description than the
-    generic) warns so CI tells the maintainer to retire the entry.
+    Additive entries append a new property to the menu's `arguments` list.
+    Enum-enrichment entries (`enum_values`) fill the values of an existing
+    plain `enum` argument and leave its upstream type/description text alone.
+
+    Skipped with a stderr warning (never modified): unknown paths (no
+    invented menus), additive properties already present in
+    `arguments`/`flags`/`read_only`, and enrichment targets that are missing,
+    not a plain `enum`, or already carry `enum_values` (upstream caught up —
+    remove the redundant entry). Applied additive overrides that overlap a
+    generic name keep precedence (generics only fill still-missing names
+    downstream); an overlap is noted on stderr as info, and a fully-subsumed
+    overlap (no richer description than the generic) warns so CI tells the
+    maintainer to retire the entry.
     """
     by_path = {m["path"]: m for m in menus}
     applied = 0
@@ -1698,6 +1743,36 @@ def apply_overrides(menus: list[dict], overrides: list[dict]) -> int:
         menu = by_path.get(o["path"])
         if menu is None:
             print(f"warning: override skipped, unknown menu {o['path']!r}", file=sys.stderr)
+            continue
+        enum_values = o.get("enum_values")
+        if enum_values:
+            target = next(
+                (e for e in menu.get("arguments", []) if e.get("name") == o["property"]),
+                None,
+            )
+            if target is None:
+                print(
+                    f"warning: enum override skipped, {o['path']!r} has no argument "
+                    f"{o['property']!r} to enrich",
+                    file=sys.stderr,
+                )
+                continue
+            if target.get("enum_values"):
+                print(
+                    f"warning: enum override skipped, {o['path']!r} {o['property']!r} already "
+                    "carries enum_values (upstream now covers it — remove the redundant entry)",
+                    file=sys.stderr,
+                )
+                continue
+            if (target.get("type") or "").strip() != "enum":
+                print(
+                    f"warning: enum override skipped, {o['path']!r} {o['property']!r} type is "
+                    f"{(target.get('type') or '')!r}, not a plain 'enum'",
+                    file=sys.stderr,
+                )
+                continue
+            target["enum_values"] = list(enum_values)
+            applied += 1
             continue
         existing = set()
         for section in ("arguments", "flags", "read_only"):

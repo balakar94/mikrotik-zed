@@ -2,9 +2,9 @@
 # Auto-generated from llms-full.txt
 # Covers: /app, /beep, /blink, /caps-man, /certificate, /console, /container, /disk, /dude, /environment, /file, /import, … (1077 menus)
 # RouterOS version: 7.23.2
-# Generated: 2026-09-12T17:21:30.111782Z
+# Generated: 2026-09-19T12:44:24.190625Z
 # Source hash (sha256[:16]): a25b13ef01b09646
-# overrides_applied = 1 (data/overrides.toml)
+# overrides_applied = 9 (data/overrides.toml)
 # generics_applied = 1944 (comment/disabled universal; place-before/copy-from ordered-only)
 
 [[menus]]
@@ -29468,6 +29468,7 @@ type = "switch"
 [[menus.arguments]]
 name = "chain"
 type = "enum"
+enum_values = ["input", "forward", "output"]
 description = "Specifies to which chain the rule will be added. If the input does not match the name of an already defined chain, a new chain will be created."
 required = true
 [[menus.arguments]]
@@ -29794,6 +29795,7 @@ type = "switch"
 [[menus.arguments]]
 name = "chain"
 type = "enum"
+enum_values = ["prerouting", "input", "forward", "output", "postrouting"]
 description = "Specifies to which chain the rule will be added. If the input does not match the name of an already defined chain, a new chain will be created."
 required = true
 [[menus.arguments]]
@@ -30135,6 +30137,7 @@ type = "switch"
 [[menus.arguments]]
 name = "chain"
 type = "enum"
+enum_values = ["srcnat", "dstnat", "input", "output"]
 description = "Specifies to which chain the rule will be added. If the input does not match the name of an already defined chain, a new chain will be created."
 required = true
 [[menus.arguments]]
@@ -30430,6 +30433,7 @@ type = "switch"
 [[menus.arguments]]
 name = "chain"
 type = "enum"
+enum_values = ["prerouting", "output"]
 description = "Specifies to which chain the rule will be added. If the input does not match the name of an already defined chain, a new chain will be created."
 required = true
 [[menus.arguments]]
@@ -35908,6 +35912,7 @@ type = "Directory"
 [[menus.arguments]]
 name = "chain"
 type = "enum"
+enum_values = ["input", "forward", "output"]
 description = "Specifies to which chain the rule will be added. If the input does not match the name of an already defined chain, a new chain will be created."
 required = true
 [[menus.arguments]]
@@ -36168,6 +36173,7 @@ type = "Directory"
 [[menus.arguments]]
 name = "chain"
 type = "enum"
+enum_values = ["prerouting", "input", "forward", "output", "postrouting"]
 description = "Specifies to which chain the rule will be added. If the input does not match the name of an already defined chain, a new chain will be created."
 required = true
 [[menus.arguments]]
@@ -36484,6 +36490,7 @@ type = "switch"
 [[menus.arguments]]
 name = "chain"
 type = "enum"
+enum_values = ["srcnat", "dstnat", "input", "output"]
 description = "Specifies to which chain the rule will be added. If the input does not match the name of an already defined chain, a new chain will be created."
 required = true
 [[menus.arguments]]
@@ -36739,6 +36746,7 @@ type = "Directory"
 [[menus.arguments]]
 name = "chain"
 type = "enum"
+enum_values = ["prerouting", "output"]
 description = "Specifies to which chain the rule will be added. If the input does not match the name of an already defined chain, a new chain will be created."
 required = true
 [[menus.arguments]]
