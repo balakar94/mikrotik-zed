@@ -17,8 +17,10 @@ make extract    # regenerate data/commands.toml (tracked, generated)
 
 `scripts/sync_llms.py --check` (via `make sync-check`) writes nothing and
 exits non-zero when upstream moved — that is how CI notices drift.
-`make validate` asserts extract idempotency
-(`git diff --exit-code data/commands.toml`).
+`make validate` regenerates the table and then runs
+`scripts/check_extract_fresh.sh`, which diffs the tracked file while ignoring
+the non-deterministic `# Generated:` timestamp header (timestamp-agnostic;
+the check also tolerates shallow clones).
 
 ## Provenance (never hand-edit)
 

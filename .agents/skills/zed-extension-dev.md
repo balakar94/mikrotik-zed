@@ -101,13 +101,13 @@ languages = ["MikroTik Script"]
 ## Tasks & Deploy
 
 `scripts/mikrotik-deploy.py` pushes `.rsc` files over REST/SSH and `scripts/mikrotik-live-check.py` validates Live REST (`GET /rest/interface`, 5s default 1..30s clamp, `--dry-run`/`--json`) — full env-var reference in script docstrings (`--help`). Always try `--dry-run` first.
-Zed task templates: `languages/rsc/tasks.json` → copy to `.zed/tasks.json` to activate (6 tasks: deploy REST/SSH/dry-run/validate + Live check/enable).
+Zed task templates: `languages/rsc/tasks.json` → copy to `.zed/tasks.json` to activate (6 tasks: Validate file readability · Check script dry-run · Live check + dry-run · Deploy REST/SSH). The deploy/check/live tasks require a clone of this repo (they run `scripts/*.py` relative to `$ZED_WORKTREE_ROOT`).
 
 ## Publishing Checklist
 
 ```bash
 # 0. Ensure clean state
-make validate   # generate-check + fmt + clippy + test-all + sync-check + extract
+make validate   # check-manifest + docs-check + generate-check + fmt + clippy + test-all + extract + freshness
 
 # 1. Publish grammar (if grammar.js changed)
 python scripts/publish_grammar.py --dry-run

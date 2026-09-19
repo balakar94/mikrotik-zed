@@ -44,8 +44,14 @@ License: Apache-2.0 with `LICENSE` at the extension root is accepted by policy �
 ## Update checklist
 
 1. Bump the version: `make bump VERSION=x.y.z`.
-2. Tag `vX.Y.Z` and push the tag — this triggers `.github/workflows/release.yml`.
-3. Wait for the Release workflow to publish its assets (multi-platform `rsc-ls` binaries, WASM component, SHA-256 companions); installs of the new version fail until they exist.
+2. Tag the release with an **annotated** tag
+   (`git tag -a vX.Y.Z -m "vX.Y.Z"`) and push it — this triggers
+   `.github/workflows/release.yml`. Lightweight tags are rejected.
+3. Wait for the Release workflow: it creates the GitHub Release as a
+   **draft**, verifies every asset (checksums, smoke runs, WASM validation)
+   in the postflight job, and only then flips it public from the `release`
+   environment (manual approval if configured). Installs of the new version
+   see nothing until that publish job succeeds.
 4. In your `zed-industries/extensions` fork:
    - `git submodule update --remote extensions/mikrotik-rsc`
    - update `version` in `extensions.toml` so it matches the new `extension.toml` version
@@ -54,16 +60,44 @@ License: Apache-2.0 with `LICENSE` at the extension root is accepted by policy �
 
 ## Release kinds & tag signing
 
-Two different things share the `vX.Y.Z` tag namespace — the signed tag is the
-durable mark that tells them apart:
+Every `vX.Y.Z` tag that reaches `release.yml` must be **annotated**; the
+workflow's *Require annotated tag* step fails closed on lightweight tags.
+Annotated is not the same as signed — signatures are enforced by repository
+push rules, not by the workflow:
 
 | Kind | Tag | What it produces |
 |------|-----|------------------|
-| Stable GitHub build | lightweight, unsigned (`git tag vX.Y.Z`) | `release.yml` publishes the public binaries + WASM to GitHub Releases |
-| Store submission build | **annotated + signed** (`git tag -s vX.Y.Z`) | same binaries, plus the green Verified badge proving publisher identity; this is the build a registry PR refers to |
+| Stable GitHub build | annotated, unsigned (`git tag -a vX.Y.Z -m "…"`) | `release.yml` publishes the public binaries + WASM to GitHub Releases |
+| Store submission build | **annotated + signed** (`git tag -s vX.Y.Z -m "…"`) | same binaries, plus the green Verified badge proving publisher identity; this is the build a registry PR refers to |
 
-Rule: a version sent to the store is ALWAYS a signed tag. A plain stable
-release stays unsigned — that asymmetry is intentional, not an omission.
+Rule: a version sent to the store is ALWAYS signed. A GitHub-only release may
+stay unsigned, but it is still annotated. A lightweight tag (`git tag vX.Y.Z`
+without `-a`/`-s`) is refused by the workflow and must be recreated:
+
+```bash
+git tag -d vX.Y.Z && git tag -a vX.Y.Z -m "vX.Y.Z" <commit>
+git push origin vX.Y.Z
+```
+
+### When a release becomes public
+
+`release.yml` publishes in stages so a broken batch never reaches installs:
+
+1. **Meta/preflight:** the tag must be annotated and its commit must be an
+   ancestor of `origin/main`; version files must match the tag.
+2. **Build + validations:** per-platform binaries, WASM, checksum companions,
+   `SHA256SUMS`, and SBOM.
+3. **Draft release:** assets are uploaded to a **draft** GitHub Release.
+4. **Postflight:** every asset and companion is downloaded again and
+   verified; the published Linux binary and WASM are smoke-run.
+5. **Publish:** the `release` environment job flips `--draft=false`. Until
+   then the release is invisible to the shim's auto-download.
+
+A version containing a hyphen (for example a release candidate) is flagged
+as a **GitHub prerelease**, so the shim's `pre_release: false` lookup can
+never auto-select it. Withdraw or remove a bad release with
+`gh release edit "$TAG" --draft=true` (withdraw) or
+`gh release delete "$TAG" --yes`; the workflow logs both commands.
 
 ### One-time signing setup (SSH, no GPG needed)
 

@@ -2,6 +2,66 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-19
+
+### Upgrade notes (user-facing)
+
+- **PATH binaries are now opt-in** (`RSC_LS_ALLOW_PATH=1`). Developer installs
+  that relied on a local `rsc-ls` in PATH must set the variable; otherwise the
+  verified cache/auto-download path is used. A PATH hit logs its absolute path
+  and a short hash prefix, and can be pinned with `RSC_LS_PATH_SHA256`.
+- **Live device targets on the LAN need `RSC_LS_LIVE_ALLOW_LOOPBACK=1`.**
+  Loopback, RFC 1918, and ULA addresses are denied by default; the
+  live-check companion prints a warning so a green check is not mistaken for
+  LSP readiness.
+- **Deploy REST execution is verified** by a `RSC_DEPLOY_OK` sentinel appended
+  to the executed payload. A 2xx response without the sentinel is reported as
+  unverified (exit 5) with a "verify device state" message;
+  `--no-verify-execute` opts out for builds that return no execute output.
+  New flags: `--backup`, `--keep-file`, `--identity`, `--no-verify-execute`.
+  The REST file-upload fallback is limited to 60 KiB of content (use
+  `--method ssh` for longer scripts).
+- **The `.sha256` companion is parsed strictly and must name the exact
+  asset.** Verification is corruption detection and asset binding, not
+  release provenance. Install failures are unchanged in their fail-closed
+  behavior.
+
+### Security
+
+- **Shim PATH gate (`src/lib.rs`, `src/path_gate.rs`)**: PATH execution is deny-by-default; only an exact `RSC_LS_ALLOW_PATH=1` (trimmed) opts in, so a fresh install always resolves through the checksum-verified work-dir cache or auto-download. Opted-in PATH hits log the absolute path plus a short SHA-256 prefix and a warning that they bypass the integrity gate; `RSC_LS_PATH_SHA256` remains the pin, failing closed to the cache on mismatch or malformed input. The decision lives in its own module because `src/lib.rs` compiles for `wasm32-wasip2` and cannot read `std::env`.
+- **Strict checksum companion (`src/sha256.rs`, `src/verify.rs`)**: the `<asset>.sha256` companion must be valid `sha256sum` format and name the exact expected asset filename; a valid digest for a different file is rejected. Hashing is streamed under a 64 MiB cap; every failure path deletes the staged artifact and refuses to execute it. Module docs state the scope explicitly: same-origin, unsigned, corruption detection — not provenance.
+- **Deploy destructive scan precision (`scripts/mikrotik-deploy.py`)**: comments and quoted strings are stripped before matching, so prose can no longer trip the gate. `system reset` / `reset-configuration` stay hard-blocked; `remove` requires explicit `--force-destructive` confirmation after an `/export` backup hint.
+- **Informed SSH TOFU (`scripts/mikrotik-deploy.py`)**: with `--accept-host-key`, the negotiated host-key SHA256 fingerprint is printed so first-use trust can be verified against the device instead of accepted blindly.
+- **Live LAN default-deny (`lsp/src/live_net.rs`, `scripts/mikrotik-live-check.py`)**: RFC 1918/ULA/loopback targets require `RSC_LS_LIVE_ALLOW_LOOPBACK=1`; the health-check warns when the flag is absent.
+
+### Added
+
+- **Script-command completion (`lsp/src/script_globals.rs`, `lsp/src/completion.rs`, `lsp/src/hover.rs`)**: typing `:` completes 15 curated RouterOS script globals (`:local`, `:global`, `:put`, `:if`, `:foreach`, `:for`, `:do`, `:return`, `:error`, `:delay`, `:resolve`, `:parse`, `:pick`, `:tonum`, `:totime`). Hover and completion share one table, structural snippets win over the plain entry by label, and the list is independent of the menu dataset.
+- **Hover provenance and truncation markers (`lsp/src/hover.rs`, `lsp/src/text_util.rs`)**: every card ends with `Source: published reference — RouterOS <dataset version>`; property descriptions longer than `MAX_HOVER_DESC_CHARS` are marked `(truncated)`; menu, flag, and read-only footers name what each section hid (read-only footers no longer promise a completion list).
+- **Deploy verification and safety flags (`scripts/mikrotik-deploy.py`)**: `RSC_DEPLOY_OK` sentinel for `POST /rest/execute`; `--backup` (timestamped on-device `/export`, aborting on failure), `--keep-file` (retain the uploaded script), `--identity` (SSH key auth while password stays the default), `--no-verify-execute` opt-out. REST requests are capped at the device's 60 s server-side limit, and the `/rest/file` fallback refuses content over 60 KiB with a `--method ssh` hint.
+- **Live resource coverage (`lsp/src/live_cache.rs`, `lsp/src/live_fetch.rs`)**: GETs request only the needed field via `?.proplist=`; `in-interface-list`/`out-interface-list` and `list` under `/interface/list` complete from `/rest/interface/list`; IPv6 firewall chains read the family-correct tables (IPv6 has no mangle); expanded/zero-padded IPv6 literals are accepted and judged by their normalized address.
+- **Live status detail (`lsp/src/live_config.rs`, `lsp/src/server.rs`)**: `inactive_reason` names the first failed activation predicate in the startup/initialize log and in the `rsc.live.status` payload, instead of collapsing every cause into `active=false`.
+- **Editor queries (`languages/rsc/config.toml`, `languages/rsc/highlights.scm`)**: a physical line ending in a continuation backslash indents the next line; quote autoclose is guarded inside strings and comments and also covers single quotes; the verb highlight list gained `scan`, `reboot`, `shutdown`, `backup`, `save`, `restore`, `update`, `install`, `renew`, `release`, `torch`, `sniffer`, `connect`, `disconnect`; loop variables (`:foreach`, `:for`, `:onerror`) and `:return true|false` highlight correctly.
+- **Cap registry (`lsp/src/caps.rs`)**: indexed `MAX_DRAIN_SIZE` and `MAX_CHANGES_PER_NOTIFICATION` alongside the existing frame/document bounds.
+- **Grammar publishing (`scripts/publish_grammar.py`)**: `--branch` target (default `main`) and a strictly side-effect-free `--dry-run` (no `git init`, generate, commit, push, or `extension.toml` write).
+- **Release gating (`.github/workflows/release.yml`)**: the tag commit must be an ancestor of `origin/main`; the GitHub Release is created as a **draft** and flipped public only after postflight re-downloads and verifies every asset (checksums, published-binary version smoke, WASM validation) from a `release` environment job (manual approval if configured). A hyphenated version is flagged as a prerelease, so the shim's non-prerelease lookup never auto-selects it. Per-member CycloneDX SBOMs replace the plain-text dependency manifest and carry their own checksum companions.
+- **CI (`.github/workflows/ci.yml`, `perf.yml`, `security-audit.yml`)**: docs-only changes skip the Rust OS matrix while Python/grammar checks still run; Python dependency caching; supply-audit workflow refreshed.
+
+### Changed
+
+- **Zed tasks (`languages/rsc/tasks.json`, `.zed/tasks.json`)**: the first task is now a file-readability preflight (`MikroTik: Validate file readability (local only, no device)`) with `reveal: no_focus` and `hide: on_success`; Validate, Check, and both Deploy tasks save the current file first (`save: current`); all six tasks (Validate, Check, Live check, Live check `--dry-run`, Deploy REST, Deploy SSH) remain mirrored byte-identically.
+- **Snippets (`lsp/src/completion.rs`)**: statement snippets indent block bodies with four spaces.
+- **Completion detail (`lsp/src/completion.rs`)**: the raw dataset type is followed by the shared plain-language gloss (`iface` → "interface name — from device (Live) or type manually"), matching hover.
+- **Signature labels (`lsp/src/signature.rs`)**: parameter-label offsets are emitted as UTF-16 code units, as LSP 3.17 requires.
+- **Data pipeline (`docs/data-pipeline.md`, `scripts/check_extract_fresh.sh`)**: `make validate` checks extract freshness with the timestamp-agnostic script (the generated `# Generated:` header is ignored), tolerating shallow clones.
+
+### Fixed
+
+- **Live-check parity (`scripts/mikrotik-live-check.py`)**: a comma-separated `MIKROTIK_HOST` is rejected as a usage error (the scripts dial exactly one host; `rsc-ls` live parses a list and fetches the primary only) and loopback/private targets warn that the LSP stays inactive without the allow-loopback opt-in.
+- **Internal parse sharing (`lsp/src/folding.rs`, `lsp/src/rename.rs`, `lsp/src/server.rs`, `lsp/src/parser.rs`)**: folding and rename reuse the request's logical-line parse instead of re-splitting the document; no observable output change.
+- **Framing drain bound (`lsp/src/framing.rs`, `lsp/src/caps.rs`)**: `MAX_DRAIN_SIZE` caps the declared `Content-Length` the framing layer will drain — oversized bodies terminate with a protocol error instead of blocking on an unbounded stream, including on the oversized-header recovery path.
+- **Position conversion (`lsp/src/encoding.rs`)**: one line-start table per edited document serves both range endpoints; no wire behavior change.
+
 ## [0.6.1] - 2026-09-16
 
 ### Security
@@ -256,7 +316,8 @@ Baseline release tagged `v0.5.0`. Changes since `v0.4.0`:
 - `extension.toml` kept to schema-known keys only.
 - Local `TODO.md` ignored.
 
-[Unreleased]: https://github.com/balakar94/mikrotik-zed/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/balakar94/mikrotik-zed/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/balakar94/mikrotik-zed/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/balakar94/mikrotik-zed/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.6...v0.6.0
 [0.5.6]: https://github.com/balakar94/mikrotik-zed/compare/v0.5.5...v0.5.6

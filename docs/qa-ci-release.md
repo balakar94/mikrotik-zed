@@ -35,9 +35,10 @@ Two independent tracks:
 1. **GitHub Release (automated):** `make bump VERSION=x.y.z` syncs
    `Cargo.toml` / `lsp/Cargo.toml` / `extension.toml` (grammar crate versions
    are independent — never bumped from here), then
-   `git tag vX.Y.Z && git push origin vX.Y.Z` fires `release.yml`
-   (multi-platform `rsc-ls` + WASM → GitHub Release with SHA-256 companions
-   that auto-download verifies).
+   `git tag -a vX.Y.Z -m 'release vX.Y.Z' && git push origin vX.Y.Z` fires
+   `release.yml` (multi-platform `rsc-ls` + WASM → GitHub Release with
+   SHA-256 companions that auto-download verifies; the meta job rejects
+   lightweight tags).
 2. **Zed Marketplace (human-reviewed):** PR to `zed-industries/extensions`
    (one extension per PR, ≤3 open, reply ≤3 weeks).
    Checklist: [publishing-runbook.md](publishing-runbook.md);

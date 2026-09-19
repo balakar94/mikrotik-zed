@@ -89,7 +89,7 @@ Verification: `sha256sum llms-full.txt` changes, CI `sync_llms --check` would ha
 3. Zed → Command Palette → `Install Dev Extension` → select `mikrotik-zed/`.
 4. Open a `.rsc` file; exercise completion (`/ip` → TAB), hover (menu/property/verb), and diagnostics (7 rules: `unknown-menu`, `unknown-property`, `missing-required`, `duplicate-property`, `invalid-enum-value`, `unclosed-brace`/`unmatched-brace`, `unclosed-quote`).
 5. Logs: `zed: open log` or `RSC_LS_LOG=debug zed --foreground` — look for `[mikrotik-zed]` / `[rsc-ls]` prefixes; caps: `MAX_DOC_SIZE 5MiB`, `MAX_MESSAGE_SIZE 10MiB`, `MAX_DIAG_LINES 3000` / `500KB` (`MAX_DIAG_BYTES`).
-6. Tasks: `cp languages/rsc/tasks.json .zed/tasks.json`; set `MIKROTIK_HOST/USER/PASS/PORT/SSL/METHOD`; in Zed `task: spawn` → 6 tasks (deploy REST/SSH/dry-run/validate + Live check/enable). Companions: `scripts/mikrotik-deploy.py` (push `.rsc` over REST/SSH) + `scripts/mikrotik-live-check.py` (Live `GET /rest/interface`, 5s default clamped 1..30s, `--dry-run`/`--json`, never logs pass).
+6. Tasks: `cp languages/rsc/tasks.json .zed/tasks.json`; set `MIKROTIK_HOST/USER/PASS/PORT/SSL/METHOD`; in Zed `task: spawn` → 6 tasks (Validate file readability · Check script dry-run · Live check + Live check dry-run · Deploy REST · Deploy SSH). Companions: `scripts/mikrotik-deploy.py` (push `.rsc` over REST/SSH) + `scripts/mikrotik-live-check.py` (Live `GET /rest/interface`, 5s default clamped 1..30s, `--dry-run`/`--json`, never logs pass).
 
 Verification: `worktree.which("rsc-ls")` resolves, `textDocument/publishDiagnostics` fires on save, `scripts/mikrotik-deploy.py --dry-run` prints `shlex.quote`'d commands; `scripts/mikrotik-live-check.py --dry-run` validates env without network.
 
@@ -101,7 +101,7 @@ Canonical single source: `AGENTS.md` → *Release*; full extension checklist liv
 2. Bump: `make bump VERSION=x.y.z` — syncs `Cargo.toml`/`lsp/Cargo.toml`/`extension.toml`, runs `cargo fmt` + coherence checks (grammar crate versions stay independent).
 3. Docs: update `CHANGELOG.md` (move `Unreleased` → versioned `Fixed`/`Changed`/`Added`, fix compare links) and `ROADMAP.md` (`Now — 0.5.x` tag/hash) — required before every commit (see Pre-commit Checklist).
 4. Validate: `make validate && cargo audit` — all green.
-5. Tag: `git tag v0.x.y && git push origin v0.x.y` → `.github/workflows/release.yml` on `v*.*.*` builds 6 `rsc-ls` triples (macOS/Linux/Windows × 2 arches) + `extension.wasm` + `*.sha256`; Linux `aarch64-unknown-linux-gnu` builds natively on `ubuntu-24.04-arm` (no `zig`).
+5. Tag (annotated; lightweight is rejected by the meta job): `git tag -a v0.x.y -m 'release v0.x.y' && git push origin v0.x.y` → `.github/workflows/release.yml` on `v*.*.*` builds 6 `rsc-ls` triples (macOS/Linux/Windows × 2 arches) + `extension.wasm` + `*.sha256`; Linux `aarch64-unknown-linux-gnu` builds natively on `ubuntu-24.04-arm` (no `zig`).
 
 Verification: `gh release view v0.x.y --json assets --jq '.assets[].name'` lists 6–7 assets; `extension.toml` rev resolves; `make generate-check` passes on tag.
 
@@ -130,7 +130,7 @@ Also: `make clippy` fails → `cargo clippy -- -D warnings` must be clean for bo
 | Canonical highlights | `languages/rsc/highlights.scm` (deduped to `grammars/rsc/queries/highlights.scm`) |
 | Brackets / indents / outline | `languages/rsc/brackets.scm`, `indents.scm`, `outline.scm` (no `injections.scm`) |
 | Language config | `languages/rsc/config.toml` (`_`, `-`, `$` word chars) |
-| Tasks template / active | `languages/rsc/tasks.json` → `.zed/tasks.json` (6 tasks: deploy REST/SSH/dry-run/validate + Live check/enable; workflow order check → deploy → verify) |
+| Tasks template / active | `languages/rsc/tasks.json` → `.zed/tasks.json` (6 tasks: Validate file readability · Check script dry-run · Live check + dry-run · Deploy REST/SSH; workflow order check → deploy → verify) |
 | Command table | `data/commands.toml` (header: version, timestamp, sha256) |
 | Truth source docs | `llms-full.txt` (version in header), `llms.txt` (index) |
 | Extraction / sync | `scripts/extract_commands.py`, `scripts/sync_llms.py` |
@@ -154,4 +154,4 @@ Also: `make clippy` fails → `cargo clippy -- -D warnings` must be clean for bo
 - [ ] **README.md** if version/snapshot changed: update badge note and `Coverage` / `Sync` snapshot line.
 - [ ] **Docs sync if needed**: `make sync && make extract` then `head -20 data/commands.toml` + `cat data/upstream-docs.toml` to confirm hash/version.
 - [ ] **Validate**: `make validate` (includes `check-manifest` + `docs-check` + `generate-check` + `fmt` + `clippy` + `test-all` + `extract` idempotency) — must be green.
-- [ ] **Tag trigger note**: `release.yml` only runs on `git push origin v*.*.*` (or `workflow_dispatch`), never on plain `git push`. Verify tag push separately: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+- [ ] **Tag trigger note**: `release.yml` only runs on `git push origin v*.*.*` (or `workflow_dispatch`), never on plain `git push`. Tags must be annotated (the meta job rejects lightweight). Verify tag push separately: `git tag -a vX.Y.Z -m 'release vX.Y.Z' && git push origin vX.Y.Z`.
