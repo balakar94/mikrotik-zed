@@ -45,8 +45,14 @@
 (command_substitution
   (identifier) @string)
 
+; Direct identifiers in a menu_continuation are property values/leaders
+; (e.g. the `.sn.mynetname.net` tail of a dotted value, or list items),
+; never sub-menu segments — those only appear after a `/`. Command-style
+; leaders (`add`, `set`, …) are promoted by the menu_continuation verb
+; override below; no first-child special case is needed because that
+; override supplies it.
 (menu_continuation
-  (identifier) @string)
+  (identifier) @constant)
 
 ; ── Catch-all: bare identifiers in menu_command → plain value ──
 ; These are typically values after line continuation like `password=\nvalue`
@@ -65,8 +71,15 @@
    (identifier) @keyword)
   (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve|check|cancel|flush|run|info|warning|error|debug|unset|scan|reboot|shutdown|backup|save|restore|update|install|renew|release|torch|sniffer|connect|disconnect)$"))
 
+; Only a verb directly following a `\` continuation is a command here
+; (e.g. `/ip firewall filter \` + `add chain=input`). Other bare
+; identifiers in menu_command are values — including comma-separated list
+; members such as `policy=ftp,reboot,…` — and stay @constant.
+; Residual: a continued list whose FIRST member is a verb-list word
+; (`policy=\` + `password,read`) is still promoted; the grammar cannot
+; distinguish it from a continued verb without property context.
 ((menu_command
-   (identifier) @keyword)
+   (line_continuation) . (identifier) @keyword)
   (#match? @keyword "^(add|remove|set|get|print|enable|disable|find|comment|move|export|import|edit|reset|force-update|beep|blink|password|quit|redo|undo|ping|monitor|watch|fetch|resolve|check|cancel|flush|run|info|warning|error|debug|unset|scan|reboot|shutdown|backup|save|restore|update|install|renew|release|torch|sniffer|connect|disconnect)$"))
 
 ; Action commands inside [...] → keyword
@@ -163,9 +176,20 @@
 
 ; ── Strings ────────────────────────────────────────────────────
 (string) @string
+; NOTE: `#` inside a quoted value is string content by design — e.g. a
+; script `source="… # comment …"` is one (string) node, so the `#` is never
+; highlighted as a comment. That is intended; no capture changes here.
 
 ; ── URLs ───────────────────────────────────────────────────────
 (url) @string.special
+
+; Quoted URLs: the grammar tokenizes a quoted value (including one split
+; across a `\` continuation) as a single (string) node, so the (url) node
+; never appears. Detect the scheme prefix so quoted and unquoted URLs share
+; the same capture. Plain strings keep @string (earlier pattern); this later
+; @string.special only wins on the scheme match.
+((string) @_url_str @string.special
+  (#match? @_url_str "^['\"]?[A-Za-z][A-Za-z0-9+.-]*://"))
 
 ; ── Mixed scalars (time, classifier, client-id, account) ───────
 (mixed_value) @number

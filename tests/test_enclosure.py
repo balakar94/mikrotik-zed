@@ -452,16 +452,18 @@ class TestGrammar:
     def test_highlights_verbs_attested(self):
         """Anti-typo guard for the curated verb list in highlights.scm.
 
-        Every branch of the (#match? ...) alternations must occur at least
-        once in data/commands.toml or the grammar corpus, so a typo like
-        `froce-update` fails here instead of silently highlighting nothing.
+        Every branch of the `(#match? @keyword ...)` alternations must occur
+        at least once in data/commands.toml or the grammar corpus, so a typo
+        like `froce-update` fails here instead of silently highlighting
+        nothing. Scoped to @keyword so helper-capture predicates (loop-var
+        guards, quoted-URL scheme detection) are not mistaken for verbs.
         Curation stays unconstrained: attestation is an OR, not a whitelist.
         """
         if not CORPUS_DIR.is_dir():
             pytest.skip("grammars/rsc corpus absent (untracked; run 'make grammar-clone')")
         txt = _read(HIGHLIGHTS_A)
         verbs = set()
-        for raw in re.findall(r'#match\?\s+@\S+\s+"([^"]+)"', txt):
+        for raw in re.findall(r'#match\?\s+@keyword\s+"([^"]+)"', txt):
             core = raw.strip()
             if core.startswith("^"):
                 core = core[1:]
@@ -608,6 +610,56 @@ class TestGrammar:
             "^(foreach|for|onerror)$",
         ):
             assert needle in code, f"highlights.scm missing {needle!r}"
+
+    def test_highlights_continued_verb_override_is_anchored(self):
+        """BUG 1 (0.7.0): bare menu_command identifiers are only commands
+        when they directly follow a `\\` continuation (`/ip firewall filter \\`
+        + `add`). Comma-separated list members (`policy=ftp,reboot,…`) stay
+        @constant instead of being promoted to @keyword."""
+        code = "\n".join(
+            line for line in _read(HIGHLIGHTS_A).splitlines()
+            if not line.strip().startswith(";")
+        )
+        assert "(line_continuation) . (identifier) @keyword)" in code, (
+            "menu_command keyword override must be anchored to line_continuation"
+        )
+        assert re.search(
+            r"\(menu_command\s*\n\s*\(identifier\) @keyword\)", code
+        ) is None, "unanchored menu_command keyword override must not return"
+
+    def test_highlights_menu_continuation_identifiers_are_values(self):
+        """BUG 2 (0.7.0): direct menu_continuation identifiers are property
+        values/list leaders (e.g. the `.sn.mynetname.net` tail of a dotted
+        value), not sub-menu text; command leaders are promoted by the
+        menu_continuation verb override."""
+        code = "\n".join(
+            line for line in _read(HIGHLIGHTS_A).splitlines()
+            if not line.strip().startswith(";")
+        )
+        assert re.search(
+            r"\(menu_continuation\s*\n\s*\(identifier\) @constant\)", code
+        ), "menu_continuation direct identifiers must be @constant values"
+        assert re.search(
+            r"\(menu_continuation\s*\n\s*\(identifier\) @string\)", code
+        ) is None, "menu_continuation direct identifiers must not be @string"
+
+    def test_highlights_quoted_urls_share_string_special(self):
+        """BUG 3 (0.7.0): the grammar tokenizes a quoted URL (including one
+        split across a `\\` continuation) as one (string) node, so (url)
+        never matches; the scheme-prefix predicate restores @string.special
+        while plain strings keep @string."""
+        code = "\n".join(
+            line for line in _read(HIGHLIGHTS_A).splitlines()
+            if not line.strip().startswith(";")
+        )
+        assert "(url) @string.special" in code
+        assert "((string) @_url_str @string.special" in code, (
+            "quoted-URL scheme predicate missing"
+        )
+        assert "#match? @_url_str" in code, (
+            "quoted-URL predicate must reference a capture defined in the same pattern"
+        )
+        assert "[A-Za-z0-9+.-]*://" in code, "scheme regex drift"
 
     def test_config_quote_brackets_and_continuation_indent(self):
         """F13/F15 (0.7.0): both quote styles autoclose only outside strings
