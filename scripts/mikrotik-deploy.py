@@ -3,11 +3,13 @@
 MikroTik RSC deploy companion — push .rsc files to a RouterOS device.
 
 Supports two transports:
-  1) REST API via `requests` (preferred, RouterOS 7.20+ has /rest)
+  1) REST API via `requests` (preferred; RouterOS 7.1+ has /rest)
   2) SSH via `paramiko` (fallback, or explicit --method ssh)
 
 Env vars (all can be overridden by CLI flags, mirrored in lsp/src/live_config.rs LiveConfig::from_env):
-  MIKROTIK_HOST   - device host/IP (required)
+  MIKROTIK_HOST   - device host/IP (required; ONE host — comma-separated
+                    multi-host is only supported by rsc-ls live, which fetches
+                    the primary host only)
   MIKROTIK_USER   - username (default: admin)
   MIKROTIK_PASS   - password (required)
   MIKROTIK_PORT   - REST 443 / SSH 22 (auto; live defaults to 443)
@@ -15,8 +17,9 @@ Env vars (all can be overridden by CLI flags, mirrored in lsp/src/live_config.rs
                     verification only — it NEVER selects the URL scheme
   MIKROTIK_METHOD - "rest" or "ssh" (default: auto; live uses REST only)
   MIKROTIK_HTTP   - "1" to force plain HTTP for REST transport (default: https)
-  MIKROTIK_TIMEOUT - per-request REST timeout and seconds to wait for the remote SSH /import (default: 60, clamped 1..300; live defaults to 5, clamped 1..30; SSH connect stays at fixed 15s)
+  MIKROTIK_TIMEOUT - per-request REST timeout and seconds to wait for the remote SSH /import (default: 60, clamped 1..300; REST is additionally capped at the device's 60s server-side limit; live defaults to 5, clamped 1..30; SSH connect stays at fixed 15s)
   MIKROTIK_ACCEPT_HOST_KEY - "1" to trust unknown SSH host keys (TOFU; deploy SSH only)
+  MIKROTIK_IDENTITY - private key path for SSH auth (default: password only)
   MIKROTIK_FINGERPRINT - SPKI SHA256 pin for REST TLS (format sha256:<hex>)
   MIKROTIK_CA_FILE - custom CA bundle path for REST TLS
   RSC_LS_LIVE_DENY_PREFIXES - comma-separated IPv4/IPv6 addresses or CIDR
@@ -26,9 +29,19 @@ Env vars (all can be overridden by CLI flags, mirrored in lsp/src/live_config.rs
 Import success caveat: HTTP 200 or SSH exit code 0 does NOT guarantee the
 import succeeded. /import output is additionally scanned for high-confidence
 RouterOS failure markers ("syntax error", "input does not match",
-"bad command name", "failure:") and treated as failed on a match. Direct
-/rest/execute script output is printed verbatim and intentionally NOT scanned
-(arbitrary scripts may legitimately echo such words).
+"bad command name", "failure:") and treated as failed on a match.
+
+Direct /rest/execute deploy verification: the executed payload gets a final
+`:put "RSC_DEPLOY_OK"` line, and the response must contain that sentinel.
+RouterOS stops a script on the first error, so the sentinel proves the last
+statement was reached; absence is treated as an uncertain result (exit 5,
+device state must be verified). Use --no-verify-execute only for builds that
+do not return /rest/execute output. The sentinel is skipped for payloads
+ending in a line continuation (logged, result unverified).
+
+Exit codes: 2 usage/validation/destructive refusal, 3 missing transport
+dependency, 4 network/auth/HTTP failure, 5 import/execute failed or
+unverified.
 
 Security note: REST/SSH targets ARE passed through
 ``_mikrotik_shared.validate_host`` (lexical SSRF denylist:
@@ -55,6 +68,8 @@ Zed tasks integration: see languages/rsc/tasks.json and README.md
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import os
 import re
 import sys
@@ -125,18 +140,87 @@ _IMPORT_FAILURE_MARKERS = ("syntax error", "input does not match", "bad command 
 # read through this bound and redacted before printing/logging.
 MAX_RESPONSE_BYTES = 512 * 1024
 
+# Machine-checkable completion sentinel appended to the direct /rest/execute
+# payload. RouterOS aborts a script on the first error, so the sentinel in
+# the response proves the last statement was reached (DEP-01).
+_REST_SENTINEL = "RSC_DEPLOY_OK"
 
-# Local pre-push scan for destructive verbs. Narrow allowlist: only an
-# explicit --force-destructive bypasses this gate. Runs before any network
-# access and on --dry-run with the same verdict (exit 2 when blocked).
-_DESTRUCTIVE_RE = re.compile(r"^\s*(/)?(system reset|.*\b(remove|reset-configuration)\b)", re.IGNORECASE)
+# RouterOS documents file-content editing only up to 60 KB, so the REST
+# file-upload fallback is offered below that bound; larger payloads must use
+# --method ssh (DEP-02).
+_REST_FILE_FALLBACK_MAX_BYTES = 60 * 1024
+
+# RouterOS closes REST commands after 60 s server-side (documented limit), so
+# a longer client timeout cannot extend a REST command (DEP-03).
+_REST_SERVER_TIMEOUT_SECS = 60
+
+
+def _strip_comments_and_strings(line: str) -> str:
+    """Best-effort strip of RouterOS `#` comments and quoted strings.
+
+    The destructive pre-scan must not fire on prose (`# remove old rules`) or
+    on string literals (`comment="remove me"`). This is a character-level
+    pass, not a parser: `#` starts a comment outside quotes; `\'`/`"` spans
+    are skipped with backslash escapes (which also covers `$"..."`).
+    """
+    out: list[str] = []
+    quote: str | None = None
+    i = 0
+    n = len(line)
+    while i < n:
+        c = line[i]
+        if quote is not None:
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+            i += 1
+            continue
+        if c == "#":
+            break
+        if c in ("'", '"'):
+            quote = c
+            i += 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+# Hard-blocked resets vs confirmation-gated removals. `--force-destructive` is
+# the single bypass for both (runs before any network access, including
+# --dry-run).
+_HARD_RESET_RE = re.compile(r"(^|[\s/])system\s+reset\b", re.IGNORECASE)
+_RESET_CONFIG_RE = re.compile(r"\breset-configuration\b", re.IGNORECASE)
+_REMOVE_RE = re.compile(r"\bremove\b", re.IGNORECASE)
+
+
+def classify_destructive_line(line: str) -> str | None:
+    """Classify one source line as "reset", "remove" or None (best-effort).
+
+    Comments and quoted strings are stripped first, so prose cannot trip the
+    gate. `system reset`/`reset-configuration` and `remove` are both gated;
+    the caller distinguishes hard-block from confirmation in its message.
+    """
+    code = _strip_comments_and_strings(line)
+    if _HARD_RESET_RE.search(code) or _RESET_CONFIG_RE.search(code):
+        return "reset"
+    if _REMOVE_RE.search(code):
+        return "remove"
+    return None
 
 
 def find_destructive_lines(content: str) -> list[tuple[int, str]]:
-    """Return (line number, line text) for lines matching the destructive scan."""
+    """Return (line number, line text) for lines matching the destructive scan.
+
+    Best-effort: comments/strings are ignored, but dynamic construction
+    (`:execute`, variable-held command names, `/tool fetch` + import) is not
+    detected. The gate is a safety net, not a sandbox.
+    """
     hits: list[tuple[int, str]] = []
     for lineno, line in enumerate((content or "").splitlines(), start=1):
-        if _DESTRUCTIVE_RE.search(line):
+        if classify_destructive_line(line) is not None:
             hits.append((lineno, line.strip()))
     return hits
 
@@ -144,22 +228,46 @@ def find_destructive_lines(content: str) -> list[tuple[int, str]]:
 def check_destructive_or_exit(content: str, force_destructive: bool) -> None:
     """Refuse destructive content unless explicitly acknowledged (exit 2).
 
+    Best-effort lexical gate: hard-blocks `system reset`/`reset-configuration`
+    and requires explicit confirmation (`--force-destructive`) for `remove`.
+    Comments and quoted strings are ignored so prose cannot trip the scan.
     Prints the offending line numbers and a backup hint. Never logs secrets.
     """
-    hits = find_destructive_lines(content)
-    if not hits:
+    reset_hits: list[tuple[int, str]] = []
+    remove_hits: list[tuple[int, str]] = []
+    for lineno, line in enumerate((content or "").splitlines(), start=1):
+        kind = classify_destructive_line(line)
+        if kind == "reset":
+            reset_hits.append((lineno, line.strip()))
+        elif kind == "remove":
+            remove_hits.append((lineno, line.strip()))
+    if not reset_hits and not remove_hits:
         return
     if force_destructive:
         print(
-            f"warning: destructive content acknowledged ({len(hits)} line(s)); proceeding",
+            f"warning: destructive content acknowledged "
+            f"({len(reset_hits)} reset, {len(remove_hits)} remove line(s)); proceeding",
             file=sys.stderr,
         )
         return
-    shown = ", ".join(f"line {n}: {t[:80]}" for n, t in hits[:5])
+    shown = ", ".join(
+        f"line {n}: {t[:80]}" for n, t in (reset_hits + remove_hits)[:5]
+    )
     print(f"error: destructive content detected ({shown})", file=sys.stderr)
+    if reset_hits:
+        print(
+            "hard-blocked: system reset / reset-configuration",
+            file=sys.stderr,
+        )
+    if remove_hits:
+        print(
+            "requires explicit confirmation: remove",
+            file=sys.stderr,
+        )
     print(
         "hint: take /export file=pre-<ts> before push"
-        " (e.g. /export file=pre-20260101-120000), then retry with --force-destructive",
+        " (e.g. /export file=pre-20260101-120000), or use --backup,"
+        " then retry with --force-destructive",
         file=sys.stderr,
     )
     sys.exit(2)
@@ -268,7 +376,24 @@ def _deny_ssrf_host_or_exit(host: str) -> None:
         sys.exit(2)
 
 
-def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: bool, content: str, filename: str, dry_run: bool, force_http: bool = False, timeout: int = 30, fingerprint: bytes | None = None, ca_file: str = "", force_destructive: bool = False) -> None:
+def deploy_via_rest(
+    host: str,
+    user: str,
+    password: str,
+    port: int,
+    ssl_verify: bool,
+    content: str,
+    filename: str,
+    dry_run: bool,
+    force_http: bool = False,
+    timeout: int = 30,
+    fingerprint: bytes | None = None,
+    ca_file: str = "",
+    force_destructive: bool = False,
+    verify_execute: bool = True,
+    keep_file: bool = False,
+    backup: bool = False,
+) -> None:
     # SSRF gate before any URL construction, logging, or network access —
     # enforced even on --dry-run.
     _deny_ssrf_host_or_exit(host)
@@ -281,12 +406,50 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
     check_destructive_or_exit(content, force_destructive)
     # URL-encode validated filename for REST path segment (safe after allowlist).
     encoded_filename = urllib.parse.quote(filename, safe="")
-    # Clamp per-request timeout to 1..300s (mirrors live 1..30 clamp, wider for file upload).
-    effective_timeout = clamp_int(timeout, 1, 300, 30)
+    content_bytes = len(content.encode("utf-8"))
+    # DEP-03: clamp to 1..300s first (CLI contract), then honor the device's
+    # documented 60s REST server-side cap — a larger client timeout cannot
+    # extend a REST command. --method ssh keeps the full 1..300s range.
+    clamped_timeout = clamp_int(timeout, 1, 300, 30)
+    effective_timeout = min(clamped_timeout, _REST_SERVER_TIMEOUT_SECS)
+    if clamped_timeout > _REST_SERVER_TIMEOUT_SECS:
+        log(
+            f"warning: timeout {clamped_timeout}s exceeds the RouterOS REST "
+            f"{_REST_SERVER_TIMEOUT_SECS}s server-side cap; using {effective_timeout}s for REST "
+            "(use --method ssh for long imports)"
+        )
+    # DEP-01: append a completion sentinel to the executed payload. A payload
+    # ending in a line continuation would swallow the sentinel, so that rare
+    # case runs unverified with a warning; RouterOS stops a script on error,
+    # so observing the sentinel proves the last statement was reached.
+    trailing_continuation = content.rstrip().endswith("\\")
+    verify_this = verify_execute and not trailing_continuation
+    payload = content if not verify_this else f'{content}\n:put "{_REST_SENTINEL}"\n'
+    if verify_execute and trailing_continuation:
+        log(
+            "warning: payload ends with a line continuation; execute-result "
+            "verification skipped for this push"
+        )
     if dry_run:
-        log(f"DRY-RUN REST: would POST {len(content)} bytes to {scheme}://{host_for_url}:{port}/rest/execute as {user} (primary: direct execute)")
-        log(f"DRY-RUN REST: fallback would PUT {len(content)} bytes to {scheme}://{host_for_url}:{port}/rest/file/{encoded_filename} as {user}")
+        log(f"DRY-RUN REST: would POST {content_bytes} bytes to {scheme}://{host_for_url}:{port}/rest/execute as {user} (primary: direct execute)")
+        if verify_this:
+            log(
+                f'DRY-RUN REST: execute payload appends :put "{_REST_SENTINEL}"; '
+                "its absence in the response is treated as failure (skip with --no-verify-execute)"
+            )
+        else:
+            log("DRY-RUN REST: execute-result verification disabled for this push")
+        if content_bytes > _REST_FILE_FALLBACK_MAX_BYTES:
+            log(
+                f"DRY-RUN REST: content exceeds {_REST_FILE_FALLBACK_MAX_BYTES} bytes; "
+                "the /rest/file fallback would be unavailable (use --method ssh)"
+            )
+        log(f"DRY-RUN REST: fallback would PUT {content_bytes} bytes to {scheme}://{host_for_url}:{port}/rest/file/{encoded_filename} as {user}")
         log(f"DRY-RUN REST: fallback would POST to {scheme}://{host_for_url}:{port}/rest/execute {{script: /import file={filename}}}")
+        if backup:
+            log(f"DRY-RUN REST: would first POST {scheme}://{host_for_url}:{port}/rest/export {{file: pre-<utc-ts>}} (on-device backup)")
+        if not keep_file:
+            log("DRY-RUN REST: would DELETE the uploaded file after a successful import (--keep-file retains it)")
         return
     if not HAS_REQUESTS:
         print("error: REST method requires 'requests' (pip install requests)", file=sys.stderr)
@@ -306,43 +469,118 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
         user, password, addrs, ca_file, ssl_verify, fingerprint, scheme
     )
 
-    # 1) Upload file content via /rest/file - RouterOS expects multipart or raw?
-    # Fallback: use /rest/execute to run script directly without file
-    # We try direct execute: POST /rest/execute with {"script": content}
-    # This avoids file handling differences across versions.
-    # Redirects are disabled on every call: 3xx fails closed, never followed.
-    log(f"REST: uploading {len(content)} bytes to {host_for_url} as {user} (direct execute)")
-    # The SPKI pin (when set) is verified inside the pinned HTTPS connection,
-    # on the same socket as the request and before the Authorization header is
-    # written — no separate handshake to race (see _mikrotik_shared).
     try:
-        # Try direct execute. stream=True + _read_response_capped bounds the
-        # body (an unbounded body read could OOM on a hostile/broken device).
-        resp = session.post(f"{base}/rest/execute", json={"script": content}, timeout=effective_timeout, allow_redirects=False, stream=True)
+        # DEP-05 (optional): timestamped on-device /export backup before any
+        # change. A requested backup that fails is fatal — the push must never
+        # imply a backup exists when it does not.
+        if backup:
+            backup_name = f"pre-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}"
+            log(f"REST: writing on-device backup /export file={backup_name}")
+            bresp = session.post(
+                f"{base}/rest/export",
+                json={"file": backup_name},
+                timeout=effective_timeout,
+                allow_redirects=False,
+                stream=True,
+            )
+            bstatus = bresp.status_code
+            bbody = _read_response_capped(bresp, password, user)
+            if bstatus not in (200, 201, 204):
+                print(
+                    redact_secrets(
+                        f"error: backup /export failed (status {bstatus}): {bbody[:300]}",
+                        password,
+                        user,
+                    ),
+                    file=sys.stderr,
+                )
+                sys.exit(4)
+            log(f"REST: backup written to {backup_name}.rsc on device")
+
+        # Primary path: POST /rest/execute with {"script": payload}. This
+        # avoids file handling differences across versions. Redirects are
+        # disabled on every call: 3xx fails closed, never followed.
+        # stream=True + _read_response_capped bounds the body (an unbounded
+        # body read could OOM on a hostile/broken device).
+        # The SPKI pin (when set) is verified inside the pinned HTTPS
+        # connection, on the same socket as the request and before the
+        # Authorization header is written (see _mikrotik_shared).
+        log(f"REST: uploading {content_bytes} bytes to {host_for_url} as {user} (direct execute)")
+        resp = session.post(
+            f"{base}/rest/execute",
+            json={"script": payload},
+            timeout=effective_timeout,
+            allow_redirects=False,
+            stream=True,
+        )
         if resp.status_code in (200, 201, 204):
-            log(f"REST: execute OK ({resp.status_code})")
             body = _read_response_capped(resp, password, user)
+            if verify_this:
+                if _REST_SENTINEL in body:
+                    log(f"REST: execute OK ({resp.status_code}, verified)")
+                    cleaned = "\n".join(
+                        line
+                        for line in body.splitlines()
+                        if _REST_SENTINEL not in line
+                    )
+                    if cleaned.strip():
+                        print(redact_secrets(cleaned, password, user))
+                    return
+                msg = (
+                    f"execute returned {resp.status_code} but the completion sentinel "
+                    f"{_REST_SENTINEL!r} was not observed; the device may have applied "
+                    "changes — verify device state (use --no-verify-execute on builds "
+                    "that do not return /rest/execute output)"
+                )
+                print(
+                    redact_secrets(f"error: {msg} body={body[:500]}", password, user),
+                    file=sys.stderr,
+                )
+                sys.exit(5)
+            log(f"REST: execute OK ({resp.status_code}, result not verified)")
             if body and body.strip():
                 print(redact_secrets(body, password, user))
             return
         if 300 <= resp.status_code < 400:
             print(f"error: redirect blocked (status {resp.status_code}); refusing to follow", file=sys.stderr)
             sys.exit(4)
-        # If execute not allowed, try file method
+        # If execute not allowed, try the file fallback (size-bounded).
         resp_body = _read_response_capped(resp, password, user)
         log(
             f"REST execute returned {resp.status_code}: "
             f"{redact_secrets(resp_body[:500], password, user)}"
         )
+        # DEP-02: RouterOS documents file-content editing only up to 60 KB, so
+        # the fallback cannot carry a long script; point at SSH instead.
+        if content_bytes > _REST_FILE_FALLBACK_MAX_BYTES:
+            print(
+                f"error: REST execute failed ({resp.status_code}) and content is "
+                f"{content_bytes} bytes (> {_REST_FILE_FALLBACK_MAX_BYTES}-byte "
+                "file-upload fallback limit); use --method ssh for this payload",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         log("REST: falling back to PUT /rest/file upload — EXPERIMENTAL: RouterOS's file API varies across versions")
         # File upload via /rest/file (PUT) — filename already validated and URL-encoded.
         # RouterOS file API is not well documented; we try PUT with contents field
-        put_resp = session.put(f"{base}/rest/file/{encoded_filename}", json={"contents": content}, timeout=effective_timeout, allow_redirects=False, stream=True)
+        put_resp = session.put(
+            f"{base}/rest/file/{encoded_filename}",
+            json={"contents": content},
+            timeout=effective_timeout,
+            allow_redirects=False,
+            stream=True,
+        )
         if put_resp.status_code in (200, 201, 204):
             log(f"REST: file upload OK ({put_resp.status_code}), now importing")
             # RouterOS console accepts single-quoted strings; quoting guards
             # filenames containing spaces/special chars.
-            imp = session.post(f"{base}/rest/execute", json={"script": f"/import file={shlex.quote(filename)}"}, timeout=effective_timeout, allow_redirects=False, stream=True)
+            imp = session.post(
+                f"{base}/rest/execute",
+                json={"script": f"/import file={shlex.quote(filename)}"},
+                timeout=effective_timeout,
+                allow_redirects=False,
+                stream=True,
+            )
             if 300 <= imp.status_code < 400:
                 print(f"error: redirect blocked (status {imp.status_code}); refusing to follow", file=sys.stderr)
                 sys.exit(4)
@@ -362,6 +600,27 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
                     file=sys.stderr,
                 )
                 sys.exit(5)
+            # DEP-05: best-effort cleanup of the uploaded file (safe default),
+            # so stale .rsc copies do not accumulate on the device.
+            if not keep_file:
+                try:
+                    del_resp = session.delete(
+                        f"{base}/rest/file/{encoded_filename}",
+                        timeout=effective_timeout,
+                        allow_redirects=False,
+                        stream=True,
+                    )
+                    del_status = del_resp.status_code
+                    del_resp.close()
+                    if del_status in (200, 201, 204):
+                        log(f"REST: removed remote file {filename} (--keep-file retains it)")
+                    else:
+                        log(f"warning: could not remove remote file {filename} (status {del_status})")
+                except requests.exceptions.RequestException as e:
+                    log(
+                        f"warning: could not remove remote file {filename}: "
+                        f"{redact_secrets(str(e), password, user)}"
+                    )
             return
         put_body = _read_response_capped(put_resp, password, user)
         msg = f"error: REST deploy failed: execute={resp.status_code} {resp_body[:1000]} file={put_resp.status_code} {put_body[:1000]}"
@@ -372,7 +631,45 @@ def deploy_via_rest(host: str, user: str, password: str, port: int, ssl_verify: 
         sys.exit(4)
 
 
-def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str, filename: str, dry_run: bool, accept_host_key: bool, timeout: int = 60, force_destructive: bool = False) -> None:
+def _wait_for_exit(stdout, deadline: float) -> bool:
+    """Poll a paramiko channel until the command exits or ``deadline`` passes.
+
+    ``recv_exit_status()`` blocks forever when a device never terminates the
+    command, so callers use this bounded poll first and only then read the
+    exit status (which returns immediately once the status is ready).
+    """
+    while not stdout.channel.exit_status_ready():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+    return True
+
+
+def _ssh_host_key_fingerprint(client) -> str | None:
+    """Best-effort ``<type> SHA256:<base64>`` of the negotiated host key."""
+    try:
+        key = client.get_transport().get_remote_server_key()
+        digest = hashlib.sha256(key.asbytes()).digest()
+        return f"{key.get_name()} SHA256:{base64.b64encode(digest).decode('ascii')}"
+    except Exception:
+        return None
+
+
+def deploy_via_ssh(
+    host: str,
+    user: str,
+    password: str,
+    port: int,
+    content: str,
+    filename: str,
+    dry_run: bool,
+    accept_host_key: bool,
+    timeout: int = 60,
+    force_destructive: bool = False,
+    identity: str = "",
+    keep_file: bool = False,
+    backup: bool = False,
+) -> None:
     # SSRF gate before any SSH dial — enforced even on --dry-run.
     _deny_ssrf_host_or_exit(host)
     host_for_url = format_host_for_url(host)
@@ -382,8 +679,13 @@ def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str,
     # Same verdict on dry-run (exit 2 unless --force-destructive).
     check_destructive_or_exit(content, force_destructive)
     if dry_run:
-        log(f"DRY-RUN SSH: would scp {len(content)} bytes to {host_for_url}:{port} as {user} -> /{filename}")
+        auth = f"key={identity}" if identity else "password"
+        log(f"DRY-RUN SSH: would sftp {len(content)} bytes to {host_for_url}:{port} as {user} (auth: {auth}) -> /{filename}")
         log(f"DRY-RUN SSH: would ssh {user}@{host_for_url} \"/import file={filename}\"")
+        if backup:
+            log("DRY-RUN SSH: would first run /export file=pre-<utc-ts> (on-device backup)")
+        if not keep_file:
+            log("DRY-RUN SSH: would remove the uploaded file after a successful import (--keep-file retains it)")
         return
     if not HAS_PARAMIKO:
         print("error: SSH method requires 'paramiko' (pip install paramiko)", file=sys.stderr)
@@ -409,10 +711,22 @@ def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str,
         # paramiko; `hostname` stays the original hostname so known_hosts
         # lookup (and the --accept-host-key policy) is unchanged. This closes
         # the resolve-then-connect TOCTOU: no second DNS resolution happens.
+        # `--identity` (default off) adds key auth while password stays the
+        # default; `look_for_keys`/`allow_agent` remain off so the user's
+        # other key material is never offered implicitly.
         # SSH connect timeout stays at a fixed 15s (independent of --timeout,
         # which only bounds the remote /import poll below).
         pinned_sock = open_pinned_socket(addrs, port, 15)
-        client.connect(hostname=host, sock=pinned_sock, username=user, password=password, look_for_keys=False, allow_agent=False, timeout=15)
+        client.connect(
+            hostname=host,
+            sock=pinned_sock,
+            username=user,
+            password=password,
+            key_filename=identity or None,
+            look_for_keys=False,
+            allow_agent=False,
+            timeout=15,
+        )
     except Exception as e:
         if pinned_sock is not None:
             try:
@@ -428,7 +742,41 @@ def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str,
             )
         sys.exit(4)
 
+    # DEP-04: TOFU must be informed, not blind — show the accepted host key.
+    if accept_host_key:
+        fp = _ssh_host_key_fingerprint(client)
+        if fp:
+            log(
+                f"SSH: host key {fp} accepted via --accept-host-key "
+                "(verify this fingerprint against the device before trusting it)"
+            )
+
     try:
+        # DEP-05 (optional): timestamped on-device /export backup before any
+        # change. A requested backup that fails is fatal.
+        if backup:
+            backup_name = f"pre-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}"
+            log(f"SSH: writing on-device backup /export file={backup_name}")
+            _b_in, b_out, b_err = client.exec_command(
+                f"/export file={backup_name}", timeout=15
+            )
+            if not _wait_for_exit(b_out, time.monotonic() + 30):
+                print("error: on-device backup timed out after 30s", file=sys.stderr)
+                sys.exit(4)
+            b_status = b_out.channel.recv_exit_status()
+            if b_status != 0:
+                b_msg = b_err.read(MAX_RESPONSE_BYTES + 1).decode(errors="replace")
+                print(
+                    redact_secrets(
+                        f"error: on-device backup failed with exit {b_status}: {b_msg[:300]}",
+                        password,
+                        user,
+                    ),
+                    file=sys.stderr,
+                )
+                sys.exit(4)
+            log(f"SSH: backup written to {backup_name}.rsc on device")
+
         sftp = client.open_sftp()
         log(f"SSH: uploading {filename} ({len(content)} bytes)")
         # paramiko SFTP expects bytes
@@ -476,6 +824,34 @@ def deploy_via_ssh(host: str, user: str, password: str, port: int, content: str,
         if marker:
             print(f"error: remote import failed (failure marker {marker!r})", file=sys.stderr)
             sys.exit(5)
+        # DEP-05: best-effort cleanup of the uploaded file (safe default), so
+        # stale .rsc copies do not accumulate on the device.
+        if not keep_file:
+            try:
+                _del_in, del_out, del_err = client.exec_command(
+                    f"/file remove {filename}", timeout=15
+                )
+                if _wait_for_exit(del_out, time.monotonic() + 15):
+                    del_status = del_out.channel.recv_exit_status()
+                    if del_status == 0:
+                        log(f"SSH: removed remote file {filename} (--keep-file retains it)")
+                    else:
+                        del_msg = del_err.read(MAX_RESPONSE_BYTES + 1).decode(
+                            errors="replace"
+                        )
+                        log(
+                            f"warning: could not remove remote file {filename}: "
+                            f"{redact_secrets(del_msg[:200], password, user)}"
+                        )
+                else:
+                    log(
+                        f"warning: could not remove remote file {filename}: removal timed out"
+                    )
+            except Exception as e:
+                log(
+                    f"warning: could not remove remote file {filename}: "
+                    f"{redact_secrets(str(e), password, user)}"
+                )
         log("SSH: import OK")
     finally:
         client.close()
@@ -500,20 +876,44 @@ def parse_args() -> argparse.Namespace:
         "--timeout",
         type=int,
         default=env_int("MIKROTIK_TIMEOUT", 60),
-        help="Per-request REST timeout and seconds to wait for the remote SSH /import (env MIKROTIK_TIMEOUT, default 60, clamped 1..300; SSH connect stays at fixed 15s)",
+        help="Per-request REST timeout and seconds to wait for the remote SSH /import (env MIKROTIK_TIMEOUT, default 60, clamped 1..300; REST is additionally capped at the device's 60s server-side limit, use --method ssh for long imports; SSH connect stays at fixed 15s)",
     )
     p.add_argument(
         "--accept-host-key",
         action="store_true",
         default=os.getenv("MIKROTIK_ACCEPT_HOST_KEY") == "1",
-        help="Trust unknown SSH host keys (trust-on-first-use). WARNING: vulnerable to MITM. Env: MIKROTIK_ACCEPT_HOST_KEY=1",
+        help="Trust unknown SSH host keys (trust-on-first-use). WARNING: vulnerable to MITM. The accepted key fingerprint is printed for verification. Env: MIKROTIK_ACCEPT_HOST_KEY=1",
     )
-    p.add_argument("--dry-run", action="store_true", help="Show what would be done without connecting")
+    p.add_argument(
+        "--identity",
+        default=os.getenv("MIKROTIK_IDENTITY", ""),
+        help="Private key file for SSH auth (env MIKROTIK_IDENTITY). Default off: password auth only, and ~/.ssh keys are never offered implicitly",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be done without connecting (preview only: it does NOT validate RouterOS syntax; use the rsc-ls diagnostics / Validate task for that)",
+    )
     p.add_argument(
         "--force-destructive",
         action="store_true",
         default=os.getenv("MIKROTIK_FORCE_DESTRUCTIVE") == "1",
-        help="Allow content matching the destructive pre-scan (system reset, remove, reset-configuration). Without it the push is refused with exit 2 (env MIKROTIK_FORCE_DESTRUCTIVE=1)",
+        help="Allow content matching the best-effort destructive pre-scan (system reset / reset-configuration hard-blocked, remove requires confirmation). Comments and quoted strings are ignored. Without it the push is refused with exit 2 (env MIKROTIK_FORCE_DESTRUCTIVE=1)",
+    )
+    p.add_argument(
+        "--no-verify-execute",
+        action="store_true",
+        help="Skip the /rest/execute completion sentinel (RSC_DEPLOY_OK). Only for RouterOS builds that do not return /rest/execute output; without the sentinel a 2xx result is otherwise reported as unverified (exit 5)",
+    )
+    p.add_argument(
+        "--keep-file",
+        action="store_true",
+        help="Keep the uploaded .rsc on the device after a successful import (default: best-effort remove)",
+    )
+    p.add_argument(
+        "--backup",
+        action="store_true",
+        help="Write a timestamped /export file=pre-<utc-ts> on the device before pushing; a failed backup aborts the push (exit 4)",
     )
     p.add_argument("--filename", default=None, help="Remote filename (default: basename of file)")
     p.add_argument(
@@ -545,6 +945,18 @@ def main() -> None:
     if not args.host:
         print("error: --host or MIKROTIK_HOST is required", file=sys.stderr)
         print("example: MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret python scripts/mikrotik-deploy.py file.rsc --dry-run", file=sys.stderr)
+        sys.exit(2)
+
+    # Single-host contract: rsc-ls parses a comma-separated MIKROTIK_HOST and
+    # fetches only the primary; the scripts dial exactly one host, so a list
+    # is a usage error instead of a confusing DNS failure later.
+    if "," in args.host:
+        print(
+            "error: --host/MIKROTIK_HOST must be a single host; comma-separated "
+            "multi-host is only supported by rsc-ls live (which fetches the primary "
+            "host only)",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
     # SSRF gate before any file handling preview, transport dispatch, or
@@ -654,15 +1066,55 @@ def main() -> None:
             print("error: no transport available: install 'requests' or 'paramiko' (pip install requests paramiko)", file=sys.stderr)
             sys.exit(3)
 
+    # SEC-07: a SPKI pin cannot be enforced over plain HTTP (and Basic
+    # credentials travel in cleartext), so never let the flag imply security.
+    if method == "rest" and fingerprint is not None and resolve_scheme(port, args.http) == "http":
+        print(
+            "warning: MIKROTIK_FINGERPRINT is set but the effective scheme is http; "
+            "the SPKI pin is not enforced over plain HTTP and credentials are sent in cleartext",
+            file=sys.stderr,
+        )
+
     if method == "rest":
         # POST /rest/execute and /import are never retried: only idempotent
         # GETs retry (see the live check), so a repeated import cannot run twice.
-        deploy_via_rest(args.host, args.user, args.password or "", port, ssl_verify, content, filename, args.dry_run, force_http=args.http, timeout=args.timeout, fingerprint=fingerprint, ca_file=ca_file, force_destructive=args.force_destructive)
+        deploy_via_rest(
+            args.host,
+            args.user,
+            args.password or "",
+            port,
+            ssl_verify,
+            content,
+            filename,
+            args.dry_run,
+            force_http=args.http,
+            timeout=args.timeout,
+            fingerprint=fingerprint,
+            ca_file=ca_file,
+            force_destructive=args.force_destructive,
+            verify_execute=not args.no_verify_execute,
+            keep_file=args.keep_file,
+            backup=args.backup,
+        )
     elif method == "ssh":
         # For SSH, default port 22 if auto gave 443
         if args.port is None and port == 443:
             port = 22
-        deploy_via_ssh(args.host, args.user, args.password or "", port, content, filename, args.dry_run, args.accept_host_key, timeout=args.timeout, force_destructive=args.force_destructive)
+        deploy_via_ssh(
+            args.host,
+            args.user,
+            args.password or "",
+            port,
+            content,
+            filename,
+            args.dry_run,
+            args.accept_host_key,
+            timeout=args.timeout,
+            force_destructive=args.force_destructive,
+            identity=args.identity or "",
+            keep_file=args.keep_file,
+            backup=args.backup,
+        )
     else:
         print(f"error: unknown method {method}", file=sys.stderr)
         sys.exit(2)

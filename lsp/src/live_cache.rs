@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResourceKind {
     Interfaces,
+    InterfaceLists,
     IpAddresses,
     Ipv6Addresses,
     AddressLists,
@@ -32,6 +33,9 @@ pub enum ResourceKind {
     FirewallMangleChains,
     FirewallNatChains,
     FirewallRawChains,
+    Ipv6FirewallFilterChains,
+    Ipv6FirewallNatChains,
+    Ipv6FirewallRawChains,
     IpPools,
     Ipv6Pools,
 }
@@ -42,6 +46,7 @@ impl ResourceKind {
     pub fn all() -> &'static [ResourceKind] {
         &[
             ResourceKind::Interfaces,
+            ResourceKind::InterfaceLists,
             ResourceKind::IpAddresses,
             ResourceKind::Ipv6Addresses,
             ResourceKind::AddressLists,
@@ -50,6 +55,9 @@ impl ResourceKind {
             ResourceKind::FirewallMangleChains,
             ResourceKind::FirewallNatChains,
             ResourceKind::FirewallRawChains,
+            ResourceKind::Ipv6FirewallFilterChains,
+            ResourceKind::Ipv6FirewallNatChains,
+            ResourceKind::Ipv6FirewallRawChains,
             ResourceKind::IpPools,
             ResourceKind::Ipv6Pools,
         ]
@@ -59,6 +67,7 @@ impl ResourceKind {
     pub fn cache_key(&self) -> &'static str {
         match self {
             Self::Interfaces => "interfaces",
+            Self::InterfaceLists => "interface_lists",
             Self::IpAddresses => "ip_addresses",
             Self::Ipv6Addresses => "ipv6_addresses",
             Self::AddressLists => "address_lists",
@@ -67,6 +76,9 @@ impl ResourceKind {
             Self::FirewallMangleChains => "firewall_mangle_chains",
             Self::FirewallNatChains => "firewall_nat_chains",
             Self::FirewallRawChains => "firewall_raw_chains",
+            Self::Ipv6FirewallFilterChains => "ipv6_firewall_filter_chains",
+            Self::Ipv6FirewallNatChains => "ipv6_firewall_nat_chains",
+            Self::Ipv6FirewallRawChains => "ipv6_firewall_raw_chains",
             Self::IpPools => "ip_pools",
             Self::Ipv6Pools => "ipv6_pools",
         }
@@ -76,6 +88,9 @@ impl ResourceKind {
     pub fn rest_path(&self) -> &'static str {
         match self {
             Self::Interfaces => "/rest/interface",
+            // Interface *lists* (`in-interface-list=`/`out-interface-list=`),
+            // not the interface table itself.
+            Self::InterfaceLists => "/rest/interface/list",
             Self::IpAddresses => "/rest/ip/address",
             Self::Ipv6Addresses => "/rest/ipv6/address",
             Self::AddressLists => "/rest/ip/firewall/address-list",
@@ -84,6 +99,9 @@ impl ResourceKind {
             Self::FirewallMangleChains => "/rest/ip/firewall/mangle",
             Self::FirewallNatChains => "/rest/ip/firewall/nat",
             Self::FirewallRawChains => "/rest/ip/firewall/raw",
+            Self::Ipv6FirewallFilterChains => "/rest/ipv6/firewall/filter",
+            Self::Ipv6FirewallNatChains => "/rest/ipv6/firewall/nat",
+            Self::Ipv6FirewallRawChains => "/rest/ipv6/firewall/raw",
             Self::IpPools => "/rest/ip/pool",
             Self::Ipv6Pools => "/rest/ipv6/pool",
         }
@@ -92,13 +110,16 @@ impl ResourceKind {
     /// Primary JSON field name extracted from array items.
     pub fn json_field(&self) -> &'static str {
         match self {
-            Self::Interfaces => "name",
+            Self::Interfaces | Self::InterfaceLists => "name",
             Self::IpAddresses | Self::Ipv6Addresses => "address",
             Self::AddressLists | Self::Ipv6AddressLists => "list",
             Self::FirewallFilterChains
             | Self::FirewallMangleChains
             | Self::FirewallNatChains
-            | Self::FirewallRawChains => "chain",
+            | Self::FirewallRawChains
+            | Self::Ipv6FirewallFilterChains
+            | Self::Ipv6FirewallNatChains
+            | Self::Ipv6FirewallRawChains => "chain",
             Self::IpPools | Self::Ipv6Pools => "name",
         }
     }
@@ -107,6 +128,7 @@ impl ResourceKind {
     pub fn detail_label(&self) -> &'static str {
         match self {
             Self::Interfaces => "live — interface on device",
+            Self::InterfaceLists => "live — interface list",
             Self::IpAddresses => "live — IPv4 address on device",
             Self::Ipv6Addresses => "live — IPv6 address on device",
             Self::AddressLists => "live — firewall address-list",
@@ -114,7 +136,10 @@ impl ResourceKind {
             Self::FirewallFilterChains => "live — firewall filter chain",
             Self::FirewallMangleChains => "live — firewall mangle chain",
             Self::FirewallNatChains => "live — firewall NAT chain",
-            Self::FirewallRawChains => "live — firewall raw chain",
+            Self::FirewallRawChains => "live — firewall RAW chain",
+            Self::Ipv6FirewallFilterChains => "live — IPv6 firewall filter chain",
+            Self::Ipv6FirewallNatChains => "live — IPv6 firewall NAT chain",
+            Self::Ipv6FirewallRawChains => "live — IPv6 firewall RAW chain",
             Self::IpPools => "live — IP pool on device",
             Self::Ipv6Pools => "live — IPv6 pool on device",
         }
@@ -395,7 +420,16 @@ pub fn live_resource_for_menu_property(
 
     let is_ipv6 = path_low.starts_with("/ipv6") || type_low.contains("ipv6");
 
-    // 1. Interfaces / bridges / ports
+    // 1. Interface names / bridges / ports. `*-interface-list` is NOT an
+    // interface name: it references `/interface/list` entries and is handled
+    // by its own kind below (wrong suggestions here would produce
+    // `invalid value` on the device).
+    if matches!(
+        prop_low.as_str(),
+        "in-interface-list" | "out-interface-list"
+    ) {
+        return Some(ResourceKind::InterfaceLists);
+    }
     if matches!(
         prop_low.as_str(),
         "interface"
@@ -404,18 +438,31 @@ pub fn live_resource_for_menu_property(
             | "parent"
             | "in-interface"
             | "out-interface"
-            | "in-interface-list"
-            | "out-interface-list"
             | "master-interface"
     ) || type_low.contains("iface")
     {
         return Some(ResourceKind::Interfaces);
     }
 
-    // 2. Firewall address-list (IPv4 vs IPv6)
+    // 2. Firewall address-list (IPv4 vs IPv6). The bare `list` property is
+    // menu-scoped: in firewall/address-list menus it is a firewall list, in
+    // `/interface/list/member` it is an interface list, and everywhere else
+    // it is unknown (unscoped `list=` must not suggest firewall names).
+    if prop_low == "list" {
+        if path_low.contains("/interface/list") {
+            return Some(ResourceKind::InterfaceLists);
+        }
+        if path_low.contains("/firewall") || path_low.contains("address-list") {
+            return Some(if is_ipv6 {
+                ResourceKind::Ipv6AddressLists
+            } else {
+                ResourceKind::AddressLists
+            });
+        }
+    }
     if matches!(
         prop_low.as_str(),
-        "src-address-list" | "dst-address-list" | "address-list" | "list"
+        "src-address-list" | "dst-address-list" | "address-list"
     ) {
         if is_ipv6 {
             return Some(ResourceKind::Ipv6AddressLists);
@@ -424,16 +471,29 @@ pub fn live_resource_for_menu_property(
         }
     }
 
-    // 3. Firewall chains (filter, mangle, nat, raw)
+    // 3. Firewall chains (filter, mangle, nat, raw), family-aware: `/ipv6`
+    // menus must read the IPv6 tables — IPv6 has no mangle table.
     if matches!(prop_low.as_str(), "chain" | "jump-target") {
         if path_low.contains("mangle") {
             return Some(ResourceKind::FirewallMangleChains);
         } else if path_low.contains("nat") {
-            return Some(ResourceKind::FirewallNatChains);
+            return Some(if is_ipv6 {
+                ResourceKind::Ipv6FirewallNatChains
+            } else {
+                ResourceKind::FirewallNatChains
+            });
         } else if path_low.contains("raw") {
-            return Some(ResourceKind::FirewallRawChains);
+            return Some(if is_ipv6 {
+                ResourceKind::Ipv6FirewallRawChains
+            } else {
+                ResourceKind::FirewallRawChains
+            });
         } else {
-            return Some(ResourceKind::FirewallFilterChains);
+            return Some(if is_ipv6 {
+                ResourceKind::Ipv6FirewallFilterChains
+            } else {
+                ResourceKind::FirewallFilterChains
+            });
         }
     }
 

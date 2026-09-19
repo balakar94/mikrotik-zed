@@ -123,6 +123,44 @@ fn test_transport_hardening_allowed_without_opt_in() {
 }
 
 #[test]
+fn test_settings_fingerprint_replacement_requires_opt_in() {
+    let hex_a = "aa".repeat(32);
+    let hex_b = "bb".repeat(32);
+    let mut cfg = LiveConfig::from_env_with(|k| match k {
+        "RSC_LS_LIVE" => Some("1".to_string()),
+        "MIKROTIK_HOST" => Some("router.local".to_string()),
+        "MIKROTIK_PASS" => Some("envpass".to_string()),
+        "MIKROTIK_FINGERPRINT" => Some(format!("sha256:{hex_a}")),
+        _ => None,
+    });
+    let pin_a = cfg.fingerprint;
+    assert!(pin_a.is_some());
+    let replace = serde_json::json!({
+        "rsc": {"live": {"fingerprint": format!("sha256:{hex_b}")}}
+    });
+    // Replacing the env pin is a trust-anchor change: default deny.
+    LiveConfig::apply_settings_value_with_transport(&mut cfg, &replace, false);
+    assert_eq!(cfg.fingerprint, pin_a, "env pin must win without opt-in");
+    // With the opt-in the overlay applies.
+    LiveConfig::apply_settings_value_with_transport(&mut cfg, &replace, true);
+    assert_eq!(cfg.fingerprint.map(|b| b[0]), Some(0xbb));
+    // Adding a pin where none existed is hardening: always allowed.
+    let mut bare = secure_base_cfg();
+    assert!(bare.fingerprint.is_none());
+    let add = serde_json::json!({
+        "rsc": {"live": {"fingerprint": format!("sha256:{hex_a}")}}
+    });
+    LiveConfig::apply_settings_value_with_transport(&mut bare, &add, false);
+    assert!(
+        bare.fingerprint.is_some(),
+        "adding a pin does not need the transport opt-in"
+    );
+    // Same value is a no-op and stays allowed.
+    LiveConfig::apply_settings_value_with_transport(&mut bare, &add, false);
+    assert_eq!(bare.fingerprint.map(|b| b[0]), Some(0xaa));
+}
+
+#[test]
 fn test_validate_user_rejects_injection() {
     assert_eq!(validate_user("admin"), Some("admin".to_string()));
     assert_eq!(

@@ -263,13 +263,18 @@ class TestLiveSecurityInvariants:
 
     def test_is_active_requires_host_and_pass(self):
         txt = _read_live()
-        # is_active must check host non-empty, pass non-empty, validate_host, enabled
+        # is_active delegates to inactive_reason, which names each failed
+        # predicate (host/pass/opt-in/policy) as the single source of truth.
         assert "fn is_active" in txt
-        block = txt[txt.index("fn is_active"): txt.index("fn is_active") + 600]
-        assert "!self.host.is_empty()" in block
-        assert "!self.pass.is_empty()" in block
+        assert "fn inactive_reason" in txt
+        assert "self.inactive_reason().is_none()" in txt
+        block = txt[txt.index("fn inactive_reason"): txt.index("fn inactive_reason") + 1200]
+        assert "self.fingerprint_invalid" in block
+        assert "!self.enabled" in block
+        assert "self.host.is_empty()" in block
+        assert "self.pass.is_empty()" in block
         assert "validate_host" in block
-        assert "self.enabled" in block
+        assert "self.port == 0" in block
 
 
 # ── 4. Default off & opt-in behavior ───────────────────────────────

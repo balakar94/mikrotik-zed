@@ -170,6 +170,31 @@ fn test_ca_bundle_missing_and_oversize_fail_closed() {
     let _ = std::fs::remove_file(&big);
 }
 
+#[test]
+fn test_ca_bundle_negative_cache_retries_after_repair() {
+    // OBS-02: the negative-cache key includes size/mtime, so a repaired
+    // bundle is re-read without a language-server restart.
+    let dir = std::env::temp_dir().join("rsc-ls-ca-repair-test");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("repair-ca.pem");
+    let key = path.to_string_lossy().to_string();
+    // Broken first: fail-closed and negative-cached.
+    std::fs::write(&path, b"not a pem bundle").unwrap();
+    assert!(read_ca_bundle(&key).is_none());
+    // Repaired (different size/mtime): must be read again and accepted.
+    // `parse_pem_certs` only needs a decodable base64 block.
+    std::fs::write(
+        &path,
+        b"-----BEGIN CERTIFICATE-----\nAAECAw==\n-----END CERTIFICATE-----\n",
+    )
+    .unwrap();
+    assert!(
+        read_ca_bundle(&key).is_some(),
+        "a repaired CA bundle must be retried"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
 #[cfg(unix)]
 #[test]
 fn test_ca_bundle_symlink_to_oversize_fails_closed() {

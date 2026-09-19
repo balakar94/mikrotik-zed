@@ -135,6 +135,64 @@ fn test_url_build_ipv6() {
 }
 
 #[test]
+fn test_expanded_ipv6_literals_accepted() {
+    // Valid textual IPv6 forms (expanded, zero-padded, mixed case) are not
+    // "non-canonical": they are accepted and judged by the parsed address.
+    for good in [
+        "2001:0db8::1",
+        "[2001:0DB8::1]",
+        "[2001:0db8:0000:0000:0000:0000:0000:0001]",
+    ] {
+        assert!(
+            validate_host_with_allow(good, false).is_ok(),
+            "expanded IPv6 must be accepted: {good}"
+        );
+        assert!(!is_non_canonical_numeric_host(good), "{good}");
+    }
+    // Denied ranges still apply to expanded spellings (anti-bypass).
+    assert!(validate_host_with_allow("[0:0:0:0:0:0:0:0]", false).is_err());
+    assert!(validate_host_with_allow("[::ffff:169.254.169.254]", true).is_err());
+    assert!(validate_host_with_allow("[fe80:0000:0000:0000:0000:0000:0000:0001]", true).is_err());
+    // IPv4 obfuscation encodings stay rejected.
+    assert!(is_non_canonical_numeric_host("2130706433"));
+    assert!(is_non_canonical_numeric_host("0x7f000001"));
+    assert!(is_non_canonical_numeric_host("127.1"));
+    assert!(!is_non_canonical_numeric_host("8.8.8.8"));
+}
+
+#[test]
+fn test_rest_url_carries_proplist_field() {
+    let mut m = HashMap::new();
+    m.insert("RSC_LS_LIVE", "1");
+    m.insert("MIKROTIK_HOST", "192.168.88.1");
+    m.insert("MIKROTIK_PASS", "p");
+    let cfg = cfg_with(m);
+    let url = build_rest_url(&cfg, ResourceKind::Interfaces).unwrap();
+    assert!(url.contains("/rest/interface?.proplist=name"), "got {url}");
+    let url_list = build_rest_url(&cfg, ResourceKind::InterfaceLists).unwrap();
+    assert!(
+        url_list.contains("/rest/interface/list?.proplist=name"),
+        "got {url_list}"
+    );
+    let url_al = build_rest_url(&cfg, ResourceKind::AddressLists).unwrap();
+    assert!(url_al.contains(".proplist=list"), "got {url_al}");
+    let url6 = build_rest_url(&cfg, ResourceKind::Ipv6FirewallNatChains).unwrap();
+    assert!(
+        url6.contains("/rest/ipv6/firewall/nat?.proplist=chain"),
+        "got {url6}"
+    );
+    // Expanded IPv6 hosts still build (and normalize in the URL).
+    let mut m2 = HashMap::new();
+    m2.insert("RSC_LS_LIVE", "1");
+    m2.insert("MIKROTIK_HOST", "2001:0db8:0000::1");
+    m2.insert("MIKROTIK_PASS", "p");
+    let cfg2 = cfg_with(m2);
+    assert!(cfg2.is_active());
+    let url2 = build_rest_url(&cfg2, ResourceKind::Interfaces).unwrap();
+    assert!(url2.contains("[2001:db8::1]"), "got {url2}");
+}
+
+#[test]
 fn test_debug_redacts_pass() {
     // Security fix: LiveConfig Debug must never leak MIKROTIK_PASS.
     let mut m = HashMap::new();

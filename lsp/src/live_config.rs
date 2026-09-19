@@ -20,6 +20,11 @@ use std::sync::{Mutex, OnceLock};
 ///
 /// JSON shape: `{ "property": "packet-mark", "path": "/rest/ip/firewall/mangle", "field":
 /// "new-packet-mark" }`
+///
+/// Values are sanitized with the generic identifier filter
+/// (`[A-Za-z0-9._-]`, max 64 chars), so a custom field whose values contain
+/// `/`, `:`, `=` or spaces (IP prefixes, comments) yields no completions —
+/// map a field whose values are RouterOS names or identifiers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CustomResource {
     /// Property name that triggers this resource (e.g. "packet-mark").
@@ -200,7 +205,7 @@ impl LiveConfig {
         let host = hosts.first().cloned().unwrap_or_default();
         if hosts.len() > 1 {
             log_info!(
-                "live multi-host {} (primary={})",
+                "live multi-host parsed count={} primary={} (only the primary host is fetched)",
                 hosts.len(),
                 sanitize_for_log(&host)
             );
@@ -287,15 +292,37 @@ impl LiveConfig {
     /// Requires opt-in `enabled` AND non-empty `host` + `pass` with valid host.
     /// A present-but-invalid `MIKROTIK_FINGERPRINT` is fail-closed (inactive).
     pub fn is_active(&self) -> bool {
+        self.inactive_reason().is_none()
+    }
+
+    /// First failed activation predicate, or `None` when live is active.
+    ///
+    /// Single source of truth for [`Self::is_active`] and the operator-facing
+    /// inactive log: names the exact reason (invalid pin, opt-in missing,
+    /// host/pass missing, host policy denial, invalid port) instead of
+    /// collapsing every cause into one generic message. `pass` is only
+    /// checked for emptiness; its value is never returned or logged.
+    pub(crate) fn inactive_reason(&self) -> Option<&'static str> {
         if self.fingerprint_invalid {
-            return false;
+            return Some("invalid MIKROTIK_FINGERPRINT (fail-closed)");
         }
-        self.enabled
-            && !self.host.is_empty()
-            && !self.pass.is_empty()
-            && validate_host_with_policy(&self.host, self.allow_loopback, &self.deny_prefixes)
-                .is_ok()
-            && self.port != 0
+        if !self.enabled {
+            return Some("live opt-in not set (RSC_LS_LIVE=1 or MIKROTIK_LIVE=1)");
+        }
+        if self.host.is_empty() {
+            return Some("missing MIKROTIK_HOST");
+        }
+        if self.pass.is_empty() {
+            return Some("missing MIKROTIK_PASS");
+        }
+        if validate_host_with_policy(&self.host, self.allow_loopback, &self.deny_prefixes).is_err()
+        {
+            return Some("host denied by live policy (SSRF/loopback/operator deny)");
+        }
+        if self.port == 0 {
+            return Some("invalid MIKROTIK_PORT");
+        }
+        None
     }
 
     /// Whether TLS verification is effectively enabled for the current scheme.
@@ -324,6 +351,14 @@ impl LiveConfig {
 
     /// Log whether live is enabled or disabled (never logs `pass`).
     pub fn log_status(&self) {
+        // SEC-07: a SPKI pin is meaningless over plain HTTP, and plain HTTP
+        // also sends the Basic credentials in cleartext. Warn loudly rather
+        // than letting MIKROTIK_FINGERPRINT imply transport security.
+        if self.fingerprint.is_some() && self.scheme() == "http" {
+            log_warn!(
+                "live MIKROTIK_FINGERPRINT is set but the effective scheme is http — the SPKI pin is not enforced over plain HTTP (credentials are sent in cleartext)"
+            );
+        }
         if self.is_active() {
             // Host is safe to log (no pass); port and scheme are non-sensitive.
             // Host/user values go through sanitize_for_log (strip CR/LF, 128 cap).
@@ -347,15 +382,17 @@ impl LiveConfig {
             );
             if self.hosts.len() > 1 {
                 log_info!(
-                    "live multi-host active count={} primary={}",
+                    "live multi-host parsed count={} primary={} (only the primary host is fetched)",
                     self.hosts.len(),
                     sanitize_for_log(&self.host)
                 );
             }
         } else if self.enabled {
-            // Opt-in was requested but required vars missing/invalid.
+            // Opt-in was requested but activation failed: name the first
+            // failed predicate instead of guessing host/pass every time.
             log_info!(
-                "live enabled but inactive — missing/invalid MIKROTIK_HOST or MIKROTIK_PASS (opt-in via RSC_LS_LIVE=1)"
+                "live enabled but inactive — {}",
+                self.inactive_reason().unwrap_or("unknown reason")
             );
         } else {
             log_info!("live disabled (opt-in via RSC_LS_LIVE=1 or MIKROTIK_LIVE=1)");
@@ -383,9 +420,10 @@ impl LiveConfig {
     ///
     /// Transport-security keys (`host`, `user`, `port`, `ssl_verify=false`,
     /// `force_http=true`, `allow_loopback=true`, `custom_resources`,
-    /// `ca_file`) are privileged: they are ignored from workspace settings
-    /// unless `RSC_LS_ALLOW_SETTINGS_TRANSPORT=1` is set. Env values always
-    /// win.
+    /// `ca_file`, and replacement/removal of an env-configured
+    /// `fingerprint`) are privileged: they are ignored from workspace
+    /// settings unless `RSC_LS_ALLOW_SETTINGS_TRANSPORT=1` is set. Env values
+    /// always win.
     pub fn apply_settings_value(cfg: &mut Self, v: &serde_json::Value) {
         Self::apply_settings_value_with_transport(cfg, v, settings_transport_allowed());
     }
@@ -596,8 +634,11 @@ impl LiveConfig {
                 cfg.allow_loopback = requested;
             }
         }
-        // TLS pin overlay: adding a pin is hardening (always allowed);
-        // removing a pin configured via env is a downgrade (needs opt-in).
+        // TLS pin overlay: adding a pin when none existed is hardening (always
+        // allowed); removing or replacing a pin configured via env is a
+        // trust-anchor change (needs opt-in), because a workspace settings
+        // file could otherwise redirect the pin to an attacker-known key
+        // while leaving host/user untouched.
         if let Some(fp_val) =
             get_settings_str(settings_obj, &["fingerprint", "MIKROTIK_FINGERPRINT"])
         {
@@ -617,8 +658,15 @@ impl LiveConfig {
                         "live settings fingerprint invalid (expected sha256:<64 hex chars>), ignoring"
                     );
                 } else {
-                    cfg.fingerprint = parsed;
-                    cfg.fingerprint_invalid = false;
+                    let replacing_env_pin = cfg.fingerprint.is_some() && parsed != cfg.fingerprint;
+                    if replacing_env_pin && !allow_transport {
+                        log_warn!(
+                            "live settings fingerprint replacement ignored (env pin stays): set RSC_LS_ALLOW_SETTINGS_TRANSPORT=1 to allow workspace transport overrides"
+                        );
+                    } else {
+                        cfg.fingerprint = parsed;
+                        cfg.fingerprint_invalid = false;
+                    }
                 }
             }
         }
@@ -643,7 +691,7 @@ impl LiveConfig {
         // Log if multi-host after overlay
         if cfg.hosts.len() > 1 {
             log_info!(
-                "live multi-host (settings) {} (primary={})",
+                "live multi-host parsed count={} primary={} (only the primary host is fetched)",
                 cfg.hosts.len(),
                 sanitize_for_log(&cfg.host)
             );

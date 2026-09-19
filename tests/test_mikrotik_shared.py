@@ -44,7 +44,9 @@ from _mikrotik_shared import (  # noqa: E402
     env_int,
     extract_spki_der,
     format_host_for_url,
+    host_is_private,
     is_ipv6_transition_prefix,
+    is_non_canonical_numeric_host,
     is_normalized_loopback_or_private,
     is_normalized_ssrf_denied,
     open_pinned_socket,
@@ -1367,6 +1369,8 @@ class TestDeployDryRunMatrix:
             "MIKROTIK_ACCEPT_HOST_KEY",
             "MIKROTIK_FINGERPRINT",
             "MIKROTIK_CA_FILE",
+            "MIKROTIK_IDENTITY",
+            "MIKROTIK_FORCE_DESTRUCTIVE",
         ):
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setenv("MIKROTIK_PASS", _MATRIX_PASSWORD)
@@ -1448,3 +1452,261 @@ class TestDeployDryRunMatrix:
         )
         assert code == 2, f"out={out!r} err={err!r}"
         assert "fingerprint" in err.lower()
+
+    def test_dry_run_reports_execute_sentinel(self, rsc_file, no_network, clean_deploy_env, monkeypatch, capsys):
+        # DEP-01: the sentinel is announced in the preview, and
+        # --no-verify-execute switches the preview to the unverified path.
+        code, out, err = self._run_main(
+            monkeypatch, capsys, [rsc_file, "--dry-run", "--host", "192.168.88.1"]
+        )
+        assert code == 0, f"out={out!r} err={err!r}"
+        assert "RSC_DEPLOY_OK" in out
+        code, out, err = self._run_main(
+            monkeypatch,
+            capsys,
+            [rsc_file, "--dry-run", "--host", "192.168.88.1", "--no-verify-execute"],
+        )
+        assert code == 0, f"out={out!r} err={err!r}"
+        assert "RSC_DEPLOY_OK" not in out
+        assert "verification disabled" in out
+
+    def test_dry_run_identity_preview(self, rsc_file, no_network, clean_deploy_env, monkeypatch, capsys):
+        # DEP-04: key auth is opt-in and visible in the preview.
+        code, out, err = self._run_main(
+            monkeypatch,
+            capsys,
+            [
+                rsc_file,
+                "--dry-run",
+                "--host",
+                "192.168.88.1",
+                "--method",
+                "ssh",
+                "--identity",
+                "/tmp/id_ed25519",
+                "--backup",
+            ],
+        )
+        assert code == 0, f"out={out!r} err={err!r}"
+        assert "key=/tmp/id_ed25519" in out
+        assert "backup" in out.lower()
+
+
+# ── Destructive pre-scan (comments/strings ignored) ──────────────
+
+
+class TestDestructiveScan:
+    def test_comments_and_strings_are_ignored(self):
+        mod = _load_deploy_module()
+        assert mod.find_destructive_lines("# remove old rules\n") == []
+        assert mod.find_destructive_lines(
+            '/ip firewall filter add chain=forward action=accept comment="remove me"\n'
+        ) == []
+        assert mod.find_destructive_lines(":put 'reset-configuration'\n") == []
+        # An inline comment is stripped; the command before it is clean.
+        assert (
+            mod.find_destructive_lines(
+                "/ip address add address=1.1.1.1/24 interface=ether1 # remove later\n"
+            )
+            == []
+        )
+
+    def test_reset_and_remove_are_classified(self):
+        mod = _load_deploy_module()
+        assert (
+            mod.classify_destructive_line("/system reset-configuration no-confirm")
+            == "reset"
+        )
+        assert mod.classify_destructive_line("/system reset") == "reset"
+        assert (
+            mod.classify_destructive_line("/ip firewall filter remove numbers=1")
+            == "remove"
+        )
+        assert (
+            mod.classify_destructive_line("/ip address add address=1.1.1.1/24")
+            is None
+        )
+
+    def test_gate_exit_codes(self, capsys):
+        mod = _load_deploy_module()
+        with pytest.raises(SystemExit) as exc:
+            mod.check_destructive_or_exit("/system reset-configuration\n", False)
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "destructive" in err.lower()
+        assert "hard-blocked" in err
+
+        with pytest.raises(SystemExit) as exc:
+            mod.check_destructive_or_exit("/ip firewall filter remove numbers=1\n", False)
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "requires explicit confirmation" in err
+
+        # --force-destructive warns but proceeds; clean content is a no-op.
+        mod.check_destructive_or_exit("/system reset-configuration\n", True)
+        assert "acknowledged" in capsys.readouterr().err
+        mod.check_destructive_or_exit("# remove old rules\n", False)
+
+    def test_dry_run_comment_only_remove_exits_0(self, tmp_path, monkeypatch, capsys):
+        mod = _load_deploy_module()
+        f = tmp_path / "comment.rsc"
+        f.write_text(
+            "# remove old rules\n/ip address add address=1.1.1.1/24 interface=ether1\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["mikrotik-deploy.py", str(f), "--dry-run", "--host", "192.168.88.1"],
+        )
+        monkeypatch.setenv("MIKROTIK_PASS", "pw")
+        mod.main()
+        out, err = capsys.readouterr()
+        assert "DRY-RUN" in out
+        assert "destructive" not in (out + err).lower()
+
+
+# ── Single-host contract ─────────────────────────────────────────
+
+
+class TestSingleHostContract:
+    def test_deploy_rejects_comma_host(self, tmp_path, monkeypatch, capsys):
+        mod = _load_deploy_module()
+        f = tmp_path / "x.rsc"
+        f.write_text("/ip address print\n", encoding="utf-8")
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["mikrotik-deploy.py", str(f), "--dry-run", "--host", "a.example,b.example"],
+        )
+        monkeypatch.setenv("MIKROTIK_PASS", "pw")
+        with pytest.raises(SystemExit) as exc:
+            mod.main()
+        assert exc.value.code == 2
+        assert "single host" in capsys.readouterr().err
+
+    def test_live_check_rejects_comma_host(self):
+        env = {k: v for k, v in os.environ.items() if k != "MIKROTIK_HOST"}
+        result = subprocess.run(
+            [sys.executable, str(LIVE_CHECK_PY), "--dry-run", "--host", "a.example,b.example"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        assert result.returncode == 2, f"out={result.stdout!r} err={result.stderr!r}"
+        assert "single host" in (result.stdout + result.stderr)
+
+
+# ── live-check parity warning + fingerprint-over-http warning ────
+
+
+class TestParityWarnings:
+    def test_private_host_warns_without_allow_loopback(self):
+        env = {k: v for k, v in os.environ.items() if k != "RSC_LS_LIVE_ALLOW_LOOPBACK"}
+        result = subprocess.run(
+            [sys.executable, str(LIVE_CHECK_PY), "--dry-run", "--host", "192.168.88.1"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        assert result.returncode == 0, f"out={result.stdout!r} err={result.stderr!r}"
+        assert "RSC_LS_LIVE_ALLOW_LOOPBACK" in result.stderr
+
+    def test_private_host_warning_suppressed_with_flag(self):
+        env = {k: v for k, v in os.environ.items() if k != "MIKROTIK_HOST"}
+        env["RSC_LS_LIVE_ALLOW_LOOPBACK"] = "1"
+        result = subprocess.run(
+            [sys.executable, str(LIVE_CHECK_PY), "--dry-run", "--host", "192.168.88.1"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        assert result.returncode == 0, f"out={result.stdout!r} err={result.stderr!r}"
+        assert "RSC_LS_LIVE_ALLOW_LOOPBACK" not in result.stderr
+
+    def test_deploy_http_fingerprint_warns(self, tmp_path, monkeypatch, capsys):
+        mod = _load_deploy_module()
+        f = tmp_path / "x.rsc"
+        f.write_text("/ip address print\n", encoding="utf-8")
+        hex64 = "ab" * 32
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "mikrotik-deploy.py",
+                str(f),
+                "--dry-run",
+                "--host",
+                "192.168.88.1",
+                "--http",
+                "--fingerprint",
+                f"sha256:{hex64}",
+            ],
+        )
+        monkeypatch.setenv("MIKROTIK_PASS", "pw")
+        mod.main()
+        err = capsys.readouterr().err
+        assert "not enforced over plain HTTP" in err
+
+
+# ── expanded IPv6 literals accepted (mirrors live_net.rs LIVE-05) ─
+
+
+class TestExpandedIpv6Accepted:
+    def test_expanded_ipv6_is_not_non_canonical(self):
+        # Valid textual IPv6 forms are accepted and judged by parsed ranges;
+        # only IPv4 inet_aton encodings stay fail-closed.
+        for good in [
+            "2001:0db8::1",
+            "[2001:0DB8::1]",
+            "[2001:0db8:0000:0000:0000:0000:0000:0001]",
+        ]:
+            assert not is_non_canonical_numeric_host(good), good
+            assert validate_host(good) is None, good
+        # Anti-bypass: expanded denied forms stay denied.
+        assert validate_host("[0:0:0:0:0:0:0:0]") is not None
+        assert validate_host("[::ffff:169.254.169.254]") is not None
+        assert validate_host("[fe80:0000:0000:0000:0000:0000:0000:0001]") is not None
+        # IPv4 obfuscation encodings stay rejected.
+        assert is_non_canonical_numeric_host("2130706433")
+        assert is_non_canonical_numeric_host("0x7f000001")
+        assert is_non_canonical_numeric_host("127.1")
+        assert not is_non_canonical_numeric_host("8.8.8.8")
+
+
+# ── host_is_private ───────────────────────────────────────────────
+
+
+class TestHostIsPrivate:
+    def test_private_hosts(self):
+        for private in [
+            "192.168.88.1",
+            "10.0.0.1",
+            "172.16.5.5",
+            "100.64.0.1",
+            "127.0.0.1",
+            "::1",
+            "[fd00::1]",
+            "localhost",
+            "LOCALHOST.",
+        ]:
+            assert host_is_private(private), private
+
+    def test_public_hosts(self):
+        for public in ["8.8.8.8", "1.1.1.1", "2001:db8::1", "router.example.com", ""]:
+            assert not host_is_private(public), public
+
+
+# ── redaction of device body previews ────────────────────────────
+
+
+class TestLiveCheckBodyRedaction:
+    def test_body_previews_are_redacted(self):
+        text = LIVE_CHECK_PY.read_text(encoding="utf-8")
+        # SEC-05: neither transport may print a raw body preview.
+        assert "body_preview = text[:500]" not in text
+        assert "body_preview = redact_secrets(" in text
+        assert "body = redact_secrets(body, password, user)" in text

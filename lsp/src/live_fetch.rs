@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{
     Arc, Mutex, OnceLock,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant};
 
@@ -687,10 +687,12 @@ fn insecure_agent_builder(timeout: Duration) -> Option<ureq::AgentBuilder> {
 /// `fetch_custom_resource`.
 ///
 /// Performs the authenticated GET against `url` with the config's clamped
-/// timeout, enforces the response caps from `caps.rs`
-/// (`MAX_LIVE_RESPONSE_BYTES` via `reader.take(limit + 1)`), validates the
-/// JSON-array shape, and extracts + sanitizes the values via
-/// `extract_and_sanitize`.
+/// timeout and extracts + sanitizes the values via [`extract_streaming`]:
+/// the body is parsed incrementally against `MAX_LIVE_RESPONSE_BYTES`, so a
+/// large table yields partial live data instead of a hard
+/// `ResponseTooLarge`, and a malformed (or non-array) body still fails
+/// closed. The URL carries the resource's `?.proplist=<field>` filter
+/// (constructed in `build_rest_url`/`build_custom_rest_url`).
 ///
 /// `label` identifies the resource in logs (e.g. `Interfaces` or a custom
 /// property name). Callers are responsible for `config.is_active()`, host
@@ -772,42 +774,15 @@ fn fetch_live_resource(
     }
 
     let reader = response.into_reader();
-    let mut buf = Vec::new();
-    let limit = MAX_LIVE_RESPONSE_BYTES + 1;
-    let n = {
-        use std::io::Read;
-        let mut limited = reader.take(limit as u64);
-        match limited.read_to_end(&mut buf) {
-            Ok(n) => n,
-            // F6: I/O errors may echo request context — redact before storing.
-            Err(e) => {
-                return Err(LiveError::Network(redact_secrets(
-                    &e.to_string(),
-                    &config.pass,
-                    &config.user,
-                )));
-            }
+    let cleaned = extract_streaming(reader, json_field, kind).map_err(|e| match e {
+        // F6: I/O errors may echo request context — redact before storing.
+        LiveError::Network(msg) => {
+            LiveError::Network(redact_secrets(&msg, &config.pass, &config.user))
         }
-    };
-    if n > MAX_LIVE_RESPONSE_BYTES {
-        return Err(LiveError::ResponseTooLarge(n));
-    }
-    if buf.is_empty() {
-        return Err(LiveError::Parse("empty response".to_string()));
-    }
-
-    let json: serde_json::Value =
-        serde_json::from_slice(&buf).map_err(|e| LiveError::Parse(format!("invalid json: {e}")))?;
-    let Some(arr) = json.as_array() else {
-        return Err(LiveError::Parse("expected JSON array".to_string()));
-    };
-
-    let cleaned = extract_and_sanitize(arr, json_field, kind);
-    if cleaned.is_empty() && !arr.is_empty() {
-        log_warn!(
-            "live fetch parsed 0 valid values for {label} from {} entries",
-            arr.len()
-        );
+        other => other,
+    })?;
+    if cleaned.is_empty() {
+        log_debug!("live fetch parsed 0 valid values for {label}");
     }
     let elapsed = start.elapsed();
     log_debug!(
@@ -820,9 +795,187 @@ fn fetch_live_resource(
     Ok(cleaned)
 }
 
+// ── Streaming extraction (LIVE-02) ───────────────────────────────────────
+//
+// The whole-body read path (`extract_and_sanitize`) fails when a single
+// response exceeds `MAX_LIVE_RESPONSE_BYTES` — and RouterOS returns one
+// record per firewall address-list entry, so country-block/feed lists easily
+// exceed the cap. The streaming path below stops at `MAX_LIVE_ITEMS` or the
+// byte cap, whichever comes first, and returns the values collected so far
+// (partial success) while malformed JSON stays fail-closed.
+
+/// Read adapter that stops producing bytes after `limit` and flags the
+/// overflow, so the parser observes a truncated document instead of the
+/// caller buffering an unbounded body. The counters are shared handles
+/// (`Arc<Atomic*>`), so the owning scope can read them while the parser
+/// holds `&mut` on this reader.
+struct CappedReader<R> {
+    inner: R,
+    limit: u64,
+    read: Arc<AtomicU64>,
+    exceeded: Arc<AtomicBool>,
+}
+
+impl<R: std::io::Read> std::io::Read for CappedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.read.fetch_add(n as u64, Ordering::Relaxed);
+        if self.read.load(Ordering::Relaxed) > self.limit {
+            self.exceeded.store(true, Ordering::Relaxed);
+            return Ok(0);
+        }
+        Ok(n)
+    }
+}
+
+/// Sequence visitor that extracts `json_field` from array elements as the
+/// parser walks them, stopping after `2 * MAX_LIVE_ITEMS` raw values.
+///
+/// serde's `StreamDeserializer` (`into_iter`) would parse a top-level array
+/// as one `Value`, not as its elements, so the array is consumed through
+/// `deserialize_seq` instead. Returning early from `visit_seq` stops the
+/// reader before the rest of the body is consumed.
+struct FieldCollector<'a> {
+    json_field: &'a str,
+    raw_values: &'a mut Vec<String>,
+    item_cap: Arc<AtomicBool>,
+}
+
+impl<'de> serde::de::Visitor<'de> for FieldCollector<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a JSON array of objects")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        while let Some(value) = seq.next_element::<serde_json::Value>()? {
+            if let serde_json::Value::Object(obj) = &value
+                && let Some(val) = obj.get(self.json_field).and_then(|v| v.as_str())
+            {
+                self.raw_values.push(val.to_string());
+            }
+            if self.raw_values.len() >= MAX_LIVE_ITEMS * 2 {
+                // `deserialize_seq` checks for trailing characters after the
+                // visitor returns, so an early break surfaces as an error;
+                // the flag lets the caller distinguish that expected stop
+                // from a genuinely malformed document.
+                self.item_cap.store(true, Ordering::Relaxed);
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Stream-extract `json_field` from a top-level JSON array.
+///
+/// - Reads through a [`CappedReader`] so at most `MAX_LIVE_RESPONSE_BYTES`
+///   are consumed and never buffered wholesale.
+/// - Stops once `2 * MAX_LIVE_ITEMS` raw values are collected (same bound as
+///   [`extract_and_sanitize`]) or the cap is hit.
+/// - A malformed document, a non-array top level, or an empty body returns
+///   `LiveError::Parse` (fail-closed). Only the cap may return a partial
+///   result; with no collected values it maps to `ResponseTooLarge`.
+pub(crate) fn extract_streaming<R: std::io::Read>(
+    reader: R,
+    json_field: &str,
+    kind: ResourceKind,
+) -> Result<Vec<String>, LiveError> {
+    use std::io::BufRead;
+
+    let exceeded = Arc::new(AtomicBool::new(false));
+    let read = Arc::new(AtomicU64::new(0));
+    let capped = CappedReader {
+        inner: reader,
+        limit: MAX_LIVE_RESPONSE_BYTES as u64,
+        read: Arc::clone(&read),
+        exceeded: Arc::clone(&exceeded),
+    };
+    let mut buffered = std::io::BufReader::new(capped);
+
+    // Peek the first non-whitespace byte: the stream yields array *elements*
+    // without exposing the container type, so a top-level object/scalar must
+    // be rejected here to keep the same "expected JSON array" contract as the
+    // buffered extractor. Whitespace-only buffers are consumed (they are
+    // bounded by the cap).
+    let first = loop {
+        let available = buffered
+            .fill_buf()
+            .map_err(|e| LiveError::Network(e.to_string()))?;
+        if available.is_empty() {
+            break None;
+        }
+        if let Some(byte) = available.iter().find(|b| !b.is_ascii_whitespace()) {
+            break Some(*byte);
+        }
+        let len = available.len();
+        buffered.consume(len);
+    };
+    match first {
+        None => return Err(LiveError::Parse("empty response".to_string())),
+        Some(b'[') => {}
+        Some(_) => return Err(LiveError::Parse("expected JSON array".to_string())),
+    }
+
+    use serde::Deserializer;
+
+    let mut raw_values: Vec<String> = Vec::new();
+    let item_cap = Arc::new(AtomicBool::new(false));
+    let collector = FieldCollector {
+        json_field,
+        raw_values: &mut raw_values,
+        item_cap: Arc::clone(&item_cap),
+    };
+    let parsed = serde_json::Deserializer::from_reader(&mut buffered).deserialize_seq(collector);
+    if let Err(err) = parsed {
+        if exceeded.load(Ordering::Relaxed) {
+            return cap_outcome(raw_values, &read, kind);
+        }
+        if item_cap.load(Ordering::Relaxed) {
+            // Expected stop: the collector already has enough values.
+            return Ok(sanitize_resource_values(raw_values, kind));
+        }
+        return Err(LiveError::Parse(format!("invalid json: {err}")));
+    }
+    if exceeded.load(Ordering::Relaxed) {
+        return cap_outcome(raw_values, &read, kind);
+    }
+    Ok(sanitize_resource_values(raw_values, kind))
+}
+
+/// Outcome for a cap hit: partial values when any were collected, else the
+/// `ResponseTooLarge` error. `sanitize_resource_values` applies the kind's
+/// filter/dedupe/sort/cap, so the partial result is still a valid set.
+fn cap_outcome(
+    raw_values: Vec<String>,
+    read: &AtomicU64,
+    kind: ResourceKind,
+) -> Result<Vec<String>, LiveError> {
+    if raw_values.is_empty() {
+        return Err(LiveError::ResponseTooLarge(
+            read.load(Ordering::Relaxed) as usize
+        ));
+    }
+    log_warn!(
+        "live response exceeded {} bytes; using {} partial values (streaming extraction)",
+        MAX_LIVE_RESPONSE_BYTES,
+        raw_values.len()
+    );
+    Ok(sanitize_resource_values(raw_values, kind))
+}
+
 /// Extract `json_field` from each array entry (bounded to
 /// `2 * MAX_LIVE_ITEMS` raw values) and sanitize the results with `kind`'s
 /// value filter.
+///
+/// Test-only reference implementation: production extraction now streams
+/// through [`extract_streaming`], and the slice form pins the expected
+/// buffered behaviour for the streaming visitor.
+#[cfg(test)]
 pub(crate) fn extract_and_sanitize(
     arr: &[serde_json::Value],
     json_field: &str,

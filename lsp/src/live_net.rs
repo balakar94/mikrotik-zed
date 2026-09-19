@@ -266,14 +266,20 @@ pub(crate) fn normalized_host_ip(host: &str) -> Option<std::net::IpAddr> {
     }
 }
 
-/// Whether `host` is a non-canonical numeric literal.
+/// Whether `host` is a non-canonical **IPv4** numeric literal.
 ///
-/// When WHATWG normalization yields an IP whose canonical string differs
-/// from the raw literal (modulo brackets and ASCII case), the input used a
-/// decimal/hex/octal/short or otherwise non-canonical encoding and is
-/// rejected fail-closed — even when the normalized address itself would be
-/// public. Canonical forms (`127.0.0.1`, `8.8.8.8`, `2001:db8::1`) are
-/// unaffected because they already match their canonical string.
+/// WHATWG normalization collapses the inet_aton encodings — decimal
+/// (`2130706433`), hex (`0x7f000001`), octal (`0177.0.0.1`), short
+/// (`127.1`) — to an address a lexical deny list cannot see, so an IPv4
+/// literal whose canonical string differs from the raw input (modulo
+/// brackets and ASCII case) is rejected fail-closed even when the normalized
+/// address itself would be public.
+///
+/// IPv6 is intentionally not subject to this check: expanded, zero-padded
+/// and mixed-case literals (`2001:0DB8:0000::1`) are valid, unambiguous
+/// encodings of one address, so they are accepted and judged by the
+/// normalized-IP range checks in [`is_normalized_ssrf_denied`] and
+/// [`is_normalized_loopback_or_private`] instead.
 pub(crate) fn is_non_canonical_numeric_host(host: &str) -> bool {
     let trimmed = host.trim();
     let inner = if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() >= 2 {
@@ -284,8 +290,10 @@ pub(crate) fn is_non_canonical_numeric_host(host: &str) -> bool {
     let Some(normalized) = normalized_host_ip(trimmed) else {
         return false;
     };
-    let canonical = normalized.to_string().to_ascii_lowercase();
-    inner.to_ascii_lowercase() != canonical
+    let std::net::IpAddr::V4(v4) = normalized else {
+        return false;
+    };
+    inner.to_ascii_lowercase() != v4.to_string()
 }
 
 // ── Operator deny prefixes (`RSC_LS_LIVE_DENY_PREFIXES`) ─────────────────
@@ -751,7 +759,9 @@ pub(crate) fn validate_host_with_policy(
 ///   (`64:ff9b::/96`, `2001::/32`, `2002::/16`), the IPv4-compatible
 ///   `::/96` form (`::127.0.0.1`, `::a9fe:a9fe`), and
 ///   `metadata.google.internal` (lexical plus WHATWG-normalized checks)
-/// - non-canonical numeric literals rejected fail-closed
+/// - non-canonical numeric **IPv4** literals rejected fail-closed (IPv6 is
+///   accepted in any valid textual form; range checks run on the parsed
+///   address)
 /// - loopback/private denied unless `RSC_LS_LIVE_ALLOW_LOOPBACK=1` (range
 ///   checks run on the normalized IP; IPv4-mapped and IPv4-compatible
 ///   embedded addresses are judged as their IPv4 equivalent, and RFC1918,
@@ -890,11 +900,12 @@ pub(crate) fn resolve_and_validate_host_with_denies(
 /// anything larger is a misconfiguration, not a trust anchor).
 pub(crate) const MAX_CA_FILE_BYTES: u64 = 256 * 1024;
 
-/// Negative cache of CA paths that failed to parse, so every completion
+/// Negative cache of CA bundles that failed to parse, so every completion
 /// keystroke does not re-read a broken bundle. Keyed by the canonical path
-/// when available, else the raw path. Entries are never evicted within the
-/// process lifetime (a bundle fix requires a restart — documented in the
-/// WARN at insertion).
+/// plus the file's size and mtime when it is statable (`path|len|mtime`),
+/// else the raw path: repairing or replacing the file changes the key and is
+/// retried automatically, while an unchanged broken bundle keeps its cached
+/// failure for the process lifetime.
 fn bad_ca_cache() -> &'static Mutex<HashSet<String>> {
     static BAD_CA: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     BAD_CA.get_or_init(|| Mutex::new(HashSet::new()))
@@ -921,6 +932,8 @@ fn mark_bad_ca(key: String) {
 /// - Warns (once per path) when the file is a symlink.
 /// - Returns `None` fail-closed on missing/unreadable/oversize/undecodable
 ///   input; callers fall back to the default verifier (never insecure).
+/// - Failures are negative-cached under `path|size|mtime` (when statable), so
+///   a repaired bundle is retried automatically without a process restart.
 /// - The size cap is enforced again at read time (`take(cap + 1)`) so a
 ///   swapped symlink or a special file cannot force an unbounded read.
 pub(crate) fn read_ca_bundle(ca_file: &str) -> Option<String> {
@@ -933,7 +946,23 @@ pub(crate) fn read_ca_bundle(ca_file: &str) -> Option<String> {
         .as_ref()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| ca_file.to_string());
-    if is_bad_ca(&key) {
+    // Size + mtime participate in the negative-cache key when the file is
+    // statable, so a repaired/replaced bundle is retried without waiting for
+    // a process restart; missing files key on the path alone so creating the
+    // file also retries.
+    let stat_key = match std::fs::metadata(raw_path) {
+        Ok(m) => {
+            let mtime = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            format!("{key}|{}|{mtime}", m.len())
+        }
+        Err(_) => key.clone(),
+    };
+    if is_bad_ca(&stat_key) {
         return None;
     }
     let fail = |why: &str| {
@@ -941,7 +970,7 @@ pub(crate) fn read_ca_bundle(ca_file: &str) -> Option<String> {
             "live CA file unreadable ({why}): {:?}",
             sanitize_for_log(ca_file)
         );
-        mark_bad_ca(key.clone());
+        mark_bad_ca(stat_key.clone());
         None
     };
     let meta = std::fs::symlink_metadata(raw_path).ok()?;
@@ -1052,8 +1081,13 @@ pub(crate) fn build_base_url_with_policy(
 
 /// Build and validate the REST URL for a given resource.
 ///
-/// Uses `build_base_url_with_allow` for shared validation, then appends the resource path.
-/// Handles IPv6 bracket wrapping via `format_host_for_url`.
+/// Uses `build_base_url_with_policy` for shared validation, then appends the
+/// resource path and a `.proplist` GET filter (documented RouterOS REST
+/// query syntax: `GET /rest/ip/address?.proplist=address,disabled`). The
+/// proplist trims each record to the single field completion consumes, which
+/// keeps large tables (firewall address-list entries in particular) inside
+/// `MAX_LIVE_RESPONSE_BYTES`. Handles IPv6 bracket wrapping via
+/// `format_host_for_url`.
 pub(crate) fn build_rest_url(
     config: &LiveConfig,
     resource: ResourceKind,
@@ -1066,6 +1100,8 @@ pub(crate) fn build_rest_url(
         &config.deny_prefixes,
     )?;
     base.set_path(resource.rest_path());
+    base.query_pairs_mut()
+        .append_pair(".proplist", resource.json_field());
     let url_str = base.to_string();
     // Re-validate full URL (scheme + host + path) via Url crate.
     let parsed = url::Url::parse(&url_str)
@@ -1095,6 +1131,10 @@ pub(crate) fn build_custom_rest_url(
         format!("/{}", custom.path)
     };
     base.set_path(&path);
+    // Same `.proplist` trim as the built-in resources; `custom.field` was
+    // validated to `^[a-zA-Z0-9_-]+$` so it is safe as a property name.
+    base.query_pairs_mut()
+        .append_pair(".proplist", &custom.field);
     let url_str = base.to_string();
     let parsed = url::Url::parse(&url_str)
         .map_err(|e| LiveError::InvalidHost(format!("invalid url: {e}")))?;

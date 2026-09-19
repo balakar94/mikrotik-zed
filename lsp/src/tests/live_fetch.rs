@@ -266,6 +266,83 @@ fn test_pinned_resolver_never_consults_dns() {
     assert_eq!(resolver.resolve("other.example:443").unwrap(), addrs);
 }
 
+// ── LIVE-02: streaming extraction ────────────────────────────────────────
+
+#[test]
+fn test_extract_streaming_parses_and_filters() {
+    let body = br#"[{"name":"ether2"},{"name":"ether1"},{"name":"ether1"},{"name":"bad val"},{"nope":"x"},{"name":"wlan1"}]"#;
+    let out = extract_streaming(&body[..], "name", ResourceKind::Interfaces).unwrap();
+    assert_eq!(out, vec!["ether1", "ether2", "wlan1"]);
+    // A valid empty array is an empty Ok, not a parse error.
+    assert_eq!(
+        extract_streaming(&b"[]"[..], "name", ResourceKind::Interfaces).unwrap(),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn test_extract_streaming_item_cap_stops_early() {
+    // More than 2*MAX_LIVE_ITEMS entries: the collector breaks early and the
+    // sanitized output is capped to MAX_LIVE_ITEMS (Ok, never an error).
+    let n = MAX_LIVE_ITEMS * 2 + 50;
+    let entries: Vec<String> = (0..n)
+        .map(|i| format!("{{\"name\":\"if{i:04}\"}}"))
+        .collect();
+    let body = format!("[{}]", entries.join(","));
+    let out = extract_streaming(body.as_bytes(), "name", ResourceKind::Interfaces).unwrap();
+    assert_eq!(out.len(), MAX_LIVE_ITEMS);
+}
+
+#[test]
+fn test_extract_streaming_rejects_malformed_and_non_array() {
+    // Top-level object/scalar, empty body, and truncated documents all fail
+    // closed with a parse error (never a silent empty success).
+    for body in [
+        &b"{\"error\":400}"[..],
+        b"42",
+        b"",
+        b"{",
+        b"[{\"name\":\"x\"}",
+    ] {
+        let err = extract_streaming(body, "name", ResourceKind::Interfaces).unwrap_err();
+        assert!(
+            matches!(err, LiveError::Parse(_)),
+            "expected Parse for {body:?}, got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn test_extract_streaming_cap_returns_partial_values() {
+    // One valid entry followed by ~800 KiB of non-matching records: the byte
+    // cap hits before MAX_LIVE_ITEMS, but the collected value survives.
+    let mut body = String::from(r#"[{"name":"ether1"},"#);
+    for _ in 0..200 {
+        body.push_str(&format!(r#"{{"other":"{}"}},"#, "x".repeat(4096)));
+    }
+    body.pop();
+    body.push(']');
+    assert!(body.len() > MAX_LIVE_RESPONSE_BYTES);
+    let out = extract_streaming(body.as_bytes(), "name", ResourceKind::Interfaces).unwrap();
+    assert_eq!(out, vec!["ether1"]);
+}
+
+#[test]
+fn test_extract_streaming_cap_without_values_is_too_large() {
+    let mut body = String::from("[");
+    for _ in 0..200 {
+        body.push_str(&format!(r#"{{"other":"{}"}},"#, "x".repeat(4096)));
+    }
+    body.pop();
+    body.push(']');
+    assert!(body.len() > MAX_LIVE_RESPONSE_BYTES);
+    let err = extract_streaming(body.as_bytes(), "name", ResourceKind::Interfaces).unwrap_err();
+    assert!(
+        matches!(err, LiveError::ResponseTooLarge(_)),
+        "expected ResponseTooLarge, got {err:?}"
+    );
+}
+
 #[test]
 fn test_pinned_agent_cache_bounded_eviction() {
     use crate::caps::MAX_PINNED_AGENT_CACHE_ENTRIES;

@@ -45,8 +45,10 @@ Usage notes:
   ``::a9fe:a9fe``), whole ``169.254.0.0/16``, IPv6 ``fe80::/10``,
   multicast ``224.0.0.0/4``, reserved ``240.0.0.0/4``, ``192.0.0.0/24``,
   and benchmarking ``198.18.0.0/15`` are all denied fail-closed.
-  Non-canonical numeric literals are rejected even when the normalized
-  address would otherwise be allowed.
+  Non-canonical numeric **IPv4** literals are rejected even when the
+  normalized address would otherwise be allowed; IPv6 literals are accepted
+  in any valid textual form (expanded, zero-padded, mixed case) and judged
+  by the parsed-address range checks.
 - ``RSC_LS_LIVE_DENY_PREFIXES`` is an operator-configured, env-only
   comma-separated list of IPv4/IPv6 addresses or CIDR prefixes the SSRF
   policy always denies (network-specific NAT64/RFC 6052 prefixes, internal
@@ -291,13 +293,18 @@ def normalized_host_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Addre
 
 
 def is_non_canonical_numeric_host(host: str) -> bool:
-    """Whether ``host`` is a non-canonical numeric literal (fail-closed).
+    """Whether ``host`` is a non-canonical **IPv4** numeric literal (fail-closed).
 
-    Mirrors ``lsp/src/live_net.rs::is_non_canonical_numeric_host``: when
-    normalization yields an IP whose canonical string differs from the raw
-    literal (modulo brackets and ASCII case), the input used a decimal, hex,
-    octal, short, or otherwise non-canonical encoding and is rejected — even
-    when the normalized address itself would be allowed.
+    Mirrors ``lsp/src/live_net.rs::is_non_canonical_numeric_host``: the
+    inet_aton encodings — decimal, hex, octal, short (``127.1``) — can hide a
+    denied address from a lexical denylist, so an IPv4 literal whose
+    canonical string differs from the raw input (modulo brackets and ASCII
+    case) is rejected even when the normalized address itself would be
+    allowed.
+
+    IPv6 is intentionally not subject to this check: expanded, zero-padded
+    and mixed-case literals (``2001:0DB8:0000::1``) are valid encodings of
+    one address and are judged by the normalized-IP range checks instead.
     """
     stripped = (host or "").strip()
     if not stripped:
@@ -310,8 +317,7 @@ def is_non_canonical_numeric_host(host: str) -> bool:
         return False
     if isinstance(norm, ipaddress.IPv4Address):
         return inner != str(norm)
-    # IPv6: compare case-insensitively against compressed form.
-    return inner.lower() != norm.compressed.lower()
+    return False
 
 
 def _in_ipv6_net(addr: ipaddress.IPv6Address, net: str) -> bool:
@@ -622,6 +628,36 @@ def is_normalized_loopback_or_private(
     except Exception:
         pass
     return False
+
+
+def host_is_private(host: str) -> bool:
+    """Whether ``host`` is loopback/RFC1918/CGNAT/ULA (or ``localhost``).
+
+    Mirrors the range half of ``lsp/src/live_net.rs::is_loopback_or_private``
+    without the allow-loopback policy: the companion scripts intentionally
+    allow private routers, but ``rsc-ls`` live denies them unless
+    ``RSC_LS_LIVE_ALLOW_LOOPBACK=1``, so callers use this to warn that a
+    successful script check does not imply LSP readiness. Numeric forms run
+    through :func:`normalized_host_ip` (IPv4-mapped/compatible included);
+    non-numeric names are never DNS-resolved here.
+    """
+    norm = normalized_host_ip(host)
+    if norm is not None and is_normalized_loopback_or_private(norm):
+        return True
+    lowered = (host or "").strip().lower()
+    inner = lowered
+    if inner.startswith("[") and inner.endswith("]") and len(inner) >= 2:
+        inner = inner[1:-1]
+    if len(inner) > 1 and inner.endswith("."):
+        inner = inner[:-1]
+    if inner == "localhost":
+        return True
+    host_no_zone = inner.split("%")[0]
+    try:
+        addr = ipaddress.ip_address(host_no_zone)
+    except ValueError:
+        return False
+    return is_normalized_loopback_or_private(addr)
 
 
 def validate_host(host: str) -> str | None:

@@ -279,6 +279,65 @@ fn test_parse_fingerprint_multibyte_body_is_rejected_without_panic() {
 }
 
 #[test]
+fn test_inactive_reason_names_first_failure() {
+    // Disabled: the opt-in is the first failed predicate.
+    let cfg = cfg_with(HashMap::new());
+    assert!(
+        cfg.inactive_reason().unwrap().contains("opt-in"),
+        "got {:?}",
+        cfg.inactive_reason()
+    );
+    assert!(!cfg.is_active());
+
+    // Enabled, host present, pass missing.
+    let mut m = HashMap::new();
+    m.insert("RSC_LS_LIVE", "1");
+    m.insert("MIKROTIK_HOST", "192.168.88.1");
+    let cfg2 = cfg_with(m);
+    assert!(
+        cfg2.inactive_reason().unwrap().contains("MIKROTIK_PASS"),
+        "got {:?}",
+        cfg2.inactive_reason()
+    );
+    assert!(!cfg2.is_active());
+
+    // Policy denial: private host without the loopback opt-in (no injection).
+    let cfg3 = LiveConfig::from_env_with(|k| match k {
+        "RSC_LS_LIVE" => Some("1".to_string()),
+        "MIKROTIK_HOST" => Some("192.168.88.1".to_string()),
+        "MIKROTIK_PASS" => Some("p".to_string()),
+        _ => None,
+    });
+    assert!(
+        cfg3.inactive_reason().unwrap().contains("policy"),
+        "got {:?}",
+        cfg3.inactive_reason()
+    );
+
+    // Invalid pin wins over every later predicate.
+    let mut m4 = HashMap::new();
+    m4.insert("RSC_LS_LIVE", "1");
+    m4.insert("MIKROTIK_HOST", "router.local");
+    m4.insert("MIKROTIK_PASS", "p");
+    m4.insert("MIKROTIK_FINGERPRINT", "sha256:nope");
+    let cfg4 = cfg_with(m4);
+    assert!(
+        cfg4.inactive_reason().unwrap().contains("FINGERPRINT"),
+        "got {:?}",
+        cfg4.inactive_reason()
+    );
+
+    // Active => no reason.
+    let mut m5 = HashMap::new();
+    m5.insert("RSC_LS_LIVE", "1");
+    m5.insert("MIKROTIK_HOST", "router.local");
+    m5.insert("MIKROTIK_PASS", "p");
+    let cfg5 = cfg_with(m5);
+    assert!(cfg5.is_active());
+    assert!(cfg5.inactive_reason().is_none());
+}
+
+#[test]
 fn test_parse_fingerprint_unset_or_blank_is_not_invalid() {
     assert_eq!(crate::live_config::parse_fingerprint(None), (None, false));
     assert_eq!(

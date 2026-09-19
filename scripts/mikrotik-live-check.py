@@ -32,8 +32,15 @@ Usage:
 
 Exit codes:
   0 - Live OK (reachable, valid JSON list)
-  2 - Usage error (missing host)
+  2 - Usage error (missing host, comma-separated host list, invalid params)
   4 - Live FAIL (network, auth, status, parse, unexpected JSON shape, or host validation failure)
+
+Notes:
+  - The scripts dial exactly one host; a comma-separated MIKROTIK_HOST is a
+    usage error (rsc-ls live parses the list and fetches the primary only).
+  - A non-fatal warning is emitted for loopback/private targets when
+    RSC_LS_LIVE_ALLOW_LOOPBACK=1 is not set, because exit 0 here does not
+    imply the LSP's stricter live policy will activate.
 """
 
 from __future__ import annotations
@@ -60,6 +67,7 @@ from _mikrotik_shared import (  # noqa: E402
     clamp_int,
     env_int,
     format_host_for_url,
+    host_is_private,
     parse_fingerprint,
     redact_secrets,
     resolve_scheme,
@@ -140,6 +148,20 @@ def main() -> None:
     args = parse_args()
 
     host = (args.host or "").strip()
+    # Single-host contract: rsc-ls parses a comma-separated MIKROTIK_HOST and
+    # fetches only the primary; the scripts dial exactly one host, so a list
+    # is a usage error instead of a confusing DNS failure later.
+    if "," in host:
+        msg = (
+            "MIKROTIK_HOST must be a single host; comma-separated multi-host is only "
+            "supported by rsc-ls live (which fetches the primary host only)"
+        )
+        print(f"error: {msg}", file=sys.stderr)
+        if args.json:
+            print(json.dumps({"ok": False, "error": msg, "host": host}))
+        else:
+            print(f"Live FAIL: {msg}")
+        sys.exit(2)
     user_raw = args.user or "admin"
     user = validate_user(user_raw) or "admin"
     if user != (user_raw or "").strip():
@@ -208,6 +230,25 @@ def main() -> None:
         sys.exit(4)
 
     scheme = resolve_scheme(port, force_http)
+
+    # SEC-07: a SPKI pin cannot be enforced over plain HTTP (and Basic
+    # credentials travel in cleartext), so never let the flag imply security.
+    if fingerprint is not None and scheme == "http":
+        print(
+            "warning: MIKROTIK_FINGERPRINT is set but the effective scheme is http; "
+            "the SPKI pin is not enforced over plain HTTP and credentials are sent in cleartext",
+            file=sys.stderr,
+        )
+
+    # Non-fatal parity note: the companion scripts intentionally allow
+    # private/loopback targets, but rsc-ls live denies them unless
+    # RSC_LS_LIVE_ALLOW_LOOPBACK=1. Warn so exit 0 does not imply LSP readiness.
+    if host_is_private(host) and os.getenv("RSC_LS_LIVE_ALLOW_LOOPBACK") != "1":
+        print(
+            "warning: target host is loopback/private; rsc-ls live stays inactive for it "
+            "unless RSC_LS_LIVE_ALLOW_LOOPBACK=1 is set (this health check itself does not require it)",
+            file=sys.stderr,
+        )
 
     host_for_url = format_host_for_url(host)
     url = f"{scheme}://{host_for_url}:{port}/rest/interface"
@@ -408,8 +449,11 @@ def main() -> None:
                         print(f"Live FAIL: {msg} status={status}")
                     sys.exit(4)
             else:
-                # Auth or other error
-                body_preview = text[:500].replace("\n", " ")
+                # Auth or other error. SEC-05: a device body could echo
+                # request context, so redact before printing/embedding.
+                body_preview = redact_secrets(
+                    text[:500].replace("\n", " "), password, user
+                )
                 msg = f"http status {status}"
                 print(f"error: {msg}: {body_preview}", file=sys.stderr)
                 if args.json:
@@ -528,7 +572,10 @@ def main() -> None:
                                 print(f"Live FAIL: {msg} status={status}")
                             sys.exit(4)
                     else:
-                        body_preview = text[:500].replace("\n", " ")
+                        # SEC-05: redact before printing/embedding.
+                        body_preview = redact_secrets(
+                            text[:500].replace("\n", " "), password, user
+                        )
                         msg = f"http status {status}"
                         print(f"error: {msg}: {body_preview}", file=sys.stderr)
                         if args.json:
@@ -550,6 +597,8 @@ def main() -> None:
                     body = e.read().decode("utf-8", errors="replace")[:500]
                 except Exception:
                     body = ""
+                # SEC-05: redact before printing/embedding.
+                body = redact_secrets(body, password, user)
                 msg = f"http status {status}"
                 print(f"error: {msg}: {body}", file=sys.stderr)
                 if args.json:

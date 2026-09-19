@@ -50,7 +50,7 @@ fn test_filter_ip_value() {
 
 #[test]
 fn test_resource_kind_properties() {
-    assert_eq!(ResourceKind::all().len(), 11);
+    assert_eq!(ResourceKind::all().len(), 15);
     for kind in ResourceKind::all() {
         assert!(!kind.cache_key().is_empty());
         assert!(kind.rest_path().starts_with("/rest/"));
@@ -77,6 +77,20 @@ fn test_live_resource_for_property_all_kinds() {
     assert_eq!(
         live_resource_for_property("foo", "iface_enum"),
         Some(ResourceKind::Interfaces)
+    );
+    // Interface *lists* are a distinct menu (`/interface/list`), not the
+    // interface table: `in-interface-list=` must not suggest interface names.
+    assert_eq!(
+        live_resource_for_property("in-interface-list", "string"),
+        Some(ResourceKind::InterfaceLists)
+    );
+    assert_eq!(
+        live_resource_for_property("out-interface-list", "string"),
+        Some(ResourceKind::InterfaceLists)
+    );
+    assert_eq!(
+        live_resource_for_menu_property("/interface/list/member", "list", "string"),
+        Some(ResourceKind::InterfaceLists)
     );
 
     // IPv4 Addresses
@@ -120,14 +134,22 @@ fn test_live_resource_for_property_all_kinds() {
         live_resource_for_property("address-list", "string"),
         Some(ResourceKind::AddressLists)
     );
+    // The bare `list` property is menu-scoped: firewall menus map to firewall
+    // address-lists, `/interface/list/member` to interface lists, and an
+    // unscoped `list=` suggests nothing (it must not offer firewall names).
     assert_eq!(
-        live_resource_for_property("list", "string"),
+        live_resource_for_menu_property("/ip/firewall/filter", "list", "string"),
+        Some(ResourceKind::AddressLists)
+    );
+    assert_eq!(
+        live_resource_for_menu_property("/ip/firewall/address-list", "list", "string"),
         Some(ResourceKind::AddressLists)
     );
     assert_eq!(
         live_resource_for_menu_property("/ipv6/firewall/address-list", "list", "string"),
         Some(ResourceKind::Ipv6AddressLists)
     );
+    assert_eq!(live_resource_for_property("list", "string"), None);
 
     // Firewall chains (filter, mangle, nat, raw)
     assert_eq!(
@@ -149,6 +171,24 @@ fn test_live_resource_for_property_all_kinds() {
     assert_eq!(
         live_resource_for_property("jump-target", "string"),
         Some(ResourceKind::FirewallFilterChains)
+    );
+    // Family-aware chains: `/ipv6/firewall/*` must read the IPv6 tables
+    // (IPv6 has no mangle table).
+    assert_eq!(
+        live_resource_for_menu_property("/ipv6/firewall/filter", "chain", "string"),
+        Some(ResourceKind::Ipv6FirewallFilterChains)
+    );
+    assert_eq!(
+        live_resource_for_menu_property("/ipv6/firewall/nat", "chain", "string"),
+        Some(ResourceKind::Ipv6FirewallNatChains)
+    );
+    assert_eq!(
+        live_resource_for_menu_property("/ipv6/firewall/raw", "chain", "string"),
+        Some(ResourceKind::Ipv6FirewallRawChains)
+    );
+    assert_eq!(
+        live_resource_for_menu_property("/ipv6/firewall/filter", "jump-target", "string"),
+        Some(ResourceKind::Ipv6FirewallFilterChains)
     );
 
     // IP Pools (IPv4 & IPv6)
