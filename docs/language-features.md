@@ -17,7 +17,7 @@ All contextual features are driven by the command database embedded in
 | Verb | `2` | `add`, `set`, … accepted by the menu; script globals (`:local`) share this tier |
 | Sub-menu | `3` | child paths in context |
 | Enum value | `4` | documented enum/bool members |
-| Common hint | `5` | curated values (e.g. firewall chains), one tier below true members |
+| Common hint | `5` | curated fallback for free-form `chain` enums (user-defined names), one tier below true members |
 | Placeholder | `6` | honest type placeholder (`0.0.0.0/0`) when nothing better exists |
 | Flag | `7` | single-letter flags |
 | Demoted | `8` | typo fallback when the prefix matched nothing |
@@ -57,6 +57,17 @@ name — from device (Live) or type manually"), the owning command
 (`in \`/ip/address add\``), enum values, an example where useful, and the
 source line. Descriptions longer than `MAX_HOVER_DESC_CHARS` are cut and
 marked `(truncated)`.
+
+Value cards cover the value side of `name=value`: boolean literals (`yes`,
+`no`, `true`, `false`, `on`, `off`), enum members with the argument's accepted
+values (bounded, with a `(+N more)` footer), other typed values with the
+shared gloss and example, and `$variable` references. Values that cannot be
+attributed to an argument return no card, and structural delimiters (`]]`,
+`)`, `,`, `;`) are trimmed from the label.
+
+Hover resolves both RouterOS path styles — slash-joined (`/ip/route/add`, the
+dominant form) and space-joined (`/ip route add`) — including paths inside
+`{ … }` blocks and `\`-continued commands.
 
 ## Diagnostics
 
