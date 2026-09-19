@@ -156,6 +156,9 @@ mod hover_menu;
 mod hover_property;
 
 #[cfg(test)]
+mod hover_value;
+
+#[cfg(test)]
 mod hover_verbs;
 
 #[cfg(test)]

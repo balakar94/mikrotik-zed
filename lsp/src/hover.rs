@@ -1,11 +1,12 @@
 // ── Hover logic for the RSC language server ──────────────────────────────
 //
 // When the user hovers over a word, check:
-// 1. Is it a menu path (starts with /)?
-// 2. Is it a property name for the current menu?
-// 3. Is it a standard RouterOS verb?
+// 1. Is it a value token of a `name=value` property?
+// 2. Is it a menu path (starts with /)?
+// 3. Is it a property name for the current menu?
+// 4. Is it a standard RouterOS verb?
 
-use crate::menus::{MenuData, MenuEntry};
+use crate::menus::{ArgEntry, LineContext, MenuData, MenuEntry};
 // Shared text helpers live in `crate::text_util` (single owner); the
 // re-exports below keep historical `hover::` paths resolving for tests.
 pub(crate) use crate::text_util::{MAX_HOVER_PROPERTIES, sanitize_markdown_for_hover};
@@ -260,6 +261,185 @@ fn slash_segment_spans(word: &str) -> Vec<(usize, usize)> {
     spans
 }
 
+/// Hover card for the VALUE token of a `name=value` property.
+///
+/// Returns `None` unless the cursor sits on the value part of a property
+/// token whose key resolves to an argument of the current menu context:
+/// property keys keep their own card, and unattributable values (unknown
+/// keys/menus, positional arguments, comments, bare expressions) stay
+/// silent. Quoted values behave like unquoted ones — outer quotes are
+/// stripped for matching and for the card label.
+fn value_hover(
+    data: &MenuData,
+    line: &str,
+    word_start: usize,
+    word_end: usize,
+    context: &LineContext,
+) -> Option<Hover> {
+    // Only a resolvable menu/command context can attribute a value.
+    let menu = find_menu(data, &context.path)?;
+    let token = crate::parser::tokenize_with_spans(line)
+        .into_iter()
+        .find(|t| t.start <= word_start && word_end <= t.end)?;
+    let (key, raw_value) = crate::parser::split_key_value(&token.text)?;
+    // Cursor on the key part of the token: the property card owns it.
+    if word_start < token.start + key.len() + 1 {
+        return None;
+    }
+    let bare = value_text(raw_value);
+    if bare.is_empty() {
+        return None;
+    }
+    let arg = menu
+        .arguments
+        .iter()
+        .find(|a| normalize_key(&a.name) == normalize_key(key))?;
+    let display = display_value(&bare);
+    if bare.starts_with('$') {
+        return Some(variable_value_card(&display));
+    }
+    if (arg.arg_type == "bool" || arg.arg_type == "boolean")
+        && let Some(card) = boolean_value_card(&bare, &display)
+    {
+        return Some(card);
+    }
+    // `alt` wrappers can still carry an enum member list (`new-mss`), so the
+    // embedded values decide in addition to the `enum` type prefix.
+    if arg.arg_type.starts_with("enum") || !arg.enum_values.is_empty() {
+        return Some(enum_value_card(arg, &display));
+    }
+    Some(typed_value_card(arg, &display))
+}
+
+/// Sanitized, length-bounded value text for a card label.
+fn display_value(value: &str) -> String {
+    truncate_chars(
+        &crate::text_util::collapse_controls(value),
+        MAX_MENU_ARG_DESC_CHARS,
+    )
+}
+
+/// Extract the value text from the raw `key=value` tail.
+///
+/// The tokenizer stops at whitespace only, so a value glued to enclosing
+/// expression syntax keeps it (`address=$WgUla]] = 0)`, `[find …
+/// address=$WgUla]`). Unquoted values therefore drop one run of leading
+/// openers (`[ ( { , ;`) and trailing closers (`] ) } , ;`); quoted values
+/// are cut at their matching closing quote — tolerating an unterminated one,
+/// as users type incrementally — and their CONTENT is never delimiter
+/// trimmed (`comment="a]b"` keeps the bracket, `comment="hi"]` loses the
+/// structural `]`).
+fn value_text(raw_value: &str) -> String {
+    let peeled = raw_value
+        .trim()
+        .trim_start_matches(['[', '(', '{', ',', ';'])
+        .trim_end_matches([']', ')', '}', ',', ';']);
+    let Some(quote) = peeled.chars().next().filter(|c| *c == '"' || *c == '\'') else {
+        return peeled.to_string();
+    };
+    let rest = &peeled[quote.len_utf8()..];
+    let mut escaped = false;
+    for (idx, c) in rest.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == quote {
+            return rest[..idx].to_string();
+        }
+    }
+    // Unterminated string: keep everything after the opening quote.
+    rest.to_string()
+}
+
+/// Boolean literal card (`yes/no/true/false/on/off`); `None` for any other
+/// spelling so the caller can fall back to the typed card.
+fn boolean_value_card(value: &str, display: &str) -> Option<Hover> {
+    let enables = match value.to_ascii_lowercase().as_str() {
+        "yes" | "true" | "on" => true,
+        "no" | "false" | "off" => false,
+        _ => return None,
+    };
+    let sentence = if enables {
+        "Boolean value — enables the option"
+    } else {
+        "Boolean value — disables the option"
+    };
+    Some(Hover {
+        contents: HoverContents {
+            kind: "markdown".to_string(),
+            value: format!("**{display}**\n\n{sentence}{}", hover_source_line()),
+        },
+    })
+}
+
+/// `$variable` value card: minimal, honest about the runtime resolution.
+fn variable_value_card(display: &str) -> Hover {
+    Hover {
+        contents: HoverContents {
+            kind: "markdown".to_string(),
+            value: format!(
+                "**{display}**\n\nVariable reference — resolved at runtime{}",
+                hover_source_line()
+            ),
+        },
+    }
+}
+
+/// Enum-typed value card with the accepted members, bounded to
+/// [`MAX_HOVER_PROPERTIES`] with an explicit `(+N more)` footer.
+fn enum_value_card(arg: &ArgEntry, display: &str) -> Hover {
+    let typ = if arg.arg_type.is_empty() {
+        "any"
+    } else {
+        arg.arg_type.as_str()
+    };
+    let mut md = format!("**{display}**\n\nValue of `{}`\n\nType: `{typ}`", arg.name);
+    let members = arg.enum_members_ref();
+    if !members.is_empty() {
+        let shown: Vec<&str> = members
+            .iter()
+            .take(MAX_HOVER_PROPERTIES)
+            .map(String::as_str)
+            .collect();
+        md.push_str(&format!("\n\nValues: {}", shown.join(" | ")));
+        if members.len() > MAX_HOVER_PROPERTIES {
+            md.push_str(&format!(
+                "\n\n(+{} more)",
+                members.len() - MAX_HOVER_PROPERTIES
+            ));
+        }
+    }
+    md.push_str(&hover_source_line());
+    Hover {
+        contents: HoverContents {
+            kind: "markdown".to_string(),
+            value: md,
+        },
+    }
+}
+
+/// Non-enum typed value card: value + owning property + declared type and,
+/// when the type has one, the shared example hint.
+fn typed_value_card(arg: &ArgEntry, display: &str) -> Hover {
+    let typ = if arg.arg_type.is_empty() {
+        "any"
+    } else {
+        arg.arg_type.as_str()
+    };
+    let mut md = format!("**{display}**\n\nValue of `{}=`\n\nType: `{typ}`", arg.name);
+    if let Some(example) = example_for(&arg.arg_type) {
+        md.push_str(&format!("\n\n{example}"));
+    }
+    md.push_str(&hover_source_line());
+    Hover {
+        contents: HoverContents {
+            kind: "markdown".to_string(),
+            value: md,
+        },
+    }
+}
+
 /// Example value line for the most common scalar types.
 fn example_for(arg_type: &str) -> Option<&'static str> {
     if arg_type.starts_with("ipPrefix") {
@@ -353,6 +533,19 @@ pub fn compute_hover(
             None
         };
 
+    // Rebuild context from the full document at the cursor position so that
+    // multiline commands (properties on next lines) are correctly resolved.
+    // Built before the menu-path branch because value attribution needs it
+    // and a `/`-leading VALUE (`comment=/ip`) must not render as a menu.
+    let before_cursor = crate::build_before_cursor(full_doc, cursor_line, character);
+    let context = crate::parse_line(data, &before_cursor);
+
+    // Value token of a `name=value` property: checked before the key-side
+    // branches because a value may spell a menu path or an argument name.
+    if let Some(card) = value_hover(data, line, word_start, word_end, &context) {
+        return Some(card);
+    }
+
     // Check if it's a menu path (case-insensitive; display keeps typed casing)
     if word.starts_with('/') {
         if let Some(menu) = find_menu(data, word) {
@@ -366,10 +559,6 @@ pub fn compute_hover(
     }
 
     // Check if it's a property name for the current menu.
-    // Rebuild context from the full document at the cursor position so that
-    // multiline commands (properties on next line) are correctly resolved.
-    let before_cursor = crate::build_before_cursor(full_doc, cursor_line, character);
-    let context = crate::parse_line(data, &before_cursor);
 
     if let Some(menu) = find_menu(data, &context.path) {
         if let Some(arg) = menu

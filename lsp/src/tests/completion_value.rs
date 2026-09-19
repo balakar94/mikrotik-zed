@@ -73,6 +73,33 @@ fn test_values_after_equals_enum() {
 }
 
 #[test]
+fn test_free_form_chain_still_gets_common_hints() {
+    // A bare `enum` chain (no documented members, e.g. user-defined chains)
+    // keeps the curated hints; only populated enum_values suppress them.
+    let data = MenuData::from_toml_str(
+        r#"
+[[menus]]
+path = "/demo/chain"
+type = "Directory"
+[[menus.arguments]]
+name = "chain"
+type = "enum"
+"#,
+    );
+    let items = compute_completions(&data, "/demo/chain add chain=");
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(labels, vec!["input", "forward", "output"]);
+    for item in &items {
+        assert_eq!(item.detail.as_deref(), Some(COMMON_HINT_DETAIL));
+        assert!(
+            item.sort_text.as_deref().unwrap_or("").starts_with('5'),
+            "curated hint tier 5, got {:?}",
+            item.sort_text
+        );
+    }
+}
+
+#[test]
 fn test_values_after_equals_bool() {
     let data = synthetic();
     let items = compute_completions(&data, "/ip/firewall/filter add enabled=");

@@ -1261,12 +1261,13 @@ fn get_value_completions_with_live(
         }
     }
 
-    // Curated common values for `chain`: upstream documents a bare `enum`
-    // (chains are user-definable), so without this the menu would stay
-    // silent. Offered one tier below true enum members, deduplicated
-    // against live/documented values below. `iface`-typed properties stay
-    // silent unless Live provides values — no fabrication.
-    if normalize_key(property_key) == "chain" {
+    // Curated common values for `chain`: only for genuinely free-form
+    // (bare `enum`) chain properties such as user-defined routing/mangle
+    // chains. When the dataset populates real members, those are the truth:
+    // the curated `input/forward/output` are bridge-FILTER chains and are
+    // invalid for other tables (e.g. `/interface/bridge/nat` accepts only
+    // `srcnat`/`dstnat`). Deduplication against real members stays below.
+    if normalize_key(property_key) == "chain" && arg.enum_values.is_empty() {
         for hint in COMMON_CHAIN_VALUES {
             let already = items.iter().any(|it| it.label.eq_ignore_ascii_case(hint));
             if !already {

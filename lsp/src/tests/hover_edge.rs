@@ -64,10 +64,20 @@ fn test_hover_unknown_menu_returns_none() {
 #[test]
 fn test_hover_random_word_returns_none() {
     let data = synth();
-    let line = "/ip/address add address=1.1.1.1";
-    // Hover over value part which is not a known word (should be none)
-    let pos = line.find("1.1.1.1").unwrap() + 2;
+    // A bare word that is neither property, verb, nor an attributed value.
+    let line = "/ip/address add foo";
+    let pos = line.find("foo").unwrap() + 1;
     assert!(hover_at(&data, line, pos).is_none());
+}
+#[test]
+fn test_hover_attributed_value_returns_value_card() {
+    let data = synth();
+    let line = "/ip/address add address=1.1.1.1";
+    // Value of a known property: attributed card (not a random-word null).
+    let pos = line.find("1.1.1.1").unwrap() + 2;
+    let h = hover_at(&data, line, pos).expect("attributed value card");
+    assert!(h.contents.value.contains("**1.1.1.1**"));
+    assert!(h.contents.value.contains("Value of `address=`"));
 }
 #[test]
 fn test_hover_empty_word_returns_none() {

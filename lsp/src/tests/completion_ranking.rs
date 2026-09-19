@@ -54,6 +54,48 @@ fn test_golden_filter_chain_empty_lists_documented_members() {
 }
 
 #[test]
+fn test_golden_bridge_nat_chain_excludes_generic_hints() {
+    // Runtime regression: `/interface/bridge/nat` documents srcnat/dstnat;
+    // the curated bridge-FILTER hints (input/forward/output) are invalid
+    // there and must not be offered alongside the documented members.
+    let data = MenuData::load();
+    let items = compute_completions(&data, "/interface/bridge/nat add chain=");
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(labels, vec!["srcnat", "dstnat"]);
+    for item in &items {
+        assert_eq!(item.detail.as_deref(), Some("enum value — enum"));
+        assert!(
+            item.sort_text.as_deref().unwrap_or("").starts_with('4'),
+            "documented enum tier, got {:?}",
+            item.sort_text
+        );
+    }
+}
+
+#[test]
+fn test_golden_ipv6_mangle_chain_lists_documented_members_only() {
+    // Same rule on a populated chain list with five members: no generic
+    // hints may be appended after the documented values.
+    let data = MenuData::load();
+    let items = compute_completions(&data, "/ipv6/firewall/mangle add chain=");
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        vec!["prerouting", "input", "forward", "output", "postrouting"]
+    );
+    assert!(
+        items
+            .iter()
+            .all(|i| i.detail.as_deref() == Some("enum value — enum")),
+        "no curated hint may survive a populated enum: {:?}",
+        items
+            .iter()
+            .map(|i| (i.label.as_str(), i.detail.as_deref()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn test_golden_filter_chain_partial_replaces_suffix() {
     let data = MenuData::load();
     let line = "/ip/firewall/filter add chain=in";
