@@ -558,19 +558,40 @@ class TestGrammar:
     def test_highlights_boolean_overrides_target_literals(self):
         """yes/no and :return true/false parse as literal(boolean_literal),
         not identifiers (verified with tree-sitter parse); the identifier
-        forms were dead and must not come back."""
+        forms were dead and must not come back. Each value carries a
+        `@boolean @diff.plus` / `@boolean @diff.minus` fallback chain."""
         txt = _read(HIGHLIGHTS_A)
-        assert "(literal (boolean_literal) @diff.plus)" in txt
-        assert "(literal (boolean_literal) @diff.minus)" in txt
+        assert "(literal (boolean_literal) @boolean @diff.plus)" in txt
+        assert "(literal (boolean_literal) @boolean @diff.minus)" in txt
         # The dead identifier-based yes/no forms must not come back. The
-        # `comment=<identifier>` red pattern legitimately uses
-        # `value: (identifier) @diff.minus`, so target the yes/no guards.
+        # `comment=<identifier>` pattern legitimately uses
+        # `value: (identifier) @string @diff.minus`, so target the yes/no guards.
         assert "value: (identifier) @diff.plus" not in txt
         assert re.search(
             r'value: \(identifier\) @diff\.minus\)\s*\n\s*\(#eq\? '
             r'@diff\.minus "no"\)',
             txt,
         ) is None, "dead identifier-based no-override pattern returned"
+
+    def test_highlights_fallback_chains(self):
+        """Portability (0.7.0): theme-dependent captures carry documented
+        fallbacks. Zed resolves right-to-left, so the rightmost capture is
+        the preferred one and the leftmost the portable fallback."""
+        txt = _read(HIGHLIGHTS_A)
+        for chain in (
+            "@boolean @diff.plus",
+            "@boolean @diff.minus",
+            "@string @diff.minus",
+            "@constant @constant.builtin",
+            "@variable @variable.parameter",
+            "@type @property",
+        ):
+            assert chain in txt, f"highlights.scm missing fallback chain {chain!r}"
+        # No bare @diff/@constant.builtin-only captures may remain: every
+        # theme-dependent value needs its documented fallback.
+        assert "(nil_literal) @constant.builtin" not in txt
+        assert "(literal (boolean_literal) @diff.plus)" not in txt
+        assert "(literal (boolean_literal) @diff.minus)" not in txt
 
     def test_highlights_control_flow_tokens(self):
         """F7 (0.7.0): clause tokens and loop variables must be captured."""
