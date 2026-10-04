@@ -357,9 +357,9 @@ impl zed::Extension for RscExtension {
             &zed::LanguageServerInstallationStatus::Downloading,
         );
 
-        // Staged download: bytes land in `<stored>.part-<pid>-<counter>`
-        // and are verified and chmodded there, then renamed over the stored
-        // name. The stored path is never a download target, so a
+        // Staged download: bytes land in `<stored>.part-<tag>` (unique per
+        // call) and are verified and chmodded there, then renamed over the
+        // stored name. The stored path is never a download target, so a
         // mid-transfer failure cannot leave a truncated file where the reuse
         // gate looks.
         let staging = cache::staging_path(&stored_name);

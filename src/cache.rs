@@ -24,21 +24,30 @@ use crate::verify::{MAX_VERIFIED_BINARY_BYTES, short_digest};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Monotonic tag source for staging and marker temp names. Combined with the
-/// process id it keeps concurrent downloads and retries from sharing a path,
-/// without needing entropy or wall-clock access in the WASM component.
+/// Monotonic tag source for staging and marker temp names. Combined with
+/// [`platform::process_seed`] it keeps concurrent downloads and retries from
+/// sharing a path, without needing entropy or wall-clock access in the WASM
+/// component.
 static INSTALL_TAG: AtomicU64 = AtomicU64::new(0);
 
-/// Unique tag for one staging or temp file (`<pid>-<counter>`).
+/// Unique tag for one staging or temp file (`<seed>-<counter>`).
+///
+/// The seed comes from [`platform::process_seed`] (the process id natively, a
+/// fixed constant in the shipped wasm32-wasip2 component, where
+/// `std::process::id()` is unimplemented and panics at runtime). Uniqueness
+/// within the process comes from the monotonic counter; collisions with
+/// residue from a previous instance are safe because both temp-file
+/// producers (the staging download in `lib.rs`, [`write_marker`] below)
+/// unlink any pre-existing file at the path before writing.
 fn unique_tag() -> String {
     format!(
         "{}-{}",
-        std::process::id(),
+        platform::process_seed(),
         INSTALL_TAG.fetch_add(1, Ordering::Relaxed)
     )
 }
 
-/// Staging path for a fresh download (`<stored>.part-<pid>-<counter>`).
+/// Staging path for a fresh download (`<stored>.part-<tag>`).
 ///
 /// The host writes downloads non-atomically, so bytes always land here first
 /// and move to `stored_name` only after verification and chmod.
@@ -72,7 +81,7 @@ pub(crate) fn marker_path(stored_name: &str) -> String {
 /// Writes the integrity marker for `stored_name` as exactly
 /// `<64-char lowercase sha256 hex>\n`.
 ///
-/// The write is atomic: bytes land in `<marker>.tmp-<pid>-<counter>` (mode
+/// The write is atomic: bytes land in `<marker>.tmp-<tag>` (mode
 /// 0600 on unix) and are renamed over the marker, so a crash never leaves a
 /// half-written marker behind.
 ///
@@ -264,6 +273,20 @@ mod tests {
         assert!(first.starts_with("rsc-ls-0.5.0.part-"));
         assert!(second.starts_with("rsc-ls-0.5.0.part-"));
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn staging_path_matches_the_seed_counter_contract() {
+        let path = staging_path("rsc-ls-0.5.0");
+        let tag = path
+            .strip_prefix("rsc-ls-0.5.0.part-")
+            .expect("staging path must keep the .part- prefix");
+        let (seed, counter) = tag.split_once('-').expect("tag must be <seed>-<counter>");
+        assert!(seed.parse::<u32>().is_ok(), "seed must be a u32: {seed}");
+        assert!(
+            counter.parse::<u64>().is_ok(),
+            "counter must be a u64: {counter}"
+        );
     }
 
     #[test]

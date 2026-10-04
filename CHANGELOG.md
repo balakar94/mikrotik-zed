@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Shim no longer aborts on the first auto-download (`src/platform.rs`,
+  `src/cache.rs`)**: the staged-download tag called `std::process::id()`, which
+  compiles for `wasm32-wasip2` but is unimplemented there — it trapped
+  `language_server_command` with a WASM `unreachable` the moment the extension
+  tried to bootstrap `rsc-ls`, i.e. on any machine without `rsc-ls` in PATH and
+  without a verified cache entry. The process id now lives behind
+  `#[cfg(not(target_arch = "wasm32"))]` in `platform::process_seed()`; the wasm
+  build uses a fixed seed, and the monotonic counter plus the pre-write unlink
+  of every temp path keep staging names unique and safe.
+
 ## [0.7.0] - 2026-09-19
 
 ### Upgrade notes (user-facing)

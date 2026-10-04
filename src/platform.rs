@@ -166,9 +166,35 @@ pub(crate) fn atomic_replace(src: &str, dst: &str) -> std::result::Result<(), St
     std::fs::rename(src, dst).map_err(|_| format!("could not replace {dst} with {src}"))
 }
 
+/// Per-process seed for unique temp and staging file names.
+///
+/// Native builds return the process id. The shipped wasm32-wasip2 component
+/// cannot: `std::process::id()` is unimplemented on that target and panics at
+/// runtime, so the wasm build returns a fixed constant instead. Callers must
+/// pair the seed with a monotonic counter (uniqueness within the process) and
+/// unlink any pre-existing file before writing (safety across instances that
+/// share the fixed seed).
+pub(crate) fn process_seed() -> u32 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::process::id()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_seed_is_nonzero_natively() {
+        // The wasm build uses a fixed seed (0); native builds must keep a real
+        // process id so tags from distinct processes never collide by design.
+        assert!(process_seed() > 0);
+    }
 
     #[test]
     fn asset_triple_covers_all_published_binaries() {
