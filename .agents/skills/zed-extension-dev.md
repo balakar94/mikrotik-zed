@@ -107,7 +107,7 @@ Zed task templates: `languages/rsc/tasks.json` → copy to `.zed/tasks.json` to 
 
 ```bash
 # 0. Ensure clean state
-make validate   # check-manifest + docs-check + generate-check + fmt + clippy + test-all + extract + freshness
+make validate   # check-manifest + docs-check + generate-check + check-wasm-api + fmt + clippy + test-all + extract + freshness
 
 # 1. Publish grammar (if grammar.js changed)
 python scripts/publish_grammar.py --dry-run

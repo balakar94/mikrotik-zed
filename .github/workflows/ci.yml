@@ -306,6 +306,9 @@ jobs:
       - name: Manifest schema check (make check-manifest)
         run: make check-manifest
 
+      - name: WASM API usage check (make check-wasm-api)
+        run: make check-wasm-api
+
       - name: Docs lint (make docs-check)
         run: make docs-check
 

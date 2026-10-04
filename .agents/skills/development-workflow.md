@@ -44,9 +44,10 @@ The canonical list is `make help` — do not duplicate it here. Targets worth ex
 | `make parse FILE=path.rsc` | `tree-sitter parse` for a file | Debug a failing parse / inspect node types |
 | `make highlight FILE=path.rsc` | `tree-sitter highlight` captures | Debug `highlights.scm` |
 | `make generate-check` | Regenerates and `git diff --exit-code` on generated files | CI / pre-commit: ensure `parser.c` committed |
+| `make check-wasm-api` | Static scan: rejects std APIs that compile for `wasm32-wasip2` but panic at runtime (shim `src/`) | Any `src/**` change; runs inside `validate`/`validate-fast` |
 | `make clean-generated` | Same artifact cleanup as `make clean` + removes generated grammar sources | Rare; then `make generate` |
 | `make install` / `SKIP_SYSTEM=1 make install` | Full bootstrap (distro deps + toolchains + rsc-ls to PATH) | First setup; skip variant for CI/containers |
-| `make validate` | check-manifest + docs-check + generate-check + fmt + clippy + test-all + extract | One-shot pre-PR gate |
+| `make validate` | check-manifest + docs-check + generate-check + check-wasm-api + fmt + clippy + test-all + extract | One-shot pre-PR gate |
 | `make sync-check` | CI-only staleness gate vs upstream docs (exit 2 on drift) — not part of validate | CI; standalone drift check |
 
 Aliases: `make check` expands to `check-wasm` + `check-lsp`. There is no bare `make test` — use `test-grammar` / `test-rust` / `test-python` / `test-all`.
@@ -153,5 +154,5 @@ Also: `make clippy` fails → `cargo clippy -- -D warnings` must be clean for bo
 - [ ] **ROADMAP.md**: update `Now — 0.5.x` with tag/hash and snapshot, remove redundant principles (e.g., English-only is implicit, not listed), keep `Volatile facts` pointer.
 - [ ] **README.md** if version/snapshot changed: update badge note and `Coverage` / `Sync` snapshot line.
 - [ ] **Docs sync if needed**: `make sync && make extract` then `head -20 data/commands.toml` + `cat data/upstream-docs.toml` to confirm hash/version.
-- [ ] **Validate**: `make validate` (includes `check-manifest` + `docs-check` + `generate-check` + `fmt` + `clippy` + `test-all` + `extract` idempotency) — must be green.
+- [ ] **Validate**: `make validate` (includes `check-manifest` + `docs-check` + `generate-check` + `check-wasm-api` + `fmt` + `clippy` + `test-all` + `extract` idempotency) — must be green.
 - [ ] **Tag trigger note**: `release.yml` only runs on `git push origin v*.*.*` (or `workflow_dispatch`), never on plain `git push`. Tags must be annotated (the meta job rejects lightweight). Verify tag push separately: `git tag -a vX.Y.Z -m 'release vX.Y.Z' && git push origin vX.Y.Z`.

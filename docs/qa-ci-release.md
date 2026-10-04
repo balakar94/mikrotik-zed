@@ -7,8 +7,9 @@
 | Target | What it runs | When |
 | --- | --- | --- |
 | `make check` | fast compile gate (WASM + LSP) | during development |
-| `make validate-fast` | manifest + fmt + clippy + Rust tests | quick gate |
-| `make validate` | offline gate: `check-manifest`, `docs-check`, `generate-check`, fmt, clippy, **all** tests, extract + idempotency assert | before claiming done / CI |
+| `make check-wasm-api` | rejects std APIs that compile for `wasm32-wasip2` but panic at runtime (shim `src/`) | static gate, inside `validate` |
+| `make validate-fast` | manifest + wasm-api + fmt + clippy + Rust tests | quick gate |
+| `make validate` | offline gate: `check-manifest`, `docs-check`, `generate-check`, `check-wasm-api`, fmt, clippy, **all** tests, extract + idempotency assert | before claiming done / CI |
 | `make sync-check` | upstream-docs staleness (network) | separate CI gate, not in `validate` |
 
 Minimum verification by change type: see `AGENTS.md` table

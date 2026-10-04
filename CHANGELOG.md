@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`make check-wasm-api` gate (`scripts/check_wasm_api_usage.py`)**: rejects
+  std APIs that compile for `wasm32-wasip2` but panic at runtime
+  (`std::process::id`, `std::net::*`, `std::thread::spawn`,
+  `std::process::Command`) in the shim, skipping `#[cfg(test)]` and
+  `#[cfg(not(target_arch = "wasm32"))]` regions; a line may opt out with
+  `// wasm-api-ok: <reason>`. Wired into `make validate` / `validate-fast` and
+  the CI `Docs • check` job. It exists because `make check-wasm` cannot catch
+  this class: the failure is a runtime `unimplemented!()`, not a link error.
+
 ### Fixed
 
 - **Shim no longer aborts on the first auto-download (`src/platform.rs`,

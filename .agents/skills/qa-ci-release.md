@@ -28,6 +28,7 @@ make test-rust      # cargo test --workspace (white-box + E2E targets)
 make test-python    # pytest tests/
 make test-all       # all three sequentially
 make docs-check     # docs lint (not a test suite; runs inside validate)
+make check-wasm-api # shim std-API ban (not a test suite; runs inside validate)
 ```
 
 ### Harness Invariants & Data Prerequisites
@@ -45,7 +46,7 @@ Triggers: `push`/`pull_request` on `main`. Concurrency `ci-${{ github.ref }}` ca
 |-----|-----------|----------------|
 | `rust` (`ubuntu-latest`) | `make fmt` (`cargo fmt -- --check`), `make clippy` (`wasm32-wasip2` + `rsc-ls --all-targets -D warnings`), `make test-rust`, `cargo build --target wasm32-wasip2 --release`, `cargo build -p rsc-ls --release` | `fmt`/`clippy` must be clean; WASM+LSP compile gate |
 | `windows` (`windows-latest`) | `cargo test -p rsc-ls --locked`, `cargo build -p rsc-ls`, cross-check `aarch64-pc-windows-msvc` | Windows MSVC linkage regressions |
-| `python` (`ubuntu-latest`) | `make check-manifest` (schema via `scripts/check_zed_requirements.py`), `make docs-check` (docs lint), `make sync` fetch `llms.txt`/`llms-full.txt`, `make test-python`, verify `data/commands.toml` timestamp-agnostic (`grep -v '^# Generated:'` diff vs `HEAD`, exit 1 if stale) | Unknown `extension.toml` keys (silently ignored by Zed), broken docs links/anchors, stale extraction |
+| `python` (`ubuntu-latest`) | `make check-manifest` (schema via `scripts/check_zed_requirements.py`), `make check-wasm-api` (shim std-API ban), `make docs-check` (docs lint), `make sync` fetch `llms.txt`/`llms-full.txt`, `make test-python`, verify `data/commands.toml` timestamp-agnostic (`grep -v '^# Generated:'` diff vs `HEAD`, exit 1 if stale) | Unknown `extension.toml` keys (silently ignored by Zed), wasm-unimplemented std APIs in the shim, broken docs links/anchors, stale extraction |
 | `grammar` (`ubuntu-latest`) | Clone at pinned `extension.toml` `rev`, `make generate-check` (`npx tree-sitter generate` + `git diff --exit-code src/parser.c src/grammar.json src/node-types.json`), `make test-grammar`, `rev` vs `HEAD` coherence | Stale `parser.c`, placeholder `000...` rev, corpus failure |
 
 `sync-check` is NOT in `ci.yml` `validate` — it is a separate staleness gate: `python scripts/sync_llms.py --check` exits `0` ok / `2` drift / `1` fetch error. CI surfaces drift via `verify commands.toml` step (timestamp-agnostic).
@@ -81,7 +82,7 @@ Use `make help` as canonical list. Two gates matter for QA:
 
 ```bash
 make check      # fast compile gate: check-wasm + check-lsp (no tests)
-make validate   # full pre-commit/pre-PR gate: check-manifest + docs-check + generate-check + fmt + clippy + test-all + extract
+make validate   # full pre-commit/pre-PR gate: check-manifest + docs-check + generate-check + check-wasm-api + fmt + clippy + test-all + extract
                 # includes extract idempotency: `git diff --exit-code data/commands.toml` (timestamp ignored in CI only)
 make sync-check # standalone staleness gate: exits 2 on drift, 1 on fetch error — NOT part of validate
 ```
@@ -123,6 +124,7 @@ After `data/commands.toml` regeneration: `cargo test -p rsc-ls` must rebuild (em
 | 8 | `docs-drift` issue opened (`upstream-docs`) | Upstream RouterOS docs drifted from `data/upstream-docs.toml` snapshot | Follow issue body: `python scripts/sync_llms.py && python scripts/extract_commands.py`, review `git diff data/`, commit & push → watchdog auto-closes |
 | 9 | `release.yml` `meta` version mismatch | `Cargo.toml`/`lsp/Cargo.toml` != tag `v*.*.*` | `make bump VERSION=x.y.z && cargo check && git diff` then `git tag vX.Y.Z && git push origin vX.Y.Z` |
 | 10 | `release.yml` placeholder `rev` | `extension.toml` `rev = "000..."` | `python scripts/publish_grammar.py --push` then re-tag |
+| 11 | `check-wasm-api` banned API | Shim uses a std API that compiles for `wasm32-wasip2` but panics at runtime (`std::process::id`, `std::net::*`, `std::thread::spawn`, `std::process::Command`) | Move it behind `#[cfg(not(target_arch = "wasm32"))]` (see `platform::process_seed`) or use the host API; `// wasm-api-ok: <reason>` only for a reviewed exception; rerun `make check-wasm-api` |
 
 Also: `make audit` needs `cargo install cargo-audit`; `extension.wasm` is gitignored — built by `release.yml`/`make build-wasm`.
 

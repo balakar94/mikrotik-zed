@@ -21,7 +21,7 @@ else
 LOCKED := --locked
 endif
 
-.PHONY: help doctor generate generate-check test-grammar test-rust test-python test-all grammar-clone parse highlight extract sync sync-check check-manifest docs docs-check build build-lsp check check-wasm check-lsp fmt fmt-fix clippy audit install install-deps install-tools install-lsp install-dev bump clean clean-generated validate validate-fast _check-tools _clean-artifacts
+.PHONY: help doctor generate generate-check test-grammar test-rust test-python test-all grammar-clone parse highlight extract sync sync-check check-manifest docs docs-check check-wasm-api build build-lsp check check-wasm check-lsp fmt fmt-fix clippy audit install install-deps install-tools install-lsp install-dev bump clean clean-generated validate validate-fast _check-tools _clean-artifacts
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -93,6 +93,9 @@ docs: ## Preview docs locally (no build — plain Markdown, open docs/index.md)
 docs-check: ## Lint docs (hygiene, links/anchors, index reachability, volatile ban)
 	@command -v $(PYTHON) >/dev/null || (echo "error: $(PYTHON) not found" && false)
 	$(PYTHON) scripts/check_docs.py
+check-wasm-api: ## Reject std APIs that compile for wasm32-wasip2 but panic at runtime
+	@command -v $(PYTHON) >/dev/null || (echo "error: $(PYTHON) not found" && false)
+	$(PYTHON) scripts/check_wasm_api_usage.py
 # ── Build ────────────────────────────────────────────────────────
 build: ## Build WASM extension (wasm32-wasip2 component) and stage extension.wasm
 	cargo build $(LOCKED) --target $(WASM_TARGET) --release
@@ -216,9 +219,9 @@ install-dev: ## Point Zed to this directory (manual: Install Dev Extension)
 	@echo "Make sure rsc-ls binary is in PATH: make build-lsp && make install-lsp"
 
 # validate-fast is the lightweight pre-commit gate; validate is the full pre-push gate.
-validate: check-manifest docs-check generate-check fmt clippy test-all extract ## Offline gate (manifest, docs, generate-check, fmt, clippy, tests, extract); run make sync-check separately for upstream drift
+validate: check-manifest docs-check generate-check check-wasm-api fmt clippy test-all extract ## Offline gate (manifest, docs, generate-check, wasm-api, fmt, clippy, tests, extract); run make sync-check separately for upstream drift
 	@bash scripts/check_extract_fresh.sh
 	@echo "All checks passed. Ready to commit."
 
-validate-fast: check-manifest fmt clippy test-rust ## Quick gate (manifest, fmt, clippy, Rust tests)
+validate-fast: check-manifest check-wasm-api fmt clippy test-rust ## Quick gate (manifest, wasm-api, fmt, clippy, Rust tests)
 	@echo "Fast checks passed."

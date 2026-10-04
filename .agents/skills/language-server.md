@@ -134,7 +134,7 @@ Stale-while-revalidate, never blocks completion (`lsp/src/live.rs` + `lsp/src/se
 5. **Serialize LSP response**: `serde_json::json!({"jsonrpc":"2.0","id":id,"result":...})`; return `None` for notifications. Use `source="rsc-ls"` and correct `severity` for diagnostics.
 6. **Wire publish if needed**: for push diagnostics pattern, add `publish_diagnostics` call after `didOpen`/`didChange`/`didClose`.
 7. **Test**: add tests under `lsp/src/tests/<module>_<aspect>.rs` (one file per aspect, ~300-line soft cap, shared fixtures where reused) with `MenuData::from_toml_str(synthetic)` plus `MenuData::load()` real-data sanity. Run `cargo test -p rsc-ls`.
-8. **WASM/extension**: if new `initializationOptions` or file types needed, update `extension.toml` and `src/lib.rs` (never use `std::env::var`/`cfg` there — use `current_platform`/`Worktree`).
+8. **WASM/extension**: if new `initializationOptions` or file types needed, update `extension.toml` and `src/lib.rs` (never use `std::env::var`/`cfg` there — use `current_platform`/`Worktree`). Watch for std APIs that **compile** for `wasm32-wasip2` but **panic at runtime**: `std::process::id()` is one (unimplemented on WASI) — `platform::process_seed` keeps the pid in its `#[cfg(not(target_arch = "wasm32"))]` arm for exactly this reason. `make check-wasm-api` (wired into `make validate`/`validate-fast`) rejects those statically; `make check-wasm` alone cannot see them, so still verify the path in a real Zed dev install.
 
 ## Performance & Limits
 
@@ -174,7 +174,7 @@ cargo test -p rsc-ls -- diagnostics   # single module
 cargo test -p rsc-ls -- --nocapture   # show eprintln logs
 python -m pytest tests/ -v            # Python integration tests
 cd grammars/rsc && npx tree-sitter test  # grammar corpus
-make validate                         # check-manifest + docs-check + generate-check + fmt + clippy + test-all + extract (sync-check separate)
+make validate                         # check-manifest + docs-check + generate-check + check-wasm-api + fmt + clippy + test-all + extract (sync-check separate)
 ```
 
 | Area | File | Pattern |

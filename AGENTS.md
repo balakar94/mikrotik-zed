@@ -19,7 +19,7 @@ Glue: `src/lib.rs` is the WASM shim Zed loads — zero language logic; resolves 
 1. **Never clone or build `zed-industries/zed`.** Depend only on `zed_extension_api`.
 2. **Never bundle an `rsc-ls` binary** in the repo or packaged extension. It is resolved at runtime.
 3. **Extension `id`/`name` must not contain "zed" or "extension"** (registry policy). Values live in `extension.toml`.
-4. **All Rust must compile for `wasm32-wasip2`.** In `src/lib.rs`: no `std::env::var`, no `cfg(...)` — use `zed_extension_api::current_platform()` and `Worktree` methods.
+4. **All Rust must compile for `wasm32-wasip2`.** In the shim (`src/`): no wasm-unimplemented std APIs (`std::process::id`, `std::net::*`, `std::thread::spawn`, `std::process::Command` — gate: `make check-wasm-api`), no `std::env::var`, and no `cfg(...)` in `src/lib.rs` — use `zed_extension_api::current_platform()` and `Worktree` methods.
 5. **Edit inputs, not generated outputs.** Generated: `src/parser.c`, `data/commands.toml`, `grammars/rsc/src/*`. Change the generator input, then regenerate.
 6. **Two independent sources of truth:** grammar semantics from `grammars/rsc/grammar.js`; command data from upstream docs via `llms-full.txt` → `data/commands.toml`. Never couple them.
 7. **The LSP stays defensive:** `MAX_MESSAGE_SIZE` 10 MiB / `MAX_HEADER_SIZE` 32 KiB / `MAX_DOC_SIZE` 5 MiB / `MAX_DOCS` 100, bounded diagnostics, strict `file://` URI validation, no filesystem access beyond its cache. Live is opt-in, in-memory only — `LIVE_NEGATIVE_TTL_SECS` 15s, `LIVE_MAX_HOSTS` 4, `LIVE_CUSTOM_RESOURCES_MAX` 8 (`RSC_LS_LIVE_RESOURCES` JSON), SSRF deny (`169.254.169.254`), per-request 5s / blocking 2s (clamped 1..30s).
@@ -31,14 +31,14 @@ Glue: `src/lib.rs` is the WASM shim Zed loads — zero language logic; resolves 
 
 First clone: `make grammar-clone` (pinned `rev`) + `make install` (`SKIP_SYSTEM=1` skips distro packages). Canonical targets: `make help` — never duplicate the list here.
 
-`make check` — fast compile gate (WASM + LSP). `make validate` — offline gate (manifest, docs, generate-check, fmt, clippy, all tests, extract; upstream staleness is separate: `make sync-check`; extract idempotency fails on dirty `data/commands.toml`). Suites: `make test-grammar` · `make test-rust` · `make test-python`.
+`make check` — fast compile gate (WASM + LSP). `make validate` — offline gate (manifest, docs, generate-check, wasm-api, fmt, clippy, all tests, extract; upstream staleness is separate: `make sync-check`; extract idempotency fails on dirty `data/commands.toml`). Suites: `make test-grammar` · `make test-rust` · `make test-python`.
 
 ### Minimum verification
 
 | You changed… | Run before claiming done |
 | ------------ | ------------------------ |
 | `lsp/src/**` | `make fmt clippy test-rust` |
-| `src/lib.rs` (shim) | `make check-wasm clippy`, then _Install Dev Extension_ in Zed, watch `zed: open log` |
+| `src/**` (shim) | `make check-wasm-api check-wasm clippy`, then _Install Dev Extension_ in Zed, watch `zed: open log` |
 | `grammars/rsc/grammar.js` | In `grammars/rsc/`: `npx tree-sitter generate && npx test`; bump pointer (see _Release_) |
 | `languages/rsc/highlights.scm` | Copy to `grammars/rsc/queries/highlights.scm` (only mirrored file; gate: `test_highlights_deduped`), then smoke-test in Zed |
 | Extraction / `llms-full.txt` | `make extract`, diff `data/commands.toml`, spot-check vs upstream CLI reference |
