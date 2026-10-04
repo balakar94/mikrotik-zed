@@ -118,6 +118,7 @@ Verification: `gh release view v0.x.y --json assets --jq '.assets[].name'` lists
 | 6 | `Platform not supported for rsc-ls auto-download` | `asset_triple()` has no published binary for that os/arch pair (all six shipped triples are covered) | Build from source: `cargo build -p rsc-ls --release` and put it on PATH; or grab `rsc-ls-<triple>` from GitHub Releases |
 | 7 | Diagnostics missing or truncated (large file) | Suppressed lines (`#`, `:global`, `}`, `..`) or caps (`MAX_DIAG_LINES 3000`, `MAX_DIAG_BYTES 500KB`) | Check `lsp/src/diagnostics.rs`; `RSC_LS_LOG=debug zed --foreground`; split file or fix `source = "rsc-ls"` filter in editor |
 | 8 | `make extract` reports unexpected menu count or wrong paths | Stale `llms-full.txt` or extraction regex change (`^[a-z0-9][a-z0-9/_-]*$`) | `python scripts/sync_llms.py --force && make extract`; compare `rg -c '^\[\[menus\]\]' data/commands.toml` with previous count; check header `sha256` and `head -20 data/commands.toml` |
+| 9 | `make fmt` fails right after an editor/agent save, always on nested-import order (`use x::{A, b}`) | The formatter ran `rustfmt` without cargo context, so it fell back to a different style edition | Leave `rustfmt.toml` (`style_edition = "2024"`) in place — it pins import order for every invocation; `make fmt-fix` if a file already drifted |
 
 Also: `make clippy` fails → `cargo clippy -- -D warnings` must be clean for both `wasm32-wasip2` and `rsc-ls`; `make audit` needs `cargo install cargo-audit`.
 

@@ -1,0 +1,5 @@
+# Pin the Rust style edition explicitly: agents/editors may invoke rustfmt
+# with a different --edition (or none), which changes nested-import ordering
+# (e.g. `use a::{MAX_X, short_y}`) and makes `make fmt` flap. Pinning keeps
+# every invocation aligned with the crate edition.
+style_edition = "2024"
