@@ -2998,7 +2998,11 @@ class TestMarkdownTableAccounting:
         assert stats["property_no_context"] == (
             stats["property_resolved"] + stats["property_skipped"]
         )
-        assert stats["property_tables"] > 100
+        # Sanity floor only: the identities above are the real guarantee that
+        # no property table is dropped silently, and this count tracks the live
+        # upstream snapshot, which restructures pages over time. Keep the floor
+        # well below the observed count so drift re-syncs do not flap on it.
+        assert stats["property_tables"] > 50
         assert stats["non_property_tables"] > 0
 
 

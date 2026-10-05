@@ -1,11 +1,11 @@
 # MikroTik RouterOS CLI Command Table
 # Auto-generated from llms-full.txt
-# Covers: /app, /beep, /blink, /caps-man, /certificate, /console, /container, /disk, /dude, /environment, /file, /import, … (1079 menus)
+# Covers: /app, /beep, /blink, /caps-man, /certificate, /cmr, /console, /container, /disk, /dude, /environment, /file, … (1111 menus)
 # RouterOS version: 7.23.2
-# Generated: 2026-10-04T21:49:28.829720Z
-# Source hash (sha256[:16]): aebc28962b497e6f
+# Generated: 2026-10-05T15:17:51.259357Z
+# Source hash (sha256[:16]): f9ec71ff6f39b6f5
 # overrides_applied = 11 (data/overrides.toml)
-# generics_applied = 1950 (comment/disabled universal; place-before/copy-from ordered-only)
+# generics_applied = 1990 (comment/disabled universal; place-before/copy-from ordered-only)
 
 [[menus]]
 path = "/app"
@@ -2670,6 +2670,1563 @@ type = "enum (md5 | sha1 | sha256 | sha384 | sha512)"
 enum_values = ["md5", "sha1", "sha256", "sha384", "sha512"]
 
 [[menus]]
+path = "/cmr"
+type = "Settings Directory"
+[[menus.arguments]]
+name = "enabled"
+type = "enum (yes | no)"
+enum_values = ["yes", "no"]
+description = "Whether CMR server is enabled or not. Default: no."
+[[menus.arguments]]
+name = "local-id"
+type = "string"
+description = "Unique CMR specific device identifier."
+unset = true
+[[menus.arguments]]
+name = "pairing-requirement"
+type = "enum (none | password | confirm)"
+enum_values = ["none", "password", "confirm"]
+description = "Defines what the remote device must do before this device accepts the pairing: - **none** - this device accepts pairing automatically, without additional checks - **password** - the remote device may approve pairing by proving that it knows the pairing password configured on this device - **confirm** - pairing must be approved locally by running the `pair` command on this device; approval from the remote side is not possible"
+unset = true
+[[menus.arguments]]
+name = "packages-directory"
+type = "file"
+description = "Directory on the server's file system containing RouterOS packages that the server distributes to the managed devices and serves from when it matches the version an upgrade needs. The value is picked from the router's file list: directory entries are entered with a trailing slash (for example `cmrpkgs/`), plain files without one. Packages are resolved individually: a package already present here for the required version is sent directly without downloading it again, and only the missing packages are downloaded and cached. A value that does not point to an existing directory is kept but cannot be used; the `/cmr` menu then shows `directory does not exist, using memory` and packages are served from memory instead."
+unset = true
+[[menus.arguments]]
+name = "packages-cache-type"
+type = "enum (directory | memory)"
+enum_values = ["directory", "memory"]
+description = "Where the server stores the package files it downloads: `directory` keeps them on the server's storage, `memory` keeps them in RAM. With `directory`, the server stores them in a `cmrcache` subdirectory of `packages-directory`, which it creates in the router's file list; packages that are already present in `packages-directory` are served from there without being downloaded. When the directory is missing or unusable the server reports `directory does not exist, using memory` in the `/cmr` menu, stores the packages in RAM instead, and switches back to the directory when it becomes available again."
+unset = true
+[[menus.arguments]]
+name = "packages-cache-limit"
+type = "num"
+description = "Maximum amount of package data held in the cache, in megabytes. A value larger than the available RAM or storage is accepted and the server shows an informational note; the cache then uses all the space that is available and evicts older entries when a file larger than the remaining space must be stored."
+unset = true
+[[menus.arguments]]
+name = "upgrade-check-interval"
+type = "time"
+description = "How often the CMR server checks the MikroTik update servers for available versions. The minimum value is 1 minute."
+unset = true
+[[menus.arguments]]
+name = "track-topology"
+type = "bool"
+description = "Enables network topology discovery. Fetches the following information from CMR clients: routes, WiFi registration table, ARP table, neighbors, DHCP state, and interface states. This information is required for full CMR functionality, for example, automatic link discovery in the `/cmr/layout` menu. Default: yes."
+unset = true
+[[menus.arguments]]
+name = "fetch-comments"
+type = "bool"
+description = "Enables fetching of comments for interfaces/ports and the WiFi registration table. Default: yes."
+unset = true
+[[menus.arguments]]
+name = "controller-addresses"
+type = "multi { array-id, address: address (flags=46D) }"
+description = "CMR server IP addresses that are sent to the devices when the controller address cannot be discovered automatically (MNDP, DHCP)."
+unset = true
+[[menus.arguments]]
+name = "apptraffic-devices"
+type = "object"
+description = "Select devices using labels for which to collect app traffic data. Supports + and - signs as AND and AND NOT operators, respectively; if no sign is provided, the OR operator is used."
+unset = true
+[[menus.arguments]]
+name = "auto-labels"
+type = "alt { auto-labels: enum (none | all) { none:0, all:0xffff } , auto-labels: ubit (version, architecture, model, board-name, identity, address) }"
+enum_values = ["none", "all"]
+description = "Whether to fetch labels information from the connected cmr-client devices. Can be configured to fetch only specific labels. Default: all."
+unset = true
+[[menus.read_only]]
+name = "self-client-id"
+type = "string"
+description = "ID that is used by CMR server to connect to itself, for it to be displayed in a device list."
+
+[[menus]]
+path = "/cmr/alert"
+type = "Directory"
+[[menus.flags]]
+name = "X"
+type = "disabled"
+description = "Alert rule is disabled."
+[[menus.arguments]]
+name = "name"
+type = "string"
+description = "Name of the alert rule."
+unset = true
+[[menus.arguments]]
+name = "labels"
+type = "object"
+description = "Select the devices, by labels, that the alert rule applies to. Supports + and - signs as AND and AND NOT operators, respectively; if no sign is provided, the OR operator is used.  When `labels` is not set, the rule applies to all connected devices (`labels=all`)."
+unset = true
+[[menus.arguments]]
+name = "connected"
+type = "bool"
+description = "Alert when the device connects or disconnects.  Default: no."
+unset = true
+[[menus.arguments]]
+name = "cpu-above"
+type = "num"
+description = "Alert when CPU load is above the given percent value (0..100); a value equal to the threshold also fires the rule.  Default: unset."
+unset = true
+[[menus.arguments]]
+name = "cpu-below"
+type = "num"
+description = "Alert when CPU load is below the given percent value (0..100); it fires only for values strictly below the threshold.  Default: unset."
+unset = true
+[[menus.arguments]]
+name = "hdd-above"
+type = "num"
+description = "Alert when disk (HDD) load is above the given percent value (0..100); a value equal to the threshold also fires the rule.  Default: unset."
+unset = true
+[[menus.arguments]]
+name = "hdd-below"
+type = "num"
+description = "Alert when disk (HDD) load is below the given percent value (0..100); it fires only for values strictly below the threshold.  Default: unset."
+unset = true
+[[menus.arguments]]
+name = "mem-above"
+type = "num"
+description = "Alert when RAM load is above the given percent value (0..100); a value equal to the threshold also fires the rule.  Default: unset."
+unset = true
+[[menus.arguments]]
+name = "mem-below"
+type = "num"
+description = "Alert when RAM load is below the given percent value (0..100); it fires only for values strictly below the threshold.  Default: unset."
+unset = true
+[[menus.arguments]]
+name = "health-above"
+type = "num"
+description = "Alert when the health sensor named by `health-value` goes above the given value; a value equal to the threshold also fires the rule. Devices that do not report the sensor are ignored.  Default: unset."
+unset = true
+[[menus.arguments]]
+name = "health-below"
+type = "num"
+description = "Alert when the health sensor named by `health-value` goes below the given value; it fires only for values strictly below the threshold. Devices that do not report the sensor are ignored.  Default: unset."
+unset = true
+[[menus.arguments]]
+name = "health-value"
+type = "string"
+description = "Name of the health sensor to compare, matching a name from `/system/health/print`, for example `cpu-temperature`. Uses the `[cpu-temperature]` style placeholder in the action text."
+unset = true
+[[menus.arguments]]
+name = "interface-change"
+type = "alt { change: enum (any) , change: ubit (running, not-running, added, removed) }"
+enum_values = ["any"]
+description = "Alert on an interface state change:  - `any` (default) - Any state change. - `running` - An interface's link comes up. - `not-running` - An interface's link goes down. - `added` - An interface is first seen. - `removed` - An interface is no longer seen.  `running` and `not-running` follow the link state of the interface, not its admin state: enabling or disabling an interface with no connection does not fire, while an actual link loss or recovery does."
+unset = true
+[[menus.arguments]]
+name = "interface-type"
+type = "alt { type: enum (any) , type: ubit (ethernet, wifi, bridge) }"
+enum_values = ["any"]
+description = "Restrict `interface-change` alerts to one interface type:  - `any` (default) - Interfaces of any type. - `ethernet` - Ethernet ports. - `wifi` - Wireless interfaces. - `bridge` - Bridge interfaces."
+unset = true
+[[menus.arguments]]
+name = "upgrade-available"
+type = "bool"
+description = "Alert when a newer RouterOS version is available for the device.  Default: no."
+unset = true
+[[menus.arguments]]
+name = "disconnected-more-than"
+type = "time"
+description = "Alert when a device has been disconnected for longer than the given time.  Default: unset."
+unset = true
+[[menus.arguments]]
+name = "upgrade-job-done"
+type = "alt { cond: enum (yes) , cond: ubit (success, fail) }"
+enum_values = ["yes"]
+description = "Alert when an upgrade job finishes; the rule fires once for the whole job, when the last device of the job is done:  - `yes` (default) - Any outcome. - `success` - The job finished successfully. - `fail` - The job failed.  A job that ends without installing an upgrade is treated as a failed job, so the `yes` and `fail` variants both fire."
+unset = true
+[[menus.arguments]]
+name = "upgrade-done"
+type = "alt { cond: enum (yes) , cond: ubit (success, fail) }"
+enum_values = ["yes"]
+description = "Alert when the upgrade of a device finishes; the rule fires once for every device that finished its upgrade:  - `yes` (default) - Any outcome. - `success` - The upgrade finished successfully. - `fail` - The upgrade failed.  When no newer version is available for a device, its upgrade still finishes as a failure (the `[upgrade-error]` is `no upgrade available`), so the `yes` and `fail` variants both fire."
+unset = true
+[[menus.arguments]]
+name = "unpaired-device-connected"
+type = "bool"
+description = "Alert when a device that is not paired to the controller connects.  Default: no."
+unset = true
+[[menus.arguments]]
+name = "rebooted"
+type = "bool"
+description = "Alert when the device reboots.  Default: no."
+unset = true
+[[menus.arguments]]
+name = "log-topics"
+type = "multi { array-id, array-id, topic: super { ! , topic: enum } }"
+description = "Log topics to follow; prefix a topic with `!` to exclude it."
+unset = true
+[[menus.arguments]]
+name = "log-regex"
+type = "string"
+description = "Alert on log lines the device sends to the controller whose message matches the given regular expression."
+unset = true
+[[menus.arguments]]
+name = "action.log"
+type = "string"
+description = "Write a message to the log when the alert fires. The message may contain placeholders such as `[device]` or `[cpu-usage]`, replaced with the values of the device that fired; an inapplicable placeholder is rendered as `unknown`."
+unset = true
+[[menus.arguments]]
+name = "action.log-topics"
+type = "multi { array-id, topic: enum }"
+description = "Log topics to write the message to.  Default: `cmr,info`."
+unset = true
+[[menus.arguments]]
+name = "action.log-prefix"
+type = "string"
+description = "Prefix for the log message. When set, the prefix is prepended to the message without a separator; when unset the message is written as it is."
+unset = true
+[[menus.arguments]]
+name = "action.script"
+type = "enum"
+description = "Run a named system script when the alert fires. The script must allow itself to run with reduced rights; otherwise the action fails with `executing script ... from cmr failed ... (not enough permissions)`. Set the script's `dont-require-permissions` to yes."
+unset = true
+[[menus.arguments]]
+name = "action.script-vars"
+type = "multi { array-id, script-var: string }"
+description = "List of variable names to make available to the `action.script`: each variable is filled with the value for the device that fired. For example `device`, `identity`, `address`, `board`, `version` become `$device`, `$identity`, and so on in the script. A name with a hyphen (for example `cpu-usage`) cannot be read as an ordinary script variable."
+unset = true
+[[menus.arguments]]
+name = "action.http-url"
+type = "string"
+description = "` to the `cmr` topic with `warning` severity and counts the failure in `action-failures`; the other actions still run."
+unset = true
+[[menus.arguments]]
+name = "action.http-method"
+type = "enum (get | post | put | delete | head | patch)"
+enum_values = ["get", "post", "put", "delete", "head", "patch"]
+description = "HTTP method used for the webhook:  - `get` - `post` - `put` - `delete` - `head` - `patch`"
+unset = true
+[[menus.arguments]]
+name = "action.http-body"
+type = "string"
+description = "HTTP request body sent to the webhook. Supports the same placeholders as the log message, substituted per device (for example `[device]` and `[version]`). No `Content-Type` header is added automatically; add one with `action.http-headers` when the receiver expects it, for example `Content-Type: application/json` for a JSON body."
+unset = true
+[[menus.arguments]]
+name = "action.http-headers"
+type = "multi { header: string }"
+description = "` user-agent."
+unset = true
+[[menus.arguments]]
+name = "reset-on-disconnect"
+type = "enum (yes | no) { yes:0, no:-1 }"
+enum_values = ["yes", "no"]
+description = "Clear (reset) the alert state when the device disconnects, so a reconnecting device fires the rule again: `yes` or `no`. Default: `no` (the fired state is kept across a disconnect)."
+unset = true
+[[menus.arguments]]
+name = "severity"
+type = "enum (critical | high | medium | low)"
+enum_values = ["critical", "high", "medium", "low"]
+description = "Severity of the alert:  - `critical` - `high` - `medium` (default) - `low`"
+unset = true
+[[menus.arguments]]
+name = "category"
+type = "multi { array-id, category: enum }"
+description = "Categories assigned to the alert. The category is a grouping label: the server assigns one according to the rule's conditions (for example `performance`, `availability`, `version`, `network`, or `logging`), and it can be changed to any value."
+unset = true
+[[menus.arguments]]
+name = "comment"
+type = "string"
+description = "Descriptive comment for the item (universal add/set property from Common commands; omitted from upstream per-menu tables)."
+[[menus.arguments]]
+name = "disabled"
+type = "bool"
+description = "Whether the item is disabled (universal add property from Common commands; distinct from the X disabled print flag)."
+[[menus.arguments]]
+name = "place-before"
+type = "string"
+description = "Place a new item before the given item number (universal add property from Common commands for ordered item lists)."
+[[menus.arguments]]
+name = "copy-from"
+type = "string"
+description = "Copy property values from an existing item (universal add property from Common commands)."
+[[menus.read_only]]
+name = "devices"
+type = "num"
+description = "Number of devices the alert rule matches (the devices selected by `labels`). When the rule covers all devices, this count includes the controller itself."
+[[menus.read_only]]
+name = "devices-on"
+type = "num"
+description = "Number of devices the alert is currently fired on."
+[[menus.read_only]]
+name = "fired"
+type = "num"
+description = "Total number of times the alert has fired."
+[[menus.read_only]]
+name = "action-failures"
+type = "num"
+description = "Number of times an alert action has failed, for example a webhook that could not be reached."
+
+[[menus]]
+path = "/cmr/alert/show-devices"
+type = "Command"
+[[menus.flags]]
+name = "p"
+type = "remote-pending"
+description = "Controller requests pairing."
+[[menus.flags]]
+name = "I"
+type = "inactive"
+description = "Device is inactive."
+[[menus.flags]]
+name = "S"
+type = "stale"
+description = "No connection (stale)."
+[[menus.flags]]
+name = "L"
+type = "controller"
+description = "The CMR server itself (self-client)."
+[[menus.flags]]
+name = "C"
+type = "connected"
+description = "Device is connected."
+[[menus.flags]]
+name = "U"
+type = "upgrade-available"
+description = "A newer update is available."
+[[menus.arguments]]
+name = "on-only"
+type = "bool"
+description = "Show only the devices the alert rule is currently active on."
+
+[[menus]]
+path = "/cmr/alert/test"
+type = "Command"
+
+[[menus]]
+path = "/cmr/client"
+type = "Settings Directory"
+[[menus.arguments]]
+name = "enabled"
+type = "enum (yes | no)"
+enum_values = ["yes", "no"]
+description = "Whether CMR client is enabled or not. Default: no."
+[[menus.arguments]]
+name = "peer-id"
+type = "string"
+description = "Unique CMR specific device identifier, of the CMR server."
+unset = true
+[[menus.arguments]]
+name = "local-id"
+type = "string"
+description = "Unique CMR specific device identifier."
+unset = true
+[[menus.arguments]]
+name = "pairing-requirement"
+type = "enum (none | password)"
+enum_values = ["none", "password"]
+description = "Defines what the remote device must do before this device accepts the pairing: - **none** - this device accepts pairing automatically, without additional checks - **password** - the remote device may approve pairing by proving that it knows the pairing password configured on this device"
+unset = true
+[[menus.arguments]]
+name = "controller-addresses"
+type = "multi { array-id, address: address (flags=46D) }"
+description = "Specifies the controller IP addresses to use. This setting is optional when the client can discover the controller automatically through DHCP or neighbor discovery, but must be configured when the controller address cannot be determined automatically."
+unset = true
+[[menus.read_only]]
+name = "status"
+type = "string"
+description = "Current CMR-client status."
+[[menus.read_only]]
+name = "controller-identity"
+type = "string"
+description = "CMR server identity."
+[[menus.read_only]]
+name = "controller-address"
+type = "address"
+description = "CMR server IP address."
+[[menus.read_only]]
+name = "pairing-status"
+type = "multi { array-id, status: string }"
+description = "Current pairing status."
+[[menus.read_only]]
+name = "saved-addresses"
+type = "multi { array-id, address: address (flags=46) }"
+description = "List of CMR server's discovered IP addresses."
+
+[[menus]]
+path = "/cmr/client/forget"
+type = "Command"
+
+[[menus]]
+path = "/cmr/client/pair"
+type = "Command"
+[[menus.arguments]]
+name = "username"
+type = "string"
+description = "CMR server username."
+unset = true
+[[menus.arguments]]
+name = "password"
+type = "string"
+description = "CMR server password."
+unset = true
+[[menus.read_only]]
+name = "address"
+type = "address (flags=46)"
+description = "CMR server IP address."
+[[menus.read_only]]
+name = "status"
+type = "string"
+description = "Pairing status."
+
+[[menus]]
+path = "/cmr/client/push-button"
+type = "Command"
+[[menus.arguments]]
+name = "interface"
+type = "multi { array-id, interface: iface_enum }"
+description = "Select inteface or interface list on which to search for CMR server. (default value: **all**)"
+unset = true
+[[menus.read_only]]
+name = "state"
+type = "string"
+description = "State of device pairing."
+[[menus.read_only]]
+name = "error"
+type = "string"
+description = "Error information, in case pairing is unsuccessfull."
+[[menus.read_only]]
+name = "peer"
+type = "multi { array-id, mac: macAddr }"
+description = "CMR server address."
+[[menus.read_only]]
+name = "peer-id"
+type = "string"
+description = "CMR server ID."
+
+[[menus]]
+path = "/cmr/device"
+type = "Directory"
+[[menus.flags]]
+name = "P"
+type = "pending"
+description = "Pairing pending."
+[[menus.flags]]
+name = "p"
+type = "remote-pending"
+description = "Controller requests pairing."
+[[menus.flags]]
+name = "I"
+type = "inactive"
+description = "Device is inactive."
+[[menus.flags]]
+name = "S"
+type = "stale"
+description = "No connection (stale)."
+[[menus.flags]]
+name = "L"
+type = "controller"
+description = "The CMR server itself (self-client)."
+[[menus.flags]]
+name = "C"
+type = "connected"
+description = "Device is connected."
+[[menus.flags]]
+name = "U"
+type = "upgrade-available"
+description = "The upgrade channel of the device offers a different version than the installed one. The offered version can also be earlier than the installed version."
+[[menus.arguments]]
+name = "ids"
+type = "object { ids: super { his-id: string , [our-id] [ /string] } }"
+description = "Identities (his-id / our-id) of the managed device."
+[[menus.arguments]]
+name = "pairing-requirement"
+type = "enum (none | password | confirm)"
+enum_values = ["none", "password", "confirm"]
+description = "Pairing requirement applied to this device, overriding the server default: `none`, `password`, or `confirm`."
+[[menus.arguments]]
+name = "labels"
+type = "multi { array-id, label: enum }"
+description = "User labels assigned to the device (grouping/filtering)."
+unset = true
+[[menus.arguments]]
+name = "port-labels"
+type = "object { port-and-labels: super { port: string , labels: multi { array-id, label: string } } }"
+description = "Labels per port. Quote the label, for example `port-labels=ether1:\"uplink\"`. `/cmr/vlan` rules can select ports by these labels."
+unset = true
+[[menus.arguments]]
+name = "identity"
+type = "string"
+description = "System identity (editable) of the device."
+[[menus.arguments]]
+name = "comment"
+type = "string"
+description = "Descriptive comment for the item (universal add/set property from Common commands; omitted from upstream per-menu tables)."
+[[menus.arguments]]
+name = "disabled"
+type = "bool"
+description = "Whether the item is disabled (universal add property from Common commands; distinct from the X disabled print flag)."
+[[menus.arguments]]
+name = "place-before"
+type = "string"
+description = "Place a new item before the given item number (universal add property from Common commands for ordered item lists)."
+[[menus.arguments]]
+name = "copy-from"
+type = "string"
+description = "Copy property values from an existing item (universal add property from Common commands)."
+[[menus.read_only]]
+name = "peer"
+type = "enum"
+description = "The management peer this device is connected to."
+[[menus.read_only]]
+name = "board"
+type = "string"
+description = "Board name."
+[[menus.read_only]]
+name = "version"
+type = "string"
+description = "RouterOS version of the device."
+[[menus.read_only]]
+name = "minimum-version"
+type = "string"
+description = "Minimum supported version."
+[[menus.read_only]]
+name = "allowed-versions"
+type = "string"
+description = "Safe (safepkg) upgrade indicator."
+[[menus.read_only]]
+name = "address"
+type = "address (flags=46)"
+description = "Current connection address."
+[[menus.read_only]]
+name = "auto-labels"
+type = "multi { array-id, label: string }"
+description = "Automatically assigned labels."
+[[menus.read_only]]
+name = "packages"
+type = "multi { array-id, label: string }"
+description = "Installed packages."
+[[menus.read_only]]
+name = "state"
+type = "string"
+description = "Device state."
+[[menus.read_only]]
+name = "upgrade-rule"
+type = "enum"
+description = "Upgrade rule covering this device. The first rule in the [`/cmr/upgrade`](../upgrade) rule list that covers the device claims it, so a `labels=all` rule placed at the top covers every device."
+[[menus.read_only]]
+name = "channel"
+type = "alt"
+description = "Current upgrade channel/version."
+[[menus.read_only]]
+name = "available-version"
+type = "string"
+description = "Newest available upgrade."
+[[menus.read_only]]
+name = "connected-time"
+type = "time"
+description = "Time the device has been connected."
+[[menus.read_only]]
+name = "uptime"
+type = "time"
+description = "Device uptime."
+[[menus.read_only]]
+name = "disconnected-since"
+type = "date"
+description = "Time since the device disconnected."
+[[menus.read_only]]
+name = "alerts"
+type = "super { on: num , [all] /num , [critical] num , [high] /num , [medium] /num , [low] /num }"
+description = "Enabled/total alert counts by severity."
+[[menus.read_only]]
+name = "serial"
+type = "string"
+description = "Factory serial number."
+
+[[menus]]
+path = "/cmr/device/apptraffic"
+type = "Command"
+[[menus.arguments]]
+name = "labels"
+type = "object"
+description = "Select the devices to monitor using labels. Supports + and - signs as AND and AND NOT operators, respectively; if no sign is provided, the OR operator is used."
+unset = true
+
+[[menus]]
+path = "/cmr/device/dashboard"
+type = "Command"
+[[menus.arguments]]
+name = "labels"
+type = "object"
+description = "Select the devices to show in the dashboard using labels. Supports + and - signs as AND and AND NOT operators, respectively; if no sign is provided, the OR operator is used."
+unset = true
+
+[[menus]]
+path = "/cmr/device/pair"
+type = "Command"
+[[menus.arguments]]
+name = "labels"
+type = "object"
+description = "Select the devices to pair using labels. Supports + and - signs as AND and AND NOT operators, respectively; if no sign is provided, the OR operator is used."
+unset = true
+[[menus.arguments]]
+name = "username"
+type = "string"
+description = "Username used for pairing when the device requires it."
+unset = true
+[[menus.arguments]]
+name = "password"
+type = "string"
+description = "Password used for pairing when the device requires it."
+unset = true
+[[menus.read_only]]
+name = "device"
+type = "enum"
+description = "Device being paired."
+[[menus.read_only]]
+name = "status"
+type = "string"
+description = "Pairing status."
+
+[[menus]]
+path = "/cmr/device/reboot"
+type = "Command"
+[[menus.arguments]]
+name = "labels"
+type = "object"
+description = "Select the devices to reboot using labels. Supports + and - signs as AND and AND NOT operators, respectively; if no sign is provided, the OR operator is used."
+unset = true
+
+[[menus]]
+path = "/cmr/device/run-script"
+type = "Command"
+[[menus.arguments]]
+name = "script"
+type = "alt { script: string }"
+description = "The script to run on the selected devices."
+[[menus.arguments]]
+name = "labels"
+type = "object"
+description = "Select the devices to run the script on using labels. Supports + and - signs as AND and AND NOT operators, respectively; if no sign is provided, the OR operator is used."
+unset = true
+[[menus.arguments]]
+name = "order"
+type = "object"
+description = "Execution order (by labels)."
+[[menus.arguments]]
+name = "strategy"
+type = "enum ()"
+description = "How devices are processed: `parallel` or `sequential`."
+unset = true
+[[menus.arguments]]
+name = "fail-policy"
+type = "enum ()"
+description = "Behaviour if a device fails: `continue`, `stop`, or `continue-order`."
+unset = true
+[[menus.arguments]]
+name = "timeout"
+type = "time"
+description = "Script execution timeout."
+unset = true
+[[menus.read_only]]
+name = "device"
+type = "enum"
+description = "Device the script is running on."
+[[menus.read_only]]
+name = "status"
+type = "string"
+description = "Execution status."
+[[menus.read_only]]
+name = "output"
+type = "string"
+description = "Script output."
+
+[[menus]]
+path = "/cmr/device/upgrade"
+type = "Command"
+[[menus.flags]]
+name = "L"
+type = "controller"
+description = "Include the CMR server itself (self-client)."
+[[menus.arguments]]
+name = "labels"
+type = "object"
+description = "Select the devices to upgrade using labels. Supports + and - signs as AND and AND NOT operators, respectively; if no sign is provided, the OR operator is used."
+unset = true
+[[menus.arguments]]
+name = "order"
+type = "object"
+description = "Execution order (by labels)."
+unset = true
+[[menus.arguments]]
+name = "channel"
+type = "alt"
+description = "Upgrade channel (`long-term`, `stable`, `testing`, or `development`) or a pinned version, for example `channel=7.24.4`."
+unset = true
+[[menus.arguments]]
+name = "schedule-time"
+type = "super { time: date , [day] [ @enum (sun | mon | tue | wed | thu | fri | sat) { sun:1, mon:2, tue:3, wed:4, thu:5, fri:6, sat:7 }] }"
+enum_values = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
+description = "When the upgrade starts: a time with an optional weekday given after `@`, for example `14:00:00` or `00:00:00@sat`."
+unset = true
+[[menus.arguments]]
+name = "strategy"
+type = "enum (parallel | sequential)"
+enum_values = ["parallel", "sequential"]
+description = "How devices are upgraded: `parallel` upgrades all covered devices at the same time; `sequential` upgrades them one after another and waits for each to finish. With `continue-order` the devices are processed per label group in the order given by `order`: in `parallel` the devices of each group are upgraded together, in `sequential` one at a time. Default: `parallel`."
+unset = true
+[[menus.arguments]]
+name = "fail-policy"
+type = "enum (continue | stop | continue-order)"
+enum_values = ["continue", "stop", "continue-order"]
+description = "Behaviour if a device fails: `continue` skips the failed device and continues with the rest; `stop` stops the whole upgrade on the first failure and does not continue with the remaining devices or with the next label group (with `strategy=parallel` it requires `order`, and `parallel` combined with `stop` without `order` is rejected); `continue-order` skips the failed device and continues with the next label group, processing the labels one group after another in the order given by `order`. With `sequential` the rest of the failed device's group is skipped; with `parallel` only the failed device is abandoned and devices already in progress in the group finish. Default: `continue`."
+unset = true
+[[menus.arguments]]
+name = "packages"
+type = "multi { package: string }"
+description = "Packages to upgrade."
+unset = true
+
+[[menus]]
+path = "/cmr/device/wifi-logs"
+type = "Command"
+[[menus.arguments]]
+name = "labels"
+type = "object"
+description = "Select the devices to monitor using labels. Supports + and - signs as AND and AND NOT operators, respectively; if no sign is provided, the OR operator is used."
+unset = true
+[[menus.arguments]]
+name = "address"
+type = "macAddr"
+description = "Filter by client MAC address."
+unset = true
+[[menus.arguments]]
+name = "bssid"
+type = "macAddr"
+description = "Filter by BSSID."
+unset = true
+[[menus.arguments]]
+name = "time"
+type = "time"
+description = "Filter by time."
+unset = true
+[[menus.arguments]]
+name = "time-start"
+type = "date"
+description = "Filter logs from this time."
+unset = true
+[[menus.arguments]]
+name = "time-end"
+type = "date"
+description = "Filter logs up to this time."
+unset = true
+[[menus.arguments]]
+name = "event"
+type = "enum (connected | disconnected | failed)"
+enum_values = ["connected", "disconnected", "failed"]
+description = "Filter by event: `connected`, `disconnected`, or `failed`."
+unset = true
+
+[[menus]]
+path = "/cmr/layout"
+type = "Directory"
+[[menus.arguments]]
+name = "name"
+type = "string"
+description = "Name of the layout/topology."
+[[menus.arguments]]
+name = "scale"
+type = "num"
+description = "Background picture scale in percents. Default: 100."
+unset = true
+[[menus.arguments]]
+name = "file"
+type = "string"
+description = "Background picture selection."
+unset = true
+[[menus.arguments]]
+name = "comment"
+type = "string"
+description = "Descriptive comment for the item (universal add/set property from Common commands; omitted from upstream per-menu tables)."
+[[menus.arguments]]
+name = "disabled"
+type = "bool"
+description = "Whether the item is disabled (universal add property from Common commands; distinct from the X disabled print flag)."
+[[menus.arguments]]
+name = "place-before"
+type = "string"
+description = "Place a new item before the given item number (universal add property from Common commands for ordered item lists)."
+[[menus.arguments]]
+name = "copy-from"
+type = "string"
+description = "Copy property values from an existing item (universal add property from Common commands)."
+
+[[menus]]
+path = "/cmr/layout/add-devices"
+type = "Command"
+[[menus.arguments]]
+name = "labels"
+type = "object"
+description = "Select devices that should be added to the topology using labels. Supports + and - signs as AND and AND NOT operators, respectively; if no sign is provided, the OR operator is used. (default value: **all**)"
+unset = true
+[[menus.arguments]]
+name = "devices"
+type = "multi { array-id, device: enum }"
+description = "Select specific devices that should be added to the topology."
+unset = true
+
+[[menus]]
+path = "/cmr/layout/link"
+type = "Directory"
+[[menus.arguments]]
+name = "layout"
+type = "enum"
+description = "Name of the layout where the link will be displayed."
+required = true
+[[menus.arguments]]
+name = "node1"
+type = "enum"
+description = "Name of the first node in a link."
+required = true
+[[menus.arguments]]
+name = "node2"
+type = "enum"
+description = "Name of the second node in a link."
+required = true
+[[menus.arguments]]
+name = "comment"
+type = "string"
+description = "Descriptive comment for the item (universal add/set property from Common commands; omitted from upstream per-menu tables)."
+[[menus.arguments]]
+name = "disabled"
+type = "bool"
+description = "Whether the item is disabled (universal add property from Common commands; distinct from the X disabled print flag)."
+[[menus.arguments]]
+name = "place-before"
+type = "string"
+description = "Place a new item before the given item number (universal add property from Common commands for ordered item lists)."
+[[menus.arguments]]
+name = "copy-from"
+type = "string"
+description = "Copy property values from an existing item (universal add property from Common commands)."
+[[menus.read_only]]
+name = "links"
+type = "multi { array-id, array-id, link: super { port1: object , [port2] --object } }"
+description = "Detailed information about the link state, such as PoE status, interface names, and traffic information. Example: `ether1(,tx=85.9KiB,rx=10.8KiB)--ether23(poe=powered-on,tx=10.9KiB,rx=86.8KiB)`"
+
+[[menus]]
+path = "/cmr/layout/node"
+type = "Directory"
+[[menus.arguments]]
+name = "name"
+type = "string"
+description = "Name of the node."
+[[menus.arguments]]
+name = "layout"
+type = "enum"
+description = "Name of the layout where the node will be displayed."
+required = true
+[[menus.arguments]]
+name = "device"
+type = "enum"
+description = "Name of the device that the node will represent in the topology. Mutually exclusive with `target-layout` parameter."
+unset = true
+[[menus.arguments]]
+name = "target-layout"
+type = "enum"
+description = "Name of the layout that the node will represent in the topology. Mutually exclusive with `device` parameter."
+unset = true
+[[menus.arguments]]
+name = "x"
+type = "num"
+description = "X coordinate of the node in a topology. Default X value is incremented by 200 each time a new node is added, to prevent overlapping when no coordinates are specified. (default value: **0+200*n**)"
+unset = true
+[[menus.arguments]]
+name = "y"
+type = "num"
+description = "Y coordinate of the node in a topology. (default value: **0**)"
+unset = true
+[[menus.arguments]]
+name = "comment"
+type = "string"
+description = "Descriptive comment for the item (universal add/set property from Common commands; omitted from upstream per-menu tables)."
+[[menus.arguments]]
+name = "disabled"
+type = "bool"
+description = "Whether the item is disabled (universal add property from Common commands; distinct from the X disabled print flag)."
+[[menus.arguments]]
+name = "place-before"
+type = "string"
+description = "Place a new item before the given item number (universal add property from Common commands for ordered item lists)."
+[[menus.arguments]]
+name = "copy-from"
+type = "string"
+description = "Copy property values from an existing item (universal add property from Common commands)."
+
+[[menus]]
+path = "/cmr/layout/rebuild-links"
+type = "Command"
+[[menus.arguments]]
+name = "labels"
+type = "object"
+description = "Select devices using labels for which links should be rebuilt. Supports + and - signs as AND and AND NOT operators, respectively; if no sign is provided, the OR operator is used. (default value: **all**)"
+unset = true
+[[menus.arguments]]
+name = "devices"
+type = "multi { array-id, device: enum }"
+description = "Select specific devices for which links should be rebuilt."
+unset = true
+
+[[menus]]
+path = "/cmr/push-button"
+type = "Command"
+[[menus.arguments]]
+name = "interface"
+type = "multi { array-id, interface: iface_enum }"
+description = "Select interface or interface list on which to search for CMR client. Default: all."
+unset = true
+[[menus.read_only]]
+name = "state"
+type = "string"
+description = "State of device pairing."
+[[menus.read_only]]
+name = "error"
+type = "string"
+description = "Error information, in case pairing is unsuccessful."
+[[menus.read_only]]
+name = "peer"
+type = "multi { array-id, mac: macAddr }"
+description = "Peer address."
+[[menus.read_only]]
+name = "peer-id"
+type = "string"
+description = "Peer ID."
+
+[[menus]]
+path = "/cmr/upgrade"
+type = "Directory"
+[[menus.flags]]
+name = "X"
+type = "disabled"
+description = "Rule is disabled."
+[[menus.flags]]
+name = "D"
+type = "dynamic"
+description = "Rule is dynamic."
+[[menus.arguments]]
+name = "name"
+type = "string"
+description = "Name of the upgrade rule."
+unset = true
+[[menus.arguments]]
+name = "labels"
+type = "object"
+description = "Select the devices the rule covers using labels. Supports + and - signs as AND and AND NOT operators, respectively; if no sign is provided, the OR operator is used. If omitted, the rule covers all connected devices. Default: `all`."
+unset = true
+[[menus.arguments]]
+name = "order"
+type = "object"
+description = "Execution order (by labels). Required when `fail-policy=continue-order`, and required when `fail-policy=stop` is combined with `strategy=parallel`."
+[[menus.arguments]]
+name = "channel"
+type = "alt"
+description = "Upgrade channel: `long-term`, `stable`, `testing`, or `development`. Alternatively, pin a specific version by giving the version directly as the value, for example `channel=7.24.4`."
+required = true
+[[menus.arguments]]
+name = "schedule-time"
+type = "multi { array-id, array-id, time: super { time: date , [day] [ @enum (sun | mon | tue | wed | thu | fri | sat) { sun:1, mon:2, tue:3, wed:4, thu:5,..."
+enum_values = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
+description = "When upgrades start: a time with an optional weekday given after `@`. For example `14:00:00` starts every day at 14:00 and `00:00:00@sat` starts every Saturday at midnight. Multiple entries are comma-separated, for example `00:00:00@sat,00:00:00@sun`."
+unset = true
+[[menus.arguments]]
+name = "strategy"
+type = "enum ()"
+description = "How devices are upgraded: `parallel` upgrades all covered devices at the same time; `sequential` upgrades them one after another and waits for each to finish. With `continue-order` the devices are processed per label group in the order given by `order`: in `parallel` the devices of each group are upgraded together, in `sequential` one at a time. Default: `parallel`."
+unset = true
+[[menus.arguments]]
+name = "fail-policy"
+type = "enum ()"
+description = "Behaviour if a device fails: `continue` skips the failed device and continues with the rest; `stop` stops the whole upgrade on the first failure and does not continue with the remaining devices or with the next label group (with `strategy=parallel` it requires `order`, and `parallel` combined with `stop` without `order` is rejected); `continue-order` skips the failed device and continues with the next label group, processing the labels one group after another in the order given by `order`. With `sequential` the rest of the failed device's group is skipped; with `parallel` only the failed device is abandoned and devices already in progress in the group finish. Default: `continue`."
+unset = true
+[[menus.arguments]]
+name = "comment"
+type = "string"
+description = "Descriptive comment for the item (universal add/set property from Common commands; omitted from upstream per-menu tables)."
+[[menus.arguments]]
+name = "disabled"
+type = "bool"
+description = "Whether the item is disabled (universal add property from Common commands; distinct from the X disabled print flag)."
+[[menus.arguments]]
+name = "place-before"
+type = "string"
+description = "Place a new item before the given item number (universal add property from Common commands for ordered item lists)."
+[[menus.arguments]]
+name = "copy-from"
+type = "string"
+description = "Copy property values from an existing item (universal add property from Common commands)."
+
+[[menus]]
+path = "/cmr/upgrade/job"
+type = "Directory"
+[[menus.flags]]
+name = "X"
+type = "disabled"
+description = "Job is disabled."
+[[menus.flags]]
+name = "R"
+type = "rule"
+description = "Job created from an upgrade rule."
+[[menus.arguments]]
+name = "comment"
+type = "string"
+description = "Descriptive comment for the item (universal add/set property from Common commands; omitted from upstream per-menu tables)."
+[[menus.arguments]]
+name = "disabled"
+type = "bool"
+description = "Whether the item is disabled (universal add property from Common commands; distinct from the X disabled print flag)."
+[[menus.arguments]]
+name = "place-before"
+type = "string"
+description = "Place a new item before the given item number (universal add property from Common commands for ordered item lists)."
+[[menus.arguments]]
+name = "copy-from"
+type = "string"
+description = "Copy property values from an existing item (universal add property from Common commands)."
+[[menus.read_only]]
+name = "labels"
+type = "object"
+description = "Devices the job covers, selected by labels."
+[[menus.read_only]]
+name = "order"
+type = "object"
+description = "Execution order of the label groups, used with `continue-order`."
+[[menus.read_only]]
+name = "channel"
+type = "alt"
+description = "Upgrade channel or the pinned version the job installs."
+[[menus.read_only]]
+name = "strategy"
+type = "enum ()"
+description = "How the job upgrades devices: `parallel` all at the same time, `sequential` one after another. With `continue-order` the devices are processed per label group in the order given by `order`."
+[[menus.read_only]]
+name = "fail-policy"
+type = "enum ()"
+description = "Behaviour of the job if a device fails: `continue`, `stop`, or `continue-order`. `stop` halts the whole job on the first failure; `continue-order` continues with the next label group in `order`."
+[[menus.read_only]]
+name = "schedule-time"
+type = "date"
+description = "When the job is scheduled to run, in the same format as the rule's `schedule-time`."
+[[menus.read_only]]
+name = "starts-in"
+type = "time"
+description = "Time remaining until the job starts. Shown for scheduled jobs."
+[[menus.read_only]]
+name = "start-time"
+type = "date"
+description = "When the job started running."
+[[menus.read_only]]
+name = "end-time"
+type = "date"
+description = "When the job finished."
+[[menus.read_only]]
+name = "state"
+type = "enum (scheduled | queued | waiting devices | queued (busy) | version check | processing | done | cancelled)"
+description = "Current job state: `scheduled` (waiting to run), `queued` (created while another job runs, starts when it finishes), `waiting devices`, `version check` (looking up the available version), `processing` (upgrading), `done` (finished), or `cancelled` (removed)."
+[[menus.read_only]]
+name = "success"
+type = "composite { success: num , total: num }"
+description = "Upgraded/total, for example `3/10`. A `0/total` occurs when the devices are already on the target version or a covered device is unreachable when the job starts."
+[[menus.read_only]]
+name = "run-time"
+type = "time"
+description = "How long the job took to run."
+[[menus.read_only]]
+name = "packages"
+type = "multi { package: string }"
+description = "Packages the job upgrades."
+
+[[menus]]
+path = "/cmr/upgrade/job/run-next"
+type = "Command"
+
+[[menus]]
+path = "/cmr/upgrade/job/show-devices"
+type = "Command"
+[[menus.flags]]
+name = "L"
+type = "controller"
+description = "Include the CMR server itself (self-client)."
+
+[[menus]]
+path = "/cmr/upgrade/show-devices"
+type = "Command"
+[[menus.flags]]
+name = "p"
+type = "remote-pending"
+description = "Controller requests pairing."
+[[menus.flags]]
+name = "I"
+type = "inactive"
+description = "Device is inactive."
+[[menus.flags]]
+name = "S"
+type = "stale"
+description = "No connection (stale)."
+[[menus.flags]]
+name = "L"
+type = "controller"
+description = "The CMR server itself (self-client)."
+[[menus.flags]]
+name = "C"
+type = "connected"
+description = "Device is connected."
+[[menus.flags]]
+name = "U"
+type = "upgrade-available"
+description = "A newer update is available."
+[[menus.arguments]]
+name = "only-upgradable"
+type = "bool"
+description = "Show only the devices that can actually be upgraded."
+
+[[menus]]
+path = "/cmr/upgrade/trigger"
+type = "Command"
+
+[[menus]]
+path = "/cmr/upgrade/version-check"
+type = "Command"
+[[menus.read_only]]
+name = "channel"
+type = "alt"
+description = "Channel checked."
+[[menus.read_only]]
+name = "version"
+type = "string"
+description = "Available versions."
+
+[[menus]]
+path = "/cmr/vlan"
+type = "Directory"
+[[menus.flags]]
+name = "X"
+type = "disabled"
+description = "VLAN provisioning rule is disabled."
+[[menus.arguments]]
+name = "labels"
+type = "object"
+description = "Select the CMR clients this rule provisions. Supports + and - signs as AND and AND NOT operators, respectively; if no sign is provided, the OR operator is used. If omitted, the rule applies to all connected devices."
+unset = true
+[[menus.arguments]]
+name = "port-labels"
+type = "object"
+description = "Select the ports to configure on the selected devices, by interface name (for example `ether1`) or by a port label assigned to the port in `/cmr/device` (for example `uplink`). If omitted, all ports of the selected devices are configured."
+unset = true
+[[menus.arguments]]
+name = "vlan-ids"
+type = "multi { vlan-range: range [1 .. 4094] }"
+description = "VLAN IDs assigned to the selected ports, as a comma-separated list or a range, for example `100,200` or `100-200`. On a trunk port every VLAN ID is tagged; on an access port only the first VLAN ID is used, as the port's PVID."
+required = true
+[[menus.arguments]]
+name = "role"
+type = "enum (access | trunk)"
+enum_values = ["access", "trunk"]
+description = "Port role assigned to the selected ports: - `access` (default) - the port belongs to a single VLAN, which is set as the port's PVID, and carries untagged frames - `trunk` - the port carries multiple VLANs; frames are tagged with 802.1Q headers so the far end can tell them apart"
+unset = true
+[[menus.arguments]]
+name = "comment"
+type = "string"
+description = "Descriptive comment for the item (universal add/set property from Common commands; omitted from upstream per-menu tables)."
+[[menus.arguments]]
+name = "disabled"
+type = "bool"
+description = "Whether the item is disabled (universal add property from Common commands; distinct from the X disabled print flag)."
+[[menus.arguments]]
+name = "place-before"
+type = "string"
+description = "Place a new item before the given item number (universal add property from Common commands for ordered item lists)."
+[[menus.arguments]]
+name = "copy-from"
+type = "string"
+description = "Copy property values from an existing item (universal add property from Common commands)."
+
+[[menus]]
+path = "/cmr/wifi"
+type = "Directory"
+[[menus.flags]]
+name = "X"
+type = "disabled"
+description = "WiFi network is disabled."
+[[menus.arguments]]
+name = "labels"
+type = "object"
+description = "Select the devices the WiFi network is replicated to using labels. Supports + and - signs as AND and AND NOT operators, respectively; if no sign is provided, the OR operator is used."
+unset = true
+[[menus.arguments]]
+name = "vlan-id"
+type = "num"
+description = "VLAN ID applied to the network: none (default) or 1-4095."
+unset = true
+[[menus.arguments]]
+name = "mlo"
+type = "bool"
+description = "Enable MLO (Multi-Link Operation)."
+unset = true
+[[menus.arguments]]
+name = "ssid"
+type = "string"
+description = "Network SSID."
+unset = true
+[[menus.arguments]]
+name = "mode"
+type = "enum (ap | station | station-bridge | station-pseudobridge | meshpoint | invalid)"
+enum_values = ["ap", "station", "station-bridge", "station-pseudobridge", "meshpoint", "invalid"]
+description = "Network operating mode."
+unset = true
+[[menus.arguments]]
+name = "hide-ssid"
+type = "bool"
+description = "Hide the SSID in beacon frames."
+unset = true
+[[menus.arguments]]
+name = "beacon-interval"
+type = "time"
+description = "Beacon interval."
+unset = true
+[[menus.arguments]]
+name = "dtim-period"
+type = "num"
+description = "DTIM period."
+unset = true
+[[menus.arguments]]
+name = "multicast-enhance"
+type = "enum (disabled | enabled) { disabled:0, enabled:1 }"
+enum_values = ["disabled", "enabled"]
+description = "Multicast enhancement: `disabled` or `enabled`."
+unset = true
+[[menus.arguments]]
+name = "qos-classifier"
+type = "enum (priority | dscp-high-3-bits) { priority:0, dscp-high-3-bits:1 }"
+enum_values = ["priority", "dscp-high-3-bits"]
+description = "QoS classifier: `priority` or `dscp-high-3-bits`."
+unset = true
+[[menus.arguments]]
+name = "station-roaming"
+type = "bool"
+description = "Enable station roaming."
+unset = true
+[[menus.arguments]]
+name = "max-clients"
+type = "num"
+description = "Maximum number of connected clients."
+unset = true
+[[menus.arguments]]
+name = "hw-protection-mode"
+type = "enum (none | rts-cts | cts-to-self)"
+enum_values = ["none", "rts-cts", "cts-to-self"]
+description = "Hardware protection mode: `none`, `rts-cts`, `cts-to-self`."
+unset = true
+[[menus.arguments]]
+name = "security.encryption"
+type = "ubit (tkip, ccmp, gcmp, ccmp-256, gcmp-256)"
+description = "Allowed encryption ciphers."
+unset = true
+[[menus.arguments]]
+name = "security.group-encryption"
+type = "enum (tkip | ccmp | gcmp | ccmp-256 | gcmp-256)"
+enum_values = ["tkip", "ccmp", "gcmp", "ccmp-256", "gcmp-256"]
+description = "Group encryption cipher."
+unset = true
+[[menus.arguments]]
+name = "security.group-key-update"
+type = "time"
+description = "Group key update interval."
+unset = true
+[[menus.arguments]]
+name = "security.passphrase"
+type = "string"
+description = "Network passphrase."
+unset = true
+[[menus.arguments]]
+name = "security.multi-passphrase-group"
+type = "enum"
+description = "Multi-passphrase group."
+unset = true
+[[menus.arguments]]
+name = "security.disable-pmkid"
+type = "bool"
+description = "Disable PMKID."
+unset = true
+[[menus.arguments]]
+name = "security.management-protection"
+type = "enum (disabled | allowed | required)"
+enum_values = ["disabled", "allowed", "required"]
+description = "Management frame protection: `disabled`, `allowed`, `required`."
+unset = true
+[[menus.arguments]]
+name = "security.beacon-protection"
+type = "enum (disabled | enabled)"
+enum_values = ["disabled", "enabled"]
+description = "Beacon protection: `disabled` or `enabled`."
+unset = true
+[[menus.arguments]]
+name = "security.management-encryption"
+type = "enum (cmac | gmac | cmac-256 | gmac-256)"
+enum_values = ["cmac", "gmac", "cmac-256", "gmac-256"]
+description = "Management frame encryption cipher."
+unset = true
+[[menus.arguments]]
+name = "security.wps"
+type = "enum (disable | push-button)"
+enum_values = ["disable", "push-button"]
+description = "WPS mode: `disable` or `push-button`."
+unset = true
+[[menus.arguments]]
+name = "security.dh-groups"
+type = "ubit (19, 20, 21)"
+description = "SAE Diffie-Hellman groups."
+unset = true
+[[menus.arguments]]
+name = "security.sae-anti-clogging-threshold"
+type = "num"
+description = "SAE anti-clogging threshold."
+unset = true
+[[menus.arguments]]
+name = "security.sae-max-failure-rate"
+type = "num"
+description = "SAE maximum failure rate."
+unset = true
+[[menus.arguments]]
+name = "security.sae-pwe"
+type = "enum (hunting-and-pecking | hash-to-element | both)"
+enum_values = ["hunting-and-pecking", "hash-to-element", "both"]
+description = "SAE PWE derivation: `hunting-and-pecking`, `hash-to-element`, `both`."
+unset = true
+[[menus.arguments]]
+name = "security.owe-transition-interface"
+type = "iface_enum { auto }"
+description = "OWE transition interface."
+unset = true
+[[menus.arguments]]
+name = "security.eap-methods"
+type = "multi { array-id, method: enum (tls | ttls | peap) { tls:13, ttls:21, peap:25 } }"
+enum_values = ["tls", "ttls", "peap"]
+description = "Allowed EAP methods."
+unset = true
+[[menus.arguments]]
+name = "security.eap-certificate-mode"
+type = "enum (verify-certificate | dont-verify-certificate | no-certificates | verify-certificate-with-crl)"
+enum_values = ["verify-certificate", "dont-verify-certificate", "no-certificates", "verify-certificate-with-crl"]
+description = "EAP certificate verification mode."
+unset = true
+[[menus.arguments]]
+name = "security.eap-tls-certificate"
+type = "enum"
+description = "EAP-TLS certificate."
+unset = true
+[[menus.arguments]]
+name = "security.eap-username"
+type = "string"
+description = "EAP username."
+unset = true
+[[menus.arguments]]
+name = "security.eap-anonymous-identity"
+type = "string"
+description = "EAP anonymous identity."
+unset = true
+[[menus.arguments]]
+name = "security.eap-password"
+type = "string"
+description = "EAP password."
+unset = true
+[[menus.arguments]]
+name = "security.eap-accounting"
+type = "bool"
+description = "Enable EAP accounting."
+unset = true
+[[menus.arguments]]
+name = "security.ft"
+type = "bool"
+description = "Enable Fast Transition (802.11r)."
+unset = true
+[[menus.arguments]]
+name = "security.ft-mobility-domain"
+type = "num"
+description = "FT mobility domain."
+unset = true
+[[menus.arguments]]
+name = "security.ft-over-ds"
+type = "bool"
+description = "FT over the distribution system."
+unset = true
+[[menus.arguments]]
+name = "security.ft-reassociation-deadline"
+type = "time"
+description = "FT reassociation deadline."
+unset = true
+[[menus.arguments]]
+name = "security.ft-nas-identifier"
+type = "string"
+description = "FT NAS identifier."
+unset = true
+[[menus.arguments]]
+name = "security.ft-r0-key-lifetime"
+type = "time"
+description = "FT R0 key lifetime."
+unset = true
+[[menus.arguments]]
+name = "security.ft-preserve-vlanid"
+type = "bool"
+description = "FT preserve VLAN ID."
+unset = true
+[[menus.arguments]]
+name = "security.connect-group"
+type = "string"
+description = "Connect group."
+unset = true
+[[menus.arguments]]
+name = "security.connect-priority"
+type = "super { connect-accept-priority: num , [connect-hold-priority] /num }"
+description = "Connect priority."
+unset = true
+[[menus.arguments]]
+name = "security.authentication-types"
+type = "ubit (wpa-psk, wpa2-psk, wpa2-psk-sha2, wpa-eap, wpa2-eap, wpa3-psk, wpa3-psk-gd, owe, wpa3-eap, wpa3-eap-192, dpp)"
+description = "Supported authentication types."
+unset = true
+[[menus.arguments]]
+name = "comment"
+type = "string"
+description = "Descriptive comment for the item (universal add/set property from Common commands; omitted from upstream per-menu tables)."
+[[menus.arguments]]
+name = "disabled"
+type = "bool"
+description = "Whether the item is disabled (universal add property from Common commands; distinct from the X disabled print flag)."
+[[menus.arguments]]
+name = "place-before"
+type = "string"
+description = "Place a new item before the given item number (universal add property from Common commands for ordered item lists)."
+[[menus.arguments]]
+name = "copy-from"
+type = "string"
+description = "Copy property values from an existing item (universal add property from Common commands)."
+
+[[menus]]
+path = "/cmr/wifi/radio"
+type = "Directory"
+[[menus.flags]]
+name = "X"
+type = "disabled"
+description = "Radio configuration is disabled."
+[[menus.arguments]]
+name = "labels"
+type = "object"
+description = "Select the devices the radio configuration is replicated to using labels. Supports + and - signs as AND and AND NOT operators, respectively; if no sign is provided, the OR operator is used."
+unset = true
+[[menus.arguments]]
+name = "configuration.country"
+type = "enum"
+description = "Country code."
+unset = true
+[[menus.arguments]]
+name = "configuration.chains"
+type = "ubit (0, 1, 2, 3, 4, 5, 6, 7)"
+description = "Radio chains to use."
+unset = true
+[[menus.arguments]]
+name = "configuration.tx-chains"
+type = "ubit ()"
+description = "Transmit chains."
+unset = true
+[[menus.arguments]]
+name = "configuration.tx-power"
+type = "num"
+description = "Transmit power."
+unset = true
+[[menus.arguments]]
+name = "configuration.antenna-gain"
+type = "num"
+description = "Antenna gain."
+unset = true
+[[menus.arguments]]
+name = "configuration.distance"
+type = "num"
+description = "Distance to the farthest connected client."
+unset = true
+[[menus.arguments]]
+name = "configuration.installation"
+type = "enum (outdoor | indoor)"
+enum_values = ["outdoor", "indoor"]
+description = "Installation type: `outdoor` or `indoor`."
+unset = true
+[[menus.arguments]]
+name = "security.authentication-types"
+type = "ubit (wpa-psk, wpa2-psk, wpa2-psk-sha2, wpa-eap, wpa2-eap, wpa3-psk, wpa3-psk-gd, owe, wpa3-eap, wpa3-eap-192, dpp)"
+description = "Supported authentication types."
+unset = true
+[[menus.arguments]]
+name = "channel.frequency"
+type = "object"
+description = "Channel frequency."
+unset = true
+[[menus.arguments]]
+name = "channel.secondary-frequency"
+type = "multi { array-id, secondary-frequency: alt { secondary-frequency-disable: enum (disabled) , secondary-frequency-num: num } }"
+enum_values = ["disabled"]
+description = "Secondary channel frequency."
+unset = true
+[[menus.arguments]]
+name = "channel.band"
+type = "enum (60ghz-ad | 5ghz-a | 5ghz-n | 5ghz-ac | 5ghz-ax | 5ghz-be | 2ghz-g | 2ghz-n | 2ghz-ax | 2ghz-be | s1ghz-ah | 6ghz-ax | 6ghz-be)"
+enum_values = ["60ghz-ad", "5ghz-a", "5ghz-n", "5ghz-ac", "5ghz-ax", "5ghz-be", "2ghz-g", "2ghz-n", "2ghz-ax", "2ghz-be", "s1ghz-ah", "6ghz-ax", "6ghz-be"]
+description = "Operating band."
+unset = true
+[[menus.arguments]]
+name = "channel.width"
+type = "enum (20mhz | 20/40mhz | 20/40mhz-Ce | 20/40mhz-eC | 20/40/80mhz | 20/40/80+80mhz | 20/40/80/160mhz | 20/40/80/160/320mhz | 1mhz | 1/2mhz | 1/2/4m...)"
+enum_values = ["20mhz", "20/40mhz", "20/40mhz-Ce", "20/40mhz-eC", "20/40/80mhz", "20/40/80+80mhz", "20/40/80/160mhz", "20/40/80/160/320mhz", "1mhz", "1/2mhz", "1/2/4mhz", "1/2/4/8mhz", "2160mhz"]
+description = "Channel width."
+unset = true
+[[menus.arguments]]
+name = "channel.skip-dfs-channels"
+type = "enum (disabled | all | 10min-cac)"
+enum_values = ["disabled", "all", "10min-cac"]
+description = "DFS channel handling: `disabled`, `all`, `10min-cac`."
+unset = true
+[[menus.arguments]]
+name = "channel.deprioritize-unii-3-4"
+type = "bool"
+description = "Deprioritize UNII-3/UNII-4 channels."
+unset = true
+[[menus.arguments]]
+name = "channel.reselect-interval"
+type = "super { reselect-interval-min: time [1 .. 60*60*24*300] , [reselect-interval-max] ..time [1 .. 60*60*24*300] }"
+description = "Channel reselection interval range."
+unset = true
+[[menus.arguments]]
+name = "channel.reselect-time"
+type = "super { reselect-time-min: date , [reselect-time-max] ..date }"
+description = "Channel reselection time range."
+unset = true
+[[menus.arguments]]
+name = "channel.preamble-puncturing"
+type = "alt { preamble-puncturing: enum (yes | no) { yes:-1, no:0 } }"
+enum_values = ["yes", "no"]
+description = "Preamble puncturing: `yes` or `no`."
+unset = true
+[[menus.arguments]]
+name = "channel.afc"
+type = "bool"
+description = "Enable AFC (Automatic Frequency Coordination)."
+unset = true
+[[menus.arguments]]
+name = "comment"
+type = "string"
+description = "Descriptive comment for the item (universal add/set property from Common commands; omitted from upstream per-menu tables)."
+[[menus.arguments]]
+name = "disabled"
+type = "bool"
+description = "Whether the item is disabled (universal add property from Common commands; distinct from the X disabled print flag)."
+[[menus.arguments]]
+name = "place-before"
+type = "string"
+description = "Place a new item before the given item number (universal add property from Common commands for ordered item lists)."
+[[menus.arguments]]
+name = "copy-from"
+type = "string"
+description = "Copy property values from an existing item (universal add property from Common commands)."
+
+[[menus]]
 path = "/console"
 type = "Directory"
 [[menus.arguments]]
@@ -3483,11 +5040,11 @@ description = "Port the iSCSI server listens on. See [iSCSI](../../storage/iscsi
 [[menus.arguments]]
 name = "iscsi-server-iqn"
 type = "string"
-description = "Unique identifier used by the iSCSI server. By default the format for the IQN is iqn.2000-02.com.mikrotik:slot (starting 7.21beta2)"
+description = "`. See [iSCSI](../../storage/iscsi)."
 [[menus.arguments]]
 name = "iscsi-port"
 type = "num"
-description = "Network port used by the iSCSI target to listen for incoming connections from initiators. The default port for iSCSI traffic is 3260."
+description = "Port the iSCSI target listens on for connections from initiators. Default: 3260. See [iSCSI](../../storage/iscsi)."
 [[menus.arguments]]
 name = "iscsi-address"
 type = "ipAddr"
@@ -3576,23 +5133,23 @@ description = "Password that enables TCG-Opal self-encryption on a supported (SE
 [[menus.arguments]]
 name = "sshfs-address"
 type = "string"
-description = "Address (IP address or hostname) of the SSH server to mount, for `type=sshfs` (Work in Progress)."
+description = "Address (IP address or hostname) of the SSH server to mount, for `type=sshfs`. See [SSHFS](../../storage/sshfs)."
 [[menus.arguments]]
 name = "sshfs-port"
 type = "num"
-description = "Port of the SSH server to connect to, for `type=sshfs` (Work in Progress)."
+description = "Port of the SSH server to connect to, for `type=sshfs` (default: 22). See [SSHFS](../../storage/sshfs)."
 [[menus.arguments]]
 name = "sshfs-user"
 type = "string"
-description = "User to log in to the remote SSH server with, for `type=sshfs` (Work in Progress)."
+description = "User to log in to the remote SSH server with, for `type=sshfs`. See [SSHFS](../../storage/sshfs)."
 [[menus.arguments]]
 name = "sshfs-password"
 type = "string"
-description = "Password of the remote SSH user, for `type=sshfs` (Work in Progress)."
+description = "Password of the remote SSH user, for `type=sshfs`. See [SSHFS](../../storage/sshfs)."
 [[menus.arguments]]
 name = "sshfs-path"
 type = "string"
-description = "Path on the remote SSH server to mount, for `type=sshfs` (Work in Progress)."
+description = "Path on the remote SSH server to mount, for `type=sshfs`. See [SSHFS](../../storage/sshfs)."
 [[menus.arguments]]
 name = "swap"
 type = "bool"
@@ -3716,7 +5273,7 @@ description = "Secret used to authenticate the connection to the NVMe-over-TCP s
 [[menus.read_only]]
 name = "sshfs-local-user"
 type = "string"
-description = "Local RouterOS user the mounted SSHFS files are made available to; by default the same as `sshfs-user`."
+description = "Local RouterOS user the SSHFS mount runs under, for example `admin`. Read-only."
 [[menus.read_only]]
 name = "io-ops"
 type = "num"
@@ -3912,25 +5469,27 @@ type = "Directory"
 [[menus.flags]]
 name = "I"
 type = "missing-devs"
-description = "missing-devs"
+description = "One or more devices of the file system are missing, so the file system is degraded."
 [[menus.flags]]
 name = "b"
 type = "balancing"
-description = "balancing"
+description = "A balance operation is running on the file system."
 [[menus.flags]]
 name = "r"
 type = "replacing"
-description = "replacing"
+description = "A device replace operation is running on the file system."
 [[menus.flags]]
 name = "s"
 type = "scrubbing"
-description = "scrubbing"
+description = "A scrub operation is running on the file system."
 [[menus.arguments]]
 name = "label"
 type = "string"
+description = "Label of the Btrfs file system, used to address the file system in the btrfs menus, for example `btrfsdisk`."
 [[menus.arguments]]
 name = "default-subvolume"
 type = "enum"
+description = "` (default) is the root of the Btrfs file system itself."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -3950,42 +5509,55 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "uuid"
 type = "string"
+description = "UUID of the Btrfs file system."
 [[menus.read_only]]
 name = "total-devs"
 type = "num"
+description = "Number of devices in the file system."
 [[menus.read_only]]
 name = "dev-ids"
 type = "multi { array-id, devid: num }"
+description = "Numeric device IDs of the devices in the file system; needed by [`replace-device`](replace-device) when a device is missing."
 [[menus.read_only]]
 name = "devs"
 type = "multi { array-id, dev: enum }"
+description = "Disk slots of the devices in the file system, for example `nvme8,nvme9`."
 [[menus.read_only]]
 name = "spaces"
 type = "multi { array-id, space: string }"
+description = "Space allocation of the file system, per device and per storage profile (`data`, `system`, `meta`, `global-reserve`), for example `data,raid1:1.07GB nvme8:1.07GB nvme9:1.07GB, used:1%`."
 [[menus.read_only]]
 name = "balance-status"
 type = "string"
+description = "Status of the balance operation, for example `done`, or an error message such as `BTRFS_IOC_BALANCE_V2 failed: ...`."
 [[menus.read_only]]
 name = "replace-status"
 type = "string"
+description = "Status of the replace or device removal operation, for example `done`, or an error message such as `BTRFS_IOC_DEV_REPLACE failed: File exists` or `BTRFS_IOC_RM_DEV_V2 failed: Resource temporarily unavailable`."
 [[menus.read_only]]
 name = "scrub-status"
 type = "string"
+description = "Status of the scrub operation, for example `done`."
 [[menus.read_only]]
 name = "write-errors"
 type = "multi { snapshot: num }"
+description = "Write error counters, one value per device in the file system. Reset with [`reset-counters`](reset-counters)."
 [[menus.read_only]]
 name = "read-errors"
 type = "multi { snapshot: num }"
+description = "Read error counters, one value per device."
 [[menus.read_only]]
 name = "flush-errors"
 type = "multi { snapshot: num }"
+description = "Flush error counters, one value per device."
 [[menus.read_only]]
 name = "corruption-errors"
 type = "multi { snapshot: num }"
+description = "Data corruption error counters, one value per device."
 [[menus.read_only]]
 name = "generation-errors"
 type = "multi { snapshot: num }"
+description = "Generation mismatch error counters, one value per device."
 
 [[menus]]
 path = "/disk/btrfs/filesystem/add-device"
@@ -3993,6 +5565,7 @@ type = "Command"
 [[menus.arguments]]
 name = "device"
 type = "enum"
+description = "Disk slot to add to the Btrfs file system, for example `nvme9`. After adding a device, run [`balance-start`](balance-start) with the desired profiles (for example `data-profile=raid1`) to actually use it for storage redundancy; otherwise the device is only listed under `devs`."
 
 [[menus]]
 path = "/disk/btrfs/filesystem/balance-cancel"
@@ -4005,23 +5578,29 @@ type = "Command"
 name = "data-profile"
 type = "enum (single | dup | raid0 | raid1 | raid1c3 | raid1c4 | raid10)"
 enum_values = ["single", "dup", "raid0", "raid1", "raid1c3", "raid1c4", "raid10"]
+description = "Profile to convert the `data` chunks to: `single` stores chunks once (only sensible with a single device), `dup` stores them twice on the same device, the `raid*` profiles spread them across multiple devices. Change the profiles after [`add-device`](add-device) to turn a single-disk file system into a Btrfs RAID, for example `data-profile=raid1`."
 [[menus.arguments]]
 name = "metadata-profile"
 type = "enum (single | dup | raid0 | raid1 | raid1c3 | raid1c4 | raid10)"
 enum_values = ["single", "dup", "raid0", "raid1", "raid1c3", "raid1c4", "raid10"]
+description = "Profile to convert the `meta` (metadata) chunks to. Metadata is small compared to data, so `dup` (default for a single device) or `raid1` are the common choices."
 [[menus.arguments]]
 name = "system-profile"
 type = "enum (single | dup | raid0 | raid1 | raid1c3 | raid1c4 | raid10)"
 enum_values = ["single", "dup", "raid0", "raid1", "raid1c3", "raid1c4", "raid10"]
+description = "Profile to convert the `system` chunks to; keep it the same as `metadata-profile`."
 [[menus.arguments]]
 name = "data-usage"
 type = "range"
+description = "Only relocate data chunks that are at most this percentage full, for example `data-usage=50` skips chunks that are more than half full. Balancing is faster but incomplete with a lower value."
 [[menus.arguments]]
 name = "metadata-usage"
 type = "range"
+description = "Only relocate metadata chunks that are at most this percentage full."
 [[menus.arguments]]
 name = "system-usage"
 type = "range"
+description = "Only relocate system chunks that are at most this percentage full."
 
 [[menus]]
 path = "/disk/btrfs/filesystem/remove-device"
@@ -4029,9 +5608,11 @@ type = "Command"
 [[menus.arguments]]
 name = "device"
 type = "enum"
+description = "Disk slot of the device to remove from the file system, for example `nvme9`. The data on the device is first migrated to the remaining devices; removal fails if the current profiles cannot be kept with fewer devices (for example `data,raid1` cannot be kept when the device count drops below two)."
 [[menus.arguments]]
 name = "device-id"
 type = "num"
+description = "Numeric device ID of the device to remove (see `dev-ids` in [`filesystem`](../filesystem)); needed when the device is missing and has no slot anymore."
 
 [[menus]]
 path = "/disk/btrfs/filesystem/replace-cancel"
@@ -4043,12 +5624,15 @@ type = "Command"
 [[menus.arguments]]
 name = "device-to-remove"
 type = "enum"
+description = "Disk slot of the device to replace in the Btrfs file system."
 [[menus.arguments]]
 name = "device-to-remove-id"
 type = "num"
+description = "Numeric device ID of the device to replace; use this instead of `device-to-remove` when the device is missing from the system (the `I - MISSING-DEVS` flag), as the slot is then no longer available."
 [[menus.arguments]]
 name = "device-to-add"
 type = "enum"
+description = "Disk slot of the new device that takes over the data of the removed device."
 
 [[menus]]
 path = "/disk/btrfs/filesystem/reset-counters"
@@ -4068,42 +5652,48 @@ type = "Directory"
 [[menus.flags]]
 name = "*"
 type = "default"
-description = "default"
+description = "`; it is created automatically with the file system."
 [[menus.flags]]
 name = "S"
 type = "snapshot"
-description = "snapshot"
+description = "The subvolume is a snapshot, created with the `parent` argument."
 [[menus.flags]]
 name = "r"
 type = "read-only"
-description = "read-only"
+description = "The subvolume is read-only."
 [[menus.flags]]
 name = "D"
 type = "dead"
-description = "dead"
+description = "The subvolume is dead, for example it is being removed."
 [[menus.flags]]
 name = "M"
 type = "mounted"
-description = "mounted"
+description = "The subvolume is mounted (`mount=yes`) under its `mountpoint`."
 [[menus.arguments]]
 name = "fs"
 type = "enum"
+description = "Label of the Btrfs file system the subvolume belongs to, as shown in [`filesystem`](filesystem/)."
 required = true
 [[menus.arguments]]
 name = "parent"
 type = "enum"
+description = "Subvolume the new subvolume is created from. With `parent`, the new subvolume becomes a snapshot of the parent and shares its content at the time of creation. See [Btrfs subvolumes and snapshots](../../../storage/btrfs/snapshots)."
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Name of the subvolume. A path-like name, for example `Snapshots/backup-10`, places the subvolume inside another subvolume; `top-level` then shows the containing subvolume."
 [[menus.arguments]]
 name = "read-only"
 type = "bool"
+description = "Whether the subvolume is read-only (`r - READ-ONLY` flag). Default: no."
 [[menus.arguments]]
 name = "mount"
 type = "bool"
+description = "Whether the subvolume is mounted under its `mountpoint` (`M - MOUNTED` flag). Default: no."
 [[menus.arguments]]
 name = "mountpoint"
 type = "string"
+description = "Mount point the subvolume is mounted under, relative to the file system mount point. Defaults to the name of the subvolume."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -4123,48 +5713,63 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "top-level"
 type = "enum"
+description = "` when the subvolume sits directly under the file system root."
 [[menus.read_only]]
 name = "fullname"
 type = "string"
+description = "Full path of the subvolume within the file system, for example `Snapshots/backup-10`."
 [[menus.read_only]]
 name = "uuid"
 type = "string"
+description = "UUID of the subvolume."
 [[menus.read_only]]
 name = "received-uuid"
 type = "string"
+description = "UUID of the subvolume on the sender when the subvolume was received with a Btrfs [`transfer`](transfer); empty for locally created subvolumes."
 [[menus.read_only]]
 name = "creation-time"
 type = "date"
+description = "Date and time the subvolume was created."
 [[menus.read_only]]
 name = "subvolume-id"
 type = "num"
+description = "Btrfs ID number of the subvolume."
 [[menus.read_only]]
 name = "generation"
 type = "num"
+description = "Btrfs transaction generation of the subvolume."
 [[menus.read_only]]
 name = "dead"
 type = "bool"
+description = "Whether the subvolume is dead (`D - DEAD` flag)."
 [[menus.read_only]]
 name = "snapshot"
 type = "bool"
+description = "Whether the subvolume is a snapshot (`S - SNAPSHOT` flag)."
 [[menus.read_only]]
 name = "send-trans-id"
 type = "num"
+description = "Btrfs transaction ID of the last send the subvolume was part of."
 [[menus.read_only]]
 name = "send-time"
 type = "date"
+description = "Time the subvolume was last sent with a Btrfs transfer."
 [[menus.read_only]]
 name = "recv-trans-id"
 type = "num"
+description = "Btrfs transaction ID of the receive that created the subvolume."
 [[menus.read_only]]
 name = "recv-time"
 type = "date"
+description = "Time the subvolume was received with a Btrfs transfer."
 [[menus.read_only]]
 name = "snapshots"
 type = "multi { array-id, snapshot: enum }"
+description = "Snapshots that were created from this subvolume."
 [[menus.read_only]]
 name = "path"
 type = "string"
+description = "Path the subvolume was received into by a Btrfs [`transfer`](transfer) (`file=` on the receiver); empty for locally created subvolumes."
 
 [[menus]]
 path = "/disk/btrfs/transfer"
@@ -4173,31 +5778,40 @@ type = "Directory"
 name = "type"
 type = "enum (receive | send)"
 enum_values = ["receive", "send"]
+description = "Direction of the Btrfs transfer: - `receive` - receive a Btrfs send stream at `file`, for example the destination side of a snapshot backup between two RouterOS devices. - `send` - send subvolumes (snapshots) of the file system `fs` to a remote RouterOS device over SSH.  Transfers use the SSH user key authentication of `/user/ssh-keys`. See [Btrfs subvolumes and snapshots](../../../storage/btrfs/snapshots) for a working send/receive example."
 required = true
 [[menus.arguments]]
 name = "fs"
 type = "enum"
+description = "Label of the Btrfs file system the transfer operates on, as shown in [`filesystem`](filesystem/)."
 [[menus.arguments]]
 name = "send-parent"
 type = "enum"
+description = "Snapshot of a previous successful send to base an incremental `send` on; only the changes since that snapshot are transferred."
 [[menus.arguments]]
 name = "send-subvolumes"
 type = "multi { array-id, subvolume: enum }"
+description = "Snapshots to send, for a `send` transfer. Snapshot names (not paths), as shown under [`subvolume`](subvolume)."
 [[menus.arguments]]
 name = "file"
 type = "file"
+description = "Destination (or source) path of the transfer, for example the mount path `BackupBtrfsDisk/Snapshots` where received snapshots are stored."
 [[menus.arguments]]
 name = "ssh-address"
 type = "string"
+description = "Address of the remote RouterOS device for a `send` transfer."
 [[menus.arguments]]
 name = "ssh-receive-mount"
 type = "string"
+description = "Mount path on the remote device under which the snapshots are received, for example `BackupBtrfsDisk/Snapshots`."
 [[menus.arguments]]
 name = "ssh-port"
 type = "num"
+description = "SSH port of the remote device. Default: 22."
 [[menus.arguments]]
 name = "ssh-user"
 type = "string"
+description = "SSH user to authenticate with on the remote device; the SSH key of the local user must be imported for `ssh-user` on the remote device."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -4217,9 +5831,11 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "bytes"
 type = "num"
+description = "Number of bytes transferred so far."
 [[menus.read_only]]
 name = "status"
 type = "string"
+description = "Status of the transfer, for example `done`, or an error message."
 
 [[menus]]
 path = "/disk/check"
@@ -6015,6 +7631,7 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "enabled"
 type = "bool"
+description = "Whether the router runs the rsync daemon that accepts [`sync`](sync/) transfers from other routers; required on the receiving device. Default: no."
 
 [[menus]]
 path = "/file/sync"
@@ -6022,39 +7639,42 @@ type = "Directory"
 [[menus.flags]]
 name = "X"
 type = "disabled"
+description = "The sync entry is disabled."
 [[menus.flags]]
 name = "I"
 type = "invalid"
+description = "The entry is invalid, for example it references a missing or unusable path."
 [[menus.flags]]
 name = "D"
 type = "dynamic"
+description = "The entry is created automatically."
 [[menus.arguments]]
 name = "remote-address"
 type = "multi { array-id, address: string }"
-description = "Target device IP"
+description = "IP address of the remote RouterOS device to synchronize with. The remote device must have the rsync daemon enabled ([`rsync-daemon`](../rsync-daemon))."
 required = true
 [[menus.arguments]]
 name = "mode"
 type = "enum (upload | download)"
 enum_values = ["upload", "download"]
-description = "Sets if you want to download/upload the file (direction of the sync)"
+description = "Direction of the synchronization: - `upload` - send the `local-path` file or folder to the remote device. - `download` - fetch `remote-path` from the remote device to this router."
 required = true
 [[menus.arguments]]
 name = "local-path"
 type = "file"
-description = "File/folder path. Used for mode Upload to set the path of the file/folder to upload to the device"
+description = "File or folder path on this router; the source for `mode=upload` and the destination for `mode=download`."
 [[menus.arguments]]
 name = "remote-path"
 type = "string"
-description = "File/folder path. Used with mode download to set the path on the target device to be downloaded"
+description = "File or folder path on the remote device."
 [[menus.arguments]]
 name = "user"
 type = "string"
-description = "Target device username"
+description = "RouterOS user on the remote device used for authentication."
 [[menus.arguments]]
 name = "password"
 type = "string"
-description = "Target device password"
+description = "Password of the user on the remote device. When it is set, the transfers run over automatically created IPsec."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -6074,6 +7694,7 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "status"
 type = "string"
+description = "` or `initializing transfer`."
 
 [[menus]]
 path = "/file/sync/monitor"
@@ -6081,6 +7702,7 @@ type = "Command"
 [[menus.read_only]]
 name = "status"
 type = "string"
+description = "` or `initializing transfer`."
 
 [[menus]]
 path = "/file/tail"
@@ -34500,18 +36122,23 @@ type = "Settings Directory"
 name = "enabled"
 type = "enum (no | auto | yes)"
 enum_values = ["no", "auto", "yes"]
+description = "Whether the built-in SMB server runs: - `no` - the server is disabled. - `auto` (default) - the server starts automatically when the first non-disabled share is configured in [`shares`](shares). - `yes` - the server is enabled."
 [[menus.arguments]]
 name = "domain"
 type = "string"
+description = "Name of the Windows workgroup the SMB server belongs to. Default: MSHOME."
 [[menus.arguments]]
 name = "comment"
 type = "string"
+description = "Comment of the SMB server. Default: MikrotikSMB."
 [[menus.arguments]]
 name = "interfaces"
 type = "multi { array-id, interface: iface_enum { all:0 } }"
+description = "Interfaces on which the SMB service listens. Default: all."
 [[menus.read_only]]
 name = "status"
 type = "string"
+description = "Actual state of the SMB server, for example `enabled`."
 
 [[menus]]
 path = "/ip/smb/shares"
@@ -34519,42 +36146,48 @@ type = "Directory"
 [[menus.flags]]
 name = "D"
 type = "dynamic"
-description = "dynamic"
+description = "The entry is created automatically."
 [[menus.flags]]
 name = "X"
 type = "disabled"
-description = "disabled"
+description = "The share is disabled and not accessible to clients."
 [[menus.flags]]
 name = "*"
 type = "default"
-description = "default"
+description = "The entry is a default entry created by the system."
 [[menus.flags]]
 name = "r"
 type = "read-only"
-description = "read-only"
+description = "The share only allows clients to read; write access is denied."
 [[menus.flags]]
 name = "c"
 type = "require-encryption"
-description = "require-encryption"
+description = "The share accepts only encrypted connections."
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Name of the SMB share that clients connect to."
 required = true
 [[menus.arguments]]
 name = "directory"
 type = "file"
+description = "Directory on the router that the share points to. When it is not set, the value of `name` from the root directory is used. The directory is created automatically if it does not exist."
 [[menus.arguments]]
 name = "read-only"
 type = "bool"
+description = "Whether clients can only read the share. Access can also be restricted per user with `read-only` in [`users`](users). Default: no."
 [[menus.arguments]]
 name = "require-encryption"
 type = "bool"
+description = "Whether only encrypted connections can access the share; recommended for macOS clients. Default: no."
 [[menus.arguments]]
 name = "valid-users"
 type = "multi { array-id, user: enum }"
+description = "List of SMB users allowed to access the share. When the list is empty, all users can access it."
 [[menus.arguments]]
 name = "invalid-users"
 type = "multi { array-id, user: enum }"
+description = "List of SMB users explicitly denied access to the share."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -34578,29 +36211,32 @@ type = "Directory"
 [[menus.flags]]
 name = "D"
 type = "dynamic"
-description = "dynamic"
+description = "The entry is created automatically."
 [[menus.flags]]
 name = "X"
 type = "disabled"
-description = "disabled"
+description = "The user is disabled and cannot log in."
 [[menus.flags]]
 name = "*"
 type = "default"
-description = "default"
+description = "The entry is a default entry created by the system."
 [[menus.flags]]
 name = "r"
 type = "read-only"
-description = "read-only"
+description = "The user has read-only access to the shares."
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Login name of the SMB service user."
 required = true
 [[menus.arguments]]
 name = "password"
 type = "string"
+description = "Password of the SMB user."
 [[menus.arguments]]
 name = "read-only"
 type = "bool"
+description = "Whether the user has read-only access to the shares. Default: yes."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -38178,18 +39814,23 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "buffer"
 type = "enum"
+description = "Buffer the entry belongs to: `memory` for the default buffer, or the name of another memory action or of a disk action. A disk action's newest entries show here, and after a reboot the entries of its active file. `/log/print` without a filter lists every buffer, so a message passed to several actions shows once per action."
 [[menus.read_only]]
 name = "time"
 type = "date"
+description = "Date and time the entry was added."
 [[menus.read_only]]
 name = "topics"
 type = "multi { array-id, topic: enum }"
+description = "Topics of the entry, for example `system,info,account`. The rules in [`/system/logging`](system/logging/) select messages by these topics."
 [[menus.read_only]]
 name = "message"
 type = "string"
+description = "Text of the entry, with the rule's `prefix` in front when the rule has one."
 [[menus.read_only]]
 name = "extra-info"
 type = "string"
+description = "Extra `key=value` fields that some messages carry, for example a login: `app=ssh duser=admin outcome=success src=192.0.2.1`. `print with-extra-info` appends them to the message, and the `cef` remote log format sends them after `msg=`."
 
 [[menus]]
 path = "/mpls"
@@ -47638,27 +49279,34 @@ type = "Directory"
 [[menus.flags]]
 name = "X"
 type = "disabled"
+description = "The rule is disabled."
 [[menus.flags]]
 name = "I"
 type = "invalid"
+description = "The rule is invalid."
 [[menus.flags]]
 name = "*"
 type = "default"
+description = "One of the four default rules: `info`, `error` and `warning` to `memory`, `critical` to `echo`."
 [[menus.flags]]
 name = "Y"
 type = "managed"
 [[menus.arguments]]
 name = "topics"
 type = "multi { array-id, array-id, topic: super { ! , topic: enum } }"
+description = "Topics a message must carry to match. A message matches only when it has every topic listed: `topics=dhcp,debug` matches DHCP debug messages, not all DHCP messages and all debug messages. To log several topics, add one rule per topic. A rule without topics matches every message, debug messages included.  `!` before a topic excludes the messages that carry it, for example `topics=ntp,debug,!packet` logs NTP debug messages without the packet dumps. The topics are described on the [Log](../../../diagnostics-monitoring-and-troubleshooting/log/#topics) page. The router accepts: `account`, `acme-client`, `amt`, `async`, `backup`, `bfd`, `bgp`, `bridge`, `calc`, `caps`, `certificate`, `clock`, `container`, `critical`, `ddns`, `debug`, `dhcp`, `discover`, `disk`, `dns`, `dot1x`, `dude`, `e-mail`, `error`, `event`, `evpn`, `fetch`, `firewall`, `gps`, `gsm`, `health`, `hotspot`, `igmp-proxy`, `info`, `interface`, `ipsec`, `iscsi`, `isdn`, `isis`, `kvm`, `l2tp`, `ldp`, `lora`, `lte`, `manager`, `mme`, `mpls`, `mqtt`, `mvrp`, `natpmp`, `netinstall`, `netwatch`, `ntp`, `ospf`, `ovpn`, `packet`, `pim`, `poe-in`, `poe-out`, `pon`, `ppp`, `pppoe`, `pptp`, `ptp`, `queue`, `radius`, `radvd`, `raw`, `read`, `rip`, `route`, `rpki`, `rproxy`, `rsvp`, `script`, `sertcp`, `simulator`, `smb`, `snmp`, `socksify`, `ssh`, `ssld`, `sstp`, `state`, `store`, `stp`, `system`, `telephony`, `tftp`, `timer`, `tr069`, `update`, `upnp`, `ups`, `vpls`, `vrrp`, `warning`, `watchdog`, `web-proxy`, `wiliot`, `wireguard`, `wireless`, `write`, `zerotier`."
 [[menus.arguments]]
 name = "prefix"
 type = "string"
+description = "`. The prefix is part of the stored and of the sent message."
 [[menus.arguments]]
 name = "regex"
 type = "string"
+description = "Regular expression matched against the message text, followed by the message's extra fields. When it does not match, the rule does not pass the message, even when the topics match."
 [[menus.arguments]]
 name = "action"
 type = "enum"
+description = "Action from [`/system/logging/action`](action/) that receives the matching messages. Every rule that matches passes the message to its own action; when two rules pass the same message to one action, the action receives it once. Default: memory."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -47682,92 +49330,118 @@ type = "Directory"
 [[menus.flags]]
 name = "*"
 type = "default"
+description = "One of the default actions: `memory`, `disk`, `echo` and `remote`."
 [[menus.flags]]
 name = "Y"
 type = "managed"
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Name of the action, letters and digits only. Rules refer to the action by this name, and for `target=memory` it is also the buffer name shown in the `buffer` field of [`/log`](../../../log)."
 required = true
 [[menus.arguments]]
 name = "target"
 type = "enum (memory | disk | echo | remote | email | script) { memory:0, disk:1, echo:2, remote:3, email:4, script:5 }"
 enum_values = ["memory", "disk", "echo", "remote", "email", "script"]
+description = "Where the messages go: - `memory` - Keep them in a memory buffer named after the action, shown by `/log/print`. The buffer is empty after a reboot. - `disk` - Write them to text files (`disk-file-name`). - `echo` - Print them on open terminal sessions (`remember`). - `remote` - Send them to a syslog server (`remote`). - `email` - Send each message as an email (`email-to`). - `script` - Run a script for each message (`script`)."
 required = true
 [[menus.arguments]]
 name = "memory-lines"
 type = "num"
+description = "Number of entries the buffer keeps, `1..65535`. When the buffer is full, each new entry drops the oldest one, unless `memory-stop-on-full` is set. Default: 1000."
 [[menus.arguments]]
 name = "memory-stop-on-full"
 type = "bool"
+description = "When `yes`, the buffer keeps its first `memory-lines` entries and drops new ones until it is emptied with [`clear`](clear). Default: no."
 [[menus.arguments]]
 name = "disk-file-name"
 type = "string"
+description = ".0.txt` starts. To write to another disk or folder, put its name first, for example `usb1/log`. The folder must exist, otherwise the action is refused with `bad disk file name`. Two disk actions cannot use the same file name. Default: log."
 [[menus.arguments]]
 name = "disk-lines-per-file"
 type = "num"
+description = "Number of lines in each file before the action starts a new file, `1..65535`. Default: 1000."
 [[menus.arguments]]
 name = "disk-file-count"
 type = "num"
+description = "Number of files the action keeps, `1..65535`. When a new file starts and the count is reached, the oldest file and its entries are dropped. Default: 2."
 [[menus.arguments]]
 name = "disk-stop-on-full"
 type = "bool"
+description = "Stop writing to this action when the log files are full, instead of dropping the oldest entries. Default: no."
 [[menus.arguments]]
 name = "remote"
 type = "alt { ipv6: ip6Addr , ip: ipAddr , hostname: string }"
+description = "Address of the syslog server: an IPv4 or IPv6 address or a host name. The default `remote` action has `0.0.0.0` (no server set). Default: 0.0.0.0."
 [[menus.arguments]]
 name = "remote-port"
 type = "num"
+description = "Port of the syslog server. Default: 514."
 [[menus.arguments]]
 name = "src-address"
 type = "alt { ipv6: ip6Addr , ip: ipAddr }"
+description = "Source address of the packets sent to the syslog server. `0.0.0.0` leaves the choice to the router. Default: 0.0.0.0."
 [[menus.arguments]]
 name = "remote-log-format"
 type = "enum (default | syslog | cef)"
 enum_values = ["default", "syslog", "cef"]
+description = "|` with the topics, a severity (`Low`, `Medium`, `High`) and the fields `dvchost`, `dvc` and `msg`, followed by the message's extra fields. Each message ends with `cef-event-delimiter`."
 [[menus.arguments]]
 name = "remote-protocol"
 type = "enum (udp | tcp | tls)"
 enum_values = ["udp", "tcp", "tls"]
+description = "Transport to the syslog server. Every format works with every transport, and actions that send to the same address and port share one connection. - `udp` (default) - One datagram per message. Messages sent while the server is unreachable are lost. - `tcp` - A TCP connection. Up to 1000 messages logged while the server is unreachable, for all remote actions together, are kept in memory and sent when the connection is back; newer ones are dropped when the buffer is full. `default` and `syslog` messages have no delimiter in the stream; use `cef` over TCP. - `tls` - The same as `tcp`, encrypted with TLS (`check-certificate`)."
 [[menus.arguments]]
 name = "check-certificate"
 type = "bool"
+description = ", ssl: no trusted CA certificate found` and tries again later. The name in the certificate is not compared with the server address, so trust only the CA of your log servers. Default: no."
 [[menus.arguments]]
 name = "cef-event-delimiter"
 type = "string"
+description = "Characters added at the end of every `cef` message, also over UDP. Default: `\\r\\n`."
 [[menus.arguments]]
 name = "syslog-time-format"
 type = "enum (bsd-syslog | iso8601)"
 enum_values = ["bsd-syslog", "iso8601"]
+description = "Time format of `syslog` messages: - `bsd-syslog` (default) - `Oct  2 16:51:21`, the router's local time without the year. - `iso8601` - `2026-10-02T16:51:21.726+03:00`, with milliseconds and the time zone offset."
 [[menus.arguments]]
 name = "syslog-facility"
 type = "enum (kern | user | mail | daemon | auth | syslog | lpr | news | uucp | cron | authpriv | ftp | ntp | local0 | local1 | local2 | local3 | local4 |...)"
 enum_values = ["kern", "user", "mail", "daemon", "auth", "syslog", "lpr", "news", "uucp", "cron", "authpriv", "ftp", "ntp", "local0", "local1", "local2", "local3", "local4", "local5", "local6", "local7"]
+description = "` of `syslog` messages, with its code: - `kern` (0) - `user` (1) - `mail` (2) - `daemon` (3) (default) - `auth` (4) - `syslog` (5) - `lpr` (6) - `news` (7) - `uucp` (8) - `cron` (9) - `authpriv` (10) - `ftp` (11) - `ntp` (12) - `local0` to `local7` (16 to 23)"
 [[menus.arguments]]
 name = "syslog-severity"
 type = "enum (auto | emergency | alert | critical | error | warning | notice | info | debug) { auto:0xffffffff, emergency:0, alert:1, critical:2, error:3,...)"
 enum_values = ["auto", "emergency", "alert", "critical", "error", "warning", "notice", "info", "debug"]
+description = "` of `syslog` messages. A value other than `auto` sends every message with that severity. - `auto` (default) - Take the severity from the message topics: `debug` 7, `info` 6, `warning` 4, `error` 3. A message with both `error` and `critical` gets 3. - `emergency` (0) - System is unusable. - `alert` (1) - Action must be taken immediately. - `critical` (2) - Critical conditions. - `error` (3) - Error conditions. - `warning` (4) - Warning conditions. - `notice` (5) - Significant condition. - `info` (6) - Informational message. - `debug` (7) - Debug message."
 [[menus.arguments]]
 name = "email-to"
 type = "string"
+description = "` as the subject and the body, through the SMTP server, port, TLS mode and sender set in [`/tool/e-mail`](../../../tool/e-mail/). See [Email](../../../../system-information-and-utilities/e-mail)."
 [[menus.arguments]]
 name = "email-cc"
 type = "multi { array-id, cc: string }"
+description = "Additional recipients of the email action, in the CC header. Several addresses are allowed."
 [[menus.arguments]]
 name = "email-start-tls"
 type = "bool"
+description = "Not used by the email action: STARTTLS follows the `tls` setting in [`/tool/e-mail`](../../../tool/e-mail/). Default: no."
 [[menus.arguments]]
 name = "remember"
 type = "bool"
+description = "For `target=echo`: keep the messages logged while no terminal session is open and print them at the next login, once. Default: yes."
 [[menus.arguments]]
 name = "add-topics-string"
 type = "bool"
+description = "`. The `default` format always contains the topics. Default: no."
 [[menus.arguments]]
 name = "script"
 type = "enum ()"
+description = "For `target=script`: the script from [`/system/script`](../../script/) to run for each matching message. The script gets the variables `$topics` (the topics as text, for example `system,error,critical`) and `$message`. Messages that match while the script is still running are skipped, and a message the script logs itself does not run it again."
 [[menus.arguments]]
 name = "vrf"
 type = "enum ()"
+description = "VRF the remote action connects from. Default: main."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -47791,6 +49465,7 @@ type = "Command"
 [[menus.arguments]]
 name = "action"
 type = "enum"
+description = "Name of the memory action whose buffer to empty."
 
 [[menus]]
 path = "/system/note"
@@ -49824,23 +51499,27 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "enabled"
 type = "bool"
+description = "Whether the server answers tests. Default: yes."
 [[menus.arguments]]
 name = "authenticate"
 type = "bool"
+description = "Whether clients must log in with a user whose group has the `test` and `winbox` policies (see [`/user/group`](../../user/group)). With `no`, anyone who reaches TCP port 2000 can run tests that load the router and its links; do not turn it off on a router reachable from the internet. Default: yes."
 [[menus.arguments]]
 name = "allocate-udp-ports-from"
 type = "num"
-description = "Beginning of UDP port range"
+description = "Beginning of UDP port range. The server and the client take the UDP ports for test data from this port upward, for example 2192 on the server and 2448 to 2467 for a client's 20 streams; firewalls must allow UDP to these ports in both directions. Range `1000..64000`. Default: 2000."
 [[menus.arguments]]
 name = "max-sessions"
 type = "num"
-description = "Maximal simultaneous test count"
+description = "Maximal simultaneous test count. Tests are counted, not their connections. When this many tests run, a new test gets `can not connect`. A single test cannot use more connections than this value either: with `max-sessions=1`, only a test with `connection-count=1` runs. Range `1..1000`. Default: 100."
 [[menus.arguments]]
 name = "allowed-addresses4"
 type = "object { address: ipPrefix }"
+description = "IPv4 addresses or prefixes of the clients allowed to run tests. Empty allows every client. A client outside the list gets `can not connect`. Use this list to limit clients: a user's own `address` setting does not limit bandwidth test logins. Default: empty."
 [[menus.arguments]]
 name = "allowed-addresses6"
 type = "object { address: ip6Prefix }"
+description = "IPv6 addresses or prefixes of the clients allowed to run tests, the same as `allowed-addresses4`. Default: empty."
 
 [[menus]]
 path = "/tool/bandwidth-server/session"
@@ -49864,54 +51543,71 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "client"
 type = "alt { ip: ipAddr , ipv6: ip6Addr }"
+description = "Address of the client. IPv4 clients are shown as IPv4-mapped IPv6 addresses, for example `::ffff:192.0.2.1`."
 [[menus.read_only]]
 name = "protocol"
 type = "enum (udp | tcp) { udp:0, tcp:1 }"
+description = "Protocol of the test, `udp` or `tcp`."
 [[menus.read_only]]
 name = "direction"
 type = "enum (receive | send | both) { receive:0x00000100, send:0x00000200, both:0x00000300 }"
+description = "Which side sends, from the server's point of view: - `receive` - The client sends, the server receives (the client's `transmit`). - `send` - The server sends (the client's `receive`). - `both` - Both sides send."
 [[menus.read_only]]
 name = "user"
 type = "string"
+description = "User the client logged in as; empty when the server has `authenticate=no` and the client gave no user."
 [[menus.read_only]]
 name = "random-data"
 type = "bool"
+description = "Whether the test uses random data."
 [[menus.read_only]]
 name = "tx-current"
 type = "num"
+description = "Rate the server sent at in the last second."
 [[menus.read_only]]
 name = "tx-10-second-average"
 type = "num"
+description = "Average rate the server sent at over the last 10 seconds."
 [[menus.read_only]]
 name = "tx-total-average"
 type = "num"
+description = "Average rate the server sent at since the test started."
 [[menus.read_only]]
 name = "rx-current"
 type = "num"
+description = "Rate the server received at in the last second."
 [[menus.read_only]]
 name = "rx-10-second-average"
 type = "num"
+description = "Average rate the server received at over the last 10 seconds."
 [[menus.read_only]]
 name = "rx-total-average"
 type = "num"
+description = "Average rate the server received at since the test started."
 [[menus.read_only]]
 name = "lost-packets"
 type = "num"
+description = "UDP packets the server found missing in the last second."
 [[menus.read_only]]
 name = "tx-size"
 type = "range"
+description = "Size of the UDP packets the server sends, in bytes of the whole IP packet."
 [[menus.read_only]]
 name = "rx-size"
 type = "range"
+description = "Size of the UDP packets the server receives, in bytes of the whole IP packet."
 [[menus.read_only]]
 name = "tcp-connection-count"
 type = "num"
+description = "Number of connections of the test (`connection-count` of the client); also shown for UDP tests."
 [[menus.read_only]]
 name = "local-tx-speed"
 type = "num"
+description = "Speed limit the client set for its own sending (`local-tx-speed`)."
 [[menus.read_only]]
 name = "remote-tx-speed"
 type = "num"
+description = "Speed limit the client set for the server's sending (`remote-tx-speed`)."
 
 [[menus]]
 path = "/tool/bandwidth-test"
@@ -49919,89 +51615,117 @@ type = "Command"
 [[menus.arguments]]
 name = "address"
 type = "address (flags=46viD)"
+description = "IPv4 or IPv6 address of the server. A link-local IPv6 address needs the interface, for example `fe80::1%ether1`."
 [[menus.arguments]]
 name = "protocol"
 type = "enum (udp | tcp) { udp:0, tcp:1 }"
 enum_values = ["udp", "tcp"]
+description = "Traffic to send: - `udp` (default) - UDP packets of `local-udp-tx-size` and `remote-udp-tx-size` bytes; the receiver counts lost packets. - `tcp` - TCP connections (`connection-count`); TCP adapts its rate to the path."
 [[menus.arguments]]
 name = "local-udp-tx-size"
 type = "range"
+description = "Size of the UDP packets the client sends, in bytes of the whole IP packet: 1500 sends a 1472-byte UDP payload. Values below 52 fail with `failure: size too small` over IPv4. Range `28..64000`. Default: 1500."
 [[menus.arguments]]
 name = "remote-udp-tx-size"
 type = "range"
+description = "Size of the UDP packets the server sends, counted the same way as `local-udp-tx-size`. Default: 1500."
 [[menus.arguments]]
 name = "direction"
 type = "enum (receive | transmit | both) { receive:0x00000100, transmit:0x00000200, both:0x00000300 }"
 enum_values = ["receive", "transmit", "both"]
+description = "Which side sends: - `receive` (default) - The server sends, the client receives (`rx-*` values). - `transmit` - The client sends, the server receives (`tx-*` values). - `both` - Both sides send at the same time."
 [[menus.arguments]]
 name = "connection-count"
 type = "num"
+description = "Number of TCP connections, or of UDP streams with their own ports, that the test uses. Range `1..255`. Default: 20, or the number of CPU cores on routers with more than 20 cores."
 [[menus.arguments]]
 name = "local-tx-speed"
 type = "num"
+description = "Maximum rate the client sends at, in bits per second (suffixes such as `50M` work). Without it, the client sends as fast as it can: an unlimited UDP test floods for about the first second and then sends more than the receiver reports, so `lost-packets` stays above zero."
 [[menus.arguments]]
 name = "remote-tx-speed"
 type = "num"
+description = "Maximum rate the server sends at, in bits per second (suffixes such as `50M` work). Without it, the server sends as fast as it can."
 [[menus.arguments]]
 name = "user"
 type = "string"
+description = "User name on the server. The user's group needs both the `test` and `winbox` policies (see [`/user/group`](../user/group)). Not needed when the server has `authenticate=no`."
 [[menus.arguments]]
 name = "password"
 type = "string"
+description = "Password of `user` on the server."
 [[menus.arguments]]
 name = "duration"
 type = "time"
+description = "."
 [[menus.arguments]]
 name = "random-data"
 type = "bool"
+description = "Whether to fill the payload with random, incompressible data, so that links that compress traffic do not show a higher rate than they carry. It costs more CPU time on both sides. Default: no."
 [[menus.read_only]]
 name = "status"
 type = "enum (connecting | can not start test | can not connect | remote is busy | test unsupported | running | disconnected | authentication failed | don...)"
+description = "State of the test: - `connecting` - The client is connecting to the server. - `running` - The test runs. - `done testing` - The test ended after `duration`. - `authentication failed` - The server refused the user name or password, or no user was given while the server authenticates. - `can not connect` - The server is disabled or not reachable, the client is not in its `allowed-addresses4`/`allowed-addresses6`, or `max-sessions` is reached. - `disconnected` - The connection to the server ended during the test, also when the test uses more connections than the server's `max-sessions`.  Other values report that the server refused or could not start the test."
 [[menus.read_only]]
 name = "duration"
 type = "time"
+description = "How long the test has run."
 [[menus.read_only]]
 name = "tx-current"
 type = "num"
+description = "Rate the client sent at in the last second. UDP counts whole IP packets (IP and UDP headers included), TCP counts the TCP payload only."
 [[menus.read_only]]
 name = "tx-10-second-average"
 type = "num"
+description = "Average rate the client sent at over the last 10 seconds."
 [[menus.read_only]]
 name = "tx-total-average"
 type = "num"
+description = "Average rate the client sent at since the test started."
 [[menus.read_only]]
 name = "rx-current"
 type = "num"
+description = "Rate the client received at in the last second. UDP counts whole IP packets (IP and UDP headers included), TCP counts the TCP payload only."
 [[menus.read_only]]
 name = "rx-10-second-average"
 type = "num"
+description = "Average rate the client received at over the last 10 seconds."
 [[menus.read_only]]
 name = "rx-total-average"
 type = "num"
+description = "Average rate the client received at since the test started."
 [[menus.read_only]]
 name = "lost-packets"
 type = "num"
+description = "UDP packets lost in the last second, not a total since the start."
 [[menus.read_only]]
 name = "random-data"
 type = "bool"
+description = "Whether the test uses random data (`random-data`)."
 [[menus.read_only]]
 name = "direction"
 type = "enum (receive | transmit | both) { receive:0x00000100, transmit:0x00000200, both:0x00000300 }"
+description = "Direction of the test (`direction`)."
 [[menus.read_only]]
 name = "tx-size"
 type = "range"
+description = "Size of the UDP packets the client sends, in bytes of the whole IP packet."
 [[menus.read_only]]
 name = "rx-size"
 type = "range"
+description = "Size of the UDP packets the client receives, in bytes of the whole IP packet."
 [[menus.read_only]]
 name = "connection-count"
 type = "num"
+description = "Number of TCP connections or UDP streams the test uses."
 [[menus.read_only]]
 name = "local-cpu-load"
 type = "num"
+description = "CPU load of the client during the test, shown after the first seconds."
 [[menus.read_only]]
 name = "remote-cpu-load"
 type = "num"
+description = "CPU load of the server during the test, shown after the first seconds."
 [[menus.read_only]]
 name = "tcp-info"
 type = "multi { name: string }"
