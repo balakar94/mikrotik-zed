@@ -637,3 +637,46 @@ class TestFirewallChainEnums:
                 a for a in BY_PATH[path]["arguments"] if a.get("name") == "chain"
             )
             assert chain.get("description", "").strip(), f"{path} chain description emptied"
+
+
+class TestCmrFamilyCoverage:
+    """The `/cmr` (centralized management) family must not vanish silently.
+
+    Upstream introduced the whole family in the Oct-2026 doc sync; a
+    regeneration that dropped it would remove an entire CLI domain from
+    completion/hover with no other signal. Membership-shaped like the rest of
+    this suite: upstream may grow the family freely.
+    """
+
+    REQUIRED: tuple[str, ...] = (
+        "/cmr",
+        "/cmr/alert",
+        "/cmr/client",
+        "/cmr/device",
+        "/cmr/push-button",
+        "/cmr/upgrade",
+        "/cmr/wifi",
+    )
+
+    def test_required_cmr_menus_are_present(self):
+        missing = [path for path in self.REQUIRED if path not in BY_PATH]
+        assert not missing, f"/cmr family shrank — missing menus: {missing}"
+
+    def test_cmr_entries_carry_their_documented_type(self):
+        # The type drives verb-vs-property completion in the language server;
+        # a drift that reshaped e.g. `/cmr/device` would degrade it silently.
+        expected = {
+            "/cmr": "Settings Directory",
+            "/cmr/client": "Settings Directory",
+            "/cmr/device": "Directory",
+            "/cmr/push-button": "Command",
+            "/cmr/wifi": "Directory",
+        }
+        for path, want in expected.items():
+            assert BY_PATH[path].get("type") == want, (
+                f"{path} type is {BY_PATH[path].get('type')!r}, expected {want!r}"
+            )
+
+    def test_cmr_device_menu_keeps_its_properties(self):
+        # Guards against a regeneration that keeps the path but empties it.
+        assert _total_properties(BY_PATH["/cmr/device"]) > 0
