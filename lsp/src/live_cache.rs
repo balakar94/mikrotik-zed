@@ -510,21 +510,35 @@ pub fn live_resource_for_menu_property(
         }
     }
 
-    // 5. IP Addresses / prefixes / gateways (IPv4 vs IPv6)
-    if matches!(
-        prop_low.as_str(),
-        "address"
-            | "network"
-            | "src-address"
-            | "dst-address"
-            | "gateway"
-            | "target-addresses"
-            | "to-addresses"
-            | "local-address"
-            | "remote-address"
-    ) || type_low.starts_with("ipaddr")
-        || type_low.starts_with("ipprefix")
-        || type_low == "address"
+    // A property typed *exclusively* as a MAC address (a scan/monitor target,
+    // a mac-server session) is never an IP address, so mapping it to the local
+    // `/ip/address` list would be invalid. Composite types that offer an IP
+    // alternative (`alt { mac-address: macAddr, ip-address: ipAddr }`) keep
+    // the address mapping.
+    let mac_only_type = (type_low.contains("macaddr") || type_low.contains("mac address"))
+        && !type_low.contains("ip");
+
+    // 5. IP Addresses / prefixes / gateways (IPv4 vs IPv6). `/cmr` menus are
+    // excluded: their addresses are endpoints on remote managed devices (the
+    // device connection address, the CMR server address), not local
+    // interfaces. `/cmr/*/push-button` keeps its `interface` mapping above —
+    // that one names the local interfaces to scan and is correct.
+    if !path_low.starts_with("/cmr")
+        && !mac_only_type
+        && (matches!(
+            prop_low.as_str(),
+            "address"
+                | "network"
+                | "src-address"
+                | "dst-address"
+                | "gateway"
+                | "target-addresses"
+                | "to-addresses"
+                | "local-address"
+                | "remote-address"
+        ) || type_low.starts_with("ipaddr")
+            || type_low.starts_with("ipprefix")
+            || type_low == "address")
     {
         if is_ipv6 {
             return Some(ResourceKind::Ipv6Addresses);

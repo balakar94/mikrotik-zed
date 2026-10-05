@@ -215,6 +215,85 @@ fn test_live_resource_for_property_all_kinds() {
 }
 
 #[test]
+fn test_cmr_addresses_do_not_borrow_local_resources() {
+    // `/cmr` addresses point at remote managed devices and the CMR server, so
+    // local `/ip/address` values would be invalid there. The `wifi-logs` MAC
+    // filter is a macAddr, never an IP either.
+    for (menu, prop, ty) in [
+        ("/cmr/device", "address", "address (flags=46)"),
+        ("/cmr/client", "controller-address", "address"),
+        ("/cmr/client/pair", "address", "address (flags=46)"),
+        ("/cmr/device/wifi-logs", "address", "macAddr"),
+    ] {
+        assert_eq!(
+            live_resource_for_menu_property(menu, prop, ty),
+            None,
+            "{menu} {prop} must not map to a local resource"
+        );
+    }
+
+    // `/cmr/*/push-button` `interface` names the LOCAL interfaces to scan for
+    // CMR peers, so that mapping stays.
+    assert_eq!(
+        live_resource_for_menu_property(
+            "/cmr/push-button",
+            "interface",
+            "multi { array-id, interface: iface_enum }"
+        ),
+        Some(ResourceKind::Interfaces)
+    );
+
+    // Non-`/cmr` menus keep mapping addresses exactly as before.
+    assert_eq!(
+        live_resource_for_menu_property("/ip/address", "address", "ipAddr"),
+        Some(ResourceKind::IpAddresses)
+    );
+}
+
+#[test]
+fn test_mac_only_types_are_never_ip_addresses() {
+    // A MAC-only property takes a peer/device MAC (scan, monitor, romon,
+    // mac-server, bluetooth), so suggesting local `/ip/address` entries would
+    // be invalid on the device.
+    for (menu, prop, ty) in [
+        ("/interface/wifi/scan", "address", "macAddr"),
+        ("/tool/romon/discover", "address", "macAddr"),
+        ("/iot/bluetooth", "address", "MAC address"),
+        ("/interface/w60g/station", "remote-address", "macAddr"),
+        ("/tool/mac-server/sessions", "src-address", "macAddr"),
+        (
+            "/interface/wireless/snooper/flat-snoop",
+            "address",
+            "alt { station-address: macAddr , network-address: macAddr }",
+        ),
+    ] {
+        assert_eq!(
+            live_resource_for_menu_property(menu, prop, ty),
+            None,
+            "{menu} {prop} [{ty}] must not map to IP addresses"
+        );
+    }
+
+    // A type that also offers an IP alternative keeps the address mapping.
+    assert_eq!(
+        live_resource_for_menu_property(
+            "/interface/ethernet/switch/multicast-fdb",
+            "address",
+            "alt { mac-address: macAddr , ip-address: ipAddr }"
+        ),
+        Some(ResourceKind::IpAddresses)
+    );
+    assert_eq!(
+        live_resource_for_menu_property(
+            "/user/active",
+            "address",
+            "alt { ip: ipAddr , ip6: ip6Addr , address: macAddr }"
+        ),
+        Some(ResourceKind::IpAddresses)
+    );
+}
+
+#[test]
 fn test_multi_resource_cache_isolation() {
     let mut cache = LiveCache::new(Duration::from_secs(60));
     cache.insert("interfaces".to_string(), vec!["ether1".to_string()]);

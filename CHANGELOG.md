@@ -24,6 +24,14 @@
   `#[cfg(not(target_arch = "wasm32"))]` in `platform::process_seed()`; the wasm
   build uses a fixed seed, and the monotonic counter plus the pre-write unlink
   of every temp path keep staging names unique and safe.
+- **Live completion no longer offers local addresses for remote-only values
+  (`lsp/src/live_cache.rs`)**: a property typed *exclusively* as a MAC address
+  (scan/monitor/romon/mac-server/bluetooth `address`) is never mapped to the
+  local `/ip/address` list, and `/cmr` addresses (remote device connection
+  address, CMR server address, the `wifi-logs` MAC filter) are excluded too.
+  Composite types that also offer an IP alternative keep the address mapping,
+  and `/cmr/*/push-button` keeps its `interface` suggestions — that property
+  names the local interfaces to scan.
 
 ## [0.7.0] - 2026-09-19
 
