@@ -26,14 +26,15 @@ Limitations: matching is textual and fully-qualified (`std::...`), which is
 this crate's convention; a call reached through a `use` alias is not caught.
 
 Usage:
-  python3 scripts/check_wasm_api_usage.py [--src DIR]
+  make check-wasm-api   (prefers .venv)
+  .venv/bin/python scripts/check_wasm_api_usage.py [--src DIR]
 
 Exit codes:
   0  no banned usage
   1  violations found
   2  IO or usage error
 
-Stdlib only; requires Python >= 3.12.
+Stdlib only.
 """
 
 from __future__ import annotations

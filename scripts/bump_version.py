@@ -16,7 +16,7 @@ asserted, then `cargo check` refreshes `Cargo.lock` and the lock is asserted
 to carry the new version for the workspace members. Grammar versions
 (`grammars/rsc/`, separate repo lifecycle) are never touched here.
 
-Usage: python3 scripts/bump_version.py <VERSION> <file> [<file> ...]
+Usage: make bump VERSION=x.y.z   (or .venv/bin/python scripts/bump_version.py <VERSION> <file> ...)
 """
 
 from __future__ import annotations
@@ -29,7 +29,9 @@ import sys
 try:
     import tomllib
 except ModuleNotFoundError:  # Python < 3.11
-    print("error: bump_version.py needs Python 3.11+ (tomllib)", file=sys.stderr)
+    print("error: bump_version.py needs Python 3.11+ (tomllib); "
+          f"this is {sys.version.split()[0]}", file=sys.stderr)
+    print("hint: create the venv once with 'make install-tools', then run 'make bump'", file=sys.stderr)
     sys.exit(2)
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent

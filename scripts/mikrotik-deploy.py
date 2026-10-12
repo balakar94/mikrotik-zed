@@ -59,9 +59,9 @@ resolve-then-connect TOCTOU. Transport itself stays HTTPS unless ``--http``
 is explicit; ``--no-ssl-verify`` never changes the scheme.
 
 Usage:
-  python scripts/mikrotik-deploy.py path/to/file.rsc
-  python scripts/mikrotik-deploy.py path/to/file.rsc --host 192.168.88.1 --user admin --dry-run
-  MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret python scripts/mikrotik-deploy.py file.rsc
+  .venv/bin/python scripts/mikrotik-deploy.py path/to/file.rsc
+  .venv/bin/python scripts/mikrotik-deploy.py path/to/file.rsc --host 192.168.88.1 --user admin --dry-run
+  MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret .venv/bin/python scripts/mikrotik-deploy.py file.rsc
 
 Zed tasks integration: see languages/rsc/tasks.json and README.md
 """
@@ -81,7 +81,7 @@ import urllib.parse
 
 # Shared connection-setup helpers live in the sibling module. Make the
 # scripts/ directory importable regardless of CWD or how this file is loaded
-# (direct run as `python scripts/<name>.py`, or importlib in the test suite).
+# (direct run as `.venv/bin/python scripts/<name>.py`, or importlib in the test suite).
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from _mikrotik_shared import (  # noqa: E402
@@ -452,7 +452,8 @@ def deploy_via_rest(
             log("DRY-RUN REST: would DELETE the uploaded file after a successful import (--keep-file retains it)")
         return
     if not HAS_REQUESTS:
-        print("error: REST method requires 'requests' (pip install requests)", file=sys.stderr)
+        print("error: REST method requires 'requests' — run 'make install-tools', "
+              "or: .venv/bin/pip install requests", file=sys.stderr)
         sys.exit(3)
     base = f"{scheme}://{host_for_url}:{port}"
     # F1: lexical + resolve-then-revalidate before Authorization is sent:
@@ -688,7 +689,8 @@ def deploy_via_ssh(
             log("DRY-RUN SSH: would remove the uploaded file after a successful import (--keep-file retains it)")
         return
     if not HAS_PARAMIKO:
-        print("error: SSH method requires 'paramiko' (pip install paramiko)", file=sys.stderr)
+        print("error: SSH method requires 'paramiko' — run 'make install-tools', "
+              "or: .venv/bin/pip install paramiko", file=sys.stderr)
         sys.exit(3)
     # F1: lexical + resolve-then-revalidate before the password goes over
     # the wire — same pre-credential phase as REST. Dry-run already
@@ -944,7 +946,7 @@ def main() -> None:
 
     if not args.host:
         print("error: --host or MIKROTIK_HOST is required", file=sys.stderr)
-        print("example: MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret python scripts/mikrotik-deploy.py file.rsc --dry-run", file=sys.stderr)
+        print("example: MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret .venv/bin/python scripts/mikrotik-deploy.py file.rsc --dry-run", file=sys.stderr)
         sys.exit(2)
 
     # Single-host contract: rsc-ls parses a comma-separated MIKROTIK_HOST and
@@ -1063,7 +1065,8 @@ def main() -> None:
         elif HAS_PARAMIKO:
             method = "ssh"
         else:
-            print("error: no transport available: install 'requests' or 'paramiko' (pip install requests paramiko)", file=sys.stderr)
+            print("error: no transport available: install 'requests' or 'paramiko' "
+                  "— '.venv/bin/pip install requests paramiko', or run 'make install-tools'", file=sys.stderr)
             sys.exit(3)
 
     # SEC-07: a SPKI pin cannot be enforced over plain HTTP (and Basic

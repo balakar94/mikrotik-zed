@@ -94,8 +94,8 @@ fn main() {
     let data = std::sync::Arc::new(MenuData::load());
     let prov = menus::dataset_provenance();
     log_info!(
-        "dataset: RouterOS {}, {} menus (src {})",
-        prov.version,
+        "dataset: upstream docs era hint {}, {} menus (src {})",
+        prov.era_hint,
         data.menus.len(),
         prov.src_hash
     );

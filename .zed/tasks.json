@@ -19,8 +19,8 @@
   },
   {
     "label": "MikroTik: Check script (dry-run, no device)",
-    "command": "python3",
-    "args": ["scripts/mikrotik-deploy.py", "$ZED_FILE", "--dry-run"],
+    "command": "sh",
+    "args": ["scripts/run-python.sh", "scripts/mikrotik-deploy.py", "$ZED_FILE", "--dry-run"],
     "env": {},
     "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": false,
@@ -32,8 +32,9 @@
   },
   {
     "label": "MikroTik: Live — Check connectivity (opt-in)",
-    "command": "python3",
+    "command": "sh",
     "args": [
+      "scripts/run-python.sh",
       "scripts/mikrotik-live-check.py",
       "--host",
       "${input:mikrotik_host}",
@@ -74,8 +75,9 @@
   },
   {
     "label": "MikroTik: Live — Check connectivity --dry-run (opt-in)",
-    "command": "python3",
+    "command": "sh",
     "args": [
+      "scripts/run-python.sh",
       "scripts/mikrotik-live-check.py",
       "--host",
       "${input:mikrotik_host}",
@@ -117,8 +119,8 @@
   },
   {
     "label": "MikroTik: Deploy current file (REST)",
-    "command": "python3",
-    "args": ["scripts/mikrotik-deploy.py", "$ZED_FILE", "--method", "rest"],
+    "command": "sh",
+    "args": ["scripts/run-python.sh", "scripts/mikrotik-deploy.py", "$ZED_FILE", "--method", "rest"],
     "env": {},
     "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": true,
@@ -131,8 +133,8 @@
   },
   {
     "label": "MikroTik: Deploy current file (SSH)",
-    "command": "python3",
-    "args": ["scripts/mikrotik-deploy.py", "$ZED_FILE", "--method", "ssh"],
+    "command": "sh",
+    "args": ["scripts/run-python.sh", "scripts/mikrotik-deploy.py", "$ZED_FILE", "--method", "ssh"],
     "env": {},
     "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": true,

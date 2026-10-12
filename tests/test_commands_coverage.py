@@ -532,7 +532,12 @@ class TestExportFixtures:
     def test_fixtures_directory_holds_expected_samples(self):
         assert self.FIXTURES_DIR.is_dir(), f"missing {self.FIXTURES_DIR}"
         names = sorted(p.name for p in self.FIXTURES_DIR.glob("*.rsc"))
-        for expected in ("ip-address.rsc", "ip-route.rsc", "system-scheduler.rsc"):
+        for expected in (
+            "ip-address.rsc",
+            "ip-route.rsc",
+            "system-scheduler.rsc",
+            "tool-fetch.rsc",
+        ):
             assert expected in names, f"expected fixture {expected} missing (found {names})"
 
     def test_every_fixture_property_exists_in_commands_toml(self):

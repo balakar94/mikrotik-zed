@@ -1,16 +1,21 @@
 """QA-F7b: tasks.json <-> scripts contract.
 
-Zed tasks run `python3 scripts/<tool>.py` from `$ZED_WORKTREE_ROOT`. Existing
-tests pin task shape, labels and secret hygiene but never connect a task
-argument to the script it invokes, so a renamed/moved script or a flag typo
-would pass every check. This module closes that gap, offline and fast:
+Zed tasks run `sh scripts/run-python.sh scripts/<tool>.py` from
+`$ZED_WORKTREE_ROOT`; the wrapper prefers `.venv/bin/python` and falls back to
+`python3` (see its header for why). Existing tests pin task shape, labels and
+secret hygiene but never connect a task argument to the script it invokes, so a
+renamed/moved script or a flag typo would pass every check. This module closes
+that gap, offline and fast:
 
-  1. both task files parse and reference `.py` scripts only under `scripts/`
-     (no absolute paths, no `..`, no other directories);
+  1. both task files parse and reference `.py`/`.sh` paths only under
+     `scripts/` (no absolute paths, no `..`, no other directories) — the `.sh`
+     case keeps the resolver wrapper under the same rules as the scripts it
+     launches;
   2. every referenced script exists relative to the repo root;
   3. every `--flag` handed to a script is recognized by that script. The
-     check is `python3 <script> --help` (run once per script; argparse exits
-     before any device/network work), with one documented exception:
+     check is `<script> --help` (run once per script, with `sys.executable`;
+     argparse exits before any device/network work), with one documented
+     exception:
      `mikrotik-live-check.py --method` is a deliberate argparse.SUPPRESS
      compatibility shim for tasks.json (`scripts/mikrotik-live-check.py:142`),
      so it is allowlisted below only after verifying the literal exists in
@@ -50,7 +55,7 @@ _HELP_CACHE: dict[str, str] = {}
 
 
 def _script_refs(args: list) -> list[str]:
-    """Path-like `.py` arguments, in order of appearance.
+    """Path-like `.py`/`.sh` arguments, in order of appearance.
 
     Inline `python3 -c` code contains whitespace/newlines and is therefore
     ignored; absolute, relative and bare paths are all detected so the
@@ -60,7 +65,7 @@ def _script_refs(args: list) -> list[str]:
     for arg in args:
         if not isinstance(arg, str) or arg.startswith("-"):
             continue
-        if not arg.endswith(".py") or any(c.isspace() for c in arg):
+        if not arg.endswith((".py", ".sh")) or any(c.isspace() for c in arg):
             continue
         refs.append(arg)
     return refs
@@ -100,7 +105,7 @@ def _flag_in_help(flag: str, help_text: str) -> bool:
 
 
 def _help_text(script: str) -> str:
-    """`python3 <script> --help` once per script (offline; no device)."""
+    """`<script> --help` once per script, run with `sys.executable` (no device)."""
     if script not in _HELP_CACHE:
         result = subprocess.run(
             [sys.executable, str(ROOT / script), "--help"],
@@ -147,6 +152,7 @@ def test_scripts_referenced_by_tasks_exist_under_scripts_dir():
     assert not violations, "task/script path violations:\n" + "\n".join(violations)
     # Guard against a vacuous pass if task files lose their script wiring.
     assert {
+        "scripts/run-python.sh",
         "scripts/mikrotik-deploy.py",
         "scripts/mikrotik-live-check.py",
     } <= seen, f"expected task script references, saw {sorted(seen)}"
@@ -196,10 +202,26 @@ def test_suppressed_flag_allowlist_is_real_and_not_stale():
 
 def test_script_ref_detection_rejects_paths_outside_scripts():
     refs = _script_refs(
-        ["./scripts/ok.py", "--flag", "/tmp/evil.py", "../evil.py", "evil.py", "-c", "import x"]
+        [
+            "./scripts/ok.sh",
+            "./scripts/ok.py",
+            "--flag",
+            "/tmp/evil.py",
+            "../evil.py",
+            "evil.py",
+            "-c",
+            "import x",
+        ]
     )
-    assert refs == ["./scripts/ok.py", "/tmp/evil.py", "../evil.py", "evil.py"]
+    assert refs == [
+        "./scripts/ok.sh",
+        "./scripts/ok.py",
+        "/tmp/evil.py",
+        "../evil.py",
+        "evil.py",
+    ]
     assert _script_path_violation("./scripts/ok.py") is None
+    assert _script_path_violation("./scripts/ok.sh") is None
     assert "absolute" in (_script_path_violation("/tmp/evil.py") or "")
     assert "traversal" in (_script_path_violation("../evil.py") or "")
     assert "outside scripts/" in (_script_path_violation("evil.py") or "")

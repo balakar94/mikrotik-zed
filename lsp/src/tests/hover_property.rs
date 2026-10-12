@@ -81,7 +81,7 @@ fn test_hover_property_card_carries_dataset_source_line() {
     assert!(
         h.contents
             .value
-            .contains("Source: published reference — RouterOS"),
+            .contains("Source: published reference — upstream docs era"),
         "property card must name its dataset source, got: {}",
         h.contents.value
     );

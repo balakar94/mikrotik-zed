@@ -25,10 +25,10 @@ item count. It never prints the password. Dry-run mode shows what would be
 called without connecting.
 
 Usage:
-  python scripts/mikrotik-live-check.py --host 192.168.88.1 --user admin
-  python scripts/mikrotik-live-check.py --dry-run
+  .venv/bin/python scripts/mikrotik-live-check.py --host 192.168.88.1 --user admin
+  .venv/bin/python scripts/mikrotik-live-check.py --dry-run
   MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret python scripts/mikrotik-live-check.py
-  MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret python scripts/mikrotik-live-check.py --json
+  MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret .venv/bin/python scripts/mikrotik-live-check.py --json
 
 Exit codes:
   0 - Live OK (reachable, valid JSON list)
@@ -57,7 +57,7 @@ import time
 
 # Shared connection-setup helpers live in the sibling module. Make the
 # scripts/ directory importable regardless of CWD or how this file is loaded
-# (direct run as `python scripts/<name>.py`, or importlib in the test suite).
+# (direct run as `.venv/bin/python scripts/<name>.py`, or importlib in the test suite).
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from _mikrotik_shared import (  # noqa: E402

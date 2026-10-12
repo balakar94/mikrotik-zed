@@ -102,7 +102,7 @@ fn test_hover_verb_and_colon_cards_carry_source_line() {
     assert!(
         verb.contents
             .value
-            .contains("Source: published reference — RouterOS"),
+            .contains("Source: published reference — upstream docs era"),
         "verb card must carry the dataset source, got: {}",
         verb.contents.value
     );
@@ -118,7 +118,7 @@ fn test_hover_verb_and_colon_cards_carry_source_line() {
         colon
             .contents
             .value
-            .contains("Source: published reference — RouterOS"),
+            .contains("Source: published reference — upstream docs era"),
         "colon card must carry the dataset source, got: {}",
         colon.contents.value
     );

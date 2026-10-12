@@ -31,13 +31,13 @@ Glue: `src/lib.rs` is the WASM shim Zed loads — zero language logic; resolves 
 
 First clone: `make grammar-clone` (pinned `rev`) + `make install` (`SKIP_SYSTEM=1` skips distro packages). Canonical targets: `make help` — never duplicate the list here.
 
-`make check` — fast compile gate (WASM + LSP). `make validate` — offline gate (manifest, docs, generate-check, wasm-api, fmt, clippy, all tests, extract; upstream staleness is separate: `make sync-check`; extract idempotency fails on dirty `data/commands.toml`). Suites: `make test-grammar` · `make test-rust` · `make test-python`.
+`make check` — fast compile gate (WASM + LSP). `make validate` — offline gate (manifest, docs, generate-check, wasm-api, fmt, clippy, rustdoc, all tests, extract; upstream staleness is separate: `make sync-check`; extract idempotency fails on dirty `data/commands.toml`). Suites: `make test-grammar` · `make test-rust` · `make test-python`.
 
 ### Minimum verification
 
 | You changed… | Run before claiming done |
 | ------------ | ------------------------ |
-| `lsp/src/**` | `make fmt clippy test-rust` |
+| `lsp/src/**` | `make fmt clippy doc-check test-rust` |
 | `src/**` (shim) | `make check-wasm-api check-wasm clippy`, then _Install Dev Extension_ in Zed, watch `zed: open log` |
 | `grammars/rsc/grammar.js` | In `grammars/rsc/`: `npx tree-sitter generate && npx test`; bump pointer (see _Release_) |
 | `languages/rsc/highlights.scm` | Copy to `grammars/rsc/queries/highlights.scm` (only mirrored file; gate: `test_highlights_deduped`), then smoke-test in Zed |
@@ -72,7 +72,7 @@ First clone: `make grammar-clone` (pinned `rev`) + `make install` (`SKIP_SYSTEM=
 | Fact | Canonical location |
 | ---- | ------------------ |
 | Pinned grammar revision | `extension.toml` → `[grammars.rsc] rev` |
-| Command/menu coverage + RouterOS snapshot | header of `data/commands.toml` |
+| Command/menu coverage + RouterOS era hint | header of `data/commands.toml` (the hint is the highest `RouterOS vX.Y` mention upstream, not the manual's version) |
 | Upstream doc version | header of `llms-full.txt` |
 | Make targets | `make help` |
 | Test counts / status | run the suite (`lsp/src/tests/`, `tests/`) |
@@ -92,7 +92,7 @@ Untracked locals: `llms.txt`, `llms-full.txt` (`make sync`), `extension.wasm`, b
 
 ## Release
 
-- **Grammar:** `python scripts/publish_grammar.py --dry-run`, then `--push` — validates generation, pushes the working copy, updates `extension.toml rev` itself. **Never hand-edit `rev`.**
+- **Grammar:** `.venv/bin/python scripts/publish_grammar.py --dry-run`, then `--push` — validates generation, pushes the working copy, updates `extension.toml rev` itself. **Never hand-edit `rev`.**
 - **Version:** `make bump VERSION=x.y.z` (fmt + syncs `Cargo.toml`/`lsp/Cargo.toml`/`extension.toml` + coherence checks; see `CHANGELOG.md`). Grammar crate/package versions are independent — coherence per-group, never cross-group.
 - **Binaries:** pushing a `v*.*.*` tag triggers `.github/workflows/release.yml` (multi-platform `rsc-ls` + WASM → GitHub Release). Store submissions use signed tags — see `docs/publishing-runbook.md` → *Release kinds & tag signing*.
 - **Registry:** follow `docs/publishing-runbook.md` (one extension per PR, ≤3 open, reply ≤3 weeks).

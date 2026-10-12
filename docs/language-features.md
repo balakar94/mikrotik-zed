@@ -41,8 +41,8 @@ plain entry for the same label.
 ## Hover
 
 Resolves menu paths, properties, and verbs against the published reference
-(not paraphrase). Every card ends with a source line naming the dataset's
-RouterOS version: `Source: published reference — RouterOS <version>`.
+(not paraphrase). Every card ends with a source line naming the upstream docs
+era of the dataset: `Source: published reference — upstream docs era <hint>`.
 
 Menu cards list required entries first, then optional ones. The cap
 (`MAX_HOVER_PROPERTIES`) applies **per section** — arguments (required plus

@@ -8,8 +8,10 @@ Device-side prerequisites (`www-ssl`, certificate, `rest-api` policy):
 
 ## Prerequisites
 
-- Python 3 (`python3` on macOS/Linux; on Windows use the launcher you
-  installed — `python3` is not guaranteed).
+- Python 3.11+ (`tomllib` from the standard library). Prefer the project
+  venv — `.venv/bin/python scripts/…` — so `requests`/`paramiko` resolve;
+  `make install-tools` creates it. On Windows use the launcher you
+  installed — `python3` is not guaranteed.
 - REST transport: `requests`. SSH transport: `paramiko`. Dry-run works
   without either.
 - A file in Zed saved on disk (`$ZED_FILE` is injected by the task).
@@ -58,7 +60,7 @@ Required: `MIKROTIK_HOST` (exactly one host), `MIKROTIK_PASS`
 | `--timeout <s>` | Clamp overrides |
 | `--fingerprint` / `--ca-file` | REST TLS pin / CA bundle |
 
-Run `python scripts/mikrotik-deploy.py --help` for the full list.
+Run `.venv/bin/python scripts/mikrotik-deploy.py --help` for the full list.
 
 ## Dry-run first (always)
 
@@ -68,14 +70,14 @@ password and no transport dependency:
 
 ```bash
 MIKROTIK_HOST=192.168.88.1 \
-  python scripts/mikrotik-deploy.py demo.rsc --dry-run
+  .venv/bin/python scripts/mikrotik-deploy.py demo.rsc --dry-run
 ```
 
 Real push (password from the environment or the interactive prompt):
 
 ```bash
 MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret \
-  python scripts/mikrotik-deploy.py demo.rsc --method rest --backup
+  .venv/bin/python scripts/mikrotik-deploy.py demo.rsc --method rest --backup
 ```
 
 ## Verification
@@ -122,7 +124,7 @@ of the scripts or use absolute paths.
 | --- | --- | --- |
 | *MikroTik: Validate file readability (local only, no device)* | File exists, non-empty, ≤ 5 MiB, valid UTF-8; semantic checks come from `rsc-ls` diagnostics. Saves the current file first | — |
 | *MikroTik: Check script (dry-run, no device)* | Deploy preview, no connection. Saves the current file first | `MIKROTIK_HOST` |
-| *MikroTik: Live — Check connectivity (opt-in)* | Prompts host/user/timeout; password from env or the terminal prompt | Python 3 |
+| *MikroTik: Live — Check connectivity (opt-in)* | Prompts host/user/timeout; password from env or the terminal prompt | Python 3.11+ |
 | *MikroTik: Live — Check connectivity --dry-run (opt-in)* | URL/scheme preview, no connection | — |
 | *MikroTik: Deploy current file (REST)* | `$ZED_FILE` via REST. Saves the current file first | `MIKROTIK_HOST`, `MIKROTIK_PASS`, `requests` |
 | *MikroTik: Deploy current file (SSH)* | `$ZED_FILE` via SSH | `MIKROTIK_HOST`, `MIKROTIK_PASS`, `paramiko` |

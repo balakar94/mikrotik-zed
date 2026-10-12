@@ -807,7 +807,7 @@ pub(crate) fn denied_reason_for_ip(
     denied_reason_for_ip_with_denies(addr, allow_loopback, &[])
 }
 
-/// [`denied_reason_for_ip`] with operator deny prefixes checked FIRST.
+/// The test-only `denied_reason_for_ip` wrapper with operator deny prefixes checked FIRST.
 ///
 /// The operator set (from `RSC_LS_LIVE_DENY_PREFIXES`) is consulted before
 /// the built-in policy and is never relaxed by `allow_loopback`: a custom

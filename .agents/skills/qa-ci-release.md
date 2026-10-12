@@ -35,28 +35,29 @@ make check-wasm-api # shim std-API ban (not a test suite; runs inside validate)
 
 - E2E spawns the real `rsc-ls` binary; std-only client (threads + `mpsc` + `serde_json`), no extra deps. `MAX_HEADER_SIZE` 32 KiB / `MAX_BODY_BYTES` 64 MiB sanity caps mirror `lsp/src/caps.rs`.
 - Diagnostics fixtures include the hagezi split-URL continuation (`\` + quoted URL spanning lines) — must not emit `unknown-menu`/`unclosed-quote` false positives; incremental `didChange` range edit must republish without the fixed typo.
-- Python `tests/` requires `pytest` + `tomli` (bootstrap via `make install-tools` → `.venv`); live enrichment tests skip unless `RSC_LS_LIVE=1`/`MIKROTIK_HOST` set, and never log `MIKROTIK_PASS`.
+- Python `tests/` requires `pytest` and Python 3.11+ (stdlib `tomllib`; no `tomli` backport) — bootstrap via `make install-tools` → `.venv`, which the `make` targets resolve. The documented floor is enforced by the `python-floor` CI job (3.11); the other jobs pin 3.12. Live enrichment tests skip unless `RSC_LS_LIVE=1`/`MIKROTIK_HOST` set, and never log `MIKROTIK_PASS`.
 - Grammar corpus expects `parser.c`/`grammar.json`/`node-types.json` generated; `make generate-check` enforces committed state.
 
 ## CI Gates (`.github/workflows/ci.yml`)
 
-Triggers: `push`/`pull_request` on `main`. Concurrency `ci-${{ github.ref }}` cancels superseded runs. MSRV Rust 1.90 + `wasm32-wasip2` + Python 3.12 + Node 24.
+Triggers: `push`/`pull_request` on `main`. Concurrency `ci-${{ github.ref }}` cancels superseded runs. MSRV Rust 1.90 + `wasm32-wasip2` + Python 3.11+ (matrix jobs pin 3.12; `python-floor` pins the 3.11 floor) + Node 24.
 
 | Job | Key Steps | Failure Signal |
 |-----|-----------|----------------|
 | `rust` (`ubuntu-latest`) | `make fmt` (`cargo fmt -- --check`), `make clippy` (`wasm32-wasip2` + `rsc-ls --all-targets -D warnings`), `make test-rust`, `cargo build --target wasm32-wasip2 --release`, `cargo build -p rsc-ls --release` | `fmt`/`clippy` must be clean; WASM+LSP compile gate |
 | `windows` (`windows-latest`) | `cargo test -p rsc-ls --locked`, `cargo build -p rsc-ls`, cross-check `aarch64-pc-windows-msvc` | Windows MSVC linkage regressions |
 | `python` (`ubuntu-latest`) | `make check-manifest` (schema via `scripts/check_zed_requirements.py`), `make check-wasm-api` (shim std-API ban), `make docs-check` (docs lint), `make sync` fetch `llms.txt`/`llms-full.txt`, `make test-python`, verify `data/commands.toml` timestamp-agnostic (`grep -v '^# Generated:'` diff vs `HEAD`, exit 1 if stale) | Unknown `extension.toml` keys (silently ignored by Zed), wasm-unimplemented std APIs in the shim, broken docs links/anchors, stale extraction |
+| `python-floor` (`ubuntu-latest`) | Python **3.11** (the documented floor; every other job pins 3.12): `make sync` (warn-only on network failure), `make test-python`, then `make extract` + timestamp-agnostic `data/commands.toml` diff vs `HEAD` | A 3.12-only construct reaches `scripts/`/`tests/` (PEP 701 f-string, 3.12 stdlib call) — `ast.parse(feature_version=...)` cannot detect it; extraction not reproducible on the documented minimum |
 | `grammar` (`ubuntu-latest`) | Clone at pinned `extension.toml` `rev`, `make generate-check` (`npx tree-sitter generate` + `git diff --exit-code src/parser.c src/grammar.json src/node-types.json`), `make test-grammar`, `rev` vs `HEAD` coherence | Stale `parser.c`, placeholder `000...` rev, corpus failure |
 
-`sync-check` is NOT in `ci.yml` `validate` — it is a separate staleness gate: `python scripts/sync_llms.py --check` exits `0` ok / `2` drift / `1` fetch error. CI surfaces drift via `verify commands.toml` step (timestamp-agnostic).
+`sync-check` is NOT in `ci.yml` `validate` — it is a separate staleness gate. The wrapped script exits `0` ok / `2` drift / `1` fetch error, but **`make` reports exit 2 for any recipe failure**, collapsing drift and fetch errors into one code: callers that must tell them apart (`docs-drift.yml`) recover the child status from make's `... Error <n>` diagnostic. CI surfaces drift via the `verify commands.toml` step (timestamp-agnostic).
 
 ## Docs Drift (`.github/workflows/docs-drift.yml`)
 
 Weekly watchdog: `schedule: 43 5 * * 1` (Mon 05:43 UTC) + `workflow_dispatch`. Permissions `contents:read`, `issues:write`.
 
-- Runs `python scripts/sync_llms.py --check` → maps `0→ok`, `2→drift`, `*→error`.
-- `drift` → label-bootstrap `upstream-docs` (`D93F0B`), open or comment on single issue `Upstream RouterOS docs drifted…` with UTC date + `check.out` + fix `python scripts/sync_llms.py && python scripts/extract_commands.py`.
+- Runs `make sync-check` (the venv-aware wrapper around `scripts/sync_llms.py --check`) → maps `0→ok`, `2→drift`, everything else →`error`. Because `make` reports exit 2 for *any* recipe failure, the step recovers the wrapped status from make's `... Error <n>` diagnostic and treats **only an explicit 2 as drift** — fail-safe, so a fetch error or a Python crash stays warn-only and can never open a drift issue.
+- `drift` → label-bootstrap `upstream-docs` (`D93F0B`), open or comment on single issue `Upstream RouterOS docs drifted…` with UTC date + `check.out` + fix `make sync && make extract`.
 - `ok` → auto-close open `upstream-docs` issue (`Resolved` / `completed`).
 - `error` → `::warning` only (transient network stays green). Concurrency `docs-drift`, no dedup window.
 
@@ -82,9 +83,10 @@ Use `make help` as canonical list. Two gates matter for QA:
 
 ```bash
 make check      # fast compile gate: check-wasm + check-lsp (no tests)
-make validate   # full pre-commit/pre-PR gate: check-manifest + docs-check + generate-check + check-wasm-api + fmt + clippy + test-all + extract
+make validate   # full pre-commit/pre-PR gate: check-manifest + docs-check + generate-check + check-wasm-api + fmt + clippy + doc-check + test-all + extract
                 # includes extract idempotency: `git diff --exit-code data/commands.toml` (timestamp ignored in CI only)
-make sync-check # standalone staleness gate: exits 2 on drift, 1 on fetch error — NOT part of validate
+make sync-check # standalone staleness gate: the wrapped script exits 2 on drift, 1 on fetch error
+                # (make itself returns 2 for ANY recipe failure) — NOT part of validate
 ```
 
 Release perf budgets (`.github/workflows/perf.yml`) run wall-clock asserts in release on a weekly schedule (Tue 05:17 UTC) plus manual `workflow_dispatch` — the opt-in for PRs with suspected perf regressions (Actions → Perf → Run workflow). Default `perf_smoke` cap/shape asserts already run inside `make test-rust`; run ignored budgets once pre-merge: `cargo test -p rsc-ls --release --test perf_smoke -- --ignored`.
@@ -118,12 +120,12 @@ After `data/commands.toml` regeneration: `cargo test -p rsc-ls` must rebuild (em
 | 2 | `sync-check` exit 2 / `data/commands.toml stale` | `llms-full.txt` updated but `data/commands.toml` not re-extracted | `make sync && make extract && git add data/commands.toml data/upstream-docs.toml` |
 | 3 | `clippy` `-D warnings` (wasm + lsp) | Lint regression in `src/lib.rs` (wasm) or `lsp/src/` | `cargo clippy --target wasm32-wasip2 -- -D warnings`; `cargo clippy -p rsc-ls --all-targets -- -D warnings` |
 | 4 | `fmt` check | Unformatted Rust | `make fmt-fix && git add -u` |
-| 5 | `check-manifest` unknown keys | `extension.toml` has schema-unknown key (silently ignored by Zed) | `python scripts/check_zed_requirements.py`; remove/rename key; see `zed-extension-dev.md` |
-| 6 | `test-rust` / `test-python` red | Unit or extraction regression | `cargo test -p rsc-ls -- --nocapture`; `pytest tests/ -v`; `RSC_LS_E2E_STDERR=1 cargo test --test e2e -- --nocapture` |
+| 5 | `check-manifest` unknown keys | `extension.toml` has schema-unknown key (silently ignored by Zed) | `make check-manifest`; remove/rename key; see `zed-extension-dev.md` |
+| 6 | `test-rust` / `test-python` red | Unit or extraction regression | `cargo test -p rsc-ls -- --nocapture`; `make test-python`; `RSC_LS_E2E_STDERR=1 cargo test --test e2e -- --nocapture` |
 | 7 | `test-grammar` corpus failure (`ERROR`/`MISSING`) | Grammar regression or stale expectations | `make parse FILE=...` then `cd grammars/rsc && npx tree-sitter test -u`, review diff |
-| 8 | `docs-drift` issue opened (`upstream-docs`) | Upstream RouterOS docs drifted from `data/upstream-docs.toml` snapshot | Follow issue body: `python scripts/sync_llms.py && python scripts/extract_commands.py`, review `git diff data/`, commit & push → watchdog auto-closes |
+| 8 | `docs-drift` issue opened (`upstream-docs`) | Upstream RouterOS docs drifted from `data/upstream-docs.toml` snapshot | Follow issue body: `make sync && make extract`, review `git diff data/`, commit & push → watchdog auto-closes |
 | 9 | `release.yml` `meta` version mismatch | `Cargo.toml`/`lsp/Cargo.toml` != tag `v*.*.*` | `make bump VERSION=x.y.z && cargo check && git diff` then `git tag vX.Y.Z && git push origin vX.Y.Z` |
-| 10 | `release.yml` placeholder `rev` | `extension.toml` `rev = "000..."` | `python scripts/publish_grammar.py --push` then re-tag |
+| 10 | `release.yml` placeholder `rev` | `extension.toml` `rev = "000..."` | `.venv/bin/python scripts/publish_grammar.py --push` then re-tag |
 | 11 | `check-wasm-api` banned API | Shim uses a std API that compiles for `wasm32-wasip2` but panics at runtime (`std::process::id`, `std::net::*`, `std::thread::spawn`, `std::process::Command`) | Move it behind `#[cfg(not(target_arch = "wasm32"))]` (see `platform::process_seed`) or use the host API; `// wasm-api-ok: <reason>` only for a reviewed exception; rerun `make check-wasm-api` |
 
 Also: `make audit` needs `cargo install cargo-audit`; `extension.wasm` is gitignored — built by `release.yml`/`make build-wasm`.

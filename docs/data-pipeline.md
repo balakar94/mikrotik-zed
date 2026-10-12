@@ -24,7 +24,7 @@ the check also tolerates shallow clones).
 
 ## Provenance (never hand-edit)
 
-- `data/commands.toml` header: RouterOS version, UTC timestamp, source SHA256.
+- `data/commands.toml` header: RouterOS era hint, UTC timestamp, source SHA256.
   Coverage counts live here — link, don't paste.
 - `data/upstream-docs.toml`: sync manifest (SHA256 of both upstream files,
   version, timestamp), regenerated alongside `make sync`.

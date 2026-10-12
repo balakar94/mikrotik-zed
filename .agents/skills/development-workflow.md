@@ -28,9 +28,10 @@ npm --prefix grammars/rsc install
 npx --prefix grammars/rsc tree-sitter --version  # 0.26.x
 # or globally: npm install -g tree-sitter-cli
 
-# Python 3.12+ + deps for extraction, deploy, tests
-python3 --version  # >=3.12
-pip install pytest requests paramiko tomli  # requests/paramiko for deploy
+# Python 3.11+ (stdlib `tomllib`) + deps for extraction, deploy, tests
+python3 --version  # >=3.11 — a bare `python3` may be older (e.g. Apple's 3.9)
+make install-tools                     # creates .venv/ from requirements-dev.txt
+.venv/bin/python -m pytest --version   # the interpreter the make targets resolve
 ```
 
 Verify: `cargo check --target wasm32-wasip2 && cargo check -p rsc-ls && cd grammars/rsc && npx tree-sitter generate --help`.
@@ -45,9 +46,10 @@ The canonical list is `make help` — do not duplicate it here. Targets worth ex
 | `make highlight FILE=path.rsc` | `tree-sitter highlight` captures | Debug `highlights.scm` |
 | `make generate-check` | Regenerates and `git diff --exit-code` on generated files | CI / pre-commit: ensure `parser.c` committed |
 | `make check-wasm-api` | Static scan: rejects std APIs that compile for `wasm32-wasip2` but panic at runtime (shim `src/`) | Any `src/**` change; runs inside `validate`/`validate-fast` |
+| `make doc-check` | Rustdoc with `-D warnings` over both crates incl. private items: a broken intra-doc link fails the build | Any `lsp/src/**`/shim doc change; runs inside `validate`/`validate-fast` |
 | `make clean-generated` | Same artifact cleanup as `make clean` + removes generated grammar sources | Rare; then `make generate` |
 | `make install` / `SKIP_SYSTEM=1 make install` | Full bootstrap (distro deps + toolchains + rsc-ls to PATH) | First setup; skip variant for CI/containers |
-| `make validate` | check-manifest + docs-check + generate-check + check-wasm-api + fmt + clippy + test-all + extract | One-shot pre-PR gate |
+| `make validate` | check-manifest + docs-check + generate-check + check-wasm-api + fmt + clippy + doc-check + test-all + extract | One-shot pre-PR gate |
 | `make sync-check` | CI-only staleness gate vs upstream docs (exit 2 on drift) — not part of validate | CI; standalone drift check |
 
 Aliases: `make check` expands to `check-wasm` + `check-lsp`. There is no bare `make test` — use `test-grammar` / `test-rust` / `test-python` / `test-all`.
@@ -67,21 +69,21 @@ Verification: `make generate-check` passes, `npx --prefix grammars/rsc tree-sitt
 
 ### 2. Regenerating `commands.toml`
 
-1. Optionally refresh docs: `python scripts/sync_llms.py --check` (exit 2 if stale).
+1. Optionally refresh docs: `make sync-check` (exit 2 if stale).
 2. `make extract` — parses `llms-full.txt` ArgTable XML → `data/commands.toml` with header (version, UTC timestamp, SHA256).
 3. Spot-check: `rg -c '^\[\[menus\]\]' data/commands.toml` (compare with previous count); `rg 'path = "/ip/firewall/filter"' data/commands.toml`; `rg 'path = "/certificate"' data/commands.toml`.
 4. `make test-python && cargo test -p rsc-ls` — LSP embeds `commands.toml` via `include_str!();` rebuild needed.
 
-Verification: `head -20 data/commands.toml` shows fresh header, `pytest tests/test_extract_commands.py -v` passes, no charset/length validation warnings.
+Verification: `head -20 data/commands.toml` shows fresh header, `.venv/bin/python -m pytest tests/test_extract_commands.py -v` passes, no charset/length validation warnings.
 
 ### 3. Syncing Upstream Docs (`sync_llms`)
 
-1. `python scripts/sync_llms.py --help` — flags: `--check` (CI, exits 2 if updates), `--force`.
-2. `python scripts/sync_llms.py --check` — dry diff via SHA256, no write.
-3. `python scripts/sync_llms.py` — fetches `https://manual.mikrotik.com/llms.txt` + `llms-full.txt` (timeout 30 s, retries), writes on change.
+1. `.venv/bin/python scripts/sync_llms.py --help` — flags: `--check` (CI, exits 2 if updates), `--force`.
+2. `make sync-check` — dry diff via SHA256, no write.
+3. `make sync` — fetches `https://manual.mikrotik.com/llms.txt` + `llms-full.txt` (timeout 30 s, retries), writes on change.
 4. If updated: `make extract` then `make test-all`.
 
-Verification: `sha256sum llms-full.txt` changes, CI `sync_llms --check` would have flagged, `rg -c menus data/commands.toml` reflects new RouterOS version.
+Verification: `sha256sum llms-full.txt` changes, CI `sync_llms --check` would have flagged, `rg -c menus data/commands.toml` reflects the new RouterOS era hint.
 
 ### 4. Zed Dev Iteration (Extension + LSP + Diagnostics)
 
@@ -98,7 +100,7 @@ Verification: `worktree.which("rsc-ls")` resolves, `textDocument/publishDiagnost
 
 Canonical single source: `AGENTS.md` → *Release*; full extension checklist lives in `zed-extension-dev.md`. This section keeps only the daily steps:
 
-1. Grammar (if `grammar.js` changed): `python scripts/publish_grammar.py --dry-run`, then `--push` — pushes `grammars/rsc` to `balakar94/tree-sitter-rsc` and updates `extension.toml` `rev` (never hand-edit).
+1. Grammar (if `grammar.js` changed): `.venv/bin/python scripts/publish_grammar.py --dry-run`, then `--push` — pushes `grammars/rsc` to `balakar94/tree-sitter-rsc` and updates `extension.toml` `rev` (never hand-edit).
 2. Bump: `make bump VERSION=x.y.z` — syncs `Cargo.toml`/`lsp/Cargo.toml`/`extension.toml`, runs `cargo fmt` + coherence checks (grammar crate versions stay independent).
 3. Docs: update `CHANGELOG.md` (move `Unreleased` → versioned `Fixed`/`Changed`/`Added`, fix compare links) and `ROADMAP.md` (`Now — 0.5.x` tag/hash) — required before every commit (see Pre-commit Checklist).
 4. Validate: `make validate && cargo audit` — all green.
@@ -117,7 +119,7 @@ Verification: `gh release view v0.x.y --json assets --jq '.assets[].name'` lists
 | 5 | WASM `extension.wasm` stale / `Failed to compile grammar` in Zed | Old `parser.c` or cached extension | `make generate-check`; `rm -rf ~/Library/Application\ Support/Zed/extensions/installed/mikrotik-rsc` then `Install Dev Extension`; Zed's `extension_builder` rebuilds on install — don't `cp` manually |
 | 6 | `Platform not supported for rsc-ls auto-download` | `asset_triple()` has no published binary for that os/arch pair (all six shipped triples are covered) | Build from source: `cargo build -p rsc-ls --release` and put it on PATH; or grab `rsc-ls-<triple>` from GitHub Releases |
 | 7 | Diagnostics missing or truncated (large file) | Suppressed lines (`#`, `:global`, `}`, `..`) or caps (`MAX_DIAG_LINES 3000`, `MAX_DIAG_BYTES 500KB`) | Check `lsp/src/diagnostics.rs`; `RSC_LS_LOG=debug zed --foreground`; split file or fix `source = "rsc-ls"` filter in editor |
-| 8 | `make extract` reports unexpected menu count or wrong paths | Stale `llms-full.txt` or extraction regex change (`^[a-z0-9][a-z0-9/_-]*$`) | `python scripts/sync_llms.py --force && make extract`; compare `rg -c '^\[\[menus\]\]' data/commands.toml` with previous count; check header `sha256` and `head -20 data/commands.toml` |
+| 8 | `make extract` reports unexpected menu count or wrong paths | Stale `llms-full.txt` or extraction regex change (`^[a-z0-9][a-z0-9/_-]*$`) | `.venv/bin/python scripts/sync_llms.py --force && make extract`; compare `rg -c '^\[\[menus\]\]' data/commands.toml` with previous count; check header `sha256` and `head -20 data/commands.toml` |
 | 9 | `make fmt` fails right after an editor/agent save, always on nested-import order (`use x::{A, b}`) | The formatter ran `rustfmt` without cargo context, so it fell back to a different style edition | Leave `rustfmt.toml` (`style_edition = "2024"`) in place — it pins import order for every invocation; `make fmt-fix` if a file already drifted |
 
 Also: `make clippy` fails → `cargo clippy -- -D warnings` must be clean for both `wasm32-wasip2` and `rsc-ls`; `make audit` needs `cargo install cargo-audit`.

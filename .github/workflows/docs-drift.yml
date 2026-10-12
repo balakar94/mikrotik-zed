@@ -3,7 +3,13 @@ name: Upstream Watchdog
 # Weekly watchdog for upstream RouterOS documentation drift.
 #
 # Compares manual.mikrotik.com against the recorded snapshot via
-# scripts/sync_llms.py --check (exit 0 = ok, 2 = drift, 1 = fetch error):
+# `make sync-check` (the venv-aware wrapper around scripts/sync_llms.py
+# --check; exit 0 = ok, 2 = drift, 1 = fetch error). The Make target is the
+# canonical interface: it resolves the project interpreter (`.venv/bin/python`
+# when present, else `python3`) instead of assuming whatever `python3` is on
+# PATH. Note that `make` itself reports exit 2 for ANY recipe failure — the
+# check step recovers the wrapped script's own status to keep the mapping
+# above intact (see the step comment).
 #   - drift → open (or comment on) an `upstream-docs` labeled issue embedding
 #     the detection date and the per-file remote hash/version hints printed by
 #     --check, plus exact maintainer fix instructions. One comment per run
@@ -49,20 +55,31 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Map sync_llms.py exit codes to a step output consumed by the branches below.
+      # Map the check's exit codes to a step output consumed by the branches
+      # below. The wrapped script reports 0 = ok, 2 = drift, 1 = fetch error.
       - name: Compare upstream docs against recorded snapshot
         id: check
         run: |
           set +e
-          python3 scripts/sync_llms.py --check > "$RUNNER_TEMP/check.out" 2>&1
+          make sync-check > "$RUNNER_TEMP/check.out" 2>&1
           ec=$?
           set -e
           cat "$RUNNER_TEMP/check.out"
-          case $ec in
-            0) result=ok ;;
-            2) result=drift ;;
-            *) result=error ;;
-          esac
+          # GNU make exits 2 for ANY recipe failure, folding the script's own
+          # statuses together (2 = drift, 1 = fetch error) — so make's code
+          # alone cannot tell drift from a transient network failure. Recover
+          # the child status from the diagnostic make prints for the failed
+          # recipe line ("make: *** [<makefile>:<line>: sync-check] Error <n>").
+          # Fail-safe: only an explicit 2 counts as drift; a fetch error, a
+          # Python crash or a missing interpreter stay 'error' (warn-only), so
+          # a transient failure can never masquerade as drift.
+          make_error=$(sed -nE 's/^make: \*\*\* \[[^]]*\] Error ([0-9]+)$/\1/p' "$RUNNER_TEMP/check.out" | tail -n1)
+          result=error
+          if [ "$ec" -eq 0 ]; then
+            result=ok
+          elif [ "$make_error" = "2" ]; then
+            result=drift
+          fi
           echo "result=$result" >> "$GITHUB_OUTPUT"
           echo "result=$result"
 
@@ -93,7 +110,7 @@ jobs:
             echo "### How to resolve"
             echo ""
             echo '```bash'
-            echo "python3 scripts/sync_llms.py && python3 scripts/extract_commands.py"
+            echo "make sync && make extract"
             echo '```'
             echo ""
             echo "Review \`git diff data/\`, commit both regenerated files, and push — this watchdog"

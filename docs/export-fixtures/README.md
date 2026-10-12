@@ -14,8 +14,11 @@ menu in the generated table (see
   was hand-built from the property names documented in `llms-full.txt` and
   the upstream CLI reference (manual.mikrotik.com), then verified against
   `data/commands.toml`. They illustrate shape, not a real device export.
-- **Coverage.** At least one fixture per top `REQUIRED_MENUS` area; current
-  set: `/ip/address`, `/ip/route`, `/system/scheduler`, `/tool/fetch`.
+- **Coverage.** Every `key=` in these fixtures is cross-checked against
+  `commands.toml` by `tests/test_commands_coverage.py::TestExportFixtures`,
+  which also pins the expected sample filenames — add a fixture, add its name
+  to that pin. The current set is deliberately not restated here: run
+  `ls docs/export-fixtures` (a pasted list rots).
 - **Format.** One menu section per file: a `/path` header line followed by
   `add` rows with `key=value` pairs (values quoted when they contain
   spaces). The test parses them with `shlex` and asserts every key exists
@@ -23,7 +26,7 @@ menu in the generated table (see
   (generic add-item names such as `comment`/`disabled` count as present).
 - **Adding a fixture.** Copy the shape of the existing files, keep values
   fake, and run
-  `pytest tests/test_commands_coverage.py -k export_fixture` before opening
-  a PR. If the new property legitimately does not exist upstream, add a
+  `.venv/bin/pytest tests/test_commands_coverage.py -k export_fixture` before
+  opening a PR. If the new property legitimately does not exist upstream, add a
   curated entry to `data/overrides.toml` (verifiable on-device) instead of
   editing `data/commands.toml`, which is generated.

@@ -199,17 +199,21 @@ pub struct MenuData {
     pub ancestor_prefixes: HashSet<String>,
 }
 
-/// Provenance of the embedded dataset for the startup banner.
+/// Provenance of the embedded dataset for the startup banner and hover
+/// footers.
 pub struct DatasetProvenance {
-    pub version: String,
+    /// RouterOS era hint from the generated header: the highest `RouterOS
+    /// vX.Y` feature-gate mention upstream, an era approximation — never the
+    /// version of the manual.
+    pub era_hint: String,
     pub src_hash: String,
 }
 
-/// Provenance parsed from the generated header of the embedded table.
+/// Provenance of the embedded command table, parsed from its generated
+/// header.
 ///
 /// Independent of the TOML body parse, so it stays available on the
-/// fail-safe empty path. Prefixes must match `scripts/extract_commands.py`
-/// header output; unknown fields degrade to `"unknown"` (never panic).
+/// fail-safe empty path. See [`parse_provenance`] for the field contract.
 pub fn dataset_provenance() -> DatasetProvenance {
     parse_provenance(COMMANDS_TOML)
 }
@@ -223,17 +227,25 @@ pub(crate) fn dataset_provenance_cached() -> &'static DatasetProvenance {
     DATASET_PROVENANCE.get_or_init(dataset_provenance)
 }
 
+/// Parse the generated header of `text` into [`DatasetProvenance`].
+///
+/// Prefixes must match the header emitted by `scripts/extract_commands.py`;
+/// absent fields degrade to `"unknown"` and this never panics. [`era_hint`]
+/// keeps only the leading token of the era-hint line: the generator appends
+/// a human-readable parenthetical note that is not part of the value.
+///
+/// [`era_hint`]: DatasetProvenance::era_hint
 pub(crate) fn parse_provenance(text: &str) -> DatasetProvenance {
-    let mut version = "unknown".to_string();
+    let mut era_hint = "unknown".to_string();
     let mut src_hash = "unknown".to_string();
     for line in text.lines().take(12) {
-        if let Some(v) = line.strip_prefix("# RouterOS version:") {
-            version = v.trim().to_string();
+        if let Some(v) = line.strip_prefix("# RouterOS era hint:") {
+            era_hint = v.split_whitespace().next().unwrap_or("unknown").to_string();
         } else if let Some(h) = line.strip_prefix("# Source hash (sha256[:16]):") {
             src_hash = h.trim().to_string();
         }
     }
-    DatasetProvenance { version, src_hash }
+    DatasetProvenance { era_hint, src_hash }
 }
 
 impl MenuData {

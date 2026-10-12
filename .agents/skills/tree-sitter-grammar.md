@@ -80,7 +80,7 @@ Historical rule-by-rule changes live in the grammar repo's git log (`git -C gram
 3. **Corpus tests** — `npx tree-sitter test` (or `npm test`) must pass clean. Parse fixtures: `npx tree-sitter parse test/simple.rsc` and `npx tree-sitter parse test/example.rsc` — no `ERROR`/`MISSING`.
 4. **Update queries** — edit canonical `languages/rsc/*.scm` first, then dedup: `cp languages/rsc/highlights.scm grammars/rsc/queries/highlights.scm`. Verify order-sensitive highlights (see below).
 5. **Verify rendering** — `npx tree-sitter highlight test/example.rsc` (ANSI) and `npx tree-sitter highlight test/example.rsc --html` (exact captures); check brackets/indents with real Zed via `Install Dev Extension`.
-6. **Publish** — `python scripts/publish_grammar.py --dry-run` **then** `python scripts/publish_grammar.py --push` — `--push` pushes `grammars/rsc` to `balakar94/tree-sitter-rsc` and **auto-updates `extension.toml` rev (never hand-edit)**. Requires `tree-sitter generate` clean + corpus green.
+6. **Publish** — `.venv/bin/python scripts/publish_grammar.py --dry-run` **then** `.venv/bin/python scripts/publish_grammar.py --push` — `--push` pushes `grammars/rsc` to `balakar94/tree-sitter-rsc` and **auto-updates `extension.toml` rev (never hand-edit)**. Requires `tree-sitter generate` clean + corpus green.
 
 Verification:
 

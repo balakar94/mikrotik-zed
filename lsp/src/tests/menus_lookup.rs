@@ -69,29 +69,29 @@ type = "Directory"
 #[test]
 fn provenance_parses_generated_header() {
     let text = "# MikroTik RouterOS CLI Command Table\n\
-        # RouterOS version: 7.23.2\n\
+        # RouterOS era hint: 7.23.2 (highest feature-gate mention upstream; not the manual version)\n\
         # Source hash (sha256[:16]): c043cd8fd9e2215c\n\
         \n\
         [[menus]]\n";
     let prov = parse_provenance(text);
-    assert_eq!(prov.version, "7.23.2");
+    assert_eq!(prov.era_hint, "7.23.2");
     assert_eq!(prov.src_hash, "c043cd8fd9e2215c");
 }
 
 #[test]
 fn provenance_degrades_to_unknown_on_missing_header() {
     let prov = parse_provenance("[[menus]]\n");
-    assert_eq!(prov.version, "unknown");
+    assert_eq!(prov.era_hint, "unknown");
     assert_eq!(prov.src_hash, "unknown");
 }
 
 #[test]
 fn embedded_dataset_provenance_matches_committed_header() {
     // Guards the banner against header renames in extract_commands.py.
-    // Value-agnostic on purpose: the version/hash rotate on every
+    // Value-agnostic on purpose: the era hint/hash rotate on every
     // `make sync`, so only assert they parsed (not "unknown").
     let prov = dataset_provenance();
-    assert!(!prov.version.contains("unknown") && !prov.version.is_empty());
+    assert!(!prov.era_hint.contains("unknown") && !prov.era_hint.is_empty());
     assert!(!prov.src_hash.contains("unknown"));
     assert_eq!(prov.src_hash.len(), 16);
 }

@@ -43,14 +43,15 @@ fn menu_arg_suffix(description: &str) -> String {
 
 /// One-line provenance footer shared by every hover card.
 ///
-/// The embedded dataset's RouterOS version comes from the generated
+/// The embedded dataset's era hint comes from the generated
 /// `data/commands.toml` header via [`crate::menus::dataset_provenance_cached`]
-/// (cached process-wide: the table is immutable).
+/// (cached process-wide: the table is immutable). It names an upstream docs
+/// era, not the version of the manual.
 fn hover_source_line() -> String {
     let prov = crate::menus::dataset_provenance_cached();
     format!(
-        "\n\nSource: published reference — RouterOS {}",
-        prov.version
+        "\n\nSource: published reference — upstream docs era {}",
+        prov.era_hint
     )
 }
 

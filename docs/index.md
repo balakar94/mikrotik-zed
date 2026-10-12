@@ -16,8 +16,19 @@ device is a separate, optional step.
 - Zed with extension support; the language server (`rsc-ls`) is resolved at
   runtime (verified cache → auto-download), so the first `.rsc` open needs
   network unless the binary is already installed.
-- Optional for the device workflows: Python 3, `requests` (REST), and
+- Optional for the device workflows: Python 3.11+, `requests` (REST), and
   `paramiko` (SSH). Dry-run previews work without either package.
+
+**Repository tooling (scripts, tests, docs gate)**
+
+- **Python 3.11+** — every script and test imports the standard-library
+  `tomllib` (no backport). `make install-tools` creates `.venv/` from
+  `requirements-dev.txt`.
+- Run the make targets (`make help` is the canonical list) — they resolve
+  `.venv/bin/python` automatically. For a direct invocation use
+  `.venv/bin/python scripts/…`, not the bare `python3` on `PATH`: Apple's
+  stock `python3` is older and fails with
+  `ModuleNotFoundError: No module named 'tomllib'`.
 
 **RouterOS side (only for Live and Deploy)**
 

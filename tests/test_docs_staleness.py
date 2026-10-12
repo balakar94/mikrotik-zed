@@ -2,6 +2,7 @@
 
 import hashlib
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -10,7 +11,7 @@ import pytest
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from sync_llms import build_manifest_text, main as sync_main, sync_result_message
+from sync_llms import build_manifest_text, main as sync_main, sync_result_message, write_manifest
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 ISO_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
@@ -20,7 +21,7 @@ FAKE_SOURCES = [
     {"name": "full", "path": "llms-full.txt", "url": "https://manual.mikrotik.com/llms-full.txt", "sha256": "b" * 64},
 ]
 
-# Minimal upstream-like payloads (RouterOS version hint must appear in the first 8 KiB).
+# Minimal upstream-like payloads (RouterOS era hint must appear in the first 8 KiB).
 PAYLOADS = {
     "llms.txt": b"# MikroTik RouterOS Manual\n\n- [Docs](https://manual.mikrotik.com/docs.md)\n",
     "llms-full.txt": b"# MikroTik RouterOS Manual\n\nRouterOS v7.22 documentation\n\n## /interface\n\ncorpus body\n",
@@ -95,10 +96,30 @@ class TestDriftWorkflow:
         assert re.search(r"\bissues:\s*write\b", block), "issues: write required"
 
     def test_step_invokes_sync_check_with_result_mapping(self):
-        assert "sync_llms.py --check" in self.text, "watchdog must run scripts/sync_llms.py --check"
+        # The venv-aware Make target is the canonical entry point: a bare
+        # `python3` picks whatever interpreter is on PATH (macOS ships 3.9).
+        # Anchored to the start of a line so the actual command is required —
+        # a mention inside a `#` comment or prose does not satisfy it.
+        assert re.search(r"^\s*make sync-check\b", self.text, re.MULTILINE), (
+            "watchdog must run the staleness check via `make sync-check`"
+        )
         assert "$GITHUB_OUTPUT" in self.text, "check result must be exported via $GITHUB_OUTPUT"
+        # GNU make folds every recipe failure into exit 2, so the step recovers
+        # the child status from make's diagnostic; only an explicit 2 is drift.
+        assert re.search(r'=\s*"2"', self.text) and "result=drift" in self.text, (
+            "drift must be gated on an explicit exit code 2"
+        )
         for branch in ("drift", "ok", "error"):
             assert f"steps.check.outputs.result == '{branch}'" in self.text, f"missing '{branch}' branch condition"
+
+    def test_watchdog_drives_tools_through_make_targets(self):
+        """The Make targets resolve the project interpreter and are documented
+        as the canonical interface; `python3 scripts/...` bypasses them."""
+        assert "python3 scripts/" not in self.text, (
+            "watchdog must go through the Make targets, not a bare `python3 scripts/...`"
+        )
+        assert re.search(r"^\s*make sync-check\b", self.text, re.MULTILINE), "drift check must call `make sync-check`"
+        assert "make sync && make extract" in self.text, "fix instructions must use the Make targets"
 
     def test_drift_branch_uses_gh_cli_and_labeled_issue(self):
         assert "gh issue create" in self.text, "drift branch must be able to create an issue"
@@ -107,40 +128,40 @@ class TestDriftWorkflow:
         assert "--reason completed" in self.text, "issue must be closed as completed"
         assert "upstream-docs" in self.text, "issues must carry the upstream-docs label"
         assert "Upstream RouterOS docs drifted" in self.text, "issue title prefix must match spec"
-        assert "extract_commands.py" in self.text, "issue body must include maintainer fix instructions"
+        assert "make sync && make extract" in self.text, "issue body must include maintainer fix instructions"
 
 
 # ── Deliverable A: manifest builder unit tests ───────────────────────
 
 class TestFullVersionHint:
     def test_picks_highest_feature_gate_mention(self):
-        from sync_llms import full_version_hint
+        from sync_llms import full_era_hint
 
         text = "available since RouterOS v7.14 ... Starting from RouterOS version 7.23 ... RouterOS 6.49"
-        assert full_version_hint(text) == "7.23"
+        assert full_era_hint(text) == "7.23"
 
     def test_handles_three_component_versions(self):
-        from sync_llms import full_version_hint
+        from sync_llms import full_era_hint
 
-        assert full_version_hint("requires RouterOS v7.18.2 or newer") == "7.18.2"
+        assert full_era_hint("requires RouterOS v7.18.2 or newer") == "7.18.2"
 
     def test_empty_when_no_mention(self):
-        from sync_llms import full_version_hint
+        from sync_llms import full_era_hint
 
-        assert full_version_hint("# MikroTik RouterOS Manual\n\n## Certificates\n") == ""
+        assert full_era_hint("# MikroTik RouterOS Manual\n\n## Certificates\n") == ""
 
     def test_ignores_ros_prefix_and_ips(self):
-        from sync_llms import full_version_hint
+        from sync_llms import full_era_hint
 
         # "ROS 802.11" must not be read as a version; only "RouterOS" counts.
-        assert full_version_hint("ROS 802.11 wireless, see RouterOS 7.16 notes") == "7.16"
+        assert full_era_hint("ROS 802.11 wireless, see RouterOS 7.16 notes") == "7.16"
 
     def test_ignores_pre_release_tags(self):
-        from sync_llms import full_version_hint
+        from sync_llms import full_era_hint
 
         # "7.24beta1" is not stable 7.24 — the highest STABLE mention wins.
         text = "Starting with RouterOS 7.24beta1 ... Starting from RouterOS version 7.23 ..."
-        assert full_version_hint(text) == "7.23"
+        assert full_era_hint(text) == "7.23"
 
 
 class TestManifestBuilder:
@@ -148,7 +169,7 @@ class TestManifestBuilder:
         text = build_manifest_text("7.22", "2026-08-26T12:34:56Z", FAKE_SOURCES)
         data = _toml_loads(text)
         assert data["schema"] == 1
-        assert data["routeros_version"] == "7.22"
+        assert data["routeros_era_hint"] == "7.22"
         assert data["synced_at_utc"] == "2026-08-26T12:34:56Z"
         sources = data["sources"]
         assert len(sources) == 2
@@ -163,6 +184,19 @@ class TestManifestBuilder:
         data = _toml_loads(text)
         assert ISO_Z_RE.match(data["synced_at_utc"]), f"timestamp not ISO-Z: {data['synced_at_utc']!r}"
 
+    def test_write_manifest_lands_0644(self, tmp_path):
+        """mkstemp creates 0600; the committed manifest must land 0644.
+
+        The manifest is a tracked artifact like any other, and the extractor's
+        writer already normalises its own output. Git records only the exec bit,
+        so this is local hygiene — pinned so a refactor cannot silently regress it.
+        """
+        dest = tmp_path / "data" / "upstream-docs.toml"
+        write_manifest(dest, "schema = 1\n")
+        mode = stat.S_IMODE(dest.stat().st_mode)
+        assert mode == 0o644, f"manifest mode {oct(mode)}, expected 0o644"
+        assert dest.read_text(encoding="utf-8") == "schema = 1\n"
+
     def test_deterministic_output(self):
         one = build_manifest_text("7.22", "2026-08-26T12:34:56Z", FAKE_SOURCES)
         two = build_manifest_text("7.22", "2026-08-26T12:34:56Z", FAKE_SOURCES)
@@ -174,10 +208,10 @@ class TestManifestBuilder:
         data = _toml_loads(text)
         assert [s["name"] for s in data["sources"]] == ["full", "index"], "builder renders sources in input order"
 
-    def test_unknown_version_rendered_as_empty_string(self):
+    def test_unknown_era_hint_rendered_as_empty_string(self):
         text = build_manifest_text("", "2026-08-26T12:34:56Z", FAKE_SOURCES)
         data = _toml_loads(text)
-        assert data["routeros_version"] == ""
+        assert data["routeros_era_hint"] == ""
 
 
 # ── Bootstrap artifact: committed provenance baseline ────────────────
@@ -187,15 +221,15 @@ class TestCommittedManifest:
     def _load(self):
         self.path = ROOT / "data" / "upstream-docs.toml"
         assert self.path.exists(), (
-            "data/upstream-docs.toml missing — bootstrap it once with 'python3 scripts/sync_llms.py --force'"
+            "data/upstream-docs.toml missing — bootstrap it once with '.venv/bin/python scripts/sync_llms.py --force'"
         )
         self.data = _toml_loads(self.path.read_text(encoding="utf-8"))
 
-    def test_schema_and_version_shape(self):
+    def test_schema_and_era_hint_shape(self):
         assert self.data["schema"] == 1
-        version = self.data["routeros_version"]
-        assert isinstance(version, str) and version != "", "routeros_version must be non-empty"
-        assert re.match(r"^\d+\.\d+", version), f"routeros_version not a version hint: {version!r}"
+        era_hint = self.data["routeros_era_hint"]
+        assert isinstance(era_hint, str) and era_hint != "", "routeros_era_hint must be non-empty"
+        assert re.match(r"^\d+\.\d+", era_hint), f"routeros_era_hint not a version hint: {era_hint!r}"
         assert ISO_Z_RE.match(self.data["synced_at_utc"]), "synced_at_utc must be ISO-8601 Z format"
 
     def test_two_sources_index_then_full(self):
@@ -318,7 +352,7 @@ class TestCheckModeNeverWrites:
         by_name = {s["name"]: s for s in data["sources"]}
         assert by_name["full"]["sha256"] == hashlib.sha256(PAYLOADS["llms-full.txt"]).hexdigest()
         assert by_name["index"]["sha256"] == hashlib.sha256(PAYLOADS["llms.txt"]).hexdigest()
-        assert data["routeros_version"] == "7.22", "version hint extracted from payload header"
+        assert data["routeros_era_hint"] == "7.22", "era hint extracted from payload header"
         assert ISO_Z_RE.match(data["synced_at_utc"])
 
     def test_real_run_no_changes_keeps_existing_manifest_untouched(self, tmp_path):
@@ -370,13 +404,13 @@ class TestSyncResultMessage:
     def test_full_only_suggests_extract(self):
         assert sync_result_message(["llms-full.txt"]) == (
             "Sync complete: files updated. "
-            "Run `python3 scripts/extract_commands.py` to regenerate commands.toml."
+            "Run `make extract` to regenerate commands.toml."
         )
 
     def test_both_suggests_extract(self):
         assert sync_result_message(["llms.txt", "llms-full.txt"]) == (
             "Sync complete: files updated (llms.txt and llms-full.txt changed). "
-            "Run `python3 scripts/extract_commands.py` to regenerate commands.toml."
+            "Run `make extract` to regenerate commands.toml."
         )
 
     def test_both_is_order_invariant(self):

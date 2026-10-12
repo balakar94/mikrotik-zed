@@ -619,8 +619,8 @@ pub(crate) fn build_insecure_agent(timeout: Duration) -> Option<ureq::Agent> {
     insecure_agent_builder(timeout).map(|b| b.build())
 }
 
-/// Builder form of [`build_insecure_agent`] so callers can append a
-/// address-pinning resolver before building.
+/// Builder form of the test-only `build_insecure_agent`, so callers can
+/// append an address-pinning resolver before building.
 fn insecure_agent_builder(timeout: Duration) -> Option<ureq::AgentBuilder> {
     // Use rustls dangerous verifier that accepts any certificate.
     use rustls::DigitallySignedStruct;
@@ -876,7 +876,7 @@ impl<'de> serde::de::Visitor<'de> for FieldCollector<'_> {
 /// - Reads through a [`CappedReader`] so at most `MAX_LIVE_RESPONSE_BYTES`
 ///   are consumed and never buffered wholesale.
 /// - Stops once `2 * MAX_LIVE_ITEMS` raw values are collected (same bound as
-///   [`extract_and_sanitize`]) or the cap is hit.
+///   the test-only `extract_and_sanitize`) or the cap is hit.
 /// - A malformed document, a non-array top level, or an empty body returns
 ///   `LiveError::Parse` (fail-closed). Only the cap may return a partial
 ///   result; with no collected values it maps to `ResponseTooLarge`.

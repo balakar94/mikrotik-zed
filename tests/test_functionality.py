@@ -116,7 +116,7 @@ class TestCommandsTomlStructure:
     def test_toml_has_header_metadata(self):
         text = self.path.read_text(encoding="utf-8")
         assert "Auto-generated" in text, "commands.toml missing Auto-generated header"
-        assert "RouterOS" in text, "commands.toml missing RouterOS version header"
+        assert "RouterOS" in text, "commands.toml missing RouterOS era hint header"
 
 
 # ── Extraction edge cases ────────────────────────────────────────────

@@ -4,6 +4,18 @@
 
 ### Added
 
+- **`make doc-check` gate**: `RUSTDOCFLAGS="-D warnings" cargo doc --locked
+  --no-deps --workspace --document-private-items` fails the build on a broken
+  intra-doc link (both crates, private items included), wired into
+  `make validate` / `validate-fast` and the CI `Linux • check` job next to
+  `make clippy`. Nothing checked rustdoc before, so dead links were invisible.
+- **CI `Docs • Python 3.11 floor` job**: every other job pins Python 3.12, so
+  nothing exercised the documented minimum. The new job installs
+  `requirements-ci.txt` on 3.11, runs `make test-python`, and re-runs
+  `make extract` to prove the committed `data/commands.toml` is reproducible on
+  the floor (a diff there means the pipeline behaves differently on 3.11). It
+  exists because `ast.parse(feature_version=…)` cannot detect PEP 701
+  f-strings — only a real 3.11 run can.
 - **`make check-wasm-api` gate (`scripts/check_wasm_api_usage.py`)**: rejects
   std APIs that compile for `wasm32-wasip2` but panic at runtime
   (`std::process::id`, `std::net::*`, `std::thread::spawn`,
@@ -13,8 +25,94 @@
   the CI `Docs • check` job. It exists because `make check-wasm` cannot catch
   this class: the failure is a runtime `unimplemented!()`, not a link error.
 
+### Changed
+
+- **RouterOS provenance label renamed (`scripts/sync_llms.py`,
+  `scripts/extract_commands.py`, `data/commands.toml`, `lsp/src/menus.rs`)**:
+  the generated header and the manifest field no longer present a manual
+  version. `data/commands.toml` reads `# RouterOS era hint: <hint> (highest
+  feature-gate mention upstream; not the manual version)` and
+  `data/upstream-docs.toml` carries `routeros_era_hint`; the Rust field is
+  `DatasetProvenance::era_hint`. The value is the *highest* `RouterOS vX.Y`
+  mention anywhere in the corpus, so a single new upstream deprecation note
+  raises it — reading it as "the manual is RouterOS 7.26" was wrong. The hover
+  footer now reads `Source: published reference — upstream docs era 7.26` and
+  the startup banner prints an explicit era hint.
+- **Docs gate scans the tree recursively (`scripts/check_docs.py`)**: `docs/*.md`
+  → `docs/**/*.md`, so nested pages (`docs/adr/`, `docs/export-fixtures/`) are
+  linted too. The directory allowlist still exempts those two from the
+  "reachable from `index.md`" rule, and the file allowlist is now matched
+  against the repo-relative path — strictly narrower, never wider.
+- **`docs-drift.yml` drives the Make targets (`make sync-check`, `make sync`,
+  `make extract`)**: the canonical entry points resolve `.venv/bin/python`, so
+  the watchdog cannot pick the wrong interpreter. `make` exits 2 for *any*
+  recipe failure, so the step recovers the wrapped script's own status from
+  make's diagnostic instead of collapsing "fetch error" into "drift" — only an
+  explicit 2 opens a drift issue.
+- **Generated artifacts land 0644 (`scripts/extract_commands.py`,
+  `scripts/sync_llms.py`)**: both writers go through `mkstemp` + rename, which
+  left `data/commands.toml` and `data/upstream-docs.toml` at 0600. They are
+  tracked artifacts; the mode is now normalised on every write (git records
+  only the exec bit, so this is local hygiene).
+
 ### Fixed
 
+- **Python scripts fail fast on an unsupported interpreter (`scripts/`,
+  `Makefile`)**: the toolkit needs Python 3.11+ (`tomllib`) and a bare
+  `python3` on macOS is Apple's 3.9, so `python3 scripts/extract_commands.py`
+  died with `ModuleNotFoundError: No module named 'tomllib'`. The scripts that
+  need `tomllib` (`extract_commands.py`, `check_zed_requirements.py`,
+  `sync_llms.py`, `bump_version.py`) now print the required version, the
+  interpreter found and the fix (`make install-tools`, then the relevant
+  `make` target); exit code 2, except `sync_llms.py` which exits 1 because it
+  reserves 2 for "updates available". `make install-tools` no longer hardcodes
+  `python3` when building `.venv` (it selects the first 3.11+ interpreter and
+  fails with instructions otherwise, and rejects an already-stale `.venv`), and
+  `make doctor` reports the interpreter version it found. Usage/docstring hints
+  across `scripts/`, `docs/` and `.agents/skills/` now point at the `make`
+  targets or `.venv/bin/python`, and the overstated "requires Python >= 3.12"
+  claims were corrected to the real floor (3.11, for `tomllib`).
+- **Dead intra-doc links to `#[cfg(test)]` items (`lsp/src/live_fetch.rs`,
+  `lsp/src/live_net.rs`)**: `insecure_agent_builder` and `extract_streaming`
+  linked to the test-only `build_insecure_agent` / `extract_and_sanitize`, and
+  `denied_reason_for_ip_with_denies` linked to the test-only
+  `denied_reason_for_ip`. Those items do not exist in a normal rustdoc build
+  (they are `#[cfg(test)]`), so the links never resolved; the doc comments now
+  name each symbol as inline code and say it is test-only. Surfaced by the new
+  `make doc-check`.
+- **`scripts/check_docs.py --docs` pointing outside the repository no longer
+  crashes**: every rule resolves paths against the repository root, so an
+  out-of-tree docs dir raised `ValueError` from `relative_to` inside
+  `check_volatile` (and would have reported every link as escaping the repo).
+  It is now a usage error with a clear message and exit 2.
+- **Extractor era-hint fallback no longer invents a version
+  (`scripts/extract_commands.py`)**: `_extract_routeros_era_hint()` returned the
+  hardcoded placeholder `"7.22+"` whenever the provenance manifest was absent
+  and the corpus header carried no version mention. It now returns `"unknown"`,
+  the same sentinel as `sync_llms.extract_version()` and `lsp/src/menus.rs`.
+- **The export-fixture set is actually pinned, and its README no longer pastes a
+  list that rots (`tests/test_commands_coverage.py`,
+  `docs/export-fixtures/README.md`)**: the README claimed "at least one fixture
+  per top `REQUIRED_MENUS` area" (the test never consults `REQUIRED_MENUS`) and
+  enumerated the then-current set, so it could silently go stale; it now points
+  at the directory. `tool-fetch.rsc` was missing from the test's expected-sample
+  list, so deleting that fixture would have gone unnoticed — all four are pinned
+  now.
+- **The 7 unattributable property tables stay skipped, and that is now pinned
+  (`tests/test_extract_commands.py`)**: widening the page-context window would
+  resolve two of them but would also inject the real `/app/settings` table
+  (`llms-full.txt:50155`) into `/app`. The one-page guard is load-bearing, so a
+  regression test records the counterexample instead of "fixing" the warnings.
+- **Zed device tasks resolve the project interpreter
+  (`scripts/run-python.sh`, `languages/rsc/tasks.json`)**: the five tasks that
+  run a `scripts/*.py` tool now invoke `sh scripts/run-python.sh` instead of a
+  bare `python3`, so `.venv/bin/python` wins when it exists. A bare `python3`
+  on macOS is the system 3.9 interpreter, which has neither `requests` nor
+  `paramiko`, so Deploy (REST) and Deploy (SSH) exited 3 with a "missing
+  dependency" message that hid the real cause. The wrapper falls back to
+  `python3` (then `python`) with a stderr note; the readability preflight stays
+  on a bare `python3` because it is stdlib-only. `tests/test_tasks_contract.py`
+  now holds the wrapper to the same path rules as the scripts it launches.
 - **Shim no longer aborts on the first auto-download (`src/platform.rs`,
   `src/cache.rs`)**: the staged-download tag called `std::process::id()`, which
   compiles for `wasm32-wasip2` but is unimplemented there — it trapped

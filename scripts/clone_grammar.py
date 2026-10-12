@@ -8,7 +8,8 @@ clones https://github.com/balakar94/tree-sitter-rsc when absent (or reuses an
 existing checkout), and detaches HEAD at the pinned commit.
 
 Usage:
-  python3 scripts/clone_grammar.py [--dir grammars/rsc] [--rev <sha>]
+  make grammar-clone   (prefers .venv)
+  .venv/bin/python scripts/clone_grammar.py [--dir grammars/rsc] [--rev <sha>]
 
 Exit codes: 0 ok, 1 error, 2 usage (argparse).
 """

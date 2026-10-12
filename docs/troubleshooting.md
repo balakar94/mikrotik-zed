@@ -52,7 +52,7 @@ Configuration details: [PATH trust model](configuration.md#path-trust-model).
 
 ## Live enrichment fails
 
-1. Run the health check: `python scripts/mikrotik-live-check.py --dry-run`
+1. Run the health check: `.venv/bin/python scripts/mikrotik-live-check.py --dry-run`
    then without `--dry-run` (exit **0** OK / **2** usage / **4** live FAIL).
 2. Look for the exact reason in the log — `live enabled but inactive — …`:
 
@@ -84,7 +84,7 @@ Configuration details: [PATH trust model](configuration.md#path-trust-model).
 | exit 2 `must be a single host` | Comma-separated `MIKROTIK_HOST` | The scripts dial one host; use a single value |
 | exit 2 `destructive content detected` | `system reset` / `reset-configuration`, or `remove` | Take a backup (`--backup`), then retry with `--force-destructive` |
 | exit 2 `use --method ssh` | REST file fallback is limited to 60 KiB | Use `--method ssh` for long scripts |
-| exit 3 | `requests` or `paramiko` missing | `pip install requests paramiko`; dry-run works without them |
+| exit 3 | `requests` or `paramiko` missing | `.venv/bin/pip install requests paramiko` (or re-run `make install-tools`); dry-run works without them |
 | exit 4 `TLS` / `certificate verify failed` | Self-signed device certificate | `MIKROTIK_SSL=0`, or pin with `MIKROTIK_FINGERPRINT`, or `MIKROTIK_CA_FILE` |
 | exit 4 `backup /export failed` | `--backup` requested but the device refused | Check the `rest-api`/write policies and free space; the push is aborted by design |
 | exit 5 sentinel not observed | RouterOS returned 2xx but the completion marker was absent | Verify device state; use `--no-verify-execute` only on builds that return no `/rest/execute` output |
@@ -112,14 +112,32 @@ binary on PATH (with `RSC_LS_ALLOW_PATH=1`), or download a release asset and
 place it on PATH. The checksum gate is corruption detection, not provenance —
 see [PATH trust model](configuration.md#path-trust-model).
 
+## Python scripts fail (`tomllib` not found)
+
+`ModuleNotFoundError: No module named 'tomllib'` means the interpreter is
+older than Python 3.11 — the scripts and tests use the standard-library
+`tomllib` (no backport pin ships). Apple's stock macOS `python3` is older,
+which is why a bare `python3 scripts/extract_commands.py` fails while
+`make extract` succeeds.
+
+- Prefer the make targets (`make extract`, `make sync`, `make validate`, …):
+  they resolve `.venv/bin/python` when it exists.
+- The Zed device tasks run `scripts/run-python.sh`, which prefers
+  `.venv/bin/python` and falls back to the `python3`/`python` on `PATH`, so
+  the pinned `requests`/`paramiko` from `.venv` are used when available.
+- For a direct invocation use `.venv/bin/python scripts/…`; recreate the venv
+  with `make install-tools` if it is missing or stale.
+
 ## Windows notes
 
 - The auto-downloaded binary is `rsc-ls-<version>.exe`; manual installs must
   keep the suffix.
-- The Zed tasks call `python3`; if your launcher is `python`, edit the task
-  copy to match (or install the Python launcher alias).
+- The Zed tasks run whichever `python3` is on `PATH`, not
+  `.venv/bin/python`; if your launcher is `python`, edit the task copy to
+  match (or install the Python launcher alias), and make sure that
+  interpreter is 3.11+ and can import `requests`/`paramiko`.
 - `make` targets assume a POSIX shell; use the GitHub Release assets and the
-  Python scripts directly instead.
+  Python scripts directly instead (`.venv/bin/python scripts/…`).
 
 ## Still stuck
 

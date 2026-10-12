@@ -47,7 +47,7 @@ Repo shorthands: `make generate`, `make test-grammar`, `make parse FILE=…`,
 Scripted — validates generation, pushes the grammar repo, updates the pin:
 
 ```bash
-python scripts/publish_grammar.py --dry-run   # then --push
+.venv/bin/python scripts/publish_grammar.py --dry-run   # then --push
 ```
 
 Details: `.agents/skills/tree-sitter-grammar.md`.

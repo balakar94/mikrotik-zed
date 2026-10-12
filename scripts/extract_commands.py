@@ -12,17 +12,34 @@ line confirms them before the next heading of any level — prose subheadings
 (`balance-xor`, ...) never carry one.
 
 Output: data/commands.toml (TOML format for the Zed language server)
+
+Usage:
+  make extract   (prefers .venv; same as .venv/bin/python scripts/extract_commands.py)
+
+Exit codes: 0 ok, 1 extraction error, 2 usage or unsupported interpreter.
 """
 
 import hashlib
 import html
 import os
 import re
+import stat
 import sys
 import tempfile
-import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
+
+# tomllib is stdlib only from 3.11. Fail with an actionable message instead of
+# a bare ModuleNotFoundError: on macOS a bare `python3` is usually the system
+# 3.9 interpreter, which lacks it.
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11
+    print("error: extract_commands.py needs Python 3.11+ (tomllib); "
+          f"this is {sys.version.split()[0]}", file=sys.stderr)
+    print("hint: create the venv once with 'make install-tools', then run 'make extract'", file=sys.stderr)
+    print("      or: .venv/bin/python scripts/extract_commands.py", file=sys.stderr)
+    sys.exit(2)
 
 
 # CLI path regex: must look like a RouterOS menu path, e.g. "ip/firewall/filter"
@@ -1280,8 +1297,15 @@ def escape_toml_string(s: str) -> str:
     return "".join(out)
 
 
-def _extract_routeros_version(llms_path: Path) -> str:
-    """Extract RouterOS version string, preferring the provenance manifest."""
+def _extract_routeros_era_hint(llms_path: Path) -> str:
+    """Extract the RouterOS era hint, preferring the provenance manifest.
+
+    The hint is the highest `RouterOS vX.Y` feature-gate mention upstream — an
+    era approximation, not the version of the manual itself. Falls back to
+    `"unknown"` when neither source carries a usable hint: the same sentinel
+    `sync_llms.extract_version()` and `lsp/src/menus.rs::parse_provenance`
+    already degrade to, so an unsynced checkout never claims an era.
+    """
     # Prefer the synced manifest: it records the highest feature-gate mention
     # across the whole corpus, not just the header, and stays in sync with
     # data/upstream-docs.toml (see sync_llms.py). Fall back to scanning the
@@ -1290,23 +1314,30 @@ def _extract_routeros_version(llms_path: Path) -> str:
     try:
         manifest = (llms_path.parent / "data" / "upstream-docs.toml")
         if manifest.exists():
-            m = re.search(r'routeros_version\s*=\s*"([^"]+)"', manifest.read_text(encoding="utf-8"))
+            m = re.search(r'routeros_era_hint\s*=\s*"([^"]+)"', manifest.read_text(encoding="utf-8"))
             if m and m.group(1) not in ("", "unknown"):
                 return m.group(1)
     except Exception:
         pass
     try:
         text = llms_path.read_text(encoding="utf-8", errors="ignore")[:8192]
-        # Try common patterns: "RouterOS 7.22", "RouterOS v7.22", "7.22" in first lines
+        # Try the common shapes: "RouterOS <x.y>", "RouterOS v<x.y>", or a
+        # bare "<x.y>" (RouterOS major 7) near the top of the corpus.
         m = re.search(r"RouterOS\s+v?(\d+\.\d+(?:\.\d+)?)", text, re.IGNORECASE)
         if m:
             return m.group(1)
+        # Deliberately anchored to major 7: a generic `\d+\.\d+` also matches the
+        # `192.168.88` of an example address in this same window (verified),
+        # which would stamp a bogus hint. Extend the alternation (e.g.
+        # `(?:7|8)\.`) when a later major ships; do not drop the anchor.
         m = re.search(r"\b7\.\d+(?:\.\d+)?\b", text)
         if m:
             return m.group(0)
     except Exception:
         pass
-    return "7.22+"
+    # No usable mention anywhere: report the absence instead of a hardcoded
+    # placeholder, which would silently claim an era the corpus never named.
+    return "unknown"
 
 
 def _source_hash(llms_path: Path) -> str:
@@ -1844,13 +1875,13 @@ def generate_toml(
     lines.append(_covers_line(menus))
     # Metadata header
     if llms_path is not None and llms_path.exists():
-        version = _extract_routeros_version(llms_path)
+        version = _extract_routeros_era_hint(llms_path)
         src_hash = _source_hash(llms_path)
     else:
         version = "unknown"
         src_hash = "unknown"
     generated = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    lines.append(f"# RouterOS version: {version}")
+    lines.append(f"# RouterOS era hint: {version} (highest feature-gate mention upstream; not the manual version)")
     lines.append(f"# Generated: {generated}")
     lines.append(f"# Source hash (sha256[:16]): {src_hash}")
     lines.append(f"# overrides_applied = {overrides_applied} (data/{_OVERRIDES_FILENAME})")
@@ -1983,14 +2014,41 @@ def _strip_generated_line(text: str) -> str:
     )
 
 
+# Permission bits for the generated artifact. `tempfile.mkstemp()` creates
+# 0600, so the temp-then-rename writer used to leave data/commands.toml
+# unreadable for group/other, unlike a plain write (0666 & ~umask, i.e. 0644
+# under the usual umask 022). Setting the mode explicitly keeps the artifact
+# readable-for-all like a plain write, and independent of the ambient umask.
+_ARTIFACT_MODE = 0o644
+
+
+def _ensure_artifact_mode(path: Path) -> None:
+    """Best-effort chmod of a generated artifact to `_ARTIFACT_MODE`.
+
+    Touches permission bits only, never content, so callers may invoke it on
+    the write path and on the content-unchanged path alike. A failure is not
+    fatal and is deliberately not raised: the payload is already correct and
+    the mode is cosmetic (git records only the executable bit), so a
+    filesystem without POSIX modes must not break `make extract`.
+    """
+    try:
+        if stat.S_IMODE(path.stat().st_mode) != _ARTIFACT_MODE:
+            path.chmod(_ARTIFACT_MODE)
+    except OSError:
+        pass
+
+
 def write_if_changed(output_file: Path, new_content: str) -> bool:
     """Write `new_content` to `output_file`, skipping timestamp-only churn.
 
     If the existing file differs from `new_content` ONLY by its
-    `# Generated:` line, the file is left untouched (keeping the old
-    timestamp) and False is returned. This keeps `make validate` /
-    `git diff --exit-code` clean when nothing material changed, instead of
-    dirtying the tracked file with a new timestamp on every run.
+    `# Generated:` line, the bytes are left untouched (keeping the old
+    timestamp) and False is returned; only the artifact mode is normalized to
+    `_ARTIFACT_MODE`. This keeps `make validate` / `git diff --exit-code`
+    clean when nothing material changed, instead of dirtying the tracked file
+    with a new timestamp on every run. A real write goes through a temp file
+    in the target directory (chmodded before the rename, so the artifact never
+    appears with the 0600 mkstemp() default).
     """
     try:
         existing = output_file.read_text(encoding="utf-8")
@@ -1998,6 +2056,7 @@ def write_if_changed(output_file: Path, new_content: str) -> bool:
         existing = None
 
     if existing is not None and _strip_generated_line(existing) == _strip_generated_line(new_content):
+        _ensure_artifact_mode(output_file)
         return False
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -2007,6 +2066,7 @@ def write_if_changed(output_file: Path, new_content: str) -> bool:
             tmp.write(new_content)
             tmp.flush()
             os.fsync(tmp.fileno())
+        _ensure_artifact_mode(Path(tmp_name))
         os.replace(tmp_name, output_file)
     except BaseException:
         try:
@@ -2025,7 +2085,7 @@ def main():
 
     if not input_file.exists():
         print(f"Error: {input_file} not found", file=sys.stderr)
-        print("Fetch RouterOS docs first:  make sync   (or: python3 scripts/sync_llms.py)", file=sys.stderr)
+        print("Fetch RouterOS docs first:  make sync   (or: .venv/bin/python scripts/sync_llms.py)", file=sys.stderr)
         sys.exit(1)
 
     print(f"Parsing {input_file}...")

@@ -107,11 +107,11 @@ Zed task templates: `languages/rsc/tasks.json` → copy to `.zed/tasks.json` to 
 
 ```bash
 # 0. Ensure clean state
-make validate   # check-manifest + docs-check + generate-check + check-wasm-api + fmt + clippy + test-all + extract + freshness
+make validate   # check-manifest + docs-check + generate-check + check-wasm-api + fmt + clippy + doc-check + test-all + extract + freshness
 
 # 1. Publish grammar (if grammar.js changed)
-python scripts/publish_grammar.py --dry-run
-python scripts/publish_grammar.py --push  # pushes grammars/rsc → balakar94/tree-sitter-rsc
+.venv/bin/python scripts/publish_grammar.py --dry-run
+.venv/bin/python scripts/publish_grammar.py --push  # pushes grammars/rsc → balakar94/tree-sitter-rsc
 # verify extension.toml rev updated: git -C grammars/rsc rev-parse HEAD
 
 # 2. Bump versions consistently
@@ -120,7 +120,7 @@ python scripts/publish_grammar.py --push  # pushes grammars/rsc → balakar94/tr
 # also update CHANGELOG.md + ROADMAP.md before commit (see AGENTS.md Pre-commit Checklist)
 
 # 3. Regenerate & commit data if llms-full.txt changed
-python scripts/extract_commands.py && git diff --exit-code data/commands.toml
+make extract && git diff --exit-code data/commands.toml
 
 # 4. Tag → triggers .github/workflows/release.yml (multi-platform rsc-ls binaries + WASM)
 git tag v<version> && git push origin v<version>
@@ -138,13 +138,13 @@ git tag v<version> && git push origin v<version>
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `grammar not found` / `Failed to load grammar rsc` | `extension.toml` `rev` is placeholder `000...` or not pushed | `python scripts/publish_grammar.py --push`; verify `git ls-remote https://github.com/balakar94/tree-sitter-rsc <rev>` |
+| `grammar not found` / `Failed to load grammar rsc` | `extension.toml` `rev` is placeholder `000...` or not pushed | `.venv/bin/python scripts/publish_grammar.py --push`; verify `git ls-remote https://github.com/balakar94/tree-sitter-rsc <rev>` |
 | `Failed to compile` WASM / `wasm32-wasip2` missing | Extension built without `wasm` target or uses `std::env`/`cfg` | `rustup target add wasm32-wasip2`; replace `std::env::var` with `worktree.shell_env()`; see `platform_triple()` in `src/lib.rs` |
 | `404 download` / `Failed to download rsc-ls-<triple>` | No GitHub Release asset for version/triple; `CARGO_PKG_VERSION` mismatch | Tag and push matching `v<version>`; check `gh release view v<ver> --json assets`; fallback: `cargo build -p rsc-ls --release && export PATH=$PATH:target/release` |
 | Diagnostics not showing | File not `language: MikroTik Script` (`.rsc` suffix or `config.toml` mismatch); doc exceeds caps; invalid URI | Check `languages/rsc/config.toml` suffix; `zed: open log` for `[rsc-ls]`; open via real `file://` path; check caps `MAX_DIAG_LINES 3000` / `500KB` in `lsp/src/caps.rs` |
 | `Platform not supported for rsc-ls auto-download` | Rare: `platform_triple()` has no mapping for os/arch (all 6 shipped triples are covered) | Build from source: `cargo build -p rsc-ls --release` and add to PATH; or grab `rsc-ls-<triple>` from GitHub Releases |
 | `stale parser.c` CI failure | Edited `grammar.js` without regenerating | `cd grammars/rsc && npx tree-sitter generate && git add src/parser.c src/grammar.json src/node-types.json` |
-| `data/commands.toml stale` CI failure | Edited `llms-full.txt` without re-extracting | `python scripts/extract_commands.py && git add data/commands.toml` |
+| `data/commands.toml stale` CI failure | Edited `llms-full.txt` without re-extracting | `make extract && git add data/commands.toml` |
 | Tasks not appearing | `.zed/tasks.json` missing or not valid JSON | `cp languages/rsc/tasks.json .zed/tasks.json`; validate JSON; restart Zed |
 | Live check fails / `RSC_LS_LIVE` no effect | Live opt-in missing, host unreachable, or caps/TLS mismatch | `RSC_LS_LIVE=1 MIKROTIK_HOST=... MIKROTIK_PASS=...` + `scripts/mikrotik-live-check.py --dry-run`; check `lsp/src/live.rs` caps (`LIVE_MAX_HOSTS 4`, 5s/2s timeouts, SSRF deny) |
 

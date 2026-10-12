@@ -172,9 +172,9 @@ Incremental edits: `lsp_position_to_offset` + `apply_incremental_edit` (`encodin
 cargo test -p rsc-ls                  # white-box suite lsp/src/tests/ + E2E targets
 cargo test -p rsc-ls -- diagnostics   # single module
 cargo test -p rsc-ls -- --nocapture   # show eprintln logs
-python -m pytest tests/ -v            # Python integration tests
+make test-python                      # Python integration tests (resolves .venv/bin/python)
 cd grammars/rsc && npx tree-sitter test  # grammar corpus
-make validate                         # check-manifest + docs-check + generate-check + check-wasm-api + fmt + clippy + test-all + extract (sync-check separate)
+make validate                         # check-manifest + docs-check + generate-check + check-wasm-api + fmt + clippy + doc-check + test-all + extract (sync-check separate)
 ```
 
 | Area | File | Pattern |
@@ -225,7 +225,7 @@ Every copy prints `rsc-ls <version>` (release builds append ` (build <sha7>)` vi
 ```bash
 cargo build -p rsc-ls --release                          # → target/release/rsc-ls
 cargo build --target wasm32-wasip2 --release             # WASM component (Zed builds via extension_builder)
-cargo test -p rsc-ls && python -m pytest tests/ -v
+cargo test -p rsc-ls && make test-python
 ```
 
 Auto-download: `RscExtension::language_server_command` (`src/lib.rs`) tries `worktree.which("rsc-ls")` → cached `rsc-ls` → `current_platform()` → `latest_github_release` / `github_release_by_tag_name` → `download_file` → `make_file_executable`. Triples: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`; extension-less release blobs, `.exe` suffix applied at spawn on Windows.

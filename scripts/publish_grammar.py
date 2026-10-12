@@ -9,11 +9,11 @@ By default uses the repo at https://github.com/balakar94/tree-sitter-rsc.
 For local dev, can push to the bare repo at grammar-bare.git.
 
 Usage:
-  python scripts/publish_grammar.py --dry-run   # show what would be done
-  python scripts/publish_grammar.py --push      # push to remote + update rev
-  python scripts/publish_grammar.py --push --remote grammar-bare  # local bare
-  python scripts/publish_grammar.py --push --branch release/0.7.0  # non-main target
-  python scripts/publish_grammar.py --push --no-commit  # stage allowlist only, print manual commit steps
+  .venv/bin/python scripts/publish_grammar.py --dry-run   # show what would be done
+  .venv/bin/python scripts/publish_grammar.py --push      # push to remote + update rev
+  .venv/bin/python scripts/publish_grammar.py --push --remote grammar-bare  # local bare
+  .venv/bin/python scripts/publish_grammar.py --push --branch release/0.7.0  # non-main target
+  .venv/bin/python scripts/publish_grammar.py --push --no-commit  # stage allowlist only, print manual commit steps
 
 Steps:
   1) Ensure grammars/rsc is a git repo (init if needed; never in --dry-run)

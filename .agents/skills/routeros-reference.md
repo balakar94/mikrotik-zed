@@ -18,7 +18,7 @@ Always resolve in this order. Do not skip a higher priority.
 
 | Priority | Source | Location | Why |
 |----------|--------|----------|-----|
-| 1 | `data/commands.toml` | repo root | Fast, structured, embedded in `rsc-ls` via `include_str!()`. Menus with `path`/`type`/`arguments`/`read_only`/`flags` + metadata header (`RouterOS version`, `Generated` UTC, `Source hash`). |
+| 1 | `data/commands.toml` | repo root | Fast, structured, embedded in `rsc-ls` via `include_str!()`. Menus with `path`/`type`/`arguments`/`read_only`/`flags` + metadata header (`RouterOS era hint`, `Generated` UTC, `Source hash`). |
 | 2 | `llms-full.txt` | repo root | Full RouterOS docs (untracked; fetch via `make sync`; version in its header). Canonical descriptions, ArgTable rows, `mandatory` flags. Use when `commands.toml` looks incomplete. |
 | 3 | `llms.txt` | repo root | Doc index with page URLs/summaries. Use to find the public URL for a menu. |
 
@@ -82,9 +82,9 @@ rg -n "## ip/firewall/filter|## interface/bridge" llms-full.txt
 rg -n "ArgTable" llms-full.txt | head -20
 
 # If stale (CI also runs this)
-python scripts/sync_llms.py --check   # exit 2 = updates available
-python scripts/sync_llms.py           # fetch latest llms.txt + llms-full.txt
-python scripts/extract_commands.py    # regenerate data/commands.toml
+make sync-check   # exit 2 = updates available
+make sync         # fetch latest llms.txt + llms-full.txt
+make extract      # regenerate data/commands.toml
 ```
 
 ## Type Reference
@@ -163,7 +163,7 @@ Expected:
 
 ## Agent Rules: Never Invent
 
-- [ ] **Never invent** a menu path, property name, type, or enum value. If `rg` returns nothing, say "not found — check `data/commands.toml` header for current RouterOS version" — do not guess.
+- [ ] **Never invent** a menu path, property name, type, or enum value. If `rg` returns nothing, say "not found — check `data/commands.toml` header for the current RouterOS era hint" — do not guess.
 - [ ] Always run **Workflow A** before emitting any RouterOS command in an answer or `.rsc` file.
 - [ ] Use **exact `rg` commands** above — `rg -n 'path = "/...\"' data/commands.toml` — not keyword fuzzy search alone.
 - [ ] Treat an empty `type = ""` as **unknown/complex** — surface as `type: property` and advise checking `llms-full.txt`, do not fabricate `enum` values.
@@ -171,12 +171,12 @@ Expected:
 - [ ] Check `required`, `unset`, and `mandatory` before claiming a property is optional or nullable.
 - [ ] Implicit parents are valid: `/ip/firewall` exists if any `/ip/firewall/*` child exists. Do not flag as `unknown-menu`.
 - [ ] `commands.toml` and `grammar.js` are independent: grammar validates *syntax*, `commands.toml` validates *semantics*. Do not conflate.
-- [ ] If `commands.toml` may be stale, run `python scripts/sync_llms.py --check` and re-extract — never silently use old data.
+- [ ] If `commands.toml` may be stale, run `make sync-check` and re-extract — never silently use old data.
 
 ## Maintenance
 
 ```bash
-python scripts/sync_llms.py --check   # CI: exit 2 if upstream changed
-python scripts/sync_llms.py && python scripts/extract_commands.py
+make sync-check   # CI: exit 2 if upstream changed
+make sync && make extract
 rg -c '^\[\[menus\]\]' data/commands.toml   # must match expected count (compare before/after extract)
 ```

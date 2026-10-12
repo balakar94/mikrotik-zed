@@ -4,7 +4,7 @@ The shared module must be the single source for REST scheme resolution,
 integer env-var parsing, host validation, and IPv6 bracket formatting used
 by the two MikroTik companion scripts. No network: pure function checks
 plus a CLI smoke test (--help / --dry-run) that also proves the scripts'
-import bootstrap works when run as `python scripts/<name>.py`.
+import bootstrap works when run as `.venv/bin/python scripts/<name>.py`.
 """
 
 import contextlib

@@ -1,6 +1,7 @@
 """Tests for the llms-full.txt command extraction script."""
 import sys
 import os
+import stat
 import tempfile
 import tomllib
 from pathlib import Path
@@ -33,6 +34,7 @@ from extract_commands import (
     override_fully_subsumed_by_generics,
     _extract_heading_path,
     _extract_bare_cli_root,
+    _extract_routeros_era_hint,
     _strip_generated_line,
     _MAX_COVERED_ROOTS,
     canonical_menu_path_error,
@@ -683,6 +685,84 @@ class TestWriteIfChanged:
         # …but the tracked file must remain byte-identical either way.
         assert wrote is False
         assert target.read_text(encoding="utf-8") == first
+
+    # ── Artifact mode: the temp-file writer must land 0644, not mkstemp's 0600 ──
+
+    @staticmethod
+    def _mode(path: Path) -> int:
+        return stat.S_IMODE(path.stat().st_mode)
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits only")
+    def test_new_file_is_written_with_artifact_mode(self):
+        target = self._fresh_path()
+        assert not target.exists()
+        assert write_if_changed(target, self._content("t")) is True
+        assert self._mode(target) == 0o644, "generated artifact must be group/other readable"
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits only")
+    def test_material_rewrite_normalizes_mode(self):
+        target = self._fresh_path()
+        target.write_text(self._content("t", body="old body"), encoding="utf-8")
+        target.chmod(0o600)
+        assert write_if_changed(target, self._content("t", body="new body")) is True
+        assert self._mode(target) == 0o644
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits only")
+    def test_timestamp_only_noop_normalizes_mode_but_keeps_bytes(self):
+        # A checkout whose artifact predates the explicit chmod still holds
+        # 0600 bytes. The no-op branch must fix the mode without touching the
+        # content (the tracked bytes stay stable for git-diff gates).
+        target = self._fresh_path()
+        first = self._content("2026-01-01T00:00:00Z")
+        target.write_text(first, encoding="utf-8")
+        target.chmod(0o600)
+
+        wrote = write_if_changed(target, self._content("2026-02-02T12:34:56.789Z"))
+        assert wrote is False
+        assert target.read_text(encoding="utf-8") == first
+        assert self._mode(target) == 0o644
+
+
+class TestRouterosEraHint:
+    """The era hint degrades to the `unknown` sentinel — never a placeholder.
+
+    `_extract_routeros_era_hint` shares that sentinel with
+    `sync_llms.extract_version()` and the LSP's `parse_provenance`, so an
+    unsynced checkout reports "we do not know" instead of stamping a
+    hardcoded era into the generated header.
+    """
+
+    @staticmethod
+    def _corpus(tmp_path: Path, text: str) -> Path:
+        # The manifest is looked up as `<corpus parent>/data/upstream-docs.toml`,
+        # so a corpus under tmp_path has none unless a test writes one.
+        corpus = tmp_path / "llms-full.txt"
+        corpus.write_text(text, encoding="utf-8")
+        return corpus
+
+    def test_manifest_hint_wins_over_header_mention(self, tmp_path):
+        (tmp_path / "data").mkdir()
+        (tmp_path / "data" / "upstream-docs.toml").write_text(
+            'routeros_era_hint = "7.23.2"\n', encoding="utf-8"
+        )
+        corpus = self._corpus(tmp_path, "# Manual\n\nRouterOS v7.18 documentation\n")
+        assert _extract_routeros_era_hint(corpus) == "7.23.2"
+
+    def test_manifest_unknown_falls_back_to_header(self, tmp_path):
+        (tmp_path / "data").mkdir()
+        (tmp_path / "data" / "upstream-docs.toml").write_text(
+            'routeros_era_hint = "unknown"\n', encoding="utf-8"
+        )
+        corpus = self._corpus(tmp_path, "# Manual\n\nRouterOS v7.18.2 documentation\n")
+        assert _extract_routeros_era_hint(corpus) == "7.18.2"
+
+    def test_header_mention_is_used_without_a_manifest(self, tmp_path):
+        corpus = self._corpus(tmp_path, "# Manual\n\nRouterOS v7.18.2 documentation\n")
+        assert _extract_routeros_era_hint(corpus) == "7.18.2"
+
+    def test_unknown_without_manifest_and_without_any_mention(self, tmp_path):
+        corpus = self._corpus(tmp_path, "# MikroTik RouterOS Manual\n\n## Certificates\n")
+        assert _extract_routeros_era_hint(corpus) == "unknown"
 
 
 class TestGenerateToml:
@@ -2621,6 +2701,58 @@ class TestMarkdownPropertyTables:
         menus = {m["path"]: m for m in self._parse(content)}
         assert "foo" not in {a["name"] for a in menus["/ip/address"].get("arguments", [])}
         assert "skipped" in capsys.readouterr().err
+
+    def test_fragment_chain_beyond_one_page_expires_instead_of_guessing(self, capsys):
+        """Guard pin: a fragment two H2 pages behind must not inherit a context.
+
+        Upstream shapes topic pages as `## Apps` (`**Sub-menu:** /app`)
+        followed by consecutive `## Properties` / `## Read-only Properties`
+        fragments. The first fragment is one page behind and is attributed to
+        /app; the second is two pages behind and is deliberately left
+        unattributed. Widening that window would not be safe: a *later*
+        fragment of the same chain (`## Properties` three pages behind,
+        documenting /app/settings) would then inherit `/app` too — it is only
+        rescued by the row-overlap fallback, which needs full row coverage.
+        """
+
+        content = (
+            "## app \n\n**Type:** Directory\n\n"
+            '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="auto-update" typ="bool"></ArgTableRow>\n'
+            "</ArgTable>\n\n"
+            "## app/settings \n\n**Type:** Settings Directory\n\n"
+            '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
+            '<ArgTableRow arg="app-store-urls" typ="string"></ArgTableRow>\n'
+            '<ArgTableRow arg="disk" typ="string"></ArgTableRow>\n'
+            "</ArgTable>\n\n"
+            "## Apps\n\n**Sub-menu:** `/app`\n\n"
+            "## Properties\n\n"
+            "| Property | Description |\n| :-- | :-- |\n"
+            "| **auto-update** (*yes \\| no*) | Writable auto-update |\n\n"
+            "## Read-only Properties\n\n"
+            "| Property | Description |\n| :-- | :-- |\n"
+            "| **app-size** (*string*) | Read-only app size |\n\n"
+            "## Properties\n\n"
+            "| Property | Description |\n| :-- | :-- |\n"
+            "| **app-store-urls** (*string*) | Settings store URLs |\n"
+            "| **disk** (*string*) | Settings disk |\n"
+        )
+        menus = {m["path"]: m for m in self._parse(content)}
+
+        # One page behind: attributed to the Sub-menu context.
+        auto_update = next(a for a in menus["/app"]["arguments"] if a["name"] == "auto-update")
+        assert auto_update["description"] == "Writable auto-update"
+        # Two pages behind: the context is stale, so the read-only row is not
+        # invented on any menu (a warning is emitted).
+        assert "app-size" not in {a["name"] for a in menus["/app"].get("arguments", [])}
+        assert "app-size" not in {r["name"] for r in menus["/app"].get("read_only", [])}
+        err = capsys.readouterr().err
+        assert "no single known menu for its property-section fragment" in err
+        # Three pages behind: only row overlap (all rows covered by exactly one
+        # menu) may resolve it — never the inherited `/app` context.
+        settings = {a["name"]: a for a in menus["/app/settings"]["arguments"]}
+        assert settings["app-store-urls"]["description"] == "Settings store URLs"
+        assert "app-store-urls" not in {a["name"] for a in menus["/app"].get("arguments", [])}
 
     def test_single_child_page_context_warns_and_skips(self, capsys):
         # One sub-menu is not enough to identify the page's own menu: it could

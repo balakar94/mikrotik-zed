@@ -32,23 +32,35 @@ Checks:
       commits API. Never touches the network without the flag.
 
 Usage:
-  python3 scripts/check_zed_requirements.py [--file PATH] [--online]
+  make check-manifest   (prefers .venv)
+  .venv/bin/python scripts/check_zed_requirements.py [--file PATH] [--online]
 
 Exit codes:
   0  manifest valid
   1  violations found
-  2  IO or usage error (unreadable file, invalid TOML, bad CLI arguments)
+  2  IO or usage error (unreadable file, invalid TOML, bad CLI arguments,
+     unsupported interpreter)
 
-Stdlib only; requires Python >= 3.12 (tomllib).
+Stdlib only; requires Python 3.11+ (tomllib).
 """
 
 import argparse
 import re
 import sys
-import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+# tomllib is stdlib only from 3.11. Fail with an actionable message instead of
+# a bare ModuleNotFoundError, which is what a bare `python3` (system 3.9 on
+# macOS) produces.
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11
+    print("error: check_zed_requirements.py needs Python 3.11+ (tomllib); "
+          f"this is {sys.version.split()[0]}", file=sys.stderr)
+    print("hint: create the venv once with 'make install-tools', then run 'make check-manifest'", file=sys.stderr)
+    sys.exit(2)
 
 # Repo root = parent of scripts/, independent of the current working directory.
 REPO_ROOT = Path(__file__).resolve().parent.parent

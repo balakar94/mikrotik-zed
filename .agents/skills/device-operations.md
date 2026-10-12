@@ -45,10 +45,10 @@ Two companion scripts provide all device I/O. Both **never log `MIKROTIK_PASS`**
 **CLI examples:**
 
 ```bash
-MIKROTIK_HOST=192.168.88.1 python scripts/mikrotik-deploy.py file.rsc --dry-run
-MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret python scripts/mikrotik-deploy.py file.rsc --method rest --backup
-MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret python scripts/mikrotik-deploy.py file.rsc --method ssh --accept-host-key
-MIKROTIK_HOST=192.168.88.1 python scripts/mikrotik-deploy.py file.rsc --http --port 80 --dry-run
+MIKROTIK_HOST=192.168.88.1 .venv/bin/python scripts/mikrotik-deploy.py file.rsc --dry-run
+MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret .venv/bin/python scripts/mikrotik-deploy.py file.rsc --method rest --backup
+MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret .venv/bin/python scripts/mikrotik-deploy.py file.rsc --method ssh --accept-host-key
+MIKROTIK_HOST=192.168.88.1 .venv/bin/python scripts/mikrotik-deploy.py file.rsc --http --port 80 --dry-run
 ```
 
 ## mikrotik-live-check.py — Verify Live REST
@@ -66,9 +66,9 @@ Mirrors `lsp/src/live_config.rs: LiveConfig::from_env` so the same env works for
 **CLI examples:**
 
 ```bash
-python scripts/mikrotik-live-check.py --dry-run --host 192.168.88.1
-MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret python scripts/mikrotik-live-check.py
-python scripts/mikrotik-live-check.py --host 192.168.88.1 --user admin --no-ssl-verify --timeout 10
+.venv/bin/python scripts/mikrotik-live-check.py --dry-run --host 192.168.88.1
+MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret .venv/bin/python scripts/mikrotik-live-check.py
+.venv/bin/python scripts/mikrotik-live-check.py --host 192.168.88.1 --user admin --no-ssl-verify --timeout 10
 ```
 
 ## Live Enrichment (rsc-ls, Opt-In)
@@ -113,13 +113,13 @@ Six tasks (all `cwd: $ZED_WORKTREE_ROOT`; the `scripts/` paths only resolve in t
 | Label | Command | Notes |
 |-------|---------|-------|
 | `MikroTik: Validate file readability (local only, no device)` | inline Python readability preflight on `$ZED_FILE` | `reveal:no_focus`, `hide:on_success`, `save:current` |
-| `MikroTik: Check script (dry-run, no device)` | `python3 scripts/mikrotik-deploy.py $ZED_FILE --dry-run` | Requires `MIKROTIK_HOST`; no password, no network, `save:current` |
-| `MikroTik: Live — Check connectivity (opt-in)` | `python3 scripts/mikrotik-live-check.py --host ${input:…} --user … --timeout …` | Prompts host/user/timeout; pass from env or prompt |
+| `MikroTik: Check script (dry-run, no device)` | `sh scripts/run-python.sh scripts/mikrotik-deploy.py $ZED_FILE --dry-run` | Requires `MIKROTIK_HOST`; no password, no network, `save:current` |
+| `MikroTik: Live — Check connectivity (opt-in)` | `sh scripts/run-python.sh scripts/mikrotik-live-check.py --host ${input:…} --user … --timeout …` | Prompts host/user/timeout; pass from env or prompt |
 | `MikroTik: Live — Check connectivity --dry-run (opt-in)` | same + `--dry-run` | `allow_concurrent_runs:true` |
-| `MikroTik: Deploy current file (REST)` | `python3 scripts/mikrotik-deploy.py $ZED_FILE --method rest` | `save:current`; needs host/pass/`requests` |
-| `MikroTik: Deploy current file (SSH)` | `python3 scripts/mikrotik-deploy.py $ZED_FILE --method ssh` | `save:current`; needs host/pass/`paramiko` |
+| `MikroTik: Deploy current file (REST)` | `sh scripts/run-python.sh scripts/mikrotik-deploy.py $ZED_FILE --method rest` | `save:current`; needs host/pass/`requests` |
+| `MikroTik: Deploy current file (SSH)` | `sh scripts/run-python.sh scripts/mikrotik-deploy.py $ZED_FILE --method ssh` | `save:current`; needs host/pass/`paramiko` |
 
-Workflow order is Validate → Check → Deploy → verify; mirror enforced by `tests/test_tasks_mirror.py` (both task files byte-identical, no secrets in env). Windows: use `python` if `python3` is not your launcher.
+Workflow order is Validate → Check → Deploy → verify; mirror enforced by `tests/test_tasks_mirror.py` (both task files byte-identical, no secrets in env). The device tasks run `scripts/run-python.sh`, which prefers `.venv/bin/python` and falls back to the `python3` on `PATH` (then `python`), so `requests`/`paramiko` resolve once `make install-tools` has been run. The readability preflight stays on a bare `python3`: it is stdlib-only and needs no dependencies.
 
 ## Troubleshooting
 
@@ -133,24 +133,24 @@ Workflow order is Validate → Check → Deploy → verify; mirror enforced by `
 | `missing MIKROTIK_PASS` (exit 2) | Pass not in env and no TTY prompt | Export it in the shell profile; `--dry-run` needs no pass; never put it in `tasks.json` or settings |
 | `response too large` | Device returned more than `MAX_LIVE_RESPONSE_BYTES` | Filter on the device side; the cap protects the LSP |
 | `auth failed` / 401/403 | Wrong credentials, REST service disabled, or missing `rest-api` policy | Check `/ip/service` (`www-ssl` enabled + certificate) and the user policy |
-| `paramiko` / `requests` missing | Optional deps not installed | `pip install requests paramiko`; dry-run works without them |
+| `paramiko` / `requests` missing | Optional deps not installed | `.venv/bin/pip install requests paramiko` (or re-run `make install-tools`); dry-run works without them |
 
 ## Verification
 
 ```bash
 # Preview without touching a device (no pass, no network; host still required)
-MIKROTIK_HOST=192.168.88.1 python scripts/mikrotik-deploy.py path/to/file.rsc --dry-run
-python scripts/mikrotik-live-check.py --dry-run --host 192.168.88.1 --json
+MIKROTIK_HOST=192.168.88.1 .venv/bin/python scripts/mikrotik-deploy.py path/to/file.rsc --dry-run
+.venv/bin/python scripts/mikrotik-live-check.py --dry-run --host 192.168.88.1 --json
 
 # Real check — exit 0 OK, 2 usage, 4 live fail
-MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret python scripts/mikrotik-live-check.py --json
+MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret .venv/bin/python scripts/mikrotik-live-check.py --json
 
 # Live enrichment end-to-end (env must be visible to the server; restart Zed)
 RSC_LS_LIVE=1 MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret zed --foreground
 # then in Zed: open .rsc → trigger interface/address completion → zed: open log → [rsc-ls]
 ```
 
-Check `lsp/src/caps.rs` for authoritative caps; never hardcode RouterOS version — see `data/commands.toml` header.
+Check `lsp/src/caps.rs` for authoritative caps; never hardcode the RouterOS era hint — see `data/commands.toml` header.
 
 ## Related Skills
 

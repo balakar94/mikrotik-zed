@@ -1,11 +1,11 @@
 # MikroTik RouterOS CLI Command Table
 # Auto-generated from llms-full.txt
-# Covers: /app, /beep, /blink, /caps-man, /certificate, /cmr, /console, /container, /disk, /dude, /environment, /file, … (1111 menus)
-# RouterOS version: 7.23.2
-# Generated: 2026-10-05T15:17:51.259357Z
-# Source hash (sha256[:16]): f9ec71ff6f39b6f5
+# Covers: /app, /beep, /blink, /caps-man, /certificate, /cmr, /console, /container, /disk, /dude, /environment, /file, … (1125 menus)
+# RouterOS era hint: 7.26 (highest feature-gate mention upstream; not the manual version)
+# Generated: 2026-10-12T13:36:53.997836Z
+# Source hash (sha256[:16]): f94c894bd7b8d838
 # overrides_applied = 11 (data/overrides.toml)
-# generics_applied = 1990 (comment/disabled universal; place-before/copy-from ordered-only)
+# generics_applied = 2002 (comment/disabled universal; place-before/copy-from ordered-only)
 
 [[menus]]
 path = "/app"
@@ -406,123 +406,123 @@ type = "macAddr"
 name = "master-interface"
 type = "iface_enum { none }"
 [[menus.arguments]]
-name = "mode"
+name = "configuration.mode"
 type = "enum (ap)"
 enum_values = ["ap"]
 unset = true
 [[menus.arguments]]
-name = "ssid"
+name = "configuration.ssid"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "hide-ssid"
+name = "configuration.hide-ssid"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "max-sta-count"
+name = "configuration.max-sta-count"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "multicast-helper"
+name = "configuration.multicast-helper"
 type = "enum (default | disabled | full | dhcp) { default:0, disabled:1, full:2, dhcp:3 }"
 enum_values = ["default", "disabled", "full", "dhcp"]
 unset = true
 [[menus.arguments]]
-name = "tx-chains"
+name = "configuration.tx-chains"
 type = "ubit (0, 1, 2, 3)"
 unset = true
 [[menus.arguments]]
-name = "rx-chains"
+name = "configuration.rx-chains"
 type = "ubit (0, 1, 2, 3)"
 unset = true
 [[menus.arguments]]
-name = "guard-interval"
+name = "configuration.guard-interval"
 type = "enum (any | long) { any:0, long:1 }"
 enum_values = ["any", "long"]
 unset = true
 [[menus.arguments]]
-name = "country"
+name = "configuration.country"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "installation"
+name = "configuration.installation"
 type = "enum (any | indoor | outdoor)"
 enum_values = ["any", "indoor", "outdoor"]
 unset = true
 [[menus.arguments]]
-name = "load-balancing-group"
+name = "configuration.load-balancing-group"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "distance"
+name = "configuration.distance"
 type = "enum (indoors | dynamic) { indoors:0, dynamic:0xffffffff }"
 enum_values = ["indoors", "dynamic"]
 unset = true
 [[menus.arguments]]
-name = "hw-retries"
+name = "configuration.hw-retries"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "hw-protection-mode"
+name = "configuration.hw-protection-mode"
 type = "enum (none | rts-cts | cts-to-self) { none:0, rts-cts:1, cts-to-self:2 }"
 enum_values = ["none", "rts-cts", "cts-to-self"]
 unset = true
 [[menus.arguments]]
-name = "hw-protection-threshold"
+name = "configuration.hw-protection-threshold"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "frame-lifetime"
+name = "configuration.frame-lifetime"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "disconnect-timeout"
+name = "configuration.disconnect-timeout"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "keepalive-frames"
+name = "configuration.keepalive-frames"
 type = "enum (enabled | disabled)"
 enum_values = ["enabled", "disabled"]
 unset = true
 [[menus.arguments]]
-name = "authentication-types"
+name = "security.authentication-types"
 type = "ubit (wpa-psk, wpa2-psk, wpa-eap, wpa2-eap)"
 unset = true
 [[menus.arguments]]
-name = "encryption"
+name = "security.encryption"
 type = "ubit (aes-ccm, tkip)"
 unset = true
 [[menus.arguments]]
-name = "group-encryption"
+name = "security.group-encryption"
 type = "enum (aes-ccm | tkip)"
 enum_values = ["aes-ccm", "tkip"]
 unset = true
 [[menus.arguments]]
-name = "group-key-update"
+name = "security.group-key-update"
 type = "time"
 [[menus.arguments]]
-name = "passphrase"
+name = "security.passphrase"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "eap-methods"
+name = "security.eap-methods"
 type = "multi { array-id, method: enum (eap-tls | passthrough) { eap-tls:13, passthrough:0xffffffff } }"
 enum_values = ["eap-tls", "passthrough"]
 unset = true
 [[menus.arguments]]
-name = "eap-radius-accounting"
+name = "security.eap-radius-accounting"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "tls-mode"
+name = "security.tls-mode"
 type = "enum (verify-certificate | dont-verify-certificate | no-certificates | verify-certificate-with-crl)"
 enum_values = ["verify-certificate", "dont-verify-certificate", "no-certificates", "verify-certificate-with-crl"]
 [[menus.arguments]]
-name = "tls-certificate"
+name = "security.tls-certificate"
 type = "enum (none) { none:0xffffffff }"
 enum_values = ["none"]
 [[menus.arguments]]
-name = "disable-pmkid"
+name = "security.disable-pmkid"
 type = "bool"
 unset = true
 [[menus.arguments]]
@@ -573,43 +573,43 @@ name = "interface-list"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "frequency"
+name = "channel.frequency"
 type = "multi { array-id, frequency: num }"
 unset = true
 [[menus.arguments]]
-name = "secondary-frequency"
+name = "channel.secondary-frequency"
 type = "multi { array-id, secondary-frequency: alt { secondary-frequency-disable: enum (disabled) , secondary-frequency-num: num } }"
 enum_values = ["disabled"]
 unset = true
 [[menus.arguments]]
-name = "control-channel-width"
+name = "channel.control-channel-width"
 type = "enum (5mhz | 10mhz | 20mhz | 40mhz-turbo) { 5mhz:5000, 10mhz:10000, 20mhz:20000, 40mhz-turbo:40000 }"
 enum_values = ["5mhz", "10mhz", "20mhz", "40mhz-turbo"]
 unset = true
 [[menus.arguments]]
-name = "band"
+name = "channel.band"
 type = "enum (2ghz-b | 2ghz-onlyg | 2ghz-b/g | 5ghz-a | 5ghz-onlyn | 5ghz-a/n | 2ghz-onlyn | 2ghz-b/g/n | 2ghz-g/n | 5ghz-a/n/ac | 5ghz-n/ac | 5ghz-onlyac)"
 enum_values = ["2ghz-b", "2ghz-onlyg", "2ghz-b/g", "5ghz-a", "5ghz-onlyn", "5ghz-a/n", "2ghz-onlyn", "2ghz-b/g/n", "2ghz-g/n", "5ghz-a/n/ac", "5ghz-n/ac", "5ghz-onlyac"]
 unset = true
 [[menus.arguments]]
-name = "extension-channel"
+name = "channel.extension-channel"
 type = "enum (disabled | Ce | eC | Ceee | eCee | eeCe | eeeC | XX | XXXX | Ceeeeeee | eCeeeeee | eeCeeeee | eeeCeeee | eeeeCeee | eeeeeCee | eeeeeeCe | ee...)"
 enum_values = ["disabled", "Ce", "eC", "Ceee", "eCee", "eeCe", "eeeC", "XX", "XXXX", "Ceeeeeee", "eCeeeeee", "eeCeeeee", "eeeCeeee", "eeeeCeee", "eeeeeCee", "eeeeeeCe", "eeeeeeeC", "XXXXXXXX"]
 unset = true
 [[menus.arguments]]
-name = "tx-power"
+name = "channel.tx-power"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "save-selected"
+name = "channel.save-selected"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "reselect-interval"
+name = "channel.reselect-interval"
 type = "super { reselect-interval-min: time [1 .. 60*60*24*300] , [reselect-interval-max] ..time [1 .. 60*60*24*300] }"
 unset = true
 [[menus.arguments]]
-name = "skip-dfs-channels"
+name = "channel.skip-dfs-channels"
 type = "bool"
 unset = true
 [[menus.arguments]]
@@ -796,156 +796,156 @@ type = "enum (enabled | disabled)"
 enum_values = ["enabled", "disabled"]
 unset = true
 [[menus.arguments]]
-name = "authentication-types"
+name = "security.authentication-types"
 type = "ubit (wpa-psk, wpa2-psk, wpa-eap, wpa2-eap)"
 unset = true
 [[menus.arguments]]
-name = "encryption"
+name = "security.encryption"
 type = "ubit (aes-ccm, tkip)"
 unset = true
 [[menus.arguments]]
-name = "group-encryption"
+name = "security.group-encryption"
 type = "enum (aes-ccm | tkip)"
 enum_values = ["aes-ccm", "tkip"]
 unset = true
 [[menus.arguments]]
-name = "group-key-update"
+name = "security.group-key-update"
 type = "time"
 [[menus.arguments]]
-name = "passphrase"
+name = "security.passphrase"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "eap-methods"
+name = "security.eap-methods"
 type = "multi { array-id, method: enum (eap-tls | passthrough) { eap-tls:13, passthrough:0xffffffff } }"
 enum_values = ["eap-tls", "passthrough"]
 unset = true
 [[menus.arguments]]
-name = "eap-radius-accounting"
+name = "security.eap-radius-accounting"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "tls-mode"
+name = "security.tls-mode"
 type = "enum (verify-certificate | dont-verify-certificate | no-certificates | verify-certificate-with-crl)"
 enum_values = ["verify-certificate", "dont-verify-certificate", "no-certificates", "verify-certificate-with-crl"]
 [[menus.arguments]]
-name = "tls-certificate"
+name = "security.tls-certificate"
 type = "enum (none) { none:0xffffffff }"
 enum_values = ["none"]
 [[menus.arguments]]
-name = "disable-pmkid"
+name = "security.disable-pmkid"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "mtu"
+name = "datapath.mtu"
 type = "num"
 [[menus.arguments]]
-name = "l2mtu"
+name = "datapath.l2mtu"
 type = "num"
 [[menus.arguments]]
-name = "arp"
+name = "datapath.arp"
 type = "enum (disabled | enabled | proxy-arp | reply-only | local-proxy-arp) { disabled:0, enabled:1, proxy-arp:2, reply-only:3, local-proxy-arp:4 }"
 enum_values = ["disabled", "enabled", "proxy-arp", "reply-only", "local-proxy-arp"]
 [[menus.arguments]]
-name = "client-to-client-forwarding"
+name = "datapath.client-to-client-forwarding"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "bridge"
+name = "datapath.bridge"
 type = "iface_enum"
 unset = true
 [[menus.arguments]]
-name = "bridge-cost"
+name = "datapath.bridge-cost"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "bridge-horizon"
+name = "datapath.bridge-horizon"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "openflow-switch"
+name = "datapath.openflow-switch"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "local-forwarding"
+name = "datapath.local-forwarding"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "vlan-mode"
+name = "datapath.vlan-mode"
 type = "enum (no-tag | use-tag | use-service-tag)"
 enum_values = ["no-tag", "use-tag", "use-service-tag"]
 unset = true
 [[menus.arguments]]
-name = "vlan-id"
+name = "datapath.vlan-id"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "interface-list"
+name = "datapath.interface-list"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "frequency"
+name = "channel.frequency"
 type = "multi { array-id, frequency: num }"
 unset = true
 [[menus.arguments]]
-name = "secondary-frequency"
+name = "channel.secondary-frequency"
 type = "multi { array-id, secondary-frequency: alt { secondary-frequency-disable: enum (disabled) , secondary-frequency-num: num } }"
 enum_values = ["disabled"]
 unset = true
 [[menus.arguments]]
-name = "control-channel-width"
+name = "channel.control-channel-width"
 type = "enum (5mhz | 10mhz | 20mhz | 40mhz-turbo) { 5mhz:5000, 10mhz:10000, 20mhz:20000, 40mhz-turbo:40000 }"
 enum_values = ["5mhz", "10mhz", "20mhz", "40mhz-turbo"]
 unset = true
 [[menus.arguments]]
-name = "band"
+name = "channel.band"
 type = "enum (2ghz-b | 2ghz-onlyg | 2ghz-b/g | 5ghz-a | 5ghz-onlyn | 5ghz-a/n | 2ghz-onlyn | 2ghz-b/g/n | 2ghz-g/n | 5ghz-a/n/ac | 5ghz-n/ac | 5ghz-onlyac)"
 enum_values = ["2ghz-b", "2ghz-onlyg", "2ghz-b/g", "5ghz-a", "5ghz-onlyn", "5ghz-a/n", "2ghz-onlyn", "2ghz-b/g/n", "2ghz-g/n", "5ghz-a/n/ac", "5ghz-n/ac", "5ghz-onlyac"]
 unset = true
 [[menus.arguments]]
-name = "extension-channel"
+name = "channel.extension-channel"
 type = "enum (disabled | Ce | eC | Ceee | eCee | eeCe | eeeC | XX | XXXX | Ceeeeeee | eCeeeeee | eeCeeeee | eeeCeeee | eeeeCeee | eeeeeCee | eeeeeeCe | ee...)"
 enum_values = ["disabled", "Ce", "eC", "Ceee", "eCee", "eeCe", "eeeC", "XX", "XXXX", "Ceeeeeee", "eCeeeeee", "eeCeeeee", "eeeCeeee", "eeeeCeee", "eeeeeCee", "eeeeeeCe", "eeeeeeeC", "XXXXXXXX"]
 unset = true
 [[menus.arguments]]
-name = "tx-power"
+name = "channel.tx-power"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "save-selected"
+name = "channel.save-selected"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "reselect-interval"
+name = "channel.reselect-interval"
 type = "super { reselect-interval-min: time [1 .. 60*60*24*300] , [reselect-interval-max] ..time [1 .. 60*60*24*300] }"
 unset = true
 [[menus.arguments]]
-name = "skip-dfs-channels"
+name = "channel.skip-dfs-channels"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "basic"
+name = "rates.basic"
 type = "ubit (1Mbps, 2Mbps, 5.5Mbps, 11Mbps, 6Mbps, 9Mbps, 12Mbps, 18Mbps, 24Mbps, 36Mbps, 48Mbps, 54Mbps)"
 unset = true
 [[menus.arguments]]
-name = "supported"
+name = "rates.supported"
 type = "ubit (1Mbps, 2Mbps, 5.5Mbps, 11Mbps, 6Mbps, 9Mbps, 12Mbps, 18Mbps, 24Mbps, 36Mbps, 48Mbps, 54Mbps)"
 unset = true
 [[menus.arguments]]
-name = "ht-basic-mcs"
+name = "rates.ht-basic-mcs"
 type = "ubit (mcs-0, mcs-1, mcs-2, mcs-3, mcs-4, mcs-5, mcs-6, mcs-7, mcs-8, mcs-9, mcs-10, mcs-11, mcs-12, mcs-13, mcs-14, mcs-15, mcs-16, mcs-17, mcs-18,..."
 unset = true
 [[menus.arguments]]
-name = "ht-supported-mcs"
+name = "rates.ht-supported-mcs"
 type = "ubit (mcs-0, mcs-1, mcs-2, mcs-3, mcs-4, mcs-5, mcs-6, mcs-7, mcs-8, mcs-9, mcs-10, mcs-11, mcs-12, mcs-13, mcs-14, mcs-15, mcs-16, mcs-17, mcs-18,..."
 unset = true
 [[menus.arguments]]
-name = "vht-basic-mcs"
+name = "rates.vht-basic-mcs"
 type = "multi { array-id, mcs-set: enum (none | mcs0-7 | mcs0-8 | mcs0-9) { none:0, mcs0-7:1, mcs0-8:2, mcs0-9:3 } }"
 enum_values = ["none", "mcs0-7", "mcs0-8", "mcs0-9"]
 unset = true
 [[menus.arguments]]
-name = "vht-supported-mcs"
+name = "rates.vht-supported-mcs"
 type = "multi { array-id, mcs-set: enum (none | mcs0-7 | mcs0-8 | mcs0-9) { none:0, mcs0-7:1, mcs0-8:2, mcs0-9:3 } }"
 enum_values = ["none", "mcs0-7", "mcs0-8", "mcs0-9"]
 unset = true
@@ -1101,123 +1101,123 @@ name = "rates"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "mode"
+name = "configuration.mode"
 type = "enum (ap)"
 enum_values = ["ap"]
 unset = true
 [[menus.arguments]]
-name = "ssid"
+name = "configuration.ssid"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "hide-ssid"
+name = "configuration.hide-ssid"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "max-sta-count"
+name = "configuration.max-sta-count"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "multicast-helper"
+name = "configuration.multicast-helper"
 type = "enum (default | disabled | full | dhcp) { default:0, disabled:1, full:2, dhcp:3 }"
 enum_values = ["default", "disabled", "full", "dhcp"]
 unset = true
 [[menus.arguments]]
-name = "tx-chains"
+name = "configuration.tx-chains"
 type = "ubit (0, 1, 2, 3)"
 unset = true
 [[menus.arguments]]
-name = "rx-chains"
+name = "configuration.rx-chains"
 type = "ubit (0, 1, 2, 3)"
 unset = true
 [[menus.arguments]]
-name = "guard-interval"
+name = "configuration.guard-interval"
 type = "enum (any | long) { any:0, long:1 }"
 enum_values = ["any", "long"]
 unset = true
 [[menus.arguments]]
-name = "country"
+name = "configuration.country"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "installation"
+name = "configuration.installation"
 type = "enum (any | indoor | outdoor)"
 enum_values = ["any", "indoor", "outdoor"]
 unset = true
 [[menus.arguments]]
-name = "load-balancing-group"
+name = "configuration.load-balancing-group"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "distance"
+name = "configuration.distance"
 type = "enum (indoors | dynamic) { indoors:0, dynamic:0xffffffff }"
 enum_values = ["indoors", "dynamic"]
 unset = true
 [[menus.arguments]]
-name = "hw-retries"
+name = "configuration.hw-retries"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "hw-protection-mode"
+name = "configuration.hw-protection-mode"
 type = "enum (none | rts-cts | cts-to-self) { none:0, rts-cts:1, cts-to-self:2 }"
 enum_values = ["none", "rts-cts", "cts-to-self"]
 unset = true
 [[menus.arguments]]
-name = "hw-protection-threshold"
+name = "configuration.hw-protection-threshold"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "frame-lifetime"
+name = "configuration.frame-lifetime"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "disconnect-timeout"
+name = "configuration.disconnect-timeout"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "keepalive-frames"
+name = "configuration.keepalive-frames"
 type = "enum (enabled | disabled)"
 enum_values = ["enabled", "disabled"]
 unset = true
 [[menus.arguments]]
-name = "authentication-types"
+name = "security.authentication-types"
 type = "ubit (wpa-psk, wpa2-psk, wpa-eap, wpa2-eap)"
 unset = true
 [[menus.arguments]]
-name = "encryption"
+name = "security.encryption"
 type = "ubit (aes-ccm, tkip)"
 unset = true
 [[menus.arguments]]
-name = "group-encryption"
+name = "security.group-encryption"
 type = "enum (aes-ccm | tkip)"
 enum_values = ["aes-ccm", "tkip"]
 unset = true
 [[menus.arguments]]
-name = "group-key-update"
+name = "security.group-key-update"
 type = "time"
 [[menus.arguments]]
-name = "passphrase"
+name = "security.passphrase"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "eap-methods"
+name = "security.eap-methods"
 type = "multi { array-id, method: enum (eap-tls | passthrough) { eap-tls:13, passthrough:0xffffffff } }"
 enum_values = ["eap-tls", "passthrough"]
 unset = true
 [[menus.arguments]]
-name = "eap-radius-accounting"
+name = "security.eap-radius-accounting"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "tls-mode"
+name = "security.tls-mode"
 type = "enum (verify-certificate | dont-verify-certificate | no-certificates | verify-certificate-with-crl)"
 enum_values = ["verify-certificate", "dont-verify-certificate", "no-certificates", "verify-certificate-with-crl"]
 [[menus.arguments]]
-name = "tls-certificate"
+name = "security.tls-certificate"
 type = "enum (none) { none:0xffffffff }"
 enum_values = ["none"]
 [[menus.arguments]]
-name = "disable-pmkid"
+name = "security.disable-pmkid"
 type = "bool"
 unset = true
 [[menus.arguments]]
@@ -1268,68 +1268,68 @@ name = "interface-list"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "frequency"
+name = "channel.frequency"
 type = "multi { array-id, frequency: num }"
 unset = true
 [[menus.arguments]]
-name = "secondary-frequency"
+name = "channel.secondary-frequency"
 type = "multi { array-id, secondary-frequency: alt { secondary-frequency-disable: enum (disabled) , secondary-frequency-num: num } }"
 enum_values = ["disabled"]
 unset = true
 [[menus.arguments]]
-name = "control-channel-width"
+name = "channel.control-channel-width"
 type = "enum (5mhz | 10mhz | 20mhz | 40mhz-turbo) { 5mhz:5000, 10mhz:10000, 20mhz:20000, 40mhz-turbo:40000 }"
 enum_values = ["5mhz", "10mhz", "20mhz", "40mhz-turbo"]
 unset = true
 [[menus.arguments]]
-name = "band"
+name = "channel.band"
 type = "enum (2ghz-b | 2ghz-onlyg | 2ghz-b/g | 5ghz-a | 5ghz-onlyn | 5ghz-a/n | 2ghz-onlyn | 2ghz-b/g/n | 2ghz-g/n | 5ghz-a/n/ac | 5ghz-n/ac | 5ghz-onlyac)"
 enum_values = ["2ghz-b", "2ghz-onlyg", "2ghz-b/g", "5ghz-a", "5ghz-onlyn", "5ghz-a/n", "2ghz-onlyn", "2ghz-b/g/n", "2ghz-g/n", "5ghz-a/n/ac", "5ghz-n/ac", "5ghz-onlyac"]
 unset = true
 [[menus.arguments]]
-name = "extension-channel"
+name = "channel.extension-channel"
 type = "enum (disabled | Ce | eC | Ceee | eCee | eeCe | eeeC | XX | XXXX | Ceeeeeee | eCeeeeee | eeCeeeee | eeeCeeee | eeeeCeee | eeeeeCee | eeeeeeCe | ee...)"
 enum_values = ["disabled", "Ce", "eC", "Ceee", "eCee", "eeCe", "eeeC", "XX", "XXXX", "Ceeeeeee", "eCeeeeee", "eeCeeeee", "eeeCeeee", "eeeeCeee", "eeeeeCee", "eeeeeeCe", "eeeeeeeC", "XXXXXXXX"]
 unset = true
 [[menus.arguments]]
-name = "tx-power"
+name = "channel.tx-power"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "save-selected"
+name = "channel.save-selected"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "reselect-interval"
+name = "channel.reselect-interval"
 type = "super { reselect-interval-min: time [1 .. 60*60*24*300] , [reselect-interval-max] ..time [1 .. 60*60*24*300] }"
 unset = true
 [[menus.arguments]]
-name = "skip-dfs-channels"
+name = "channel.skip-dfs-channels"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "basic"
+name = "rates.basic"
 type = "ubit (1Mbps, 2Mbps, 5.5Mbps, 11Mbps, 6Mbps, 9Mbps, 12Mbps, 18Mbps, 24Mbps, 36Mbps, 48Mbps, 54Mbps)"
 unset = true
 [[menus.arguments]]
-name = "supported"
+name = "rates.supported"
 type = "ubit (1Mbps, 2Mbps, 5.5Mbps, 11Mbps, 6Mbps, 9Mbps, 12Mbps, 18Mbps, 24Mbps, 36Mbps, 48Mbps, 54Mbps)"
 unset = true
 [[menus.arguments]]
-name = "ht-basic-mcs"
+name = "rates.ht-basic-mcs"
 type = "ubit (mcs-0, mcs-1, mcs-2, mcs-3, mcs-4, mcs-5, mcs-6, mcs-7, mcs-8, mcs-9, mcs-10, mcs-11, mcs-12, mcs-13, mcs-14, mcs-15, mcs-16, mcs-17, mcs-18,..."
 unset = true
 [[menus.arguments]]
-name = "ht-supported-mcs"
+name = "rates.ht-supported-mcs"
 type = "ubit (mcs-0, mcs-1, mcs-2, mcs-3, mcs-4, mcs-5, mcs-6, mcs-7, mcs-8, mcs-9, mcs-10, mcs-11, mcs-12, mcs-13, mcs-14, mcs-15, mcs-16, mcs-17, mcs-18,..."
 unset = true
 [[menus.arguments]]
-name = "vht-basic-mcs"
+name = "rates.vht-basic-mcs"
 type = "multi { array-id, mcs-set: enum (none | mcs0-7 | mcs0-8 | mcs0-9) { none:0, mcs0-7:1, mcs0-8:2, mcs0-9:3 } }"
 enum_values = ["none", "mcs0-7", "mcs0-8", "mcs0-9"]
 unset = true
 [[menus.arguments]]
-name = "vht-supported-mcs"
+name = "rates.vht-supported-mcs"
 type = "multi { array-id, mcs-set: enum (none | mcs0-7 | mcs0-8 | mcs0-9) { none:0, mcs0-7:1, mcs0-8:2, mcs0-9:3 } }"
 enum_values = ["none", "mcs0-7", "mcs0-8", "mcs0-9"]
 unset = true
@@ -2686,7 +2686,7 @@ unset = true
 name = "pairing-requirement"
 type = "enum (none | password | confirm)"
 enum_values = ["none", "password", "confirm"]
-description = "Defines what the remote device must do before this device accepts the pairing: - **none** - this device accepts pairing automatically, without additional checks - **password** - the remote device may approve pairing by proving that it knows the pairing password configured on this device - **confirm** - pairing must be approved locally by running the `pair` command on this device; approval from the remote side is not possible"
+description = "Defines what the remote device must do before this device accepts the pairing: - **none** - this device accepts pairing automatically, without additional checks - **password** - the remote device may approve pairing by giving the username and password of a RouterOS user on this device; CMR has no separate pairing password - **confirm** - pairing must be approved locally by running the `pair` command on this device; approval from the remote side is not possible"
 unset = true
 [[menus.arguments]]
 name = "packages-directory"
@@ -2707,7 +2707,7 @@ unset = true
 [[menus.arguments]]
 name = "upgrade-check-interval"
 type = "time"
-description = "How often the CMR server checks the MikroTik update servers for available versions. The minimum value is 1 minute."
+description = "How often the CMR server checks the MikroTik update servers for available versions. The minimum value is 1 minute. Default: `10h`."
 unset = true
 [[menus.arguments]]
 name = "track-topology"
@@ -2722,12 +2722,12 @@ unset = true
 [[menus.arguments]]
 name = "controller-addresses"
 type = "multi { array-id, address: address (flags=46D) }"
-description = "CMR server IP addresses that are sent to the devices when the controller address cannot be discovered automatically (MNDP, DHCP)."
+description = "CMR server IP addresses that are sent to the devices when the controller address cannot be discovered automatically (MNDP, or DNS: the client resolves `_cmr._tcp.lan` and `_cmr._tcp.` followed by the domain name from DHCP)."
 unset = true
 [[menus.arguments]]
 name = "apptraffic-devices"
 type = "object"
-description = "Select devices using labels for which to collect app traffic data. Supports + and - signs as AND and AND NOT operators, respectively; if no sign is provided, the OR operator is used."
+description = "Select devices using labels for which to collect app traffic data. Supports + and - signs as AND and AND NOT operators, respectively; if no sign is provided, the OR operator is used. Default: `gateway`; `all` selects every device."
 unset = true
 [[menus.arguments]]
 name = "auto-labels"
@@ -2760,7 +2760,7 @@ unset = true
 [[menus.arguments]]
 name = "connected"
 type = "bool"
-description = "Alert when the device connects or disconnects.  Default: no."
+description = "State condition that matches whether the device is connected (`yes`) or disconnected (`no`).  Default: no."
 unset = true
 [[menus.arguments]]
 name = "cpu-above"
@@ -2849,17 +2849,17 @@ unset = true
 [[menus.arguments]]
 name = "rebooted"
 type = "bool"
-description = "Alert when the device reboots.  Default: no."
+description = "Event condition that fires when the device unexpectedly reboots.  Default: no."
 unset = true
 [[menus.arguments]]
 name = "log-topics"
 type = "multi { array-id, array-id, topic: super { ! , topic: enum } }"
-description = "Log topics to follow; prefix a topic with `!` to exclude it."
+description = "Log topics to follow; prefix a topic with `!` to exclude it. Together with `log-regex`, defines a log-message event condition. CMR automatically instructs the device to forward matching log messages."
 unset = true
 [[menus.arguments]]
 name = "log-regex"
 type = "string"
-description = "Alert on log lines the device sends to the controller whose message matches the given regular expression."
+description = "Match log messages against the given regular expression. Each message matching the configured topics and regular expression fires the actions without creating a persistent active alert."
 unset = true
 [[menus.arguments]]
 name = "action.log"
@@ -2911,7 +2911,7 @@ unset = true
 name = "reset-on-disconnect"
 type = "enum (yes | no) { yes:0, no:-1 }"
 enum_values = ["yes", "no"]
-description = "Clear (reset) the alert state when the device disconnects, so a reconnecting device fires the rule again: `yes` or `no`. Default: `no` (the fired state is kept across a disconnect)."
+description = "Clear (reset) a state alert when the device disconnects, so a reconnecting device fires the rule again if it still matches: `yes` or `no`. Default: `no` (the state is kept across a disconnect). Event alerts have no persistent state to reset."
 unset = true
 [[menus.arguments]]
 name = "severity"
@@ -2947,7 +2947,7 @@ description = "Number of devices the alert rule matches (the devices selected by
 [[menus.read_only]]
 name = "devices-on"
 type = "num"
-description = "Number of devices the alert is currently fired on."
+description = "Number of devices with an active state alert. Event occurrences do not add to this count."
 [[menus.read_only]]
 name = "fired"
 type = "num"
@@ -2987,7 +2987,7 @@ description = "A newer update is available."
 [[menus.arguments]]
 name = "on-only"
 type = "bool"
-description = "Show only the devices the alert rule is currently active on."
+description = "Show only the devices on which the alert rule is active."
 
 [[menus]]
 path = "/cmr/alert/test"
@@ -3015,12 +3015,12 @@ unset = true
 name = "pairing-requirement"
 type = "enum (none | password)"
 enum_values = ["none", "password"]
-description = "Defines what the remote device must do before this device accepts the pairing: - **none** - this device accepts pairing automatically, without additional checks - **password** - the remote device may approve pairing by proving that it knows the pairing password configured on this device"
+description = "Defines what the remote device must do before this device accepts the pairing: - **none** - this device accepts pairing automatically, without additional checks - **password** (default) - the remote device may approve pairing by giving the username and password of a RouterOS user on this device; CMR has no separate pairing password"
 unset = true
 [[menus.arguments]]
 name = "controller-addresses"
 type = "multi { array-id, address: address (flags=46D) }"
-description = "Specifies the controller IP addresses to use. This setting is optional when the client can discover the controller automatically through DHCP or neighbor discovery, but must be configured when the controller address cannot be determined automatically."
+description = "Specifies the controller IP addresses to use. This setting is optional when the client can discover the controller automatically through neighbor discovery or DNS (`_cmr._tcp.lan`, or `_cmr._tcp.` followed by the domain name from DHCP), but must be configured when the controller address cannot be determined automatically."
 unset = true
 [[menus.read_only]]
 name = "status"
@@ -3351,13 +3351,13 @@ unset = true
 [[menus.arguments]]
 name = "channel"
 type = "alt"
-description = "Upgrade channel (`long-term`, `stable`, `testing`, or `development`) or a pinned version, for example `channel=7.24.4`."
+description = "Upgrade channel (`long-term`, `stable`, `testing`, or `development`) or a pinned version, for example `channel=7.24.4`. When not set, each device upgrades on its own upgrade channel, the `channel` value shown in `/cmr/device`."
 unset = true
 [[menus.arguments]]
 name = "schedule-time"
 type = "super { time: date , [day] [ @enum (sun | mon | tue | wed | thu | fri | sat) { sun:1, mon:2, tue:3, wed:4, thu:5, fri:6, sat:7 }] }"
 enum_values = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
-description = "When the upgrade starts: a time with an optional weekday given after `@`, for example `14:00:00` or `00:00:00@sat`."
+description = "When the upgrade starts: a time with an optional weekday given after `@`, for example `14:00:00` or `00:00:00@sat`. The job waits in the `scheduled` state until the next occurrence of that time."
 unset = true
 [[menus.arguments]]
 name = "strategy"
@@ -3369,7 +3369,7 @@ unset = true
 name = "fail-policy"
 type = "enum (continue | stop | continue-order)"
 enum_values = ["continue", "stop", "continue-order"]
-description = "Behaviour if a device fails: `continue` skips the failed device and continues with the rest; `stop` stops the whole upgrade on the first failure and does not continue with the remaining devices or with the next label group (with `strategy=parallel` it requires `order`, and `parallel` combined with `stop` without `order` is rejected); `continue-order` skips the failed device and continues with the next label group, processing the labels one group after another in the order given by `order`. With `sequential` the rest of the failed device's group is skipped; with `parallel` only the failed device is abandoned and devices already in progress in the group finish. Default: `continue`."
+description = "Behaviour if a device fails: `continue` skips the failed device and continues with the rest; `stop` stops the whole upgrade on the first failure and does not continue with the remaining devices or with the next label group; `continue-order` skips the failed device and continues with the next label group, processing the labels one group after another in the order given by `order`. With `sequential` the rest of the failed device's group is skipped; with `parallel` only the failed device is abandoned and devices already in progress in the group finish. Default: `stop`."
 unset = true
 [[menus.arguments]]
 name = "packages"
@@ -3502,7 +3502,7 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "links"
 type = "multi { array-id, array-id, link: super { port1: object , [port2] --object } }"
-description = "Detailed information about the link state, such as PoE status, interface names, and traffic information. Example: `ether1(,tx=85.9KiB,rx=10.8KiB)--ether23(poe=powered-on,tx=10.9KiB,rx=86.8KiB)`"
+description = "Detailed information about the link state, such as PoE status, interface names, and traffic information. A `*` before a port name marks a direct, physical link. Example: `ether1(,tx=85.9KiB,rx=10.8KiB)--ether23(poe=powered-on,tx=10.9KiB,rx=86.8KiB)`"
 
 [[menus]]
 path = "/cmr/layout/node"
@@ -3616,7 +3616,7 @@ unset = true
 [[menus.arguments]]
 name = "order"
 type = "object"
-description = "Execution order (by labels). Required when `fail-policy=continue-order`, and required when `fail-policy=stop` is combined with `strategy=parallel`."
+description = "Execution order (by labels). Required when `fail-policy=continue-order`."
 [[menus.arguments]]
 name = "channel"
 type = "alt"
@@ -3636,7 +3636,7 @@ unset = true
 [[menus.arguments]]
 name = "fail-policy"
 type = "enum ()"
-description = "Behaviour if a device fails: `continue` skips the failed device and continues with the rest; `stop` stops the whole upgrade on the first failure and does not continue with the remaining devices or with the next label group (with `strategy=parallel` it requires `order`, and `parallel` combined with `stop` without `order` is rejected); `continue-order` skips the failed device and continues with the next label group, processing the labels one group after another in the order given by `order`. With `sequential` the rest of the failed device's group is skipped; with `parallel` only the failed device is abandoned and devices already in progress in the group finish. Default: `continue`."
+description = "Behaviour if a device fails: `continue` skips the failed device and continues with the rest; `stop` stops the whole upgrade on the first failure and does not continue with the remaining devices or with the next label group; `continue-order` skips the failed device and continues with the next label group, processing the labels one group after another in the order given by `order`. With `sequential` the rest of the failed device's group is skipped; with `parallel` only the failed device is abandoned and devices already in progress in the group finish. Default: `stop`."
 unset = true
 [[menus.arguments]]
 name = "comment"
@@ -3685,7 +3685,7 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "labels"
 type = "object"
-description = "Devices the job covers, selected by labels."
+description = "Devices the job covers, selected by labels. Empty for a job that `/cmr/device/upgrade` started for devices selected by number."
 [[menus.read_only]]
 name = "order"
 type = "object"
@@ -3693,7 +3693,7 @@ description = "Execution order of the label groups, used with `continue-order`."
 [[menus.read_only]]
 name = "channel"
 type = "alt"
-description = "Upgrade channel or the pinned version the job installs."
+description = "Upgrade channel or the pinned version the job installs. Empty when each device upgrades on its own upgrade channel."
 [[menus.read_only]]
 name = "strategy"
 type = "enum ()"
@@ -3869,8 +3869,8 @@ description = "Network SSID."
 unset = true
 [[menus.arguments]]
 name = "mode"
-type = "enum (ap | station | station-bridge | station-pseudobridge | meshpoint | invalid)"
-enum_values = ["ap", "station", "station-bridge", "station-pseudobridge", "meshpoint", "invalid"]
+type = "enum (ap | station | station-bridge | station-pseudobridge)"
+enum_values = ["ap", "station", "station-bridge", "station-pseudobridge"]
 description = "Network operating mode."
 unset = true
 [[menus.arguments]]
@@ -4081,7 +4081,7 @@ description = "Connect priority."
 unset = true
 [[menus.arguments]]
 name = "security.authentication-types"
-type = "ubit (wpa-psk, wpa2-psk, wpa2-psk-sha2, wpa-eap, wpa2-eap, wpa3-psk, wpa3-psk-gd, owe, wpa3-eap, wpa3-eap-192, dpp)"
+type = "ubit (wpa-psk, wpa2-psk, wpa2-psk-sha2, wpa-eap, wpa2-eap, wpa3-psk, wpa3-psk-gd, owe, wpa3-eap, wpa3-eap-192)"
 description = "Supported authentication types."
 unset = true
 [[menus.arguments]]
@@ -4151,7 +4151,7 @@ description = "Installation type: `outdoor` or `indoor`."
 unset = true
 [[menus.arguments]]
 name = "security.authentication-types"
-type = "ubit (wpa-psk, wpa2-psk, wpa2-psk-sha2, wpa-eap, wpa2-eap, wpa3-psk, wpa3-psk-gd, owe, wpa3-eap, wpa3-eap-192, dpp)"
+type = "ubit (wpa-psk, wpa2-psk, wpa2-psk-sha2, wpa-eap, wpa2-eap, wpa3-psk, wpa3-psk-gd, owe, wpa3-eap, wpa3-eap-192)"
 description = "Supported authentication types."
 unset = true
 [[menus.arguments]]
@@ -7746,33 +7746,43 @@ type = "Directory"
 [[menus.flags]]
 name = "D"
 type = "dynamic"
+description = "dynamic (created automatically)"
 [[menus.flags]]
 name = "X"
 type = "disabled"
+description = "disabled"
 [[menus.flags]]
 name = "I"
 type = "inactive"
+description = "inactive"
 [[menus.flags]]
 name = "R"
 type = "running"
+description = "running"
 [[menus.flags]]
 name = "S"
 type = "slave"
+description = "slave (member of a bridge or bond)"
 [[menus.flags]]
 name = "P"
 type = "passthrough"
+description = "passthrough"
 [[menus.flags]]
 name = "w"
 type = "power-limited"
+description = "power-limited (on PoE-out boards the power budget is in effect)"
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Name of the interface"
 [[menus.arguments]]
 name = "mtu"
 type = "num"
+description = "Configured MTU"
 [[menus.arguments]]
 name = "l2mtu"
 type = "num"
+description = "Configured layer-2 MTU"
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -7792,72 +7802,95 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "default-name"
 type = "string"
+description = "The factory-set name of the interface"
 [[menus.read_only]]
 name = "type"
 type = "string"
+description = "Interface type"
 [[menus.read_only]]
 name = "actual-mtu"
 type = "num"
+description = "MTU in effect (hardware/driver negotiated)"
 [[menus.read_only]]
 name = "max-l2mtu"
 type = "num"
+description = "Maximum layer-2 MTU the hardware/driver supports"
 [[menus.read_only]]
 name = "vrf"
 type = "enum"
+description = "VRF the interface is bound to (blank for the main routing table)"
 [[menus.read_only]]
 name = "mac-address"
 type = "macAddr"
+description = "MAC address of the interface"
 [[menus.read_only]]
 name = "last-link-down-time"
 type = "date"
+description = "Time the link last went down"
 [[menus.read_only]]
 name = "last-link-up-time"
 type = "date"
+description = "Time the link last came up"
 [[menus.read_only]]
 name = "link-downs"
 type = "num"
+description = "How many times the link has gone down"
 [[menus.read_only]]
 name = "rx-byte"
 type = "num"
+description = "Bytes received"
 [[menus.read_only]]
 name = "tx-byte"
 type = "num"
+description = "Bytes transmitted"
 [[menus.read_only]]
 name = "rx-packet"
 type = "num"
+description = "Packets received"
 [[menus.read_only]]
 name = "tx-packet"
 type = "num"
+description = "Packets transmitted"
 [[menus.read_only]]
 name = "rx-drop"
 type = "num"
+description = "Packets received and dropped"
 [[menus.read_only]]
 name = "tx-drop"
 type = "num"
+description = "Packets dropped during transmission"
 [[menus.read_only]]
 name = "tx-queue-drop"
 type = "num"
+description = "Packets dropped by the interface queue (congestion signal)"
 [[menus.read_only]]
 name = "rx-error"
 type = "num"
+description = "Corrupted receive frames"
 [[menus.read_only]]
 name = "tx-error"
 type = "num"
+description = "Transmission errors"
 [[menus.read_only]]
 name = "fp-rx-byte"
 type = "num"
+description = "Bytes received over Fast Path"
 [[menus.read_only]]
 name = "fp-tx-byte"
 type = "num"
+description = "Bytes transmitted over Fast Path"
 [[menus.read_only]]
 name = "fp-rx-packet"
 type = "num"
+description = "Packets received over Fast Path"
 [[menus.read_only]]
 name = "fp-tx-packet"
 type = "num"
+description = "Packets transmitted over Fast Path"
 [[menus.read_only]]
 name = "fp-rps-drop"
 type = "num"
+description = "Packets dropped in the receive-packet-steering path"
 
 [[menus]]
 path = "/interface/6to4"
@@ -8278,6 +8311,9 @@ type = "bool"
 [[menus.arguments]]
 name = "dhcp-snooping"
 type = "bool"
+[[menus.arguments]]
+name = "dhcp-snooping-vlan-ids"
+type = "multi { vlan-id-range: range [1 .. 4094] }"
 [[menus.arguments]]
 name = "dhcp-agent-circuit-id"
 type = "string"
@@ -10419,11 +10455,6 @@ type = "enum (10M-baseT-half | 10M-baseT-full | 100M-baseT-half | 100M-baseT-ful
 enum_values = ["10M-baseT-half", "10M-baseT-full", "100M-baseT-half", "100M-baseT-full", "1G-baseT-half", "1G-baseT-full", "10G-baseT", "2.5G-baseT", "2.5G-baseX", "5G-baseT", "40G-baseCR4", "40G-baseSR4-LR4", "25G-baseCR", "25G-baseSR-LR", "50G-baseCR2", "100G-baseSR4-LR4", "100G-baseCR4", "50G-baseSR2-LR2", "1G-baseX", "10G-baseCR", "10G-baseSR-LR", "50G-baseSR-LR", "50G-baseCR", "100G-baseSR2-LR2", "100G-baseCR2", "200G-baseSR4-LR4", "200G-baseCR4", "400G-baseSR8-LR8", "400G-baseCR8", "100M-baseFX-half", "100M-baseFX-full"]
 description = "Sets interface data transmission speed which takes effect only when auto-negotiation is disabled. Setting higher speeds than the actual interface supported speed can result in undefined behavior. Single option is allowed."
 [[menus.arguments]]
-name = "bandwidth"
-type = "composite { rx: alt { rx: enum (unlimited | 64k | 128k | 256k | 512k | 1M | 2M | 4M | 5M | 8M | 10M) { unlimited:0, 64k:64, 128k:128, 256k:256, 512..."
-enum_values = ["unlimited", "64k", "128k", "256k", "512k", "1M", "2M", "4M", "5M", "8M", "10M"]
-description = "Sets max rx/tx bandwidth in kbps that will be handled by an interface. TX limit is supported on all Atheros switch-chip ports. RX limit is supported only on Atheros8327/QCA8337 switch-chip ports."
-[[menus.arguments]]
 name = "poe-out"
 type = "enum (off | auto-on | forced-on | forced-on-a | forced-on-bt) { off:0, auto-on:1, forced-on:2, forced-on-a:3, forced-on-bt:4 }"
 enum_values = ["off", "auto-on", "forced-on", "forced-on-a", "forced-on-bt"]
@@ -10476,6 +10507,18 @@ name = "passthrough-interface"
 type = "iface_enum { none:0 }"
 description = "Sets an interface in passthrough mode on the CCR2004-1G-2XS-PCIe device. By default, the PCIe interface will show up as four virtual Ethernet interfaces. Two interfaces in passthrough mode to the 25G SFP28 cages. The remaining two virtual Ethernet-PCIe interfaces are bridged with the Gigabit Ethernet port for management access."
 [[menus.arguments]]
+name = "onu-model"
+type = "string"
+[[menus.arguments]]
+name = "onu-vendor-id"
+type = "string"
+[[menus.arguments]]
+name = "onu-serial-number"
+type = "string"
+[[menus.arguments]]
+name = "onu-registration-id"
+type = "string"
+[[menus.arguments]]
 name = "arp"
 type = "enum (disabled | enabled | proxy-arp | reply-only | local-proxy-arp) { disabled:0, enabled:1, proxy-arp:2, reply-only:3, local-proxy-arp:4 }"
 enum_values = ["disabled", "enabled", "proxy-arp", "reply-only", "local-proxy-arp"]
@@ -10498,6 +10541,10 @@ type = "time"
 [[menus.arguments]]
 name = "loop-protect-disable-time"
 type = "time"
+[[menus.arguments]]
+name = "bandwidth"
+type = "integer/integer"
+description = "Sets max rx/tx bandwidth in kbps that will be handled by an interface. TX limit is supported on all Atheros switch-chip ports. RX limit is supported only on Atheros8327/QCA8337 switch-chip ports."
 [[menus.arguments]]
 name = "cable-setting"
 type = "default | short | standard"
@@ -11256,15 +11303,24 @@ type = "num"
 [[menus]]
 path = "/interface/ethernet/pon"
 type = "Directory"
+[[menus.flags]]
+name = "X"
+type = "disabled"
 [[menus.arguments]]
 name = "name"
 type = "string"
 [[menus.arguments]]
-name = "status"
+name = "onu-model"
 type = "string"
 [[menus.arguments]]
-name = "olt-max-mtu"
-type = "num"
+name = "onu-vendor-id"
+type = "string"
+[[menus.arguments]]
+name = "onu-serial-number"
+type = "string"
+[[menus.arguments]]
+name = "onu-registration-id"
+type = "string"
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -11281,6 +11337,19 @@ description = "Place a new item before the given item number (universal add prop
 name = "copy-from"
 type = "string"
 description = "Copy property values from an existing item (universal add property from Common commands)."
+
+[[menus]]
+path = "/interface/ethernet/pon/monitor"
+type = "Command"
+[[menus.read_only]]
+name = "name"
+type = "string"
+[[menus.read_only]]
+name = "status"
+type = "string"
+[[menus.read_only]]
+name = "olt-max-mtu"
+type = "num"
 
 [[menus]]
 path = "/interface/ethernet/reset-counters"
@@ -14934,6 +15003,10 @@ path = "/interface/ethernet/switch/rule/reset-counters"
 type = "Command"
 
 [[menus]]
+path = "/interface/ethernet/switch/rule/reset-counters-all"
+type = "Command"
+
+[[menus]]
 path = "/interface/ethernet/switch/shaper"
 type = "Directory"
 [[menus.flags]]
@@ -16475,13 +16548,21 @@ name = "mtu"
 type = "num"
 description = "Maximum Transmission Unit. Max packet size that the LTE interface will be able to send without packet fragmentation. auto - use network advertised MTU for modems that support it (MBIM modems). Other modems will fall back to the default value (1500)."
 [[menus.arguments]]
+name = "master"
+type = "iface_enum"
+required = true
+[[menus.arguments]]
 name = "pin"
 type = "string"
 description = "SIM Card's PIN code."
 [[menus.arguments]]
 name = "apn-profiles"
-type = "multi { array-id, apn: enum }"
-description = "Which APN profile to use for this interface"
+type = "enum"
+[[menus.arguments]]
+name = "apn-profile"
+type = "enum"
+description = "Which APN profile to use for this interface (old deprecated value \"apn-profiles\" still accepted for single APN configuration, for multi-apn see the Multi APN section)"
+required = true
 [[menus.arguments]]
 name = "modem-init"
 type = "string"
@@ -16534,9 +16615,6 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "default-name"
 type = "string"
-[[menus.read_only]]
-name = "master"
-type = "iface_enum"
 [[menus.read_only]]
 name = "advertised-mtu"
 type = "num"
@@ -17593,48 +17671,63 @@ type = "Command"
 [[menus.arguments]]
 name = "interface"
 type = "multi { array-id, interface: iface_enum { aggregate:0 } }"
+description = "Interfaces to watch (or `aggregate` for the combined view)"
 [[menus.read_only]]
 name = "name"
 type = "string"
+description = "Interface name"
 [[menus.read_only]]
 name = "rx-packets-per-second"
 type = "num"
+description = "Received packets per second"
 [[menus.read_only]]
 name = "rx-bits-per-second"
 type = "num"
+description = "Received bits per second"
 [[menus.read_only]]
 name = "fp-rx-packets-per-second"
 type = "num"
+description = "Fast Path received packets per second"
 [[menus.read_only]]
 name = "fp-rx-bits-per-second"
 type = "num"
+description = "Fast Path received bits per second"
 [[menus.read_only]]
 name = "rx-drops-per-second"
 type = "num"
+description = "Receive drops per second"
 [[menus.read_only]]
 name = "rx-errors-per-second"
 type = "num"
+description = "Receive errors per second"
 [[menus.read_only]]
 name = "tx-packets-per-second"
 type = "num"
+description = "Transmitted packets per second"
 [[menus.read_only]]
 name = "tx-bits-per-second"
 type = "num"
+description = "Transmitted bits per second"
 [[menus.read_only]]
 name = "fp-tx-packets-per-second"
 type = "num"
+description = "Fast Path transmitted packets per second"
 [[menus.read_only]]
 name = "fp-tx-bits-per-second"
 type = "num"
+description = "Fast Path transmitted bits per second"
 [[menus.read_only]]
 name = "tx-drops-per-second"
 type = "num"
+description = "Transmit drops per second"
 [[menus.read_only]]
 name = "tx-queue-drops-per-second"
 type = "num"
+description = "Interface queue drops per second"
 [[menus.read_only]]
 name = "tx-errors-per-second"
 type = "num"
+description = "Transmit errors per second"
 
 [[menus]]
 path = "/interface/ovpn-client"
@@ -19137,10 +19230,6 @@ name = "rx-flow-control"
 type = "enum (off | on | auto) { off:0, on:1, auto:2 }"
 enum_values = ["off", "on", "auto"]
 [[menus.arguments]]
-name = "bandwidth"
-type = "composite { rx: alt { rx: enum (unlimited | 64k | 128k | 256k | 512k | 1M | 2M | 4M | 5M | 8M | 10M) { unlimited:0, 64k:64, 128k:128, 256k:256, 512..."
-enum_values = ["unlimited", "64k", "128k", "256k", "512k", "1M", "2M", "4M", "5M", "8M", "10M"]
-[[menus.arguments]]
 name = "arp"
 type = "enum (disabled | enabled | proxy-arp | reply-only | local-proxy-arp) { disabled:0, enabled:1, proxy-arp:2, reply-only:3, local-proxy-arp:4 }"
 enum_values = ["disabled", "enabled", "proxy-arp", "reply-only", "local-proxy-arp"]
@@ -20074,9 +20163,8 @@ name = "mtu"
 type = "num"
 description = "Layer3 Maximum transmission unit"
 [[menus.arguments]]
-name = "force-mac-address"
+name = "forced-mac-address"
 type = "macAddr"
-description = "Static MAC address for the VLAN interface. Default: unset (`!force-mac-address`) — the interface uses the MAC address of its parent interface and follows any later changes to it. When set, the configured unicast address is used instead and no longer tracks the parent MAC; unsetting the property reverts to the parent MAC address. All-zero, multicast and broadcast addresses are not accepted"
 [[menus.arguments]]
 name = "vlan-id"
 type = "num"
@@ -20326,6 +20414,9 @@ description = "The VRRP interface is a group member. Its state machine follows t
 name = "R"
 type = "running"
 description = "running."
+[[menus.flags]]
+name = "H"
+type = "hw-offloaded"
 [[menus.flags]]
 name = "M"
 type = "master"
@@ -21122,519 +21213,524 @@ name = "test.dfs.duty-cycle"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "mode"
+name = "configuration.mode"
 type = "enum (ap)"
 enum_values = ["ap"]
 unset = true
 [[menus.arguments]]
-name = "ssid"
+name = "configuration.ssid"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "hide-ssid"
+name = "configuration.hide-ssid"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "max-sta-count"
+name = "configuration.max-sta-count"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "multicast-helper"
+name = "configuration.multicast-helper"
 type = "enum (default | disabled | full | dhcp) { default:0, disabled:1, full:2, dhcp:3 }"
 enum_values = ["default", "disabled", "full", "dhcp"]
 unset = true
 [[menus.arguments]]
-name = "tx-chains"
+name = "configuration.tx-chains"
 type = "ubit (0, 1, 2, 3)"
 unset = true
 [[menus.arguments]]
-name = "rx-chains"
+name = "configuration.rx-chains"
 type = "ubit (0, 1, 2, 3)"
 unset = true
 [[menus.arguments]]
-name = "guard-interval"
+name = "configuration.guard-interval"
 type = "enum (any | long) { any:0, long:1 }"
 enum_values = ["any", "long"]
 unset = true
 [[menus.arguments]]
-name = "country"
+name = "configuration.country"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "installation"
+name = "configuration.installation"
 type = "enum (any | indoor | outdoor)"
 enum_values = ["any", "indoor", "outdoor"]
 unset = true
 [[menus.arguments]]
-name = "load-balancing-group"
+name = "configuration.load-balancing-group"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "distance"
+name = "configuration.distance"
 type = "enum (indoors | dynamic) { indoors:0, dynamic:0xffffffff }"
 enum_values = ["indoors", "dynamic"]
 unset = true
 [[menus.arguments]]
-name = "hw-retries"
+name = "configuration.hw-retries"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "hw-protection-mode"
+name = "configuration.hw-protection-mode"
 type = "enum (none | rts-cts | cts-to-self) { none:0, rts-cts:1, cts-to-self:2 }"
 enum_values = ["none", "rts-cts", "cts-to-self"]
 unset = true
 [[menus.arguments]]
-name = "hw-protection-threshold"
+name = "configuration.hw-protection-threshold"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "frame-lifetime"
+name = "configuration.frame-lifetime"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "disconnect-timeout"
+name = "configuration.disconnect-timeout"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "keepalive-frames"
+name = "configuration.keepalive-frames"
 type = "enum (enabled | disabled)"
 enum_values = ["enabled", "disabled"]
 unset = true
 [[menus.arguments]]
-name = "beacon-interval"
+name = "configuration.beacon-interval"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "dtim-period"
+name = "configuration.dtim-period"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "multicast-enhance"
+name = "configuration.multicast-enhance"
 type = "enum (disabled | enabled) { disabled:0, enabled:1 }"
 enum_values = ["disabled", "enabled"]
 unset = true
 [[menus.arguments]]
-name = "qos-classifier"
+name = "configuration.qos-classifier"
 type = "enum (priority | dscp-high-3-bits) { priority:0, dscp-high-3-bits:1 }"
 enum_values = ["priority", "dscp-high-3-bits"]
 unset = true
 [[menus.arguments]]
-name = "station-roaming"
+name = "configuration.station-roaming"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "max-clients"
+name = "configuration.max-clients"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "chains"
+name = "configuration.chains"
 type = "ubit (0, 1, 2, 3, 4, 5, 6, 7)"
 unset = true
 [[menus.arguments]]
-name = "tx-power"
+name = "configuration.tx-power"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "antenna-gain"
+name = "configuration.antenna-gain"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "encryption"
+name = "security.encryption"
 type = "ubit (tkip, ccmp, gcmp, ccmp-256, gcmp-256)"
 unset = true
 [[menus.arguments]]
-name = "group-encryption"
+name = "security.group-encryption"
 type = "enum (tkip | ccmp | gcmp | ccmp-256 | gcmp-256)"
 enum_values = ["tkip", "ccmp", "gcmp", "ccmp-256", "gcmp-256"]
 unset = true
 [[menus.arguments]]
-name = "group-key-update"
+name = "security.group-key-update"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "passphrase"
+name = "security.passphrase"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "multi-passphrase-group"
+name = "security.multi-passphrase-group"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "disable-pmkid"
+name = "security.disable-pmkid"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "management-protection"
+name = "security.management-protection"
 type = "enum (disabled | allowed | required)"
 enum_values = ["disabled", "allowed", "required"]
 unset = true
 [[menus.arguments]]
-name = "beacon-protection"
+name = "security.beacon-protection"
 type = "enum (disabled | enabled)"
 enum_values = ["disabled", "enabled"]
 unset = true
 [[menus.arguments]]
-name = "management-encryption"
+name = "security.management-encryption"
 type = "enum (cmac | gmac | cmac-256 | gmac-256)"
 enum_values = ["cmac", "gmac", "cmac-256", "gmac-256"]
 unset = true
 [[menus.arguments]]
-name = "wps"
+name = "security.wps"
 type = "enum (disable | push-button)"
 enum_values = ["disable", "push-button"]
 unset = true
 [[menus.arguments]]
-name = "dh-groups"
+name = "security.dh-groups"
 type = "ubit (19, 20, 21)"
 unset = true
 [[menus.arguments]]
-name = "sae-anti-clogging-threshold"
+name = "security.sae-anti-clogging-threshold"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "sae-max-failure-rate"
+name = "security.sae-max-failure-rate"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "sae-pwe"
+name = "security.sae-pwe"
 type = "enum (hunting-and-pecking | hash-to-element | both)"
 enum_values = ["hunting-and-pecking", "hash-to-element", "both"]
 unset = true
 [[menus.arguments]]
-name = "owe-transition-interface"
+name = "security.owe-transition-interface"
 type = "iface_enum { auto }"
 unset = true
 [[menus.arguments]]
-name = "eap-methods"
+name = "security.eap-methods"
 type = "multi { array-id, method: enum (tls | ttls | peap) { tls:13, ttls:21, peap:25 } }"
 enum_values = ["tls", "ttls", "peap"]
 unset = true
 [[menus.arguments]]
-name = "eap-certificate-mode"
+name = "security.eap-certificate-mode"
 type = "enum (verify-certificate | dont-verify-certificate | no-certificates | verify-certificate-with-crl)"
 enum_values = ["verify-certificate", "dont-verify-certificate", "no-certificates", "verify-certificate-with-crl"]
 unset = true
 [[menus.arguments]]
-name = "eap-tls-certificate"
+name = "security.eap-tls-certificate"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "eap-username"
+name = "security.eap-username"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "eap-anonymous-identity"
+name = "security.eap-anonymous-identity"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "eap-password"
+name = "security.eap-password"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "eap-accounting"
+name = "security.eap-accounting"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "ft"
+name = "security.ft"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "ft-mobility-domain"
+name = "security.ft-mobility-domain"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "ft-over-ds"
+name = "security.ft-over-ds"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "ft-reassociation-deadline"
+name = "security.ft-reassociation-deadline"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "ft-nas-identifier"
+name = "security.ft-nas-identifier"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "ft-r0-key-lifetime"
+name = "security.ft-r0-key-lifetime"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "ft-preserve-vlanid"
+name = "security.ft-preserve-vlanid"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "connect-group"
+name = "security.connect-group"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "connect-priority"
+name = "security.connect-priority"
 type = "super { connect-accept-priority: num , [connect-hold-priority] /num }"
 unset = true
 [[menus.arguments]]
-name = "authentication-types"
-type = "ubit (wpa-psk, wpa2-psk, wpa2-psk-sha2, wpa-eap, wpa2-eap, wpa3-psk, owe, wpa3-eap, wpa3-eap-192)"
+name = "security.authentication-types"
+type = "ubit (wpa-psk, wpa2-psk, wpa2-psk-sha2, wpa-eap, wpa2-eap, wpa3-psk, wpa3-psk-gd, owe, wpa3-eap, wpa3-eap-192)"
 unset = true
 [[menus.arguments]]
-name = "network-type"
+name = "interworking.network-type"
 type = "enum (private | private-with-guest | public-chargeable | public-free | personal-device | emergency-only | test | wildcard) { private:0, private-wi...)"
 enum_values = ["private", "private-with-guest", "public-chargeable", "public-free", "personal-device", "emergency-only", "test", "wildcard"]
 unset = true
 [[menus.arguments]]
-name = "internet"
+name = "interworking.internet"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "esr"
+name = "interworking.esr"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "uesa"
+name = "interworking.uesa"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "venue"
+name = "interworking.venue"
 type = "enum (unspecified | disabled) { unspecified:0, disabled:0xffffffff }"
 enum_values = ["unspecified", "disabled"]
 unset = true
 [[menus.arguments]]
-name = "hessid"
+name = "interworking.hessid"
 type = "macAddr"
 unset = true
 [[menus.arguments]]
-name = "hotspot20"
+name = "interworking.hotspot20"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "hotspot20-dgaf"
+name = "interworking.hotspot20-dgaf"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "roaming-ois"
+name = "interworking.roaming-ois"
 type = "multi { array-id, roaming-oi: string }"
 unset = true
 [[menus.arguments]]
-name = "venue-names"
+name = "interworking.venue-names"
 type = "object { venue-name: composite { venue-name-name: string , venue-name-lang: string } }"
 unset = true
 [[menus.arguments]]
-name = "ipv4-availability"
+name = "interworking.authentication-types"
+type = "object { authentication-type: composite { authentication-type-indicator: enum (terms-and-conditions | online-enrollment | https-redirection | dns-r..."
+enum_values = ["terms-and-conditions", "online-enrollment", "https-redirection", "dns-redirection"]
+unset = true
+[[menus.arguments]]
+name = "interworking.ipv4-availability"
 type = "enum (not-available | public | port-restricted | single-nated | double-nated | port-restricted-single-nated | port-restricted-double-nated | unkno...)"
 enum_values = ["not-available", "public", "port-restricted", "single-nated", "double-nated", "port-restricted-single-nated", "port-restricted-double-nated", "unknown"]
 unset = true
 [[menus.arguments]]
-name = "ipv6-availability"
+name = "interworking.ipv6-availability"
 type = "enum (not-available | available | unknown) { not-available:0, available:1, unknown:2 }"
 enum_values = ["not-available", "available", "unknown"]
 unset = true
 [[menus.arguments]]
-name = "realms"
+name = "interworking.realms"
 type = "object { realm: composite { realm-name: string , realm-auth: enum (not-specified | eap-sim | eap-tls | eap-aka) } }"
 enum_values = ["not-specified", "eap-sim", "eap-tls", "eap-aka"]
 unset = true
 [[menus.arguments]]
-name = "realms-raw"
+name = "interworking.realms-raw"
 type = "multi { array-id, realm-raw: string }"
 unset = true
 [[menus.arguments]]
-name = "3gpp-info"
+name = "interworking.3gpp-info"
 type = "object { 3gpp: composite { 3gpp-mcc: string , 3gpp-mnc: string } }"
 unset = true
 [[menus.arguments]]
-name = "3gpp-info-raw"
+name = "interworking.3gpp-info-raw"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "domain-names"
+name = "interworking.domain-names"
 type = "multi { array-id, domain-name: string }"
 unset = true
 [[menus.arguments]]
-name = "operator-names"
+name = "interworking.operator-names"
 type = "object { operator-name: composite { operator-name-name: string , operator-name-lang: string } }"
 unset = true
 [[menus.arguments]]
-name = "wan-status"
+name = "interworking.wan-status"
 type = "enum (reserved | up | down | test) { reserved:0, up:1, down:2, test:3 }"
 enum_values = ["reserved", "up", "down", "test"]
 unset = true
 [[menus.arguments]]
-name = "wan-symmetric"
+name = "interworking.wan-symmetric"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "wan-at-capacity"
+name = "interworking.wan-at-capacity"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "wan-downlink"
+name = "interworking.wan-downlink"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "wan-uplink"
+name = "interworking.wan-uplink"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "wan-downlink-load"
+name = "interworking.wan-downlink-load"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "wan-uplink-load"
+name = "interworking.wan-uplink-load"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "wan-measurement-duration"
+name = "interworking.wan-measurement-duration"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "connection-capabilities"
+name = "interworking.connection-capabilities"
 type = "object { connection-cap: composite { protocol: num , connection-cap2: composite { port: num , status: enum (closed | open | unknown) { closed:0, op..."
 enum_values = ["closed", "open", "unknown"]
 unset = true
 [[menus.arguments]]
-name = "operational-classes"
+name = "interworking.operational-classes"
 type = "multi { array-id, operational-class: num }"
 unset = true
 [[menus.arguments]]
-name = "bridge"
+name = "datapath.bridge"
 type = "iface_enum { none }"
 unset = true
 [[menus.arguments]]
-name = "bridge-cost"
+name = "datapath.bridge-cost"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "bridge-horizon"
+name = "datapath.bridge-horizon"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "openflow-switch"
+name = "datapath.openflow-switch"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "client-isolation"
+name = "datapath.client-isolation"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "traffic-processing"
+name = "datapath.traffic-processing"
 type = "enum (on-cap | on-capsman | on-capsman-secure)"
 enum_values = ["on-cap", "on-capsman", "on-capsman-secure"]
 unset = true
 [[menus.arguments]]
-name = "vlan-id"
+name = "datapath.vlan-id"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "interface-list"
+name = "datapath.interface-list"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "frequency"
+name = "channel.frequency"
 type = "object"
 unset = true
 [[menus.arguments]]
-name = "secondary-frequency"
+name = "channel.secondary-frequency"
 type = "multi { array-id, secondary-frequency: alt { secondary-frequency-disable: enum (disabled) , secondary-frequency-num: num } }"
 enum_values = ["disabled"]
 unset = true
 [[menus.arguments]]
-name = "band"
+name = "channel.band"
 type = "enum (60ghz-ad | 5ghz-a | 5ghz-n | 5ghz-ac | 5ghz-ax | 5ghz-be | 2ghz-g | 2ghz-n | 2ghz-ax | 2ghz-be | s1ghz-ah | 6ghz-ax | 6ghz-be)"
 enum_values = ["60ghz-ad", "5ghz-a", "5ghz-n", "5ghz-ac", "5ghz-ax", "5ghz-be", "2ghz-g", "2ghz-n", "2ghz-ax", "2ghz-be", "s1ghz-ah", "6ghz-ax", "6ghz-be"]
 unset = true
 [[menus.arguments]]
-name = "width"
+name = "channel.width"
 type = "enum (20mhz | 20/40mhz | 20/40mhz-Ce | 20/40mhz-eC | 20/40/80mhz | 20/40/80+80mhz | 20/40/80/160mhz | 20/40/80/160/320mhz | 1mhz | 1/2mhz | 1/2/4m...)"
 enum_values = ["20mhz", "20/40mhz", "20/40mhz-Ce", "20/40mhz-eC", "20/40/80mhz", "20/40/80+80mhz", "20/40/80/160mhz", "20/40/80/160/320mhz", "1mhz", "1/2mhz", "1/2/4mhz", "1/2/4/8mhz", "2160mhz"]
 unset = true
 [[menus.arguments]]
-name = "skip-dfs-channels"
+name = "channel.skip-dfs-channels"
 type = "enum (disabled | all | 10min-cac)"
 enum_values = ["disabled", "all", "10min-cac"]
 unset = true
 [[menus.arguments]]
-name = "deprioritize-unii-3-4"
+name = "channel.deprioritize-unii-3-4"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "reselect-interval"
+name = "channel.reselect-interval"
 type = "super { reselect-interval-min: time [1 .. 60*60*24*300] , [reselect-interval-max] ..time [1 .. 60*60*24*300] }"
 unset = true
 [[menus.arguments]]
-name = "reselect-time"
+name = "channel.reselect-time"
 type = "super { reselect-time-min: date , [reselect-time-max] ..date }"
 unset = true
 [[menus.arguments]]
-name = "preamble-puncturing"
+name = "channel.preamble-puncturing"
 type = "alt { preamble-puncturing: enum (yes | no) { yes:-1, no:0 } }"
 enum_values = ["yes", "no"]
 unset = true
 [[menus.arguments]]
-name = "afc"
+name = "channel.afc"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "username-format"
+name = "aaa.username-format"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "password-format"
+name = "aaa.password-format"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "called-format"
+name = "aaa.called-format"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "calling-format"
+name = "aaa.calling-format"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "mac-caching"
+name = "aaa.mac-caching"
 type = "alt { mac-caching-disable: enum (disabled) { disabled:0 } , mac-caching-time: time }"
 enum_values = ["disabled"]
 unset = true
 [[menus.arguments]]
-name = "interim-update"
+name = "aaa.interim-update"
 type = "alt { interim-update-disable: enum (disabled) { disabled:0 } , interim-update-time: time [1 .. ] }"
 enum_values = ["disabled"]
 unset = true
 [[menus.arguments]]
-name = "nas-identifier"
+name = "aaa.nas-identifier"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "neighbor-group"
+name = "steering.neighbor-group"
 type = "multi { array-id, neighbor-group: string }"
 unset = true
 [[menus.arguments]]
-name = "rrm"
+name = "steering.rrm"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "wnm"
+name = "steering.wnm"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "2g-probe-delay"
+name = "steering.2g-probe-delay"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "transition-threshold"
+name = "steering.transition-threshold"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "transition-threshold-time"
+name = "steering.transition-threshold-time"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "transition-request-period"
+name = "steering.transition-request-period"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "transition-request-count"
+name = "steering.transition-request-count"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "transition-time"
+name = "steering.transition-time"
 type = "alt { value: enum (unlimited | immediate) { unlimited:-1, immediate:0 } , time: time }"
 enum_values = ["unlimited", "immediate"]
 unset = true
@@ -21671,36 +21767,44 @@ description = "disabled"
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "A unique name for the AAA profile."
 required = true
 [[menus.arguments]]
 name = "username-format"
 type = "string"
+description = "Format for the value of the User-Name attribute in AP's messages to RADIUS servers when performing MAC address authentication."
 unset = true
 [[menus.arguments]]
 name = "password-format"
 type = "string"
+description = "Format for the value to use in calculating the value of the User-Password attribute in AP's messages to RADIUS servers when performing MAC address authentication. Default value: \"\" (an empty string)."
 unset = true
 [[menus.arguments]]
 name = "called-format"
 type = "string"
+description = "Format for the value of the Called-Station-Id RADIUS attribute, in AP's messages to RADIUS servers."
 unset = true
 [[menus.arguments]]
 name = "calling-format"
 type = "string"
+description = "Format for the value of the Calling-Station-Id RADIUS attribute, in AP's messages to RADIUS servers."
 unset = true
 [[menus.arguments]]
 name = "mac-caching"
 type = "alt { mac-caching-disable: enum (disabled) { disabled:0 } , mac-caching-time: time }"
 enum_values = ["disabled"]
+description = "Length of time to cache RADIUS server replies, when MAC address authentication is enabled. This resolves issues with client device authentication timing out due to comparatively high latency of RADIUS server replies."
 unset = true
 [[menus.arguments]]
 name = "interim-update"
 type = "alt { interim-update-disable: enum (disabled) { disabled:0 } , interim-update-time: time [1 .. ] }"
 enum_values = ["disabled"]
+description = "Interval at which to send interim updates about traffic accounting to the RADIUS server."
 unset = true
 [[menus.arguments]]
 name = "nas-identifier"
 type = "string"
+description = "Value of the NAS-Identifier attribute, in AP's messages to RADIUS servers. Defaults to the host name of the device (/system/identity)."
 unset = true
 [[menus.arguments]]
 name = "comment"
@@ -21983,43 +22087,52 @@ required = true
 [[menus.arguments]]
 name = "frequency"
 type = "object"
+description = "For an interface in AP mode, specifies frequencies (in MHz) to consider when picking control channel center frequency. For an interface in station mode, specifies frequencies on which to scan for APs. Leave unset (default) to consider all frequencies supported by the radio and permitted by the applicable regulatory profile. The parameter can contain 1 or more comma-separated values of decimal numbers or, optionally, ranges of numbers denoted using the syntax RangeBeginning-RangeEnd:RangeStep Examples of valid channel.frequency values: 24122412,2432,24725180-5240:20,5500-5580:20"
 unset = true
 [[menus.arguments]]
 name = "secondary-frequency"
 type = "multi { array-id, secondary-frequency: alt { secondary-frequency-disable: enum (disabled) , secondary-frequency-num: num } }"
 enum_values = ["disabled"]
+description = "For split 80+80MHz channels, specifies permitted center frequencies for the secondary 80MHz segment. For 320MHz channels, specifies permitted 320MHz channel centers. When unset (default), does not limit channel selection. E.g. 'width=20/40/80+80mhz frequency=5180' would allow combining channel 42 with any other supported 80MHz channel. 'width=20/40/80+80mhz frequency=5180 secondary-frequency=5530' would only allow combining channels 42 and 106. 'width=20/40/80/160/320mhz frequency=6115' would allow use of either channel 31 or 63. 'width=20/40/80/160/320mhz frequency=6115 secondary-frequency=6265' allows use of only channel 63. Refer here for lists of valid 5GHz) and 6GHz) channels."
 unset = true
 [[menus.arguments]]
 name = "band"
 type = "enum (60ghz-ad | 5ghz-a | 5ghz-n | 5ghz-ac | 5ghz-ax | 5ghz-be | 2ghz-g | 2ghz-n | 2ghz-ax | 2ghz-be | s1ghz-ah | 6ghz-ax | 6ghz-be)"
 enum_values = ["60ghz-ad", "5ghz-a", "5ghz-n", "5ghz-ac", "5ghz-ax", "5ghz-be", "2ghz-g", "2ghz-n", "2ghz-ax", "2ghz-be", "s1ghz-ah", "6ghz-ax", "6ghz-be"]
+description = "Frequency band and wireless standard that will be used by the AP. Defaults to newest supported standard. Note that band support is limited by radio capabilities."
 unset = true
 [[menus.arguments]]
 name = "width"
 type = "enum (20mhz | 20/40mhz | 20/40mhz-Ce | 20/40mhz-eC | 20/40/80mhz | 20/40/80+80mhz | 20/40/80/160mhz | 20/40/80/160/320mhz | 1mhz | 1/2mhz | 1/2/4m...)"
 enum_values = ["20mhz", "20/40mhz", "20/40mhz-Ce", "20/40mhz-eC", "20/40/80mhz", "20/40/80+80mhz", "20/40/80/160mhz", "20/40/80/160/320mhz", "1mhz", "1/2mhz", "1/2/4mhz", "1/2/4/8mhz", "2160mhz"]
+description = "Width of radio channel. Defaults to widest channel supported by the radio hardware."
 unset = true
 [[menus.arguments]]
 name = "skip-dfs-channels"
 type = "enum (disabled | all | 10min-cac)"
 enum_values = ["disabled", "all", "10min-cac"]
+description = "Whether to avoid using channels, on which channel availability check (listening for presence of radar signals) is required. 10min-cac - interface will avoid using channels, on which 10 minute long CAC is requiredall - interface will avoid using all channels, on which CAC is requireddisabled - interface may select any supported channel, regardless of CAC requirements"
 unset = true
 [[menus.arguments]]
 name = "deprioritize-unii-3-4"
 type = "bool"
+description = "Whether to assign lower priority to channels with a control frequency of 5720 or 5825-5885 MHz. These channels are unsupported by some client devices, making their automatic selection undesirable. Defaults to 'yes' in ETSI regulatory domains, elsewhere to 'no'."
 unset = true
 [[menus.arguments]]
 name = "reselect-interval"
 type = "super { reselect-interval-min: time [1 .. 60*60*24*300] , [reselect-interval-max] ..time [1 .. 60*60*24*300] }"
+description = "Specifies the interval when the interface should run \"rescan channel availability\" and select the most appropriate one to use. Specifying the interval will allow the system to select this interval dynamically and randomly. This helps to avoid a situation when many APs at the same time scan the network, select the same channel, and prefer to use it at the same time. reselect-interval uses a background scan. The reselect process will choose the most suitable channel considering the number of networks in the channel, channel usage, and overlap with networks in adjacent channels. It can be used with a list of frequencies defined, or with frequency not set - using all supported frequencies. Example: 01:00..01:30 → Would set the rescan of channels to run every 1 hour + random time up to 30 minutes. The first time, it could run a rescan after \"1 hour and 15 minutes\", later, it could be \"1 hour and 1 second\", then, it could be \"1 hour, 29 minutes and 59 seconds\" ...at random, a rescan will happen between every 1 hour and 1 hour 30 minutes."
 unset = true
 [[menus.arguments]]
 name = "reselect-time"
 type = "super { reselect-time-min: date , [reselect-time-max] ..date }"
+description = "Specifies the clock time when the interface should run \"rescan channel availability\" and select the most appropriate one to use. Specifying the clock time will allow the system to select this time dynamically and randomly. This helps to avoid a situation when many APs at the same time scan the network, select the same channel, and prefer to use it at the same time. reselect-time uses a background scan. The reselect process will choose the most suitable channel considering the number of networks in the channel, channel usage, and overlap with networks in adjacent channels. It can be used with a list of frequencies defined, or with frequency not set - using all supported frequencies. Example: 01:00..01:30 → Would set the rescan of channels to run every night, once, randomly, between 01:00 AM and 01:30 AM, system clock time.14:00..14:30 → Would set the rescan of channels to run every day (after midday), once, randomly between 14:00:00 and 14:30:00 (or 2 PM to 2:30 PM), system clock time."
 unset = true
 [[menus.arguments]]
 name = "preamble-puncturing"
 type = "alt { preamble-puncturing: enum (yes | no) { yes:-1, no:0 } }"
 enum_values = ["yes", "no"]
+description = "Enables puncturing support on this interface for DFS/radar (802.11be only). When set, the access point may disable (\"puncture\") only the affected 20 MHz part of a wide 80/160 MHz channel when radar signal presence is detected, instead of switching the whole channel. For 80 MHz channels a single 20 MHz sub-channel may be punctured. For 160 MHz channels either one 20 MHz sub-channel or one 40 MHz block may be punctured. The current puncturing state can be observed in /interface/wifi/monitor output for this interface, where punctured sub-channels are marked with the letter o."
 unset = true
 [[menus.arguments]]
 name = "afc"
@@ -22194,402 +22307,407 @@ type = "enum (enabled | disabled)"
 enum_values = ["enabled", "disabled"]
 unset = true
 [[menus.arguments]]
-name = "encryption"
+name = "security.encryption"
 type = "ubit (tkip, ccmp, gcmp, ccmp-256, gcmp-256)"
 unset = true
 [[menus.arguments]]
-name = "group-encryption"
+name = "security.group-encryption"
 type = "enum (tkip | ccmp | gcmp | ccmp-256 | gcmp-256)"
 enum_values = ["tkip", "ccmp", "gcmp", "ccmp-256", "gcmp-256"]
 unset = true
 [[menus.arguments]]
-name = "group-key-update"
+name = "security.group-key-update"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "passphrase"
+name = "security.passphrase"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "multi-passphrase-group"
+name = "security.multi-passphrase-group"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "disable-pmkid"
+name = "security.disable-pmkid"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "management-protection"
+name = "security.management-protection"
 type = "enum (disabled | allowed | required)"
 enum_values = ["disabled", "allowed", "required"]
 unset = true
 [[menus.arguments]]
-name = "beacon-protection"
+name = "security.beacon-protection"
 type = "enum (disabled | enabled)"
 enum_values = ["disabled", "enabled"]
 unset = true
 [[menus.arguments]]
-name = "management-encryption"
+name = "security.management-encryption"
 type = "enum (cmac | gmac | cmac-256 | gmac-256)"
 enum_values = ["cmac", "gmac", "cmac-256", "gmac-256"]
 unset = true
 [[menus.arguments]]
-name = "wps"
+name = "security.wps"
 type = "enum (disable | push-button)"
 enum_values = ["disable", "push-button"]
 unset = true
 [[menus.arguments]]
-name = "dh-groups"
+name = "security.dh-groups"
 type = "ubit (19, 20, 21)"
 unset = true
 [[menus.arguments]]
-name = "sae-anti-clogging-threshold"
+name = "security.sae-anti-clogging-threshold"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "sae-max-failure-rate"
+name = "security.sae-max-failure-rate"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "sae-pwe"
+name = "security.sae-pwe"
 type = "enum (hunting-and-pecking | hash-to-element | both)"
 enum_values = ["hunting-and-pecking", "hash-to-element", "both"]
 unset = true
 [[menus.arguments]]
-name = "owe-transition-interface"
+name = "security.owe-transition-interface"
 type = "iface_enum { auto }"
 unset = true
 [[menus.arguments]]
-name = "eap-methods"
+name = "security.eap-methods"
 type = "multi { array-id, method: enum (tls | ttls | peap) { tls:13, ttls:21, peap:25 } }"
 enum_values = ["tls", "ttls", "peap"]
 unset = true
 [[menus.arguments]]
-name = "eap-certificate-mode"
+name = "security.eap-certificate-mode"
 type = "enum (verify-certificate | dont-verify-certificate | no-certificates | verify-certificate-with-crl)"
 enum_values = ["verify-certificate", "dont-verify-certificate", "no-certificates", "verify-certificate-with-crl"]
 unset = true
 [[menus.arguments]]
-name = "eap-tls-certificate"
+name = "security.eap-tls-certificate"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "eap-username"
+name = "security.eap-username"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "eap-anonymous-identity"
+name = "security.eap-anonymous-identity"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "eap-password"
+name = "security.eap-password"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "eap-accounting"
+name = "security.eap-accounting"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "ft"
+name = "security.ft"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "ft-mobility-domain"
+name = "security.ft-mobility-domain"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "ft-over-ds"
+name = "security.ft-over-ds"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "ft-reassociation-deadline"
+name = "security.ft-reassociation-deadline"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "ft-nas-identifier"
+name = "security.ft-nas-identifier"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "ft-r0-key-lifetime"
+name = "security.ft-r0-key-lifetime"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "ft-preserve-vlanid"
+name = "security.ft-preserve-vlanid"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "connect-group"
+name = "security.connect-group"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "connect-priority"
+name = "security.connect-priority"
 type = "super { connect-accept-priority: num , [connect-hold-priority] /num }"
 unset = true
 [[menus.arguments]]
-name = "authentication-types"
-type = "ubit (wpa-psk, wpa2-psk, wpa2-psk-sha2, wpa-eap, wpa2-eap, wpa3-psk, owe, wpa3-eap, wpa3-eap-192)"
+name = "security.authentication-types"
+type = "ubit (wpa-psk, wpa2-psk, wpa2-psk-sha2, wpa-eap, wpa2-eap, wpa3-psk, wpa3-psk-gd, owe, wpa3-eap, wpa3-eap-192)"
 unset = true
 [[menus.arguments]]
-name = "network-type"
+name = "interworking.network-type"
 type = "enum (private | private-with-guest | public-chargeable | public-free | personal-device | emergency-only | test | wildcard) { private:0, private-wi...)"
 enum_values = ["private", "private-with-guest", "public-chargeable", "public-free", "personal-device", "emergency-only", "test", "wildcard"]
 unset = true
 [[menus.arguments]]
-name = "internet"
+name = "interworking.internet"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "esr"
+name = "interworking.esr"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "uesa"
+name = "interworking.uesa"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "venue"
+name = "interworking.venue"
 type = "enum (unspecified | disabled) { unspecified:0, disabled:0xffffffff }"
 enum_values = ["unspecified", "disabled"]
 unset = true
 [[menus.arguments]]
-name = "hessid"
+name = "interworking.hessid"
 type = "macAddr"
 unset = true
 [[menus.arguments]]
-name = "hotspot20"
+name = "interworking.hotspot20"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "hotspot20-dgaf"
+name = "interworking.hotspot20-dgaf"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "roaming-ois"
+name = "interworking.roaming-ois"
 type = "multi { array-id, roaming-oi: string }"
 unset = true
 [[menus.arguments]]
-name = "venue-names"
+name = "interworking.venue-names"
 type = "object { venue-name: composite { venue-name-name: string , venue-name-lang: string } }"
 unset = true
 [[menus.arguments]]
-name = "ipv4-availability"
+name = "interworking.authentication-types"
+type = "object { authentication-type: composite { authentication-type-indicator: enum (terms-and-conditions | online-enrollment | https-redirection | dns-r..."
+enum_values = ["terms-and-conditions", "online-enrollment", "https-redirection", "dns-redirection"]
+unset = true
+[[menus.arguments]]
+name = "interworking.ipv4-availability"
 type = "enum (not-available | public | port-restricted | single-nated | double-nated | port-restricted-single-nated | port-restricted-double-nated | unkno...)"
 enum_values = ["not-available", "public", "port-restricted", "single-nated", "double-nated", "port-restricted-single-nated", "port-restricted-double-nated", "unknown"]
 unset = true
 [[menus.arguments]]
-name = "ipv6-availability"
+name = "interworking.ipv6-availability"
 type = "enum (not-available | available | unknown) { not-available:0, available:1, unknown:2 }"
 enum_values = ["not-available", "available", "unknown"]
 unset = true
 [[menus.arguments]]
-name = "realms"
+name = "interworking.realms"
 type = "object { realm: composite { realm-name: string , realm-auth: enum (not-specified | eap-sim | eap-tls | eap-aka) } }"
 enum_values = ["not-specified", "eap-sim", "eap-tls", "eap-aka"]
 unset = true
 [[menus.arguments]]
-name = "realms-raw"
+name = "interworking.realms-raw"
 type = "multi { array-id, realm-raw: string }"
 unset = true
 [[menus.arguments]]
-name = "3gpp-info"
+name = "interworking.3gpp-info"
 type = "object { 3gpp: composite { 3gpp-mcc: string , 3gpp-mnc: string } }"
 unset = true
 [[menus.arguments]]
-name = "3gpp-info-raw"
+name = "interworking.3gpp-info-raw"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "domain-names"
+name = "interworking.domain-names"
 type = "multi { array-id, domain-name: string }"
 unset = true
 [[menus.arguments]]
-name = "operator-names"
+name = "interworking.operator-names"
 type = "object { operator-name: composite { operator-name-name: string , operator-name-lang: string } }"
 unset = true
 [[menus.arguments]]
-name = "wan-status"
+name = "interworking.wan-status"
 type = "enum (reserved | up | down | test) { reserved:0, up:1, down:2, test:3 }"
 enum_values = ["reserved", "up", "down", "test"]
 unset = true
 [[menus.arguments]]
-name = "wan-symmetric"
+name = "interworking.wan-symmetric"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "wan-at-capacity"
+name = "interworking.wan-at-capacity"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "wan-downlink"
+name = "interworking.wan-downlink"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "wan-uplink"
+name = "interworking.wan-uplink"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "wan-downlink-load"
+name = "interworking.wan-downlink-load"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "wan-uplink-load"
+name = "interworking.wan-uplink-load"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "wan-measurement-duration"
+name = "interworking.wan-measurement-duration"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "connection-capabilities"
+name = "interworking.connection-capabilities"
 type = "object { connection-cap: composite { protocol: num , connection-cap2: composite { port: num , status: enum (closed | open | unknown) { closed:0, op..."
 enum_values = ["closed", "open", "unknown"]
 unset = true
 [[menus.arguments]]
-name = "operational-classes"
+name = "interworking.operational-classes"
 type = "multi { array-id, operational-class: num }"
 unset = true
 [[menus.arguments]]
-name = "bridge"
+name = "datapath.bridge"
 type = "iface_enum { none }"
 unset = true
 [[menus.arguments]]
-name = "bridge-cost"
+name = "datapath.bridge-cost"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "bridge-horizon"
+name = "datapath.bridge-horizon"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "openflow-switch"
+name = "datapath.openflow-switch"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "client-isolation"
+name = "datapath.client-isolation"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "traffic-processing"
+name = "datapath.traffic-processing"
 type = "enum (on-cap | on-capsman | on-capsman-secure)"
 enum_values = ["on-cap", "on-capsman", "on-capsman-secure"]
 unset = true
 [[menus.arguments]]
-name = "vlan-id"
+name = "datapath.vlan-id"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "interface-list"
+name = "datapath.interface-list"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "frequency"
+name = "channel.frequency"
 type = "object"
 unset = true
 [[menus.arguments]]
-name = "secondary-frequency"
+name = "channel.secondary-frequency"
 type = "multi { array-id, secondary-frequency: alt { secondary-frequency-disable: enum (disabled) , secondary-frequency-num: num } }"
 enum_values = ["disabled"]
 unset = true
 [[menus.arguments]]
-name = "band"
+name = "channel.band"
 type = "enum (60ghz-ad | 5ghz-a | 5ghz-n | 5ghz-ac | 5ghz-ax | 5ghz-be | 2ghz-g | 2ghz-n | 2ghz-ax | 2ghz-be | s1ghz-ah | 6ghz-ax | 6ghz-be)"
 enum_values = ["60ghz-ad", "5ghz-a", "5ghz-n", "5ghz-ac", "5ghz-ax", "5ghz-be", "2ghz-g", "2ghz-n", "2ghz-ax", "2ghz-be", "s1ghz-ah", "6ghz-ax", "6ghz-be"]
 unset = true
 [[menus.arguments]]
-name = "width"
+name = "channel.width"
 type = "enum (20mhz | 20/40mhz | 20/40mhz-Ce | 20/40mhz-eC | 20/40/80mhz | 20/40/80+80mhz | 20/40/80/160mhz | 20/40/80/160/320mhz | 1mhz | 1/2mhz | 1/2/4m...)"
 enum_values = ["20mhz", "20/40mhz", "20/40mhz-Ce", "20/40mhz-eC", "20/40/80mhz", "20/40/80+80mhz", "20/40/80/160mhz", "20/40/80/160/320mhz", "1mhz", "1/2mhz", "1/2/4mhz", "1/2/4/8mhz", "2160mhz"]
 unset = true
 [[menus.arguments]]
-name = "skip-dfs-channels"
+name = "channel.skip-dfs-channels"
 type = "enum (disabled | all | 10min-cac)"
 enum_values = ["disabled", "all", "10min-cac"]
 unset = true
 [[menus.arguments]]
-name = "deprioritize-unii-3-4"
+name = "channel.deprioritize-unii-3-4"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "reselect-interval"
+name = "channel.reselect-interval"
 type = "super { reselect-interval-min: time [1 .. 60*60*24*300] , [reselect-interval-max] ..time [1 .. 60*60*24*300] }"
 unset = true
 [[menus.arguments]]
-name = "reselect-time"
+name = "channel.reselect-time"
 type = "super { reselect-time-min: date , [reselect-time-max] ..date }"
 unset = true
 [[menus.arguments]]
-name = "preamble-puncturing"
+name = "channel.preamble-puncturing"
 type = "alt { preamble-puncturing: enum (yes | no) { yes:-1, no:0 } }"
 enum_values = ["yes", "no"]
 unset = true
 [[menus.arguments]]
-name = "afc"
+name = "channel.afc"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "username-format"
+name = "aaa.username-format"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "password-format"
+name = "aaa.password-format"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "called-format"
+name = "aaa.called-format"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "calling-format"
+name = "aaa.calling-format"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "mac-caching"
+name = "aaa.mac-caching"
 type = "alt { mac-caching-disable: enum (disabled) { disabled:0 } , mac-caching-time: time }"
 enum_values = ["disabled"]
 unset = true
 [[menus.arguments]]
-name = "interim-update"
+name = "aaa.interim-update"
 type = "alt { interim-update-disable: enum (disabled) { disabled:0 } , interim-update-time: time [1 .. ] }"
 enum_values = ["disabled"]
 unset = true
 [[menus.arguments]]
-name = "nas-identifier"
+name = "aaa.nas-identifier"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "neighbor-group"
+name = "steering.neighbor-group"
 type = "multi { array-id, neighbor-group: string }"
 unset = true
 [[menus.arguments]]
-name = "rrm"
+name = "steering.rrm"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "wnm"
+name = "steering.wnm"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "2g-probe-delay"
+name = "steering.2g-probe-delay"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "transition-threshold"
+name = "steering.transition-threshold"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "transition-threshold-time"
+name = "steering.transition-threshold-time"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "transition-request-period"
+name = "steering.transition-request-period"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "transition-request-count"
+name = "steering.transition-request-count"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "transition-time"
+name = "steering.transition-time"
 type = "alt { value: enum (unlimited | immediate) { unlimited:-1, immediate:0 } , time: time }"
 enum_values = ["unlimited", "immediate"]
 unset = true
@@ -22611,6 +22729,248 @@ type = "string"
 description = "Copy property values from an existing item (universal add property from Common commands)."
 
 [[menus]]
+path = "/interface/wifi/dashboard"
+type = "Directory"
+[[menus.arguments]]
+name = "comment"
+type = "string"
+description = "Descriptive comment for the item (universal add/set property from Common commands; omitted from upstream per-menu tables)."
+[[menus.arguments]]
+name = "disabled"
+type = "bool"
+description = "Whether the item is disabled (universal add property from Common commands; distinct from the X disabled print flag)."
+
+[[menus]]
+path = "/interface/wifi/dashboard/settings"
+type = "Settings Directory"
+[[menus.arguments]]
+name = "wifi-log-bytes"
+type = "num"
+unset = true
+[[menus.arguments]]
+name = "wifi-log-time"
+type = "time"
+unset = true
+
+[[menus]]
+path = "/interface/wifi/dashboard/show"
+type = "Command"
+[[menus.arguments]]
+name = "interface"
+type = "multi { array-id, interface: iface_enum }"
+unset = true
+[[menus.read_only]]
+name = "ifaces"
+type = "num"
+[[menus.read_only]]
+name = "aps-total"
+type = "num"
+[[menus.read_only]]
+name = "aps-run"
+type = "num"
+[[menus.read_only]]
+name = "slaveaps-total"
+type = "num"
+[[menus.read_only]]
+name = "aps-2g"
+type = "num"
+[[menus.read_only]]
+name = "aps-5g"
+type = "num"
+[[menus.read_only]]
+name = "aps-6g"
+type = "num"
+[[menus.read_only]]
+name = "aps-be"
+type = "num"
+[[menus.read_only]]
+name = "aps-ax"
+type = "num"
+[[menus.read_only]]
+name = "aps-ac"
+type = "num"
+[[menus.read_only]]
+name = "aps-n"
+type = "num"
+[[menus.read_only]]
+name = "aps-ofdm"
+type = "num"
+[[menus.read_only]]
+name = "stas-total"
+type = "num"
+[[menus.read_only]]
+name = "stas-2ghz"
+type = "num"
+[[menus.read_only]]
+name = "stas-5ghz"
+type = "num"
+[[menus.read_only]]
+name = "stas-6ghz"
+type = "num"
+[[menus.read_only]]
+name = "stas-open"
+type = "num"
+[[menus.read_only]]
+name = "stas-wpa"
+type = "num"
+[[menus.read_only]]
+name = "stas-wpa2"
+type = "num"
+[[menus.read_only]]
+name = "stas-wpa3"
+type = "num"
+[[menus.read_only]]
+name = "stas-eap"
+type = "num"
+[[menus.read_only]]
+name = "stas-ft"
+type = "num"
+[[menus.read_only]]
+name = "stas-be"
+type = "num"
+[[menus.read_only]]
+name = "stas-ax"
+type = "num"
+[[menus.read_only]]
+name = "stas-ac"
+type = "num"
+[[menus.read_only]]
+name = "stas-n"
+type = "num"
+[[menus.read_only]]
+name = "stas-ofdm"
+type = "num"
+[[menus.read_only]]
+name = "bw-total-down"
+type = "num"
+[[menus.read_only]]
+name = "bw-total-up"
+type = "num"
+[[menus.read_only]]
+name = "ap-freqs"
+type = "multi { array-id, array-id, array-id, range: super { start: num , [end] -num , [value] :num } }"
+[[menus.read_only]]
+name = "sta-freqs"
+type = "multi { array-id, array-id, array-id, range: super { start: num , [end] -num , [value] :num } }"
+
+[[menus]]
+path = "/interface/wifi/dashboard/show-clients"
+type = "Command"
+[[menus.flags]]
+name = "A"
+type = "active"
+[[menus.arguments]]
+name = "interface"
+type = "multi { array-id, interface: iface_enum }"
+unset = true
+[[menus.arguments]]
+name = "address"
+type = "macAddr"
+unset = true
+[[menus.arguments]]
+name = "bssid"
+type = "macAddr"
+unset = true
+[[menus.arguments]]
+name = "time"
+type = "time"
+unset = true
+[[menus.arguments]]
+name = "time-start"
+type = "date"
+unset = true
+[[menus.arguments]]
+name = "time-end"
+type = "date"
+unset = true
+[[menus.arguments]]
+name = "event"
+type = "enum (connected | disconnected | failed)"
+enum_values = ["connected", "disconnected", "failed"]
+unset = true
+[[menus.read_only]]
+name = "address"
+type = "macAddr"
+[[menus.read_only]]
+name = "dhcp-address"
+type = "address"
+[[menus.read_only]]
+name = "dhcp-hostname"
+type = "string"
+[[menus.read_only]]
+name = "last-ap"
+type = "macAddr"
+[[menus.read_only]]
+name = "conn"
+type = "num"
+[[menus.read_only]]
+name = "disconn"
+type = "num"
+[[menus.read_only]]
+name = "fail"
+type = "num"
+
+[[menus]]
+path = "/interface/wifi/dashboard/show-logs"
+type = "Command"
+[[menus.arguments]]
+name = "interface"
+type = "multi { array-id, interface: iface_enum }"
+unset = true
+[[menus.arguments]]
+name = "address"
+type = "macAddr"
+unset = true
+[[menus.arguments]]
+name = "bssid"
+type = "macAddr"
+unset = true
+[[menus.arguments]]
+name = "time"
+type = "time"
+unset = true
+[[menus.arguments]]
+name = "time-start"
+type = "date"
+unset = true
+[[menus.arguments]]
+name = "time-end"
+type = "date"
+unset = true
+[[menus.arguments]]
+name = "event"
+type = "enum (connected | disconnected | failed)"
+enum_values = ["connected", "disconnected", "failed"]
+unset = true
+[[menus.read_only]]
+name = "time"
+type = "date"
+[[menus.read_only]]
+name = "address"
+type = "macAddr"
+[[menus.read_only]]
+name = "event"
+type = "enum (connected | disconnected | failed)"
+[[menus.read_only]]
+name = "bssid"
+type = "macAddr"
+[[menus.read_only]]
+name = "signal"
+type = "num"
+[[menus.read_only]]
+name = "auth-type"
+type = "enum (wpa2-eap | wpa2-psk | ft-eap | ft-wpa2-psk | wpa3-eap | wpa2-psk-sha2 | wpa3-psk | wpa3-psk-gd | ft-wpa3-psk | ft-wpa3-psk-gd | wpa3-eap-192...)"
+[[menus.read_only]]
+name = "tx-bytes"
+type = "num"
+[[menus.read_only]]
+name = "rx-bytes"
+type = "num"
+[[menus.read_only]]
+name = "reason"
+type = "string"
+
+[[menus]]
 path = "/interface/wifi/datapath"
 type = "Directory"
 [[menus.flags]]
@@ -22624,14 +22984,17 @@ required = true
 [[menus.arguments]]
 name = "bridge"
 type = "iface_enum { none }"
+description = "Bridge interface to add interface to, as a bridge port. Virtual ('slave') interfaces are by default added to the same bridge, if any, as the corresponding master interface. Master interfaces are not by default added to any bridge."
 unset = true
 [[menus.arguments]]
 name = "bridge-cost"
 type = "num"
+description = "Bridge port cost to use when adding as bridge port."
 unset = true
 [[menus.arguments]]
 name = "bridge-horizon"
 type = "num"
+description = "Bridge horizon to use when adding as bridge port."
 unset = true
 [[menus.arguments]]
 name = "openflow-switch"
@@ -22640,19 +23003,23 @@ unset = true
 [[menus.arguments]]
 name = "client-isolation"
 type = "bool"
+description = "Determines whether client devices connecting to this interface are (by default) isolated from others or not. This policy can be overridden on a per-client basis using access list rules, so an AP can have a mixture of isolated and non-isolated clients. Traffic from an isolated client will not be forwarded to other clients and unicast traffic from a non-isolated client will not be forwarded to an isolated one."
 unset = true
 [[menus.arguments]]
 name = "traffic-processing"
 type = "enum (on-cap | on-capsman | on-capsman-secure)"
 enum_values = ["on-cap", "on-capsman", "on-capsman-secure"]
+description = ". <code>on-cap</code>, will make it so that the CAP itself is responsible for handling all WiFi traffic (same as any standalone AP would);<code>on-capsman</code>, will make it so that the CAP's WiFi traffic is forwarded to a pseudo-tunnel to the CAPSMAN and the CAPsMAN becomes responsible for CAP's traffic handling;<code>on-capsman-secure</code>, will make it so that the CAP's WiFi traffic is forwarded to an encrypted pseudo-tunnel to the CAPSMAN and the CAPsMAN becomes responsible for CAP's traffic handling. 🛈 Important: When using traffic-processing=on-capsman setting, be aware that since all the CAP's WiFi traffic now gets handled by the CAPsMAN (gets pushed into the CAPsMAN), it will increase CAPSMAN's resource consumption (CPU and RAM usage)."
 unset = true
 [[menus.arguments]]
 name = "vlan-id"
 type = "num"
+description = "Default VLAN ID to assign to client devices connecting to this interface (only relevant to interfaces in AP mode). When a client is assigned a VLAN ID, traffic coming from the client is automatically tagged with the ID and only packets tagged with this ID are forwarded to the client. ⚠️ Warning: Some radio drivers do not support VLAN offloading to wifi. Examples include 802.11ah HaLow and wifi-qcom-ac APs. Such devices can be configured as VLAN access ports in bridge settings."
 unset = true
 [[menus.arguments]]
 name = "interface-list"
 type = "enum"
+description = "List to which to add the interface as a member."
 unset = true
 [[menus.arguments]]
 name = "comment"
@@ -23092,358 +23459,363 @@ type = "enum (none | rts-cts | cts-to-self)"
 enum_values = ["none", "rts-cts", "cts-to-self"]
 unset = true
 [[menus.arguments]]
-name = "encryption"
+name = "security.encryption"
 type = "ubit (tkip, ccmp, gcmp, ccmp-256, gcmp-256)"
 unset = true
 [[menus.arguments]]
-name = "group-encryption"
+name = "security.group-encryption"
 type = "enum (tkip | ccmp | gcmp | ccmp-256 | gcmp-256)"
 enum_values = ["tkip", "ccmp", "gcmp", "ccmp-256", "gcmp-256"]
 unset = true
 [[menus.arguments]]
-name = "group-key-update"
+name = "security.group-key-update"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "passphrase"
+name = "security.passphrase"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "multi-passphrase-group"
+name = "security.multi-passphrase-group"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "disable-pmkid"
+name = "security.disable-pmkid"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "management-protection"
+name = "security.management-protection"
 type = "enum (disabled | allowed | required)"
 enum_values = ["disabled", "allowed", "required"]
 unset = true
 [[menus.arguments]]
-name = "beacon-protection"
+name = "security.beacon-protection"
 type = "enum (disabled | enabled)"
 enum_values = ["disabled", "enabled"]
 unset = true
 [[menus.arguments]]
-name = "management-encryption"
+name = "security.management-encryption"
 type = "enum (cmac | gmac | cmac-256 | gmac-256)"
 enum_values = ["cmac", "gmac", "cmac-256", "gmac-256"]
 unset = true
 [[menus.arguments]]
-name = "wps"
+name = "security.wps"
 type = "enum (disable | push-button)"
 enum_values = ["disable", "push-button"]
 unset = true
 [[menus.arguments]]
-name = "dh-groups"
+name = "security.dh-groups"
 type = "ubit (19, 20, 21)"
 unset = true
 [[menus.arguments]]
-name = "sae-anti-clogging-threshold"
+name = "security.sae-anti-clogging-threshold"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "sae-max-failure-rate"
+name = "security.sae-max-failure-rate"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "sae-pwe"
+name = "security.sae-pwe"
 type = "enum (hunting-and-pecking | hash-to-element | both)"
 enum_values = ["hunting-and-pecking", "hash-to-element", "both"]
 unset = true
 [[menus.arguments]]
-name = "owe-transition-interface"
+name = "security.owe-transition-interface"
 type = "iface_enum { auto }"
 unset = true
 [[menus.arguments]]
-name = "eap-methods"
+name = "security.eap-methods"
 type = "multi { array-id, method: enum (tls | ttls | peap) { tls:13, ttls:21, peap:25 } }"
 enum_values = ["tls", "ttls", "peap"]
 unset = true
 [[menus.arguments]]
-name = "eap-certificate-mode"
+name = "security.eap-certificate-mode"
 type = "enum (verify-certificate | dont-verify-certificate | no-certificates | verify-certificate-with-crl)"
 enum_values = ["verify-certificate", "dont-verify-certificate", "no-certificates", "verify-certificate-with-crl"]
 unset = true
 [[menus.arguments]]
-name = "eap-tls-certificate"
+name = "security.eap-tls-certificate"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "eap-username"
+name = "security.eap-username"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "eap-anonymous-identity"
+name = "security.eap-anonymous-identity"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "eap-password"
+name = "security.eap-password"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "eap-accounting"
+name = "security.eap-accounting"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "ft"
+name = "security.ft"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "ft-mobility-domain"
+name = "security.ft-mobility-domain"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "ft-over-ds"
+name = "security.ft-over-ds"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "ft-reassociation-deadline"
+name = "security.ft-reassociation-deadline"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "ft-nas-identifier"
+name = "security.ft-nas-identifier"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "ft-r0-key-lifetime"
+name = "security.ft-r0-key-lifetime"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "ft-preserve-vlanid"
+name = "security.ft-preserve-vlanid"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "connect-group"
+name = "security.connect-group"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "connect-priority"
+name = "security.connect-priority"
 type = "super { connect-accept-priority: num , [connect-hold-priority] /num }"
 unset = true
 [[menus.arguments]]
-name = "authentication-types"
-type = "ubit (wpa-psk, wpa2-psk, wpa2-psk-sha2, wpa-eap, wpa2-eap, wpa3-psk, owe, wpa3-eap, wpa3-eap-192)"
+name = "security.authentication-types"
+type = "ubit (wpa-psk, wpa2-psk, wpa2-psk-sha2, wpa-eap, wpa2-eap, wpa3-psk, wpa3-psk-gd, owe, wpa3-eap, wpa3-eap-192)"
 unset = true
 [[menus.arguments]]
-name = "bridge"
+name = "datapath.bridge"
 type = "iface_enum { none }"
 unset = true
 [[menus.arguments]]
-name = "bridge-cost"
+name = "datapath.bridge-cost"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "bridge-horizon"
+name = "datapath.bridge-horizon"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "openflow-switch"
+name = "datapath.openflow-switch"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "client-isolation"
+name = "datapath.client-isolation"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "traffic-processing"
+name = "datapath.traffic-processing"
 type = "enum (on-cap | on-capsman | on-capsman-secure)"
 enum_values = ["on-cap", "on-capsman", "on-capsman-secure"]
 unset = true
 [[menus.arguments]]
-name = "vlan-id"
+name = "datapath.vlan-id"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "interface-list"
+name = "datapath.interface-list"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "network-type"
+name = "interworking.network-type"
 type = "enum (private | private-with-guest | public-chargeable | public-free | personal-device | emergency-only | test | wildcard) { private:0, private-wi...)"
 enum_values = ["private", "private-with-guest", "public-chargeable", "public-free", "personal-device", "emergency-only", "test", "wildcard"]
 unset = true
 [[menus.arguments]]
-name = "internet"
+name = "interworking.internet"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "esr"
+name = "interworking.esr"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "uesa"
+name = "interworking.uesa"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "venue"
+name = "interworking.venue"
 type = "enum (unspecified | disabled) { unspecified:0, disabled:0xffffffff }"
 enum_values = ["unspecified", "disabled"]
 unset = true
 [[menus.arguments]]
-name = "hessid"
+name = "interworking.hessid"
 type = "macAddr"
 unset = true
 [[menus.arguments]]
-name = "hotspot20"
+name = "interworking.hotspot20"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "hotspot20-dgaf"
+name = "interworking.hotspot20-dgaf"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "roaming-ois"
+name = "interworking.roaming-ois"
 type = "multi { array-id, roaming-oi: string }"
 unset = true
 [[menus.arguments]]
-name = "venue-names"
+name = "interworking.venue-names"
 type = "object { venue-name: composite { venue-name-name: string , venue-name-lang: string } }"
 unset = true
 [[menus.arguments]]
-name = "ipv4-availability"
+name = "interworking.authentication-types"
+type = "object { authentication-type: composite { authentication-type-indicator: enum (terms-and-conditions | online-enrollment | https-redirection | dns-r..."
+enum_values = ["terms-and-conditions", "online-enrollment", "https-redirection", "dns-redirection"]
+unset = true
+[[menus.arguments]]
+name = "interworking.ipv4-availability"
 type = "enum (not-available | public | port-restricted | single-nated | double-nated | port-restricted-single-nated | port-restricted-double-nated | unkno...)"
 enum_values = ["not-available", "public", "port-restricted", "single-nated", "double-nated", "port-restricted-single-nated", "port-restricted-double-nated", "unknown"]
 unset = true
 [[menus.arguments]]
-name = "ipv6-availability"
+name = "interworking.ipv6-availability"
 type = "enum (not-available | available | unknown) { not-available:0, available:1, unknown:2 }"
 enum_values = ["not-available", "available", "unknown"]
 unset = true
 [[menus.arguments]]
-name = "realms"
+name = "interworking.realms"
 type = "object { realm: composite { realm-name: string , realm-auth: enum (not-specified | eap-sim | eap-tls | eap-aka) } }"
 enum_values = ["not-specified", "eap-sim", "eap-tls", "eap-aka"]
 unset = true
 [[menus.arguments]]
-name = "realms-raw"
+name = "interworking.realms-raw"
 type = "multi { array-id, realm-raw: string }"
 unset = true
 [[menus.arguments]]
-name = "3gpp-info"
+name = "interworking.3gpp-info"
 type = "object { 3gpp: composite { 3gpp-mcc: string , 3gpp-mnc: string } }"
 unset = true
 [[menus.arguments]]
-name = "3gpp-info-raw"
+name = "interworking.3gpp-info-raw"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "domain-names"
+name = "interworking.domain-names"
 type = "multi { array-id, domain-name: string }"
 unset = true
 [[menus.arguments]]
-name = "operator-names"
+name = "interworking.operator-names"
 type = "object { operator-name: composite { operator-name-name: string , operator-name-lang: string } }"
 unset = true
 [[menus.arguments]]
-name = "wan-status"
+name = "interworking.wan-status"
 type = "enum (reserved | up | down | test) { reserved:0, up:1, down:2, test:3 }"
 enum_values = ["reserved", "up", "down", "test"]
 unset = true
 [[menus.arguments]]
-name = "wan-symmetric"
+name = "interworking.wan-symmetric"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "wan-at-capacity"
+name = "interworking.wan-at-capacity"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "wan-downlink"
+name = "interworking.wan-downlink"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "wan-uplink"
+name = "interworking.wan-uplink"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "wan-downlink-load"
+name = "interworking.wan-downlink-load"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "wan-uplink-load"
+name = "interworking.wan-uplink-load"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "wan-measurement-duration"
+name = "interworking.wan-measurement-duration"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "connection-capabilities"
+name = "interworking.connection-capabilities"
 type = "object { connection-cap: composite { protocol: num , connection-cap2: composite { port: num , status: enum (closed | open | unknown) { closed:0, op..."
 enum_values = ["closed", "open", "unknown"]
 unset = true
 [[menus.arguments]]
-name = "operational-classes"
+name = "interworking.operational-classes"
 type = "multi { array-id, operational-class: num }"
 unset = true
 [[menus.arguments]]
-name = "neighbor-group"
+name = "steering.neighbor-group"
 type = "multi { array-id, neighbor-group: string }"
 unset = true
 [[menus.arguments]]
-name = "rrm"
+name = "steering.rrm"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "wnm"
+name = "steering.wnm"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "2g-probe-delay"
+name = "steering.2g-probe-delay"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "transition-threshold"
+name = "steering.transition-threshold"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "transition-threshold-time"
+name = "steering.transition-threshold-time"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "transition-request-period"
+name = "steering.transition-request-period"
 type = "time"
 unset = true
 [[menus.arguments]]
-name = "transition-request-count"
+name = "steering.transition-request-count"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "transition-time"
+name = "steering.transition-time"
 type = "alt { value: enum (unlimited | immediate) { unlimited:-1, immediate:0 } , time: time }"
 enum_values = ["unlimited", "immediate"]
 unset = true
 [[menus.arguments]]
-name = "username-format"
+name = "aaa.username-format"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "password-format"
+name = "aaa.password-format"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "called-format"
+name = "aaa.called-format"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "calling-format"
+name = "aaa.calling-format"
 type = "string"
 unset = true
 [[menus.arguments]]
-name = "mac-caching"
+name = "aaa.mac-caching"
 type = "alt { mac-caching-disable: enum (disabled) { disabled:0 } , mac-caching-time: time }"
 enum_values = ["disabled"]
 unset = true
 [[menus.arguments]]
-name = "interim-update"
+name = "aaa.interim-update"
 type = "alt { interim-update-disable: enum (disabled) { disabled:0 } , interim-update-time: time [1 .. ] }"
 enum_values = ["disabled"]
 unset = true
 [[menus.arguments]]
-name = "nas-identifier"
+name = "aaa.nas-identifier"
 type = "string"
 unset = true
 [[menus.arguments]]
@@ -23477,88 +23849,90 @@ description = "disabled"
 [[menus.arguments]]
 name = "labels"
 type = "object"
+description = "Matches the radio config to physical radios with the given labels."
 unset = true
 [[menus.arguments]]
 name = "extra-labels"
 type = "multi { array-id, label: string }"
+description = "Additional labels to assign to matched radios."
 unset = true
 [[menus.arguments]]
-name = "country"
+name = "configuration.country"
 type = "enum"
 unset = true
 [[menus.arguments]]
-name = "chains"
+name = "configuration.chains"
 type = "ubit (0, 1, 2, 3, 4, 5, 6, 7)"
 unset = true
 [[menus.arguments]]
-name = "tx-chains"
+name = "configuration.tx-chains"
 type = "ubit ()"
 unset = true
 [[menus.arguments]]
-name = "tx-power"
+name = "configuration.tx-power"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "antenna-gain"
+name = "configuration.antenna-gain"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "distance"
+name = "configuration.distance"
 type = "num"
 unset = true
 [[menus.arguments]]
-name = "installation"
+name = "configuration.installation"
 type = "enum (outdoor | indoor)"
 enum_values = ["outdoor", "indoor"]
 unset = true
 [[menus.arguments]]
-name = "frequency"
+name = "channel.frequency"
 type = "object"
 unset = true
 [[menus.arguments]]
-name = "secondary-frequency"
+name = "channel.secondary-frequency"
 type = "multi { array-id, secondary-frequency: alt { secondary-frequency-disable: enum (disabled) , secondary-frequency-num: num } }"
 enum_values = ["disabled"]
 unset = true
 [[menus.arguments]]
-name = "band"
+name = "channel.band"
 type = "enum (60ghz-ad | 5ghz-a | 5ghz-n | 5ghz-ac | 5ghz-ax | 5ghz-be | 2ghz-g | 2ghz-n | 2ghz-ax | 2ghz-be | s1ghz-ah | 6ghz-ax | 6ghz-be)"
 enum_values = ["60ghz-ad", "5ghz-a", "5ghz-n", "5ghz-ac", "5ghz-ax", "5ghz-be", "2ghz-g", "2ghz-n", "2ghz-ax", "2ghz-be", "s1ghz-ah", "6ghz-ax", "6ghz-be"]
 unset = true
 [[menus.arguments]]
-name = "width"
+name = "channel.width"
 type = "enum (20mhz | 20/40mhz | 20/40mhz-Ce | 20/40mhz-eC | 20/40/80mhz | 20/40/80+80mhz | 20/40/80/160mhz | 20/40/80/160/320mhz | 1mhz | 1/2mhz | 1/2/4m...)"
 enum_values = ["20mhz", "20/40mhz", "20/40mhz-Ce", "20/40mhz-eC", "20/40/80mhz", "20/40/80+80mhz", "20/40/80/160mhz", "20/40/80/160/320mhz", "1mhz", "1/2mhz", "1/2/4mhz", "1/2/4/8mhz", "2160mhz"]
 unset = true
 [[menus.arguments]]
-name = "skip-dfs-channels"
+name = "channel.skip-dfs-channels"
 type = "enum (disabled | all | 10min-cac)"
 enum_values = ["disabled", "all", "10min-cac"]
 unset = true
 [[menus.arguments]]
-name = "deprioritize-unii-3-4"
+name = "channel.deprioritize-unii-3-4"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "reselect-interval"
+name = "channel.reselect-interval"
 type = "super { reselect-interval-min: time [1 .. 60*60*24*300] , [reselect-interval-max] ..time [1 .. 60*60*24*300] }"
 unset = true
 [[menus.arguments]]
-name = "reselect-time"
+name = "channel.reselect-time"
 type = "super { reselect-time-min: date , [reselect-time-max] ..date }"
 unset = true
 [[menus.arguments]]
-name = "preamble-puncturing"
+name = "channel.preamble-puncturing"
 type = "alt { preamble-puncturing: enum (yes | no) { yes:-1, no:0 } }"
 enum_values = ["yes", "no"]
 unset = true
 [[menus.arguments]]
-name = "afc"
+name = "channel.afc"
 type = "bool"
 unset = true
 [[menus.arguments]]
-name = "authentication-types"
-type = "ubit (wpa-psk, wpa2-psk, wpa2-psk-sha2, wpa-eap, wpa2-eap, wpa3-psk, owe, wpa3-eap, wpa3-eap-192)"
+name = "security.authentication-types"
+type = "ubit (wpa-psk, wpa2-psk, wpa2-psk-sha2, wpa-eap, wpa2-eap, wpa3-psk, wpa3-psk-gd, owe, wpa3-eap, wpa3-eap-192)"
 unset = true
 [[menus.arguments]]
 name = "comment"
@@ -23720,7 +24094,7 @@ name = "hw-type"
 type = "string"
 [[menus.read_only]]
 name = "hw-caps"
-type = "multi { array-id, hw-cap: enum (sniffer | qos-classifier-dscp | spectral | channel-switch | mlo | hw-protection-mode | beacon-protection | meshpoin..."
+type = "multi { array-id, hw-cap: enum (sniffer | qos-classifier-dscp | spectral | channel-switch | mlo | hw-protection-mode | beacon-protection) }"
 [[menus.read_only]]
 name = "ml-group"
 type = "string"
@@ -23771,6 +24145,10 @@ unset = true
 name = "wifi-band"
 type = "enum (2.4GHz | 5GHz)"
 enum_values = ["2.4GHz", "5GHz"]
+unset = true
+[[menus.arguments]]
+name = "default-country"
+type = "enum"
 unset = true
 
 [[menus]]
@@ -23946,139 +24324,171 @@ type = "string"
 required = true
 [[menus.arguments]]
 name = "authentication-types"
-type = "ubit (wpa-psk, wpa2-psk, wpa2-psk-sha2, wpa-eap, wpa2-eap, wpa3-psk, owe, wpa3-eap, wpa3-eap-192)"
+type = "ubit (wpa-psk, wpa2-psk, wpa2-psk-sha2, wpa-eap, wpa2-eap, wpa3-psk, wpa3-psk-gd, owe, wpa3-eap, wpa3-eap-192)"
+description = "Authentication types to enable on the interface. Interfaces without a configured passphrase default to an empty list (no authentication, an open network). Interfaces with a configured passphrase default to a set of passphrase-based authentication types, which depends on their supported WiFi standard, frequency band and interface mode. APs operating in the 6-7GHz band default to wpa3-psk and wpa3-psk-gd. WiFi 7 APs operating in the 2.4 and 5 GHz bands default to wpa2-psk,wpa3-psk and wpa3-psk-gd. WiFi 5 and 6 APs operating in the 2.4 and 5 GHz bands default wpa2-psk. Station-mode interfaces default to wpa-psk and wpa2-psk. Station-mode interfaces with a configured eap-username and an eap-password default to wpa-eap and wpa2-eap authentication methods."
 unset = true
 [[menus.arguments]]
 name = "encryption"
 type = "ubit (tkip, ccmp, gcmp, ccmp-256, gcmp-256)"
+description = "A list of ciphers to support for encrypting unicast traffic. Defaults to ccmp.⚠️ Caution: Take care when configuring encryption ciphers. All client devices MUST support the group encryption cipher used by the AP to connect, and some client devices (notably, Intel® 8260) will also fail to connect if the list of unicast ciphers includes any they don't support."
 unset = true
 [[menus.arguments]]
 name = "group-encryption"
 type = "enum (tkip | ccmp | gcmp | ccmp-256 | gcmp-256)"
 enum_values = ["tkip", "ccmp", "gcmp", "ccmp-256", "gcmp-256"]
+description = "Cipher to use for encrypting multicast traffic."
 unset = true
 [[menus.arguments]]
 name = "group-key-update"
 type = "time"
+description = "The interval at which the group temporal key (key for encrypting broadcast traffic) is renewed."
 unset = true
 [[menus.arguments]]
 name = "passphrase"
 type = "string"
+description = "The passphrase to use for PSK authentication types. Defaults to an empty string - \"\". WPA-PSK and WPA2-PSK authentication requires a minimum of 8 chars, while WPA3-PSK does not have a minimum passphrase length."
 unset = true
 [[menus.arguments]]
 name = "multi-passphrase-group"
 type = "enum"
+description = "Name of /interface/wifi/security/multi-passphrase/ group that will be used. Only a single group can be defined under the security profile."
 unset = true
 [[menus.arguments]]
 name = "disable-pmkid"
 type = "bool"
+description = "For interfaces in AP mode, disables inclusion of a PMKID in EAPOL frames. Disabling PMKID can cause compatibility issues with client devices that make use of it.yes - Do not include PMKID in EAPOL frames.no - Include PMKID in EAPOL frames."
 unset = true
 [[menus.arguments]]
 name = "management-protection"
 type = "enum (disabled | allowed | required)"
 enum_values = ["disabled", "allowed", "required"]
+description = "Whether to use 802.11w management frame protection. The default value depends on the value of the selected authentication type. WPA2 allows the use of management protection, WPA3 requires it."
 unset = true
 [[menus.arguments]]
 name = "beacon-protection"
 type = "enum (disabled | enabled)"
 enum_values = ["disabled", "enabled"]
+description = "Whether to enable beacon integrity protection. Support depends on 'beacon-protection' radio capability. Enabled by default for 802.11be interfaces."
 unset = true
 [[menus.arguments]]
 name = "management-encryption"
 type = "enum (cmac | gmac | cmac-256 | gmac-256)"
 enum_values = ["cmac", "gmac", "cmac-256", "gmac-256"]
+description = "Cipher to use for encrypting protected management frames."
 unset = true
 [[menus.arguments]]
 name = "wps"
 type = "enum (disable | push-button)"
 enum_values = ["disable", "push-button"]
+description = "push-button - AP will accept WPS authentication for 2 minutes after the 'wps-push-button' command is called. Physical WPS button functionality is not yet implemented.disabled - AP will not accept WPS authentication"
 unset = true
 [[menus.arguments]]
 name = "dh-groups"
 type = "ubit (19, 20, 21)"
+description = "Identifiers of elliptic curve cryptography groups to use in SAE (WPA3) authentication."
 unset = true
 [[menus.arguments]]
 name = "sae-anti-clogging-threshold"
 type = "num"
+description = "Due to SAE (WPA3) associations being CPU resource intensive, overwhelming an AP with bogus authentication requests makes for a feasible denial-of-service attack. This parameter provides a way to mitigate such attacks by specifying a threshold of in-progress SAE authentications, at which the AP will start requesting that client devices include a cookie bound to their MAC address in their authentication requests. It will then only process authentication requests that contain valid cookies."
 unset = true
 [[menus.arguments]]
 name = "sae-max-failure-rate"
 type = "num"
+description = "Rate of failed SAE (WPA3) associations per minute, at which the AP will stop processing new association requests."
 unset = true
 [[menus.arguments]]
 name = "sae-pwe"
 type = "enum (hunting-and-pecking | hash-to-element | both)"
 enum_values = ["hunting-and-pecking", "hash-to-element", "both"]
+description = "Methods to support for deriving SAE password element."
 unset = true
 [[menus.arguments]]
 name = "owe-transition-interface"
 type = "iface_enum { auto }"
+description = "Name of an interface whose MAC address and SSID to advertise as the matching AP when running in OWE transition mode. Setting the value to 'auto' will make RouterOS try to automatically match open and OWE APs on the same radio. Required for setting up open APs that offer OWE, but also work with older devices that don't support the standard. See configuration example above."
 unset = true
 [[menus.arguments]]
 name = "eap-methods"
 type = "multi { array-id, method: enum (tls | ttls | peap) { tls:13, ttls:21, peap:25 } }"
 enum_values = ["tls", "ttls", "peap"]
+description = "EAP methods to consider for authentication. Defaults to all supported methods."
 unset = true
 [[menus.arguments]]
 name = "eap-certificate-mode"
 type = "enum (verify-certificate | dont-verify-certificate | no-certificates | verify-certificate-with-crl)"
 enum_values = ["verify-certificate", "dont-verify-certificate", "no-certificates", "verify-certificate-with-crl"]
+description = "Policy for handling the TLS certificate of the RADIUS server. verify-certificate - require server to have a valid certificate. Check that it is signed by a trusted certificate authority.dont-verify-certificate - Do not perform any checks on the certificate.no-certificates - Attempt to establish the TLS tunnel by performing anonymous Diffie-Hellman key exchange. To be used if the RADIUS server has no certificate at all.verify-certificate-with-crl - Same as verify-certificate, but also checks if the certificate is valid by checking the Certificate Revocation List."
 unset = true
 [[menus.arguments]]
 name = "eap-tls-certificate"
 type = "enum"
+description = "Name or id of a certificate in the device's certificate store to use, when the chosen EAP authentication method requires one."
 unset = true
 [[menus.arguments]]
 name = "eap-username"
 type = "string"
+description = "Username to use when the chosen EAP method requires one."
 unset = true
 [[menus.arguments]]
 name = "eap-anonymous-identity"
 type = "string"
+description = "Optional anonymous identity for EAP outer authentication. 🛈 Properties related to EAP are only relevant to interfaces in station mode. APs delegate (passthrough) EAP authentication to the RADIUS server."
 unset = true
 [[menus.arguments]]
 name = "eap-password"
 type = "string"
+description = "Password to use, when the chosen EAP method requires one."
 unset = true
 [[menus.arguments]]
 name = "eap-accounting"
 type = "bool"
+description = "Send accounting information to RADIUS server for EAP-authenticated peers."
 unset = true
 [[menus.arguments]]
 name = "ft"
 type = "bool"
+description = "Whether to enable 802.11r fast BSS transitions (roaming). ⚠️ Warning: For a client device to successfully roam between 2 APs, the APs need to be managed by the same instance of RouterOS. For information on how to centrally manage multiple APs, see CAPsMAN"
 unset = true
 [[menus.arguments]]
 name = "ft-mobility-domain"
 type = "num"
+description = "The fast BSS transition mobility domain ID."
 unset = true
 [[menus.arguments]]
 name = "ft-over-ds"
 type = "bool"
+description = "Whether to enable fast BSS transitions over DS (distributed system)."
 unset = true
 [[menus.arguments]]
 name = "ft-reassociation-deadline"
 type = "time"
+description = "Fast BSS transition reassociation deadline."
 unset = true
 [[menus.arguments]]
 name = "ft-nas-identifier"
 type = "string"
+description = "Fast BSS transition PMK-R0 key holder identifier. Default: MAC address of the interface."
 unset = true
 [[menus.arguments]]
 name = "ft-r0-key-lifetime"
 type = "time"
+description = "Lifetime of the fast BSS transition PMK-R0 encryption key."
 unset = true
 [[menus.arguments]]
 name = "ft-preserve-vlanid"
 type = "bool"
+description = "no - when a client connects to this AP via 802.11r fast BSS transition, it is assigned a VLAN ID according to the access and/or interface settingsyes (default) - when a client connects to this AP via 802.11r fast BSS transition, it retains the VLAN ID, which it was assigned during initial authentication The default behavior is essential when relying on a RADIUS server to assign VLAN IDs to users, since a RADIUS server is only used for initial authentication. Not supported by wifi-qcom-ac drivers."
 unset = true
 [[menus.arguments]]
 name = "connect-group"
 type = "string"
+description = "APs within the same connect group do not allow more than 1 client device with the same MAC address. This is to prevent malicious authorized users from intercepting traffic intended for other users ('MacStealer' attack) or performing a denial of service attack by spoofing the MAC address of a victim. Handling of new connections with duplicate MAC addresses depends on the connect-priority of AP interfaces involved. By default, all APs are assigned the same connect-group."
 unset = true
 [[menus.arguments]]
 name = "connect-priority"
 type = "super { connect-accept-priority: num , [connect-hold-priority] /num }"
+description = "These parameters determine how a connection is handled if the MAC address of the client device is the same as that of another active connection to another AP. If (accept-priority of AP2) < (hold-priority of AP1), a connection to AP2 will cause the client to be dropped from AP1. If (accept-priority of AP2) = (hold-priority of AP1), a connection to AP2 will be allowed only if the MAC address can no longer be reached via AP1. If (accept-priority of AP2) > (hold-priority of AP1), a connection to AP2 will not be accepted. If omitted, hold-priority is the same as accept-priority. By default, APs, which perform user authentication, have higher priority (lower integer value), than open APs."
 unset = true
 [[menus.arguments]]
 name = "comment"
@@ -24254,39 +24664,48 @@ required = true
 [[menus.arguments]]
 name = "neighbor-group"
 type = "multi { array-id, neighbor-group: string }"
+description = "When sending neighbor reports and BSS transition management requests, an AP will list all other APs within its neighbor group as potential roaming candidates. By default, a dynamic neighbor group is created for each set of APs with the same SSID and authentication settings. APs operating in the 5GHz band are indicated to be preferable to ones operating in the 2.4GHz band. A dynamic neighbor group will not be created if EAP is used; it needs to be defined manually."
 unset = true
 [[menus.arguments]]
 name = "rrm"
 type = "bool"
+description = "Enables sending of 802.11k neighbor reports. The client may request the \"neighbor report\" from the AP, when the device wants to \"explore/map\" its surroundings (the client device can store the report, and it can use it to roam at once or later)."
 unset = true
 [[menus.arguments]]
 name = "wnm"
 type = "bool"
+description = "Enables sending of solicited 802.11v BSS transition management requests. A client may request a \"roaming suggestion\" packet that contains \"neighbor list\", to help the device switch APs. The client device may accept the suggestion and roam at once, or it can ignore the suggestion and keep its current connection."
 unset = true
 [[menus.arguments]]
 name = "2g-probe-delay"
 type = "bool"
+description = "If This property is set to yes on a 2.4GHz AP andsaid AP is in a steering neighbor group with at least one 5GHz AP then the 2.4GHz AP will forego responding to the first 3 probe requests from each client in a 60 second interval which have a signal-to-noise ratio of > 35 dB."
 unset = true
 [[menus.arguments]]
 name = "transition-threshold"
 type = "num"
+description = "Sets an RSSI threshold for sending unsolicited 802.11v BSS transition management requests. If the client device sits \"below\" the configured threshold for the duration of transition-threshold-time, it gets marked as a \"transition candidate\"."
 unset = true
 [[menus.arguments]]
 name = "transition-threshold-time"
 type = "time"
+description = "Defines a time, in seconds, for how long the client device can sit \"below\" the configured transition-threshold value, to be marked as \"transition candidate\"."
 unset = true
 [[menus.arguments]]
 name = "transition-request-period"
 type = "time"
+description = "Defines an interval in seconds, using which, the AP will send unsolicited 802.11v BSS transition management requests to the client device, if it is a \"transition candidate\". E.g., using the default value (30s), a request will be sent to the client every 30 seconds for transition-request-count number of total requests."
 unset = true
 [[menus.arguments]]
 name = "transition-request-count"
 type = "num"
+description = "Defines how many unsolicited 802.11v BSS transition management requests should be sent out to the client marked as a \"transition candidate\". One request is sent out immediately after the client gets \"transition candidate\" status (\"-1\" count), and the remaining \"count\" will be sent every transition-request-period. E.g., using the default value (3), the 1st request gets sent when a client gets \"transition candidate\" status; the second request gets sent after transition-request-period seconds and the third (last one), after another transition-request-period. Set to unlimited if you want to send requests without a count limit."
 unset = true
 [[menus.arguments]]
 name = "transition-time"
 type = "alt { value: enum (unlimited | immediate) { unlimited:-1, immediate:0 } , time: time }"
 enum_values = ["unlimited", "immediate"]
+description = "Defines the time, for how long the client device can be a \"transition candidate\" before it gets forcefully deauthenticated. It can be a time interval in seconds (to deauthenticate the client after the time, which starts running/counting as soon as the device becomes a \"transition candidate\", expires), it can be immediate (to instantly deauthenticate the client after it becomes a \"transition candidate\") or unlimited (to never force the client and to continue sending transition requests for the transition-request-count amount, every transition-request-period seconds). 🛈 Important: Note that with transition-time=immediate, transition-request-period and transition-request-count become useless, as the client will get deauthenticated instantly after transition-threshold-time."
 unset = true
 [[menus.arguments]]
 name = "comment"
@@ -26874,6 +27293,13 @@ type = "enum (none | best-fit | exact-size) { none:0, best-fit:2, exact-size:3 }
 [[menus.read_only]]
 name = "assoc-mt-framing-limit"
 type = "num"
+
+[[menus]]
+path = "/interface/wireless/snooper/snoop"
+type = "Command"
+[[menus.arguments]]
+name = "interface"
+type = "iface_enum"
 
 [[menus]]
 path = "/interface/wireless/spectral-scan"
@@ -29528,6 +29954,9 @@ name = "secondary-ntp"
 type = "ipAddr"
 description = "Second NTP server received from the DHCP server."
 [[menus.read_only]]
+name = "cmr-address"
+type = "ipAddr"
+[[menus.read_only]]
 name = "caps-managers"
 type = "multi { ip: ipAddr }"
 description = "CAPsMAN addresses received from the DHCP server (option 138)."
@@ -30234,6 +30663,14 @@ name = "dhcp-option-set"
 type = "enum (none)"
 enum_values = ["none"]
 description = "Option set (`/ip/dhcp-server/option/sets`) sent to clients in this network. Options of the server and of the lease take precedence."
+[[menus.arguments]]
+name = "cmr-none"
+type = "bool"
+description = "no servers will be sent to client"
+[[menus.arguments]]
+name = "cmr-server"
+type = "ipAddr"
+description = "If unset, IP address of dhcp server will be included if CMR is enabled; if set, the custom IP address will always be included even if CMR is disabled"
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -36505,11 +36942,11 @@ description = "Use stronger encryption, HMAC algorithms, use bigger DH primes an
 [[menus.arguments]]
 name = "known-hosts-validation"
 type = "bool"
-description = "peer host key validation"
+description = "Verify the server's host key against the keys stored in [`known-hosts`](known-hosts) whenever the router connects as an SSH client (fetch SFTP, [`/system/ssh`](../../system/ssh), [`/system/ssh-exec`](../../system/ssh-exec)). With validation enabled and no matching key stored, the interactive client shows the server's fingerprint and asks `do you want to trust this host key?`, while non-interactive commands fail with `host key not trusted`. On new installations validation is enabled; upgraded routers keep the previous value. Default: yes."
 [[menus.arguments]]
 name = "known-hosts-trusted-subnets"
 type = "object { subnets: ip6Prefix }"
-description = "skip host key validation for peers in these subnets"
+description = "Skip host key validation for servers whose address belongs to these subnets, even when `known-hosts-validation` is enabled. Hosts outside the listed subnets are still validated."
 [[menus.arguments]]
 name = "host-key-size"
 type = "enum (1024 | 1536 | 2048 | 4096 | 8192) { 1024:1024, 1536:1536, 2048:2048, 4096:4096, 8192:8192 }"
@@ -36531,7 +36968,7 @@ type = "Command"
 [[menus.arguments]]
 name = "key-file-prefix"
 type = "string"
-description = "Prefix for generated files. For example, prefix 'my' generates files 'my_rsa', 'my_rsa.pub'. Host keys are exported in PKCS#8 format."
+description = "Prefix for the generated files: for example `my` produces `my_rsa.pem` (private key) and `my_rsa_pub.pem` (public key) for an RSA host key, or `my_ed25519.pem` and `my_ed25519_pub.pem` for an Ed25519 one. Both files are in PKCS#8 PEM format."
 [[menus.arguments]]
 name = "passphrase"
 type = "string"
@@ -36555,9 +36992,11 @@ type = "Directory"
 [[menus.arguments]]
 name = "host"
 type = "ip6Addr"
+description = "IP address of the SSH server the key belongs to."
 [[menus.arguments]]
 name = "key"
 type = "string"
+description = "`, for example `ssh-rsa AAAAB3...`. Pasting the key of a different server stores it as-is; a mismatched key causes later connections to fail with `host key not trusted`."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -36577,9 +37016,11 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "key-type"
 type = "enum (rsa | ed25519)"
+description = "Key type of the pinned host key: `rsa` or `ed25519`."
 [[menus.read_only]]
 name = "fingerprint"
 type = "string"
+description = "SHA256 fingerprint of the pinned key. Compare it with the server's `host-key-fingerprint` shown by `/ip/ssh/print` on that server."
 
 [[menus]]
 path = "/ip/ssh/regenerate-host-key"
@@ -36665,28 +37106,36 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "enabled"
 type = "bool"
+description = "Enable or disable the Traffic-Flow service"
 [[menus.arguments]]
 name = "interfaces"
 type = "multi { array-id, interface-or-list: alt { interface: iface_enum { local:0, all:0xFFFFFFFF } , interface-list: enum } }"
+description = "Comma-separated interface names (or `all`) whose forwarded traffic is accounted"
 [[menus.arguments]]
 name = "cache-entries"
 type = "enum (1k | 2k | 4k | 8k | 16k | 32k | 64k | 128k | 256k | 512k | 1M | 2M | 4M | 8M | 16M | 32M) { 1k:0x400, 2k:0x800, 4k:0x1000, 8k:0x2000, 16k:0x...)"
 enum_values = ["1k", "2k", "4k", "8k", "16k", "32k", "64k", "128k", "256k", "512k", "1M", "2M", "4M", "8M", "16M", "32M"]
+description = "Number of flow records held in memory at once (the default value depends on the device memory: 256k on larger boards, down to 4k on the smallest)"
 [[menus.arguments]]
 name = "active-flow-timeout"
 type = "time"
+description = "Maximum lifetime of a flow, even when packets keep matching it; the flow is expired and exported after this time. Default: 30m"
 [[menus.arguments]]
 name = "inactive-flow-timeout"
 type = "time"
+description = "A flow that sees no packet for this long is expired and exported; the next packet starts a new flow. If the timeout is too small, it can create many flows and overflow the buffer. Default: 15s"
 [[menus.arguments]]
 name = "packet-sampling"
 type = "bool"
+description = "Enable packet sampling: packets are accounted only per `sampling-interval` and `sampling-space`"
 [[menus.arguments]]
 name = "sampling-interval"
 type = "num"
+description = "Number of consecutive packets that are sampled in each sampling cycle"
 [[menus.arguments]]
 name = "sampling-space"
 type = "num"
+description = "Number of consecutive packets that are omitted in each sampling cycle"
 
 [[menus]]
 path = "/ip/traffic-flow/ipfix"
@@ -36694,111 +37143,147 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "nat-events"
 type = "bool"
+description = "Include the NAT bitmask of the flow (event flags)"
 [[menus.arguments]]
 name = "first-forwarded"
 type = "bool"
+description = "Include the timestamp of the first forwarded packet of the flow"
 [[menus.arguments]]
 name = "last-forwarded"
 type = "bool"
+description = "Include the timestamp of the last forwarded packet of the flow"
 [[menus.arguments]]
 name = "sys-init-time"
 type = "bool"
+description = "Include the system boot time reference of the flow"
 [[menus.arguments]]
 name = "packets"
 type = "bool"
+description = "Include the number of packets in the flow"
 [[menus.arguments]]
 name = "bytes"
 type = "bool"
+description = "Include the total byte count of the flow"
 [[menus.arguments]]
 name = "src-port"
 type = "bool"
+description = "Include the source port number of the flow"
 [[menus.arguments]]
 name = "dst-port"
 type = "bool"
+description = "Include the destination port number of the flow"
 [[menus.arguments]]
 name = "in-interface"
 type = "bool"
+description = "Include the interface the flow was received on"
 [[menus.arguments]]
 name = "out-interface"
 type = "bool"
+description = "Include the interface the flow was sent out on"
 [[menus.arguments]]
 name = "protocol"
 type = "bool"
+description = "Include the IP protocol number (TCP, UDP, ICMP, ...)"
 [[menus.arguments]]
 name = "tos"
 type = "bool"
+description = "Include the IP header TOS (Type of Service) field"
 [[menus.arguments]]
 name = "tcp-flags"
 type = "bool"
+description = "Include the cumulative TCP flags of the flow (SYN, ACK, ...)"
 [[menus.arguments]]
 name = "dst-mac-address"
 type = "bool"
+description = "Include the destination MAC address of the flow"
 [[menus.arguments]]
 name = "src-mac-address"
 type = "bool"
+description = "Include the source MAC address of the flow"
 [[menus.arguments]]
 name = "src-address"
 type = "bool"
+description = "Include the source IP address of the flow"
 [[menus.arguments]]
 name = "dst-address"
 type = "bool"
+description = "Include the destination IP address of the flow"
 [[menus.arguments]]
 name = "src-address-mask"
 type = "bool"
+description = "Include the source netmask length (summarization)"
 [[menus.arguments]]
 name = "dst-address-mask"
 type = "bool"
+description = "Include the destination netmask length"
 [[menus.arguments]]
 name = "gateway"
 type = "bool"
+description = "Include the gateway IP address the flow was routed to"
 [[menus.arguments]]
 name = "ttl"
 type = "bool"
+description = "Include the TTL of the packets"
 [[menus.arguments]]
 name = "ip-header-length"
 type = "bool"
+description = "Include the IP header length"
 [[menus.arguments]]
 name = "is-multicast"
 type = "bool"
+description = "Mark the multicast flows"
 [[menus.arguments]]
 name = "ip-total-length"
 type = "bool"
+description = "Include the total IP packet length in bytes"
 [[menus.arguments]]
 name = "nat-src-address"
 type = "bool"
+description = "Include the NATed source address of the flow"
 [[menus.arguments]]
 name = "nat-dst-address"
 type = "bool"
+description = "Include the NATed destination address of the flow"
 [[menus.arguments]]
 name = "nat-src-port"
 type = "bool"
+description = "Include the NATed source port of the flow"
 [[menus.arguments]]
 name = "nat-dst-port"
 type = "bool"
+description = "Include the NATed destination port of the flow"
 [[menus.arguments]]
 name = "ipv6-flow-label"
 type = "bool"
+description = "Include the IPv6 flow label field"
 [[menus.arguments]]
 name = "udp-length"
 type = "bool"
+description = "Include the UDP payload length"
 [[menus.arguments]]
 name = "tcp-seq-num"
 type = "bool"
+description = "Include the TCP sequence number"
 [[menus.arguments]]
 name = "tcp-ack-num"
 type = "bool"
+description = "Include the TCP acknowledgment number"
 [[menus.arguments]]
 name = "tcp-window-size"
 type = "bool"
+description = "Include the TCP window size"
 [[menus.arguments]]
 name = "igmp-type"
 type = "bool"
+description = "Include the IGMP message type"
 [[menus.arguments]]
 name = "icmp-type"
 type = "bool"
+description = "Include the ICMP type"
 [[menus.arguments]]
 name = "icmp-code"
 type = "bool"
+description = "Include the ICMP code"
 
 [[menus]]
 path = "/ip/traffic-flow/monitor"
@@ -36806,15 +37291,19 @@ type = "Command"
 [[menus.read_only]]
 name = "finished-flows"
 type = "num"
+description = "Number of flows that expired and were exported"
 [[menus.read_only]]
 name = "active-flows"
 type = "num"
+description = "Number of flows in the cache right now"
 [[menus.read_only]]
 name = "unmanaged-packets"
 type = "num"
+description = "Packets that did not fit into any tracked flow"
 [[menus.read_only]]
 name = "unmanaged-bytes"
 type = "num"
+description = "Bytes of the unmanaged packets"
 
 [[menus]]
 path = "/ip/traffic-flow/target"
@@ -36826,23 +37315,29 @@ description = "disabled"
 [[menus.arguments]]
 name = "src-address"
 type = "alt { ip: ipAddr , ipv6: ip6Addr }"
+description = "Source address of the export packets. 0.0.0.0 means auto-detect: the router uses the source of the outgoing interface"
 [[menus.arguments]]
 name = "dst-address"
 type = "alt { ip: ipAddr , ipv6: ip6Addr }"
+description = "IP address of the host that receives the flow data"
 required = true
 [[menus.arguments]]
 name = "port"
 type = "num"
+description = "UDP port to send flows to. Default: 2055"
 [[menus.arguments]]
 name = "version"
 type = "enum (1 | 5 | 9 | ipfix) { 1:1, 5:5, 9:9, ipfix:10 }"
 enum_values = ["1", "5", "9", "ipfix"]
+description = "NetFlow format of the export packets: `1`, `5`, `9` or `ipfix`"
 [[menus.arguments]]
 name = "v9-template-refresh"
 type = "num"
+description = "Number of export packets after which the FlowSet template is resent (version 9 and IPFIX only). Default: 20"
 [[menus.arguments]]
 name = "v9-template-timeout"
 type = "time"
+description = "Send the FlowSet template after this interval if it has not been sent by then (version 9 and IPFIX only)"
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -37479,6 +37974,10 @@ description = "Preference value sent in Advertise messages. Clients prefer the s
 name = "binding-script"
 type = "alt { script: string }"
 description = "Script to run when a binding is bound and when it ends. It runs separately for each binding, and receives these variables: - `bindingBound` - `1` when the binding was bound, otherwise `0`. - `bindingServerName` - Name of the DHCPv6 server. - `bindingDUID` - DUID of the client. - `bindingAddress` - IPv6 address the client sends from, usually its link-local address. - `bindingPrefix` - The delegated prefix, or the assigned address for an address binding."
+[[menus.arguments]]
+name = "dns-none"
+type = "bool"
+description = "Don't add DNS servers to responses"
 [[menus.arguments]]
 name = "dhcp-option"
 type = "multi { array-id, option: alt { option: enum , option-set: enum } }"
@@ -48486,6 +48985,75 @@ type = "enum (never | 1min | 10min | 60min) { never:0, 1min:1, 10min:10, 60min:6
 enum_values = ["never", "1min", "10min", "60min"]
 
 [[menus]]
+path = "/system/dashboard"
+type = "Directory"
+[[menus.arguments]]
+name = "comment"
+type = "string"
+description = "Descriptive comment for the item (universal add/set property from Common commands; omitted from upstream per-menu tables)."
+[[menus.arguments]]
+name = "disabled"
+type = "bool"
+description = "Whether the item is disabled (universal add property from Common commands; distinct from the X disabled print flag)."
+
+[[menus]]
+path = "/system/dashboard/settings"
+type = "Settings Directory"
+[[menus.arguments]]
+name = "uplink-interfaces"
+type = "multi { array-id, interface: iface_enum }"
+unset = true
+
+[[menus]]
+path = "/system/dashboard/show"
+type = "Command"
+[[menus.read_only]]
+name = "model"
+type = "string"
+[[menus.read_only]]
+name = "board-name"
+type = "string"
+[[menus.read_only]]
+name = "identity"
+type = "string"
+[[menus.read_only]]
+name = "version"
+type = "string"
+[[menus.read_only]]
+name = "uptime"
+type = "time"
+[[menus.read_only]]
+name = "cpu-usage"
+type = "num"
+[[menus.read_only]]
+name = "memory-usage"
+type = "composite { used: num , total: num }"
+[[menus.read_only]]
+name = "hdd-usage"
+type = "composite { used: num , total: num }"
+[[menus.read_only]]
+name = "ether"
+type = "super { running: num , [enabled] /num , [total] /num }"
+[[menus.read_only]]
+name = "wifi"
+type = "super { running: num , [enabled] /num , [total] /num }"
+[[menus.read_only]]
+name = "total-bw"
+type = "super { tx: num , [rx] /num }"
+[[menus.read_only]]
+name = "uplink-bw"
+type = "super { tx: num , [rx] /num }"
+[[menus.read_only]]
+name = "ether-bw"
+type = "super { tx: num , [rx] /num }"
+[[menus.read_only]]
+name = "wifi-bw"
+type = "super { tx: num , [rx] /num }"
+[[menus.read_only]]
+name = "lte-bw"
+type = "super { tx: num , [rx] /num }"
+
+[[menus]]
 path = "/system/default-configuration"
 type = "Settings Directory"
 [[menus.read_only]]
@@ -48818,78 +49386,103 @@ type = "Settings Directory"
 name = "state-after-reboot"
 type = "enum (disabled | enabled)"
 enum_values = ["disabled", "enabled"]
+description = "Enables or disables hardware health monitoring after a reboot."
 [[menus.read_only]]
 name = "core"
 type = "num"
+description = "CPU core voltage."
 [[menus.read_only]]
 name = "3.3v"
 type = "num"
+description = "3.3 V supply line voltage."
 [[menus.read_only]]
 name = "5v"
 type = "num"
+description = "5 V supply line voltage."
 [[menus.read_only]]
 name = "12v"
 type = "num"
+description = "12 V supply line voltage."
 [[menus.read_only]]
 name = "lm87-temp"
 type = "num"
+description = "Temperature measured by the LM87 sensor."
 [[menus.read_only]]
 name = "cpu-temp"
 type = "num"
+description = "CPU temperature."
 [[menus.read_only]]
 name = "board-temp"
 type = "num"
+description = "Board temperature."
 [[menus.read_only]]
 name = "voltage1"
 type = "num"
+description = "Voltage measured by sensor 1."
 [[menus.read_only]]
 name = "voltage2"
 type = "num"
+description = "Voltage measured by sensor 2."
 [[menus.read_only]]
 name = "voltage3"
 type = "num"
+description = "Voltage measured by sensor 3."
 [[menus.read_only]]
 name = "voltage4"
 type = "num"
+description = "Voltage measured by sensor 4."
 [[menus.read_only]]
 name = "voltage5"
 type = "num"
+description = "Voltage measured by sensor 5."
 [[menus.read_only]]
 name = "voltage6"
 type = "num"
+description = "Voltage measured by sensor 6."
 [[menus.read_only]]
 name = "voltage7"
 type = "num"
+description = "Voltage measured by sensor 7."
 [[menus.read_only]]
 name = "voltage8"
 type = "num"
+description = "Voltage measured by sensor 8."
 [[menus.read_only]]
 name = "voltage9"
 type = "num"
+description = "Voltage measured by sensor 9."
 [[menus.read_only]]
 name = "voltage10"
 type = "num"
+description = "Voltage measured by sensor 10."
 [[menus.read_only]]
 name = "temp1"
 type = "num"
+description = "Temperature measured by sensor 1."
 [[menus.read_only]]
 name = "temp2"
 type = "num"
+description = "Temperature measured by sensor 2."
 [[menus.read_only]]
 name = "temp3"
 type = "num"
+description = "Temperature measured by sensor 3."
 [[menus.read_only]]
 name = "fan1"
 type = "num"
+description = "Speed of fan 1 in RPM."
 [[menus.read_only]]
 name = "fan2"
 type = "num"
+description = "Speed of fan 2 in RPM."
 [[menus.read_only]]
 name = "fan3"
 type = "num"
+description = "Speed of fan 3 in RPM."
 [[menus.read_only]]
 name = "state"
 type = "enum (disabled | enabled)"
+description = "Health monitoring state."
 
 [[menus]]
 path = "/system/health/settings"
@@ -48897,49 +49490,63 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "fan-full-speed-temp"
 type = "num"
+description = "Sets the temperature value at which the fan speed is increased to the maximum possible RPM. The fan controller reads the temperature from CPU, PHY, switch and SFP, and adjusts the fan speed based on the component with the highest temperature. Range: -273..65. Default: 65."
 [[menus.arguments]]
 name = "fan-target-temp"
 type = "num"
+description = "Sets the target temperature for the hottest component. The fan controller adjusts the fan behavior to keep the temperature in the target range. Range: -273..65. Default: 58."
 [[menus.arguments]]
 name = "fan-min-speed-percent"
 type = "num"
+description = "Sets the minimum percentage of the fan speed, so the fans do not drop below this value. The default varies by fan controller chip; current devices default to 12. Range: 0..100."
 [[menus.arguments]]
 name = "fan-control-interval"
 type = "time"
+description = "Sets the interval for reading the temperature data from the CPU, PHY, switch and SFP. This setting directly affects CPU usage. Range: 5..30 seconds. Default: 30s."
 [[menus.arguments]]
 name = "fan-mode"
 type = "enum (manual | auto) { manual:0, auto:1 }"
 enum_values = ["manual", "auto"]
+description = "Selects the fan control mode. With `auto`, the device automatically switches to the auxiliary fan when the main fan fails. With `manual`, you select which fans run by using `use-fan` and `use-fan2`."
 [[menus.arguments]]
 name = "use-fan"
 type = "enum (auxiliary | main) { auxiliary:0, main:1 }"
 enum_values = ["auxiliary", "main"]
+description = "Selects which fan to use in the manual fan-control mode."
 [[menus.arguments]]
 name = "use-fan2"
 type = "enum (auxiliary | main) { auxiliary:0, main:1 }"
 enum_values = ["auxiliary", "main"]
+description = "Selects which second fan to use in the manual fan-control mode."
 [[menus.arguments]]
 name = "fan-switch"
 type = "enum (auto | on | off) { auto:0, on:1, off:2 }"
 enum_values = ["auto", "on", "off"]
+description = "Sets the fan state: `auto` follows the automatic temperature control, `on` forces the fan to run, and `off` forces the fan to stop."
 [[menus.arguments]]
 name = "fan-on-threshold"
 type = "num"
+description = "Sets the temperature at which the fans are switched on."
 [[menus.arguments]]
 name = "cpu-overtemp-check"
 type = "bool"
+description = "Enables or disables CPU overtemperature monitoring. Available on ARM and ARM64 devices. Default: no."
 [[menus.arguments]]
 name = "cpu-overtemp-threshold"
 type = "num"
+description = "Sets the maximum temperature before the overtemperature protection is triggered. Range: 0..105. Default: 105."
 [[menus.arguments]]
 name = "cpu-overtemp-startup-delay"
 type = "time"
+description = "Sets the delay after startup before overtemperature monitoring is enabled. Default: 1m."
 [[menus.read_only]]
 name = "active-fan"
 type = "enum (auxiliary | main | none) { auxiliary:0, main:1, none:2 }"
+description = "Fan that is currently in use."
 [[menus.read_only]]
 name = "active-fan2"
 type = "enum (auxiliary | main | none) { auxiliary:0, main:1, none:2 }"
+description = "Second fan that is currently in use."
 
 [[menus]]
 path = "/system/health/settings/detect-fans"
@@ -49341,8 +49948,8 @@ description = "Name of the action, letters and digits only. Rules refer to the a
 required = true
 [[menus.arguments]]
 name = "target"
-type = "enum (memory | disk | echo | remote | email | script) { memory:0, disk:1, echo:2, remote:3, email:4, script:5 }"
-enum_values = ["memory", "disk", "echo", "remote", "email", "script"]
+type = "enum (memory | disk | echo | remote | email | script | cmr) { memory:0, disk:1, echo:2, remote:3, email:4, script:5, cmr:6 }"
+enum_values = ["memory", "disk", "echo", "remote", "email", "script", "cmr"]
 description = "Where the messages go: - `memory` - Keep them in a memory buffer named after the action, shown by `/log/print`. The buffer is empty after a reboot. - `disk` - Write them to text files (`disk-file-name`). - `echo` - Print them on open terminal sessions (`remember`). - `remote` - Send them to a syslog server (`remote`). - `email` - Send each message as an email (`email-to`). - `script` - Run a script for each message (`script`)."
 required = true
 [[menus.arguments]]
@@ -50007,47 +50614,50 @@ type = "Directory"
 [[menus.flags]]
 name = "I"
 type = "inactive"
+description = "inactive"
 [[menus.flags]]
 name = "X"
 type = "disabled"
+description = "disabled"
 [[menus.arguments]]
 name = "name"
 type = "string"
-description = "Name of the PTP profile."
+description = "Name of the PTP profile instance"
 [[menus.arguments]]
 name = "priority1"
 type = "enum (auto) { auto:0 }"
 enum_values = ["auto"]
-description = "Parameter which takes part in the election of a grandmaster clock."
+description = "First value of the grandmaster election; the lower value wins. With `auto`, the value of the chosen profile applies (802.1AS: 246, other profiles: 128)"
 [[menus.arguments]]
 name = "priority2"
 type = "enum (auto)"
 enum_values = ["auto"]
-description = "Parameter which takes part in the election of a backup grandmaster clock."
+description = "Second value of the grandmaster election, used for ties. With `auto`, the value of the chosen profile applies (802.1AS: 248, other profiles: 128)"
 [[menus.arguments]]
 name = "delay-mode"
 type = "enum (auto | e2e | p2p)"
 enum_values = ["auto", "e2e", "p2p"]
-description = "auto - selects the delay mode automatically depending on the profile being used.e2e - utilizes the delay request-response mechanism.p2p - utilizes the peer delay mechanism."
+description = "Delay measurement mechanism: `e2e` (request-response) or `p2p` (peer delay). With `auto`, the profile default applies (802.1AS: p2p, other profiles: e2e)"
 [[menus.arguments]]
 name = "transport"
 type = "enum (auto | ipv4 | l2-non-forwardable | l2-forwardable)"
 enum_values = ["auto", "ipv4", "l2-non-forwardable", "l2-forwardable"]
-description = "Transport protocol to be used: auto - automatically selects the transport mode based on the PTP profile in use.ipv4 - uses the IPv4 multicast addresses 224.0.1.129 for PTP primary messages and 224.0.0.107 for PTP peer delay messages.l2-forwardable - uses the multicast MAC address <code>01-1B-19-00-00-00</code>, which is being forwarded through PTP-unaware network equipment.l2-non-forwardable - uses the multicast MAC address <code>01-80-C2-00-00-0E</code>, ensuring that PTP messages are not forwarded through PTP-unaware network equipment."
+description = "Transport used for PTP messages: `ipv4` (multicast 224.0.1.129 for PTP primary messages and 224.0.0.107 for peer delay messages), `l2-forwardable` (multicast MAC 01-1B-19-00-00-00, forwarded by PTP-unaware bridges) or `l2-non-forwardable` (01-80-C2-00-00-0E, not forwarded by compliant bridges). With `auto`, the profile default applies (802.1AS and G.8275.1 use `l2-non-forwardable`; AES67, SMPTE and the default profile use `ipv4`)"
 [[menus.arguments]]
 name = "profile"
 type = "enum (default | 802.1as | g8275.1 | aes67 | smpte-2059)"
 enum_values = ["default", "802.1as", "g8275.1", "aes67", "smpte-2059"]
-description = "Each profile comes with its own predefined auto values for PTP operating parameters and options: 802.1as is an adaptation of PTP for use with Audio Video Bridging and Time-Sensitive Networking. Default(auto) values: priority1=246, priority2=248, transport=l2-non-forwardable, delay-mode=p2p.aes67 profile is for high-performance audio-over-IP interoperability. Default(auto) values: priority1=128, priority2=128, domain=0, transport=ipv4, delay-mode=e2e.g8275.1 profile is for frequency and phase synchronization in a fully PTP-aware network. Default(auto) values: priority1=128, priority2=128, domain=24, transport=l2-non-forwardable, delay-mode=e2e.smpte profile is for the synchronization of audio/video equipment in a professional broadcast environment. Default(auto) values: priority1=128, priority2=128, domain=127, transport=ipv4, delay-mode=e2e.default profile, PTPv2 default configuration, allows for more configuration options than other profiles. Default(auto) values: priority1=128, priority2=128, domain=0, transport=ipv4, delay-mode=e2e."
+description = "Operating profile: `default` (plain PTPv2), `802.1as` (AVB/TSN, IEEE 802.1AS-2020), `aes67` (audio over IP), `g8275.1` (telecom frequency and phase), `smpte-2059` (professional broadcast). The profile also presets the auto values of domain, priority1/2, transport and delay-mode"
 [[menus.arguments]]
 name = "domain"
 type = "enum (auto)"
 enum_values = ["auto"]
-description = "Identifier used to separate different PTP instances. Each PTP profile defines its own allowed domain range and default value: • 802.1AS range: 0–127, default: 0 (auto) • AES67 range: 0–127, default: 0 (auto) • G.8275.1 range: 24–43, default: 24 (auto) • SMPTE range: 0–127, default: 127 (auto) • Default range: 0–127, default: 0 (auto) Notes: - \"auto\" selects the profile’s default domain value."
+description = "PTP domain number separating independent PTP instances on one network. Allowed ranges differ per profile (0-127 for most, 24-43 for G.8275.1). With `auto`, the profile default applies (default profile/AES67: 0, G.8275.1: 24, SMPTE: 127)"
 [[menus.arguments]]
 name = "ptp-mode"
 type = "enum (ordinary-clock | transparent-clock)"
 enum_values = ["ordinary-clock", "transparent-clock"]
+description = "Clock mode of the instance: an ordinary clock (end device; grandmaster or slave) or a transparent clock (measures and forwards residence time without acting as an end device)"
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -50071,42 +50681,55 @@ type = "Command"
 [[menus.read_only]]
 name = "name"
 type = "string"
+description = "Name of the PTP profile instance"
 [[menus.read_only]]
 name = "clock-id"
 type = "string"
+description = "Identifier of the local clock"
 [[menus.read_only]]
 name = "priority1"
 type = "num"
+description = "The local priority1 value in the grandmaster election"
 [[menus.read_only]]
 name = "priority2"
 type = "num"
+description = "The local priority2 value in the grandmaster election"
 [[menus.read_only]]
 name = "i-am-gm"
 type = "bool"
+description = "Whether this device is the grandmaster clock"
 [[menus.read_only]]
 name = "gm-clock-id"
 type = "string"
+description = "Identifier of the grandmaster clock"
 [[menus.read_only]]
 name = "gm-priority1"
 type = "num"
+description = "The priority1 of the grandmaster clock"
 [[menus.read_only]]
 name = "gm-priority2"
 type = "num"
+description = "The priority2 of the grandmaster clock"
 [[menus.read_only]]
 name = "master-clock-id"
 type = "string"
+description = "Identifier of the master clock in the PTP path (the grandmaster clock or a boundary clock)"
 [[menus.read_only]]
 name = "slave-port"
 type = "iface_enum"
+description = "The local port connected towards the master clock"
 [[menus.read_only]]
 name = "freq-drift"
 type = "num"
+description = "Frequency drift between the master and the slave clock, in parts per billion"
 [[menus.read_only]]
 name = "offset"
 type = "num"
+description = "Time difference between the master and the slave clock, in nanoseconds"
 [[menus.read_only]]
 name = "slave-port-delay"
 type = "num"
+description = "Measured delay for packets between the two clocks, in nanoseconds (cable and transceiver lengths matter)"
 
 [[menus]]
 path = "/system/ptp/port"
@@ -50114,36 +50737,46 @@ type = "Directory"
 [[menus.flags]]
 name = "I"
 type = "inactive"
+description = "inactive"
 [[menus.flags]]
 name = "X"
 type = "disabled"
+description = "disabled"
 [[menus.arguments]]
 name = "ptp"
 type = "enum"
+description = "The [`/system/ptp`](./) profile instance this port joins"
 required = true
 [[menus.arguments]]
 name = "interface"
 type = "iface_enum"
+description = "Interface used for PTP (the hardware must support PTP timestamping — see the supported device list in the [guide](../../../system-information-and-utilities/precision-time-protocol))"
 required = true
 [[menus.arguments]]
 name = "role"
 type = "enum (bmca | master | slave)"
 enum_values = ["bmca", "master", "slave"]
+description = "Port role selection: `bmca` (best master clock algorithm decides between master and slave), or a fixed `master` or `slave`"
 [[menus.arguments]]
 name = "announce-interval"
 type = "num"
+description = "Log2 interval between announce messages in seconds (for example -3...4 for 0.125s-16s)"
 [[menus.arguments]]
 name = "sync-interval"
 type = "num"
+description = "Log2 interval between sync messages in seconds"
 [[menus.arguments]]
 name = "delay-interval"
 type = "num"
+description = "Log2 interval between delay request messages in seconds (E2E mode)"
 [[menus.arguments]]
 name = "pdelay-interval"
 type = "num"
+description = "Log2 interval between peer delay messages in seconds (P2P mode)"
 [[menus.arguments]]
 name = "vlan-id"
 type = "num"
+description = "VLAN ID under which the port participates in PTP when the interface carries tagged PTP traffic"
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -50183,21 +50816,27 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "interface"
 type = "iface_enum"
+description = "Interface of the PTP port"
 [[menus.read_only]]
 name = "state"
 type = "string"
+description = "Current port state (for example `listening`, `master` or `slave`)"
 [[menus.read_only]]
 name = "delay"
 type = "num"
+description = "Measured path delay on slave ports, in nanoseconds"
 [[menus.read_only]]
 name = "port-nr"
 type = "num"
+description = "Port number of this port within the PTP data set"
 [[menus.read_only]]
 name = "as-capable"
 type = "bool"
+description = "Whether the port is asCapable per IEEE 802.1AS"
 [[menus.read_only]]
 name = "neigh-freq-drift"
 type = "num"
+description = "Measured frequency drift of the neighbour clock, in parts per billion"
 
 [[menus]]
 path = "/system/reboot"
@@ -50248,57 +50887,75 @@ type = "Settings Directory"
 [[menus.read_only]]
 name = "uptime"
 type = "time"
+description = "Time interval passed since boot-up"
 [[menus.read_only]]
 name = "version"
 type = "string"
+description = "Installed RouterOS version number"
 [[menus.read_only]]
 name = "build-time"
 type = "string"
+description = "Installed RouterOS version build-time"
 [[menus.read_only]]
 name = "minimum-version"
 type = "string"
+description = "Minimum RouterOS version the board allows downgrading to (was factory-software)"
 [[menus.read_only]]
 name = "free-memory"
 type = "num"
+description = "The unused amount of RAM"
 [[menus.read_only]]
 name = "total-memory"
 type = "num"
+description = "Amount of installed RAM"
 [[menus.read_only]]
 name = "cpu"
 type = "string"
+description = "CPU model that is on the board"
 [[menus.read_only]]
 name = "cpu-count"
 type = "num"
+description = "Number of CPUs present on the system; each core is a separate CPU, Intel HT also counts as one CPU"
 [[menus.read_only]]
 name = "cpu-frequency"
 type = "num"
+description = "Current CPU frequency"
 [[menus.read_only]]
 name = "cpu-load"
 type = "num"
+description = "Percentage of used CPU resources, combined for all CPUs; per-core values are in [`/system/resource/cpu`](cpu)"
 [[menus.read_only]]
 name = "free-hdd-space"
 type = "num"
+description = "Free space on the hard drive or NAND"
 [[menus.read_only]]
 name = "total-hdd-space"
 type = "num"
+description = "Size of the hard drive or NAND"
 [[menus.read_only]]
 name = "write-sect-since-reboot"
 type = "num"
+description = "The number of sector writes to the drive/NAND since the router was last rebooted"
 [[menus.read_only]]
 name = "write-sect-total"
 type = "num"
+description = "The number of sector writes in total"
 [[menus.read_only]]
 name = "bad-blocks"
 type = "num"
+description = "Percentage of bad blocks on the NAND"
 [[menus.read_only]]
 name = "architecture-name"
 type = "string"
+description = "CPU architecture of this build (arm, arm64, x86, tile ...)"
 [[menus.read_only]]
 name = "board-name"
 type = "string"
+description = "RouterBOARD model name"
 [[menus.read_only]]
 name = "platform"
 type = "string"
+description = "Platform name"
 
 [[menus]]
 path = "/system/resource/cpu"
@@ -50322,7 +50979,7 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "cpu"
 type = "string"
-description = "Identification number of the CPU whose usage is shown."
+description = "Identification number of the CPU whose usage is shown"
 [[menus.read_only]]
 name = "load"
 type = "num"
@@ -50342,6 +50999,7 @@ type = "Directory"
 [[menus.flags]]
 name = "I"
 type = "inactive"
+description = "inactive: the device is present but not active"
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -50361,10 +51019,11 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "device-name"
 type = "string"
+description = "Name of the device as reported by its firmware (name column refinement)"
 [[menus.read_only]]
 name = "location"
 type = "string"
-description = "Device location in system topology"
+description = "Device location in the system topology"
 [[menus.read_only]]
 name = "parent"
 type = "enum"
@@ -50372,7 +51031,7 @@ description = "Parent bus or controller"
 [[menus.read_only]]
 name = "type"
 type = "enum (usb | pci | scsi | serial)"
-description = "Bus type of the device"
+description = "Bus type of the device: `usb`, `pci`, `scsi` or `serial`"
 [[menus.read_only]]
 name = "vendor"
 type = "string"
@@ -50412,6 +51071,7 @@ description = "Supported USB version"
 [[menus.read_only]]
 name = "manufacturer-reported-max-power"
 type = "string"
+description = "Maximum power draw reported by the device (for example a USB modem)"
 [[menus.read_only]]
 name = "irq"
 type = "num"
@@ -50419,9 +51079,11 @@ description = "Assigned interrupt number"
 [[menus.read_only]]
 name = "memory"
 type = "multi { range: composite { min: num , max: num } }"
+description = "Memory window assigned to the device"
 [[menus.read_only]]
 name = "io"
 type = "multi { range: composite { min: num , max: num } }"
+description = "I/O window assigned to the device"
 [[menus.read_only]]
 name = "owner"
 type = "string"
@@ -50437,7 +51099,7 @@ type = "Command"
 [[menus.arguments]]
 name = "allow"
 type = "bool"
-description = "Enable or disable USB device authorization"
+description = "Authorize the USB device (`yes`) or keep it unusable (`no`)"
 
 [[menus]]
 path = "/system/resource/hardware/usb-power-reset"
@@ -50449,11 +51111,11 @@ description = "Power-off duration before re-enabling USB"
 [[menus.arguments]]
 name = "bus"
 type = "num"
-description = "USB bus number"
+description = "USB bus number (as shown by `/system/resource/hardware`)"
 [[menus.arguments]]
 name = "slot"
 type = "num"
-description = "USB port/slot number on the bus"
+description = "USB slot number on the bus"
 
 [[menus]]
 path = "/system/resource/hardware/usb-settings"
@@ -50461,10 +51123,7 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "authorization"
 type = "bool"
-description = "Enable or disable USB device authorization"
-[[menus.arguments]]
-name = "numbers"
-type = "number"
+description = "Require per-device authorization before USB devices become usable (`authorization=yes`)"
 
 [[menus]]
 path = "/system/resource/irq"
@@ -50472,10 +51131,11 @@ type = "Directory"
 [[menus.flags]]
 name = "o"
 type = "read-only"
+description = "read-only (the CPU assignment is fixed by the hardware)"
 [[menus.arguments]]
 name = "cpu"
 type = "num"
-description = "Specifies which CPU is assigned to the IRQ.auto - picks a CPU based on the number of interrupts. Uses NAPI to optimize interrupts."
+description = "The CPU the IRQ is pinned to; `auto` lets the scheduler balance by interrupt counts"
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -50499,18 +51159,19 @@ description = "IRQ identification number"
 [[menus.read_only]]
 name = "users"
 type = "object { user: alt { interface: iface_enum , other: string } }"
-description = "Process assigned to IRQ"
+description = "Process/driver bound to the IRQ"
 [[menus.read_only]]
 name = "active-cpu"
 type = "num"
-description = "Shows active CPU in multicore systems."
+description = "The CPU currently serving the IRQ on multicore systems"
 [[menus.read_only]]
 name = "count"
 type = "num"
-description = "The number of interrupts. On ethernet interfaces interrupt=packet."
+description = "The number of interrupts handled (on ethernet interfaces interrupt = packet)"
 [[menus.read_only]]
 name = "per-cpu-count"
 type = "multi { count: num }"
+description = "Per-CPU interrupt counts as a list"
 
 [[menus]]
 path = "/system/resource/irq/rps"
@@ -50518,6 +51179,12 @@ type = "Directory"
 [[menus.flags]]
 name = "X"
 type = "disabled"
+description = "disabled entry (RPS steering off for this interface)"
+[[menus.arguments]]
+name = "interface"
+type = "iface_enum"
+description = "Interface whose receive path is steered"
+required = true
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -50534,9 +51201,6 @@ description = "Place a new item before the given item number (universal add prop
 name = "copy-from"
 type = "string"
 description = "Copy property values from an existing item (universal add property from Common commands)."
-[[menus.read_only]]
-name = "name"
-type = "iface_enum"
 
 [[menus]]
 path = "/system/resource/monitor"
@@ -50544,12 +51208,15 @@ type = "Command"
 [[menus.read_only]]
 name = "cpu-used"
 type = "num"
+description = "Total CPU usage across cores"
 [[menus.read_only]]
 name = "cpu-used-per-core"
 type = "multi { cpu-used: num }"
+description = "One line per core with its percent usage"
 [[menus.read_only]]
 name = "free-memory"
 type = "num"
+description = "Free memory in KiB"
 
 [[menus]]
 path = "/system/routerboard"
@@ -50737,10 +51404,6 @@ description = "Defines the maximum time the reset button can be held during a re
 [[menus.read_only]]
 name = "safe-cpu-frequency"
 type = "enum"
-
-[[menus]]
-path = "/system/routerboard/settings/keep-frequency"
-type = "Command"
 
 [[menus]]
 path = "/system/routerboard/upgrade"
@@ -51023,6 +51686,7 @@ description = "Username for the remote host. Defaults to the currently logged-in
 [[menus.arguments]]
 name = "port"
 type = "num"
+description = "TCP port the SSH server listens on. Default: 22."
 [[menus.arguments]]
 name = "src-address"
 type = "alt { ip: ipAddr , ip6: ip6Addr }"
@@ -51030,6 +51694,7 @@ description = "Source address to use when connecting. Supports both IPv4 and IPv
 [[menus.arguments]]
 name = "vrf"
 type = "enum"
+description = "VRF to make the connection in. Matches the remote host only inside that routing table."
 [[menus.arguments]]
 name = "output-to-file"
 type = "string"
@@ -51057,6 +51722,7 @@ description = "Password for the remote host. You should use SSH PKI authenticati
 [[menus.arguments]]
 name = "port"
 type = "num"
+description = "TCP port the SSH server listens on. Default: 22."
 [[menus.arguments]]
 name = "known-hosts-ignore"
 type = "bool"
@@ -51068,6 +51734,7 @@ description = "Source address to use when connecting. Supports both IPv4 and IPv
 [[menus.arguments]]
 name = "vrf"
 type = "enum"
+description = "VRF to run the command over; the connection is made inside that routing table."
 [[menus.arguments]]
 name = "output-to-file"
 type = "string"
@@ -51075,7 +51742,7 @@ description = "Write output to file instead of 'output' variable."
 [[menus.read_only]]
 name = "exit-code"
 type = "num"
-description = "Returns 0 if the command execution succeeded."
+description = "Exit code reported by the remote command shell; `0` when the command ran. A connection or authentication failure aborts `ssh-exec` itself instead of returning."
 [[menus.read_only]]
 name = "output"
 type = "string"
@@ -51492,6 +52159,210 @@ description = "Descriptive comment for the item (universal add/set property from
 name = "disabled"
 type = "bool"
 description = "Whether the item is disabled (universal add property from Common commands; distinct from the X disabled print flag)."
+
+[[menus]]
+path = "/tool/apptraffic"
+type = "Settings Directory"
+[[menus.arguments]]
+name = "enabled"
+type = "bool"
+
+[[menus]]
+path = "/tool/apptraffic/stats"
+type = "Directory"
+[[menus.arguments]]
+name = "comment"
+type = "string"
+description = "Descriptive comment for the item (universal add/set property from Common commands; omitted from upstream per-menu tables)."
+[[menus.arguments]]
+name = "disabled"
+type = "bool"
+description = "Whether the item is disabled (universal add property from Common commands; distinct from the X disabled print flag)."
+[[menus.arguments]]
+name = "place-before"
+type = "string"
+description = "Place a new item before the given item number (universal add property from Common commands for ordered item lists)."
+[[menus.arguments]]
+name = "copy-from"
+type = "string"
+description = "Copy property values from an existing item (universal add property from Common commands)."
+[[menus.read_only]]
+name = "application"
+type = "string"
+[[menus.read_only]]
+name = "category"
+type = "string"
+[[menus.read_only]]
+name = "bytes-out"
+type = "num"
+[[menus.read_only]]
+name = "percent-out"
+type = "num"
+[[menus.read_only]]
+name = "bytes-in"
+type = "num"
+[[menus.read_only]]
+name = "percent-in"
+type = "num"
+[[menus.read_only]]
+name = "bytes-out-minute"
+type = "num"
+[[menus.read_only]]
+name = "percent-out-minute"
+type = "num"
+[[menus.read_only]]
+name = "bytes-in-minute"
+type = "num"
+[[menus.read_only]]
+name = "percent-in-minute"
+type = "num"
+[[menus.read_only]]
+name = "bytes-out-ten-minute"
+type = "num"
+[[menus.read_only]]
+name = "percent-out-ten-minute"
+type = "num"
+[[menus.read_only]]
+name = "bytes-in-ten-minute"
+type = "num"
+[[menus.read_only]]
+name = "percent-in-ten-minute"
+type = "num"
+[[menus.read_only]]
+name = "bytes-out-hour"
+type = "num"
+[[menus.read_only]]
+name = "percent-out-hour"
+type = "num"
+[[menus.read_only]]
+name = "bytes-in-hour"
+type = "num"
+[[menus.read_only]]
+name = "percent-in-hour"
+type = "num"
+[[menus.read_only]]
+name = "bytes-out-day"
+type = "num"
+[[menus.read_only]]
+name = "percent-out-day"
+type = "num"
+[[menus.read_only]]
+name = "bytes-in-day"
+type = "num"
+[[menus.read_only]]
+name = "percent-in-day"
+type = "num"
+[[menus.read_only]]
+name = "bytes-out-week"
+type = "num"
+[[menus.read_only]]
+name = "percent-out-week"
+type = "num"
+[[menus.read_only]]
+name = "bytes-in-week"
+type = "num"
+[[menus.read_only]]
+name = "percent-in-week"
+type = "num"
+
+[[menus]]
+path = "/tool/apptraffic/stats/categories"
+type = "Directory"
+[[menus.arguments]]
+name = "comment"
+type = "string"
+description = "Descriptive comment for the item (universal add/set property from Common commands; omitted from upstream per-menu tables)."
+[[menus.arguments]]
+name = "disabled"
+type = "bool"
+description = "Whether the item is disabled (universal add property from Common commands; distinct from the X disabled print flag)."
+[[menus.arguments]]
+name = "place-before"
+type = "string"
+description = "Place a new item before the given item number (universal add property from Common commands for ordered item lists)."
+[[menus.arguments]]
+name = "copy-from"
+type = "string"
+description = "Copy property values from an existing item (universal add property from Common commands)."
+[[menus.read_only]]
+name = "category"
+type = "string"
+[[menus.read_only]]
+name = "bytes-out"
+type = "num"
+[[menus.read_only]]
+name = "percent-out"
+type = "num"
+[[menus.read_only]]
+name = "bytes-in"
+type = "num"
+[[menus.read_only]]
+name = "percent-in"
+type = "num"
+[[menus.read_only]]
+name = "bytes-out-minute"
+type = "num"
+[[menus.read_only]]
+name = "percent-out-minute"
+type = "num"
+[[menus.read_only]]
+name = "bytes-in-minute"
+type = "num"
+[[menus.read_only]]
+name = "percent-in-minute"
+type = "num"
+[[menus.read_only]]
+name = "bytes-out-ten-minute"
+type = "num"
+[[menus.read_only]]
+name = "percent-out-ten-minute"
+type = "num"
+[[menus.read_only]]
+name = "bytes-in-ten-minute"
+type = "num"
+[[menus.read_only]]
+name = "percent-in-ten-minute"
+type = "num"
+[[menus.read_only]]
+name = "bytes-out-hour"
+type = "num"
+[[menus.read_only]]
+name = "percent-out-hour"
+type = "num"
+[[menus.read_only]]
+name = "bytes-in-hour"
+type = "num"
+[[menus.read_only]]
+name = "percent-in-hour"
+type = "num"
+[[menus.read_only]]
+name = "bytes-out-day"
+type = "num"
+[[menus.read_only]]
+name = "percent-out-day"
+type = "num"
+[[menus.read_only]]
+name = "bytes-in-day"
+type = "num"
+[[menus.read_only]]
+name = "percent-in-day"
+type = "num"
+[[menus.read_only]]
+name = "bytes-out-week"
+type = "num"
+[[menus.read_only]]
+name = "percent-out-week"
+type = "num"
+[[menus.read_only]]
+name = "bytes-in-week"
+type = "num"
+[[menus.read_only]]
+name = "percent-in-week"
+type = "num"
+
+[[menus]]
+path = "/tool/apptraffic/stats/clear"
+type = "Command"
 
 [[menus]]
 path = "/tool/bandwidth-server"
@@ -52387,11 +53258,11 @@ description = "disabled"
 [[menus.arguments]]
 name = "name"
 type = "string"
-description = "The name of the Netwatch probe."
+description = "The name of the Netwatch probe; named probes are identified by it in log lines (unnamed probes log their type and host instead)."
 [[menus.arguments]]
 name = "host"
 type = "address (flags=46viD)"
-description = "The IP address or domain name of the server to be probed. See [address flags](../../cli-reference/#address-flags)"
+description = "The IP address or domain name of the server to be probed. Accepts an address with a VRF suffix (`192.0.2.1@vrf1`) and a link-local IPv6 address with an interface suffix (`fe80::1%ether1`). See [address flags](../../cli-reference/#address-flags)"
 required = true
 [[menus.arguments]]
 name = "type"
@@ -52406,7 +53277,7 @@ unset = true
 [[menus.arguments]]
 name = "interval"
 type = "time"
-description = "The time interval between probe tests. (default value: **10s**)"
+description = "The time interval between probe tests. (default value: **10s**, except `simple` probes: **60s**)"
 unset = true
 [[menus.arguments]]
 name = "timeout"
@@ -52476,12 +53347,12 @@ unset = true
 [[menus.arguments]]
 name = "early-success-detection"
 type = "bool"
-description = "Netwatch will not wait for all the packets to be processed to change probe status if it is already known that the host will be considered \"Down\". This parameter is specific to the [**ICMP**](../../diagnostics-monitoring-and-troubleshooting/netwatch#icmp-probe) probe type. (default value: **no**)"
+description = "Netwatch reports the \"Up\" state before the whole packet train is processed once the result is certain, for example when the remaining packets can no longer push the loss past `thr-loss-count`. This parameter is specific to the [**ICMP**](../../diagnostics-monitoring-and-troubleshooting/netwatch#icmp-probe) probe type. (default value: **no**)"
 unset = true
 [[menus.arguments]]
 name = "early-failure-detection"
 type = "bool"
-description = "Netwatch will not wait for all the packets to be processed to change probe status if it is already known that the host will be considered \"Down\". This parameter is specific to the [**ICMP**](../../diagnostics-monitoring-and-troubleshooting/netwatch#icmp-probe) probe type. (default value: **no**)"
+description = "Netwatch reports the \"Down\" state before the whole packet train is processed once failure is certain, for example as soon as the loss crosses `thr-loss-count`. This parameter is specific to the [**ICMP**](../../diagnostics-monitoring-and-troubleshooting/netwatch#icmp-probe) probe type. (default value: **no**)"
 unset = true
 [[menus.arguments]]
 name = "thr-max"
@@ -52553,7 +53424,7 @@ unset = true
 [[menus.arguments]]
 name = "dns-server"
 type = "address (flags=46)"
-description = "The DNS server that the probe should send its requests to; if not specified, it will use the value from `/ip/dns`. This parameter is specific to the [**DNS**](../../diagnostics-monitoring-and-troubleshooting/netwatch#dns-probe) probe type. See [address flags](../../cli-reference/#address-flags)"
+description = "The DNS server that the probe should send its requests to; if not specified, it will use the value from `/ip/dns`. The probe is paced by its own `timeout`, not by the `query-server-timeout` of `/ip/dns`. This parameter is specific to the [**DNS**](../../diagnostics-monitoring-and-troubleshooting/netwatch#dns-probe) probe type. See [address flags](../../cli-reference/#address-flags)"
 unset = true
 [[menus.arguments]]
 name = "comment"
@@ -52781,15 +53652,19 @@ type = "Command"
 name = "cpu"
 type = "enum (all | total) { all:0xfffffffe, total:0xfffffffd }"
 enum_values = ["all", "total"]
+description = "Selects the CPU view on multi-core systems: `total` (default) sums the usage of all cores, `all` shows separate rows per core, and an integer (`0` .. number of cores minus one) shows only that core."
 [[menus.read_only]]
 name = "name"
 type = "string"
+description = "The process classifier name (for example `wireless`, `console`). The per-core summary rows are named `cpu0`, `cpu1`, ..., and the summed view adds a `total` row."
 [[menus.read_only]]
 name = "cpu"
 type = "num"
+description = "The CPU core the row's usage belongs to (per-core view only)."
 [[menus.read_only]]
 name = "usage"
 type = "num"
+description = "Usage share of the CPU, in percent, measured since the previous output frame."
 
 [[menus]]
 path = "/tool/romon"
@@ -52821,30 +53696,39 @@ description = "active"
 [[menus.read_only]]
 name = "address"
 type = "macAddr"
+description = "RoMON ID (MAC address) of the discovered router"
 [[menus.read_only]]
 name = "cost"
 type = "num"
+description = "Accumulated cost of the RoMON path to the router (sum of the port costs configured with `/tool/romon/port`)"
 [[menus.read_only]]
 name = "hops"
 type = "num"
+description = "Number of RoMON hops between this router and the discovered router"
 [[menus.read_only]]
 name = "path"
 type = "multi { array-id, path-hop: macAddr }"
+description = "Path of RoMON IDs (MAC addresses) through which the discovery reply passed"
 [[menus.read_only]]
 name = "l2mtu"
 type = "num"
+description = "The smallest L2 MTU on the RoMON path"
 [[menus.read_only]]
 name = "identity"
 type = "string"
+description = "The RouterOS system identity of the discovered router"
 [[menus.read_only]]
 name = "version"
 type = "string"
+description = "The RouterOS version of the discovered router"
 [[menus.read_only]]
 name = "board"
 type = "string"
+description = "The board name of the discovered router"
 [[menus.read_only]]
 name = "uptime"
 type = "time"
+description = "The uptime of the discovered router"
 
 [[menus]]
 path = "/tool/romon/ping"
@@ -52852,48 +53736,63 @@ type = "Command"
 [[menus.arguments]]
 name = "id"
 type = "macAddr"
+description = "RoMON ID (MAC address) of the router to ping"
 [[menus.arguments]]
 name = "size"
 type = "num"
+description = "Size of the ping packet payload (default value: **32**)"
 [[menus.arguments]]
 name = "interval"
 type = "time"
+description = "Interval between pings (default value: **1s**)"
 [[menus.arguments]]
 name = "count"
 type = "num"
+description = "Number of pings to send (default value: **100**)"
 [[menus.read_only]]
 name = "seq"
 type = "num"
+description = "Ping sequence number"
 [[menus.read_only]]
 name = "host"
 type = "macAddr"
+description = "RoMON ID (MAC address) of the router that answered"
 [[menus.read_only]]
 name = "time"
 type = "time"
+description = "Round-trip time of the reply"
 [[menus.read_only]]
 name = "size"
 type = "num"
+description = "Size of the reply"
 [[menus.read_only]]
 name = "status"
 type = "string"
+description = "Failure reason (for example `timeout`); empty on success"
 [[menus.read_only]]
 name = "sent"
 type = "num"
+description = "Pings sent"
 [[menus.read_only]]
 name = "received"
 type = "num"
+description = "Replies received"
 [[menus.read_only]]
 name = "packet-loss"
 type = "num"
+description = "Percentage of lost pings"
 [[menus.read_only]]
 name = "min-rtt"
 type = "time"
+description = "Smallest round-trip time"
 [[menus.read_only]]
 name = "avg-rtt"
 type = "time"
+description = "Average round-trip time"
 [[menus.read_only]]
 name = "max-rtt"
 type = "time"
+description = "Largest round-trip time"
 
 [[menus]]
 path = "/tool/romon/port"
@@ -52913,7 +53812,7 @@ description = "dynamic"
 [[menus.arguments]]
 name = "interface"
 type = "iface_enum { all }"
-description = "Interface name or interface-list used for RoMON."
+description = "Interface that participates in RoMON; either a single interface or the built-in wildcard `all`. Master interfaces such as bridges are not accepted — name the physical ports. The preconfigured `all` entry cannot be added a second time, removed, enabled or disabled; only its `cost`, `forbid` and `secrets` can be changed."
 required = true
 [[menus.arguments]]
 name = "forbid"
@@ -52950,15 +53849,19 @@ type = "Command"
 [[menus.arguments]]
 name = "address"
 type = "macAddr"
+description = "RoMON ID (MAC address) of the router to connect to"
 [[menus.arguments]]
 name = "command"
 type = "string"
+description = "A command to run on the remote router instead of an interactive session"
 [[menus.arguments]]
 name = "user"
 type = "string"
+description = "The user account on the remote router to log in with"
 [[menus.arguments]]
 name = "output-to-file"
 type = "string"
+description = "Save the output of `command` to a file on the local router"
 
 [[menus]]
 path = "/tool/sms"
@@ -55019,24 +55922,30 @@ description = "invalid"
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Name of the traffic monitor entry"
 [[menus.arguments]]
 name = "interface"
 type = "iface_enum"
+description = "Interface whose rate is watched"
 required = true
 [[menus.arguments]]
 name = "traffic"
 type = "enum (transmitted | received) { transmitted:1, received:2 }"
 enum_values = ["transmitted", "received"]
+description = "Direction to watch: `transmitted` or `received`"
 [[menus.arguments]]
 name = "trigger"
 type = "enum (above | below | always) { above:1, below:2, always:3 }"
 enum_values = ["above", "below", "always"]
+description = "When `on-event` runs: when the rate crosses `above` the threshold, crosses `below` it, or `always` (on every poll)."
 [[menus.arguments]]
 name = "threshold"
 type = "num"
+description = "Traffic rate in bits per second that the trigger compares against"
 [[menus.arguments]]
 name = "on-event"
 type = "alt { script: string }"
+description = "Script run when the trigger condition is met"
 [[menus.arguments]]
 name = "comment"
 type = "string"

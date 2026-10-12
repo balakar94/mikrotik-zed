@@ -9,6 +9,8 @@ reported with a non-zero exit code:
   - L1 broken relative link, broken same-file anchor
   - L2 absolute `/docs/...` link
   - R1 page not reachable from `docs/index.md`
+  - recursion: nested pages (`docs/**/*.md`) are scanned, with the
+    directory/file allowlists still applying
 
 They also assert a clean temporary tree passes (no false positives) and
 that the real `docs/` tree stays clean via the actual CLI entrypoint.
@@ -38,11 +40,16 @@ def _load_gate():
 
 
 def _run_gate(monkeypatch, tmp_path: pathlib.Path, files: dict[str, str]) -> int:
-    """Write `files` under tmp_path/docs and run the gate against them."""
+    """Write `files` under tmp_path/docs and run the gate against them.
+
+    Keys may be nested paths (``sub/page.md``); parent directories are created.
+    """
     docs = tmp_path / "docs"
     docs.mkdir(parents=True, exist_ok=True)
     for name, text in files.items():
-        (docs / name).write_text(text, encoding="utf-8")
+        target = docs / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
     gate = _load_gate()
     # check_links/check_volatile/check_reachability resolve paths against
     # REPO_ROOT; point it at the fixture root so tmp files stay "in repo".
@@ -94,6 +101,66 @@ def test_unreachable_page_fails(tmp_path, monkeypatch, capsys):
     assert "orphan.md: not reachable from docs/index.md" in out, out
 
 
+def test_nested_page_is_scanned(tmp_path, monkeypatch, capsys):
+    """`docs/**/*.md`: a violation under a subdirectory must be reported."""
+    files = {
+        "index.md": CLEAN_INDEX,
+        "page.md": CLEAN_PAGE,
+        "export-fixtures/README.md": "# Exports\n\nPinned against 9.9.9 today.  \n",
+    }
+    code = _run_gate(monkeypatch, tmp_path, files)
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert "export-fixtures/README.md:3: trailing whitespace" in out, out
+    assert "pasted volatile literal `9.9.9`" in out, out
+
+
+def test_nested_page_counted_in_summary(tmp_path, monkeypatch, capsys):
+    """The summary counts nested pages, not only top-level ones."""
+    files = {
+        "index.md": CLEAN_INDEX,
+        "page.md": CLEAN_PAGE,
+        "adr/0001-note.md": "# Note\n\nBody.\n",
+    }
+    code = _run_gate(monkeypatch, tmp_path, files)
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "docs-check: 3 files, 0 problems" in out, out
+
+
+def test_allowlisted_dirs_skip_reachability_at_depth(tmp_path, monkeypatch, capsys):
+    """`adr/` and `export-fixtures/` stay exempt from R1 when nested."""
+    files = {
+        "index.md": CLEAN_INDEX,
+        "page.md": CLEAN_PAGE,
+        "adr/0001-note.md": "# Note\n\nBody.\n",
+        "export-fixtures/README.md": "# Exports\n\nBody.\n",
+    }
+    code = _run_gate(monkeypatch, tmp_path, files)
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "not reachable from docs/index.md" not in out, out
+
+
+def test_allowlisted_file_still_requires_index_link(tmp_path, monkeypatch, capsys):
+    """The file allowlist is path-scoped: top level only, index link required."""
+    files = {
+        "index.md": CLEAN_INDEX,
+        "page.md": CLEAN_PAGE,
+        "publishing-runbook.md": "# Runbook\n\nBody.\n",
+    }
+    code = _run_gate(monkeypatch, tmp_path, files)
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert "publishing-runbook.md: not linked from docs/index.md" in out, out
+
+    linked = dict(files)
+    linked["index.md"] = CLEAN_INDEX + "- [Runbook](publishing-runbook.md)\n"
+    code = _run_gate(monkeypatch, tmp_path, linked)
+    out = capsys.readouterr().out
+    assert code == 0, out
+
+
 def test_real_docs_tree_stays_clean():
     """The shipped docs must pass the real CLI exactly as `make docs-check` runs it."""
     result = subprocess.run(
@@ -105,3 +172,27 @@ def test_real_docs_tree_stays_clean():
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "0 problems" in result.stdout, result.stdout
+
+
+def test_docs_dir_outside_repo_root_is_a_usage_error(tmp_path, monkeypatch, capsys):
+    """`--docs` outside REPO_ROOT must fail with a message, not a traceback.
+
+    Every rule resolves paths against REPO_ROOT, so an out-of-tree docs dir
+    used to raise `ValueError` from `relative_to` deep inside `check_volatile`
+    (and would have reported every link as escaping the repo). It is a usage
+    error: exit 2, no traceback.
+    """
+    repo = tmp_path / "repo"
+    (repo / "docs").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    (outside / "docs").mkdir(parents=True)
+    (outside / "docs" / "index.md").write_text(CLEAN_INDEX, encoding="utf-8")
+
+    gate = _load_gate()
+    monkeypatch.setattr(gate, "REPO_ROOT", repo)
+    monkeypatch.setattr(sys, "argv", ["check_docs.py", "--docs", str(outside / "docs")])
+
+    assert gate.main() == 2
+    captured = capsys.readouterr()
+    assert "must be inside the repo root" in captured.err, captured.err
+    assert "Traceback" not in captured.err

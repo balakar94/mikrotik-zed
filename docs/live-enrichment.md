@@ -51,9 +51,9 @@ in `.zed/settings.example.json` (secret-free).
 Check first:
 
 ```bash
-python scripts/mikrotik-live-check.py --dry-run --host 192.168.88.1
+.venv/bin/python scripts/mikrotik-live-check.py --dry-run --host 192.168.88.1
 MIKROTIK_HOST=192.168.88.1 MIKROTIK_PASS=secret \
-  python scripts/mikrotik-live-check.py
+  .venv/bin/python scripts/mikrotik-live-check.py
 ```
 
 Or use the Zed task *MikroTik: Live — Check connectivity (opt-in)* (the

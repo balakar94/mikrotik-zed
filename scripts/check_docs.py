@@ -10,14 +10,15 @@ Checks:
   L1  Every relative `[text](target)` resolves on disk; `#anchor` matches a
       slugged heading in the target file (GitHub slug algorithm).
   L2  No absolute `/docs/...` links (use relative).
-  R1  Every `docs/*.md` (except allowlisted dirs/files) is reachable from
+  R1  Every `docs/**/*.md` (except allowlisted dirs/files) is reachable from
       `docs/index.md` via local links.
   V1  No pasted volatile literals (versions, 40-hex SHAs, menu counts,
       RouterOS snapshots) outside fenced code blocks — with allowlist for
       CHANGELOG/ADR history and explicit `<!-- volatile-ok -->` markers.
 
 Usage:
-  python3 scripts/check_docs.py [--docs DIR]
+  make docs-check   (prefers .venv)
+  .venv/bin/python scripts/check_docs.py [--docs DIR]
 
 Exit codes:
   0  docs valid
@@ -199,14 +200,17 @@ def check_reachability(docs: pathlib.Path, headings: dict[pathlib.Path, dict[str
             if resolved.suffix == ".md" and resolved.exists() and resolved not in seen:
                 seen.add(resolved)
                 frontier.append(resolved)
-    for md in sorted(docs.glob("*.md")):
+    for md in sorted(docs.rglob("*.md")):
         resolved = md.resolve()
         if resolved in seen:
             continue
+        rel_path = md.relative_to(docs)
         rel = md.relative_to(REPO_ROOT).as_posix()
-        if any(part in ALLOWLIST_DIRS for part in md.relative_to(docs).parts[:-1]):
+        # Directory-level allowlist: history/asset dirs (adr/, export-fixtures/)
+        # are excluded from index reachability at any nesting depth.
+        if any(part in ALLOWLIST_DIRS for part in rel_path.parts[:-1]):
             continue
-        if md.name in ALLOWLIST_FILES:
+        if rel_path.as_posix() in ALLOWLIST_FILES:
             # Must still be linked from index explicitly.
             index_text = index.read_text(encoding="utf-8")
             if md.name not in index_text and md.stem not in index_text:
@@ -224,11 +228,25 @@ def main() -> int:
     if not docs.is_dir():
         print(f"error: docs dir not found: {docs}", file=sys.stderr)
         return 2
+    # Every rule is repo-relative: L1 bounds links to the repository, R1 and
+    # the allowlists compare against repo paths, and the volatile ban exempts
+    # history by repo path. A docs tree outside REPO_ROOT therefore has no
+    # coherent meaning — reject it up front instead of raising ValueError
+    # inside a check.
+    try:
+        docs.resolve().relative_to(REPO_ROOT)
+    except ValueError:
+        print(
+            f"error: --docs must be inside the repo root ({REPO_ROOT.as_posix()}), "
+            f"got {docs.resolve().as_posix()}",
+            file=sys.stderr,
+        )
+        return 2
 
     errs: list[str] = []
-    files = sorted(p for p in docs.glob("*.md") if p.is_file())
+    files = sorted(p for p in docs.rglob("*.md") if p.is_file())
     if not files:
-        print("error: no docs/*.md files found", file=sys.stderr)
+        print("error: no docs/**/*.md files found", file=sys.stderr)
         return 2
 
     headings: dict[pathlib.Path, dict[str, int]] = {}

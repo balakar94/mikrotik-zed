@@ -21,7 +21,7 @@ else
 LOCKED := --locked
 endif
 
-.PHONY: help doctor generate generate-check test-grammar test-rust test-python test-all grammar-clone parse highlight extract sync sync-check check-manifest docs docs-check check-wasm-api build build-lsp check check-wasm check-lsp fmt fmt-fix clippy audit install install-deps install-tools install-lsp install-dev bump clean clean-generated validate validate-fast _check-tools _clean-artifacts
+.PHONY: help doctor generate generate-check test-grammar test-rust test-python test-all grammar-clone parse highlight extract sync sync-check check-manifest docs docs-check check-wasm-api build build-lsp check check-wasm check-lsp fmt fmt-fix clippy doc-check audit install install-deps install-tools install-lsp install-dev bump clean clean-generated validate validate-fast _check-tools _clean-artifacts
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -33,6 +33,9 @@ _check-tools:
 	@command -v rustup >/dev/null && rustup target list --installed | grep -q $(WASM_TARGET) || echo "hint: rustup target add $(WASM_TARGET)"
 	@command -v npx >/dev/null || echo "hint: npm install -g tree-sitter-cli (for grammar)"
 	@command -v $(PYTHON) >/dev/null || echo "hint: $(PYTHON) not found — Python 3.11+ needed (run 'make install-tools')"
+	@if command -v $(PYTHON) >/dev/null && ! $(PYTHON) -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then \
+		echo "hint: $(PYTHON) is $$($(PYTHON) --version 2>&1) — Python 3.11+ needed (tomllib); run 'make install-tools'"; \
+	fi
 	@test -d $(GRAMMAR_DIR) || echo "hint: $(GRAMMAR_DIR) missing — run 'make grammar-clone'"
 
 doctor: _check-tools ## Check local toolchain readiness (cargo, wasm target, npx, Python, grammar)
@@ -120,6 +123,9 @@ clippy: ## Lint with clippy (wasm + native, -D warnings)
 	cargo clippy $(LOCKED) --target $(WASM_TARGET) -- -D warnings
 	cargo clippy $(LOCKED) -p rsc-ls --all-targets -- -D warnings
 
+doc-check: ## Rustdoc: a broken intra-doc link fails the build (both crates incl. private items, -D warnings)
+	RUSTDOCFLAGS="-D warnings" cargo doc $(LOCKED) --no-deps --workspace --document-private-items
+
 audit: ## Audit dependencies (requires cargo-audit)
 	@command -v cargo-audit >/dev/null 2>&1 || (echo "install: cargo install cargo-audit" && false)
 	cargo audit
@@ -154,9 +160,23 @@ install-tools: ## Install toolchains: rustup+wasm32-wasip2, Python venv (.venv) 
 	fi
 	@if [ -f "$$HOME/.cargo/env" ]; then . "$$HOME/.cargo/env"; fi; rustup target add $(WASM_TARGET)
 	@if [ ! -x "$(VENV_DIR)/bin/python" ]; then \
-		echo "==> Creating Python venv at $(VENV_DIR)"; \
-		python3 -m venv $(VENV_DIR); \
+		PY=""; \
+		for c in python3.14 python3.13 python3.12 python3.11 python3 python; do \
+			if command -v "$$c" >/dev/null 2>&1 && "$$c" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then PY="$$c"; break; fi; \
+		done; \
+		if [ -z "$$PY" ]; then \
+			echo "error: no Python 3.11+ interpreter found (tomllib is stdlib from 3.11)" >&2; \
+			echo "       install one first (e.g. 'brew install python@3.13'), then re-run 'make install-tools'" >&2; \
+			exit 1; \
+		fi; \
+		echo "==> Creating Python venv at $(VENV_DIR) using $$PY ($$("$$PY" --version 2>&1))"; \
+		"$$PY" -m venv $(VENV_DIR); \
 	fi
+	@$(VENV_DIR)/bin/python -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null || { \
+		echo "error: $(VENV_DIR)/bin/python is $$($(VENV_DIR)/bin/python --version 2>&1) — Python 3.11+ required (tomllib)" >&2; \
+		echo "       remove $(VENV_DIR) and re-run 'make install-tools' to rebuild it" >&2; \
+		exit 1; \
+	}
 	$(VENV_DIR)/bin/pip install --upgrade pip
 	$(VENV_DIR)/bin/pip install -r requirements-dev.txt
 	@if [ ! -d "$(GRAMMAR_DIR)" ]; then \
@@ -219,9 +239,9 @@ install-dev: ## Point Zed to this directory (manual: Install Dev Extension)
 	@echo "Make sure rsc-ls binary is in PATH: make build-lsp && make install-lsp"
 
 # validate-fast is the lightweight pre-commit gate; validate is the full pre-push gate.
-validate: check-manifest docs-check generate-check check-wasm-api fmt clippy test-all extract ## Offline gate (manifest, docs, generate-check, wasm-api, fmt, clippy, tests, extract); run make sync-check separately for upstream drift
+validate: check-manifest docs-check generate-check check-wasm-api fmt clippy doc-check test-all extract ## Offline gate (manifest, docs, generate-check, wasm-api, fmt, clippy, rustdoc, tests, extract); run make sync-check separately for upstream drift
 	@bash scripts/check_extract_fresh.sh
 	@echo "All checks passed. Ready to commit."
 
-validate-fast: check-manifest check-wasm-api fmt clippy test-rust ## Quick gate (manifest, wasm-api, fmt, clippy, Rust tests)
+validate-fast: check-manifest check-wasm-api fmt clippy doc-check test-rust ## Quick gate (manifest, wasm-api, fmt, clippy, rustdoc, Rust tests)
 	@echo "Fast checks passed."

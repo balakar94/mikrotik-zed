@@ -39,7 +39,8 @@ are **not** used unless you opt in with `RSC_LS_ALLOW_PATH=1` — see
 [Configuration](docs/configuration.md#path-trust-model).
 
 Prerequisites: [docs/index.md#prerequisites](docs/index.md#prerequisites)
-(editor side, plus RouterOS REST prerequisites for Live/Deploy).
+(editor side, Python 3.11+ for the scripts, plus RouterOS REST
+prerequisites for Live/Deploy).
 
 ## Features
 
@@ -110,7 +111,7 @@ still needs `MIKROTIK_HOST`, but no password and no connection):
 
 ```bash
 MIKROTIK_HOST=192.168.88.1 \
-  python scripts/mikrotik-deploy.py demo.rsc --dry-run
+  .venv/bin/python scripts/mikrotik-deploy.py demo.rsc --dry-run
 ```
 
 REST execution is verified with a completion sentinel; `/import` output is
