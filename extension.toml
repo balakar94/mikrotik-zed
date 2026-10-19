@@ -1,6 +1,6 @@
 id = "mikrotik-rsc"
 name = "MikroTik RouterOS Script"
-description = "MikroTik RouterOS 7.20+ language support (data 7.23.2) with highlighting, completions, hover docs, diagnostics & deploy."
+description = "MikroTik RouterOS 7.20+ language support with highlighting, completions, source-linked hover docs, diagnostics and deploy."
 version = "0.7.0"
 schema_version = 1
 authors = ["balakar94"]

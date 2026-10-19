@@ -82,6 +82,8 @@ Two sources merged and sorted by `startLine`, emitted only when `startLine < end
 
 Order: 1) menu path (`### /ip/address` + `Type:` + `Arguments:` + `Flags:`) 2) property (`**address** Type: ipPrefix`) 3) flag (`**X** — disabled`) 4) standard verb (`**add** — Standard RouterOS command`). Returns `Hover{contents:{kind:"markdown",value}}` or `None`.
 
+Evidence: menu and property cards append the official source page they were published from (`source_url`, restricted to `manual.mikrotik.com`), read-only cards explain the output-column role and link to the menu's page, and rows whose evidence is not the menu's CLI-reference page (narrative enrichments, curated values, generics) name their own source instead. A menu whose `coverage` is not `reference` (including an unrecognized marker, which counts as incomplete) adds `Published property coverage is incomplete; unlisted properties may be valid.` Markdown in a source URL cannot inject links.
+
 ### Signature Help (`textDocument/signatureHelp`, `compute_signature_help` in `signature.rs`)
 
 Adapted to RouterOS's named-parameter CLI (no positional parentheses): ONE `SignatureInformation` describes the resolved `/menu verb` command, and every `ParameterInformation` is a `name=type` segment of that single-line label, addressed by `[start, end]` BYTE offsets into the label string. Properties come from the menu's `arguments` only (flags and `read_only` entries are never typed as `name=value`, so listing them would mislead), ordered REQUIRED FIRST then alphabetically and capped at 40 (`MAX_SIGNATURE_PROPERTIES`). The verb is anchored by `resolve_verb_token`, which mirrors `parse_line`'s sub-menu walk but takes the FIRST bare word after the path region — while a partial property is being typed (`/tool fetch add che`) `parse_line.command` already points at that fragment, which would break activeParameter detection. `activeParameter` comes from the newest quote-aware token after the verb the cursor has reached: its KEY before `=` matches a property exactly, else by unique prefix (`che` → check-certificate only when unambiguous; ambiguous prefixes highlight nothing), and a cursor INSIDE a quoted value keeps its key active because tokenization keeps `key="…"` as one token. Anti-noise gating (null result): untracked URI, no logical line covering the cursor, no resolvable menu, no verb on the line, or a menu with zero arguments. Context resolution reuses the diagnostics pipeline (`logical_lines` join once per request → `covering_logical_line` → `parse_line` → `menu_by_path`; cursor mapped via `LogicalLine::logical_offset_from_physical`); malformed params → `-32602`.
@@ -103,7 +105,7 @@ Returns `quickfix` actions ("Did you mean 'X'?") for client-echoed diagnostics w
 | # | Code | Severity | When | Example |
 |---|------|----------|------|---------|
 | 1 | `unknown-menu` | Warning (2) | `path` not in `menu_by_path` nor `child_names_by_parent`, not prefix of any menu | `/foo/bar add` → `Unknown menu '/foo/bar'` |
-| 2 | `unknown-property` | Warning (2) | key not in `arguments ∪ flags ∪ read_only` for known menu | `/ip/address add bad=1` → `Unknown property 'bad' for '/ip/address'` |
+| 2 | `unknown-property` | Warning (2), Hint (4) under incomplete coverage | key not in `arguments ∪ flags ∪ read_only` for known menu; with `coverage` ≠ `reference`, or no CLI-reference table at all, the finding is a Hint and says the coverage is incomplete (a marker outside the published vocabulary counts as incomplete too) | `/ip/address add bad=1` → `Unknown property 'bad' for '/ip/address'` |
 | 3 | `missing-required` | Warning (2) | `Directory`/`Settings Directory` + verb `add`/`set` missing `arg.required` (breaks `/import`) | `/ip/address add` → `Missing required property 'address' for '/ip/address add'` |
 | 4 | `duplicate-property` | Warning (2) | same key twice (range = second occurrence) | `address=1.1.1.1 address=2.2.2.2` → `Duplicate property 'address'` |
 | 5 | `invalid-enum-value` | Warning (2) | `arg_type` starts with `enum` and value not in `enum (a \| b \| ...)` (breaks `/import`); typo’d values append `Did you mean …?` | `chain=invalid` → `Invalid value 'invalid' for 'chain' (expected one of: input \| forward \| output)` |
@@ -111,6 +113,11 @@ Returns `quickfix` actions ("Did you mean 'X'?") for client-echoed diagnostics w
 | 7 | `unclosed-quote` | Error (1) | quoted string whose opening quote never terminates before EOF; error points at the OPENING quote, rest of document treated as string content (no cascade); same walk/cap as rule 6 | `:put "oops` → `Quoted string opened here is never closed` |
 
 All diagnostics: `source="rsc-ls"`. Types: `Diagnostic{range, severity, code, source, message}` with `Range{Position{line,character}}`.
+
+The `non-unsettable-property` Hint (rule 8 in `diagnostics_unset*`) fires only
+when the argument states `unset_known = true` and `unset = false`: a missing
+marker means the capability is unknown, so the server stays silent instead of
+claiming the property is fixed.
 
 ## Live Enrichment (0.5.3)
 

@@ -4,6 +4,23 @@
 
 ### Added
 
+- **Source-linked hover evidence (`lsp/src/hover.rs`, `data/commands.toml`)**:
+  menu and property cards link to the official page they were published from,
+  narrative enrichments, curated values and generic properties name their own
+  evidence, and read-only cards explain their output-column role.
+- **Extraction coverage report and regression gate
+  (`scripts/extraction_quality.py`, `scripts/extract_commands.py`)**: `--report`
+  writes a deterministic JSON snapshot (per menu: property names, coverage
+  marker, source URL, properties without evidence; per table: source, heading,
+  line, candidate and resolved menus, unresolved reason); `--baseline …
+  --fail-on-regression` compares per menu before writing command data —
+  removed menus or properties, a lost or changed source URL, a coverage
+  downgrade, properties that lost their source, and newly unresolved tables —
+  and `--check` verifies the tracked table without writing. CI uploads the
+  report even when verification fails.
+- **`--allow-missing-index` (`scripts/extract_commands.py`)**: explicit,
+  degraded extraction without `llms.txt`, for recovery and tests. By default a
+  missing index is an error, because it would drop every source URL silently.
 - **`make doc-check` gate**: `RUSTDOCFLAGS="-D warnings" cargo doc --locked
   --no-deps --workspace --document-private-items` fails the build on a broken
   intra-doc link (both crates, private items included), wired into
@@ -27,6 +44,32 @@
 
 ### Changed
 
+- **Property coverage markers (`lsp/src/menus.rs`, `lsp/src/diagnostics.rs`)**:
+  `coverage` is now a validated vocabulary (`reference`, `partial`, `unknown`),
+  and a marker outside it degrades to `Coverage::Unrecognized` — incomplete,
+  never complete. Partial or unknown coverage downgrades unknown-property
+  findings to hints and explains the uncertainty in hover; syntax findings keep
+  their normal severity.
+- **`unset` capability is stated, never inferred (`data/commands.toml`,
+  `lsp/src/menus.rs`)**: every generated argument carries `unset_known`, and the
+  loader's default is fail-closed, so unknown support produces no
+  non-unsettable hint instead of claiming the property is fixed.
+- **Source attribution through the index (`scripts/extract_commands.py`)**:
+  indexed source-page context survives property fragments, `---` boundaries are
+  only accepted when they lead to a heading, fenced documentation examples can
+  no longer invent menus or steal ownership, and an unrelated menu documenting
+  the same property name no longer proves coverage. Truncated enum lists are
+  never embedded as complete members.
+- **Sync validates before replacing (`scripts/sync_llms.py`)**: unusable
+  HTTP-success bodies (empty, HTML error page, invalid UTF-8, missing
+  structure, halved section count, oversized) are refused or retried, sources
+  and the provenance manifest commit as one recoverable batch with rollback on
+  an ordinary rename failure, and an index-only change now requests extraction
+  because the index supplies every source URL.
+- **Generated header**: `data/commands.toml` records the `llms.txt` hash next to
+  the source hash, so a snapshot can be traced to both upstream documents.
+- **Extension listing description (`extension.toml`)**: drop the stale pinned
+  command-data version, keep the supported RouterOS line.
 - **RouterOS provenance label renamed (`scripts/sync_llms.py`,
   `scripts/extract_commands.py`, `data/commands.toml`, `lsp/src/menus.rs`)**:
   the generated header and the manifest field no longer present a manual

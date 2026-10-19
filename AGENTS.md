@@ -22,7 +22,7 @@ Glue: `src/lib.rs` is the WASM shim Zed loads — zero language logic; resolves 
 4. **All Rust must compile for `wasm32-wasip2`.** In the shim (`src/`): no wasm-unimplemented std APIs (`std::process::id`, `std::net::*`, `std::thread::spawn`, `std::process::Command` — gate: `make check-wasm-api`), no `std::env::var`, and no `cfg(...)` in `src/lib.rs` — use `zed_extension_api::current_platform()` and `Worktree` methods.
 5. **Edit inputs, not generated outputs.** Generated: `src/parser.c`, `data/commands.toml`, `grammars/rsc/src/*`. Change the generator input, then regenerate.
 6. **Two independent sources of truth:** grammar semantics from `grammars/rsc/grammar.js`; command data from upstream docs via `llms-full.txt` → `data/commands.toml`. Never couple them.
-7. **The LSP stays defensive:** `MAX_MESSAGE_SIZE` 10 MiB / `MAX_HEADER_SIZE` 32 KiB / `MAX_DOC_SIZE` 5 MiB / `MAX_DOCS` 100, bounded diagnostics, strict `file://` URI validation, no filesystem access beyond its cache. Live is opt-in, in-memory only — `LIVE_NEGATIVE_TTL_SECS` 15s, `LIVE_MAX_HOSTS` 4, `LIVE_CUSTOM_RESOURCES_MAX` 8 (`RSC_LS_LIVE_RESOURCES` JSON), SSRF deny (`169.254.169.254`), per-request 5s / blocking 2s (clamped 1..30s).
+7. **The LSP stays defensive:** `MAX_MESSAGE_SIZE` 10 MiB / `MAX_HEADER_SIZE` 32 KiB / `MAX_DOC_SIZE` 5 MiB / `MAX_DOCS` 100, bounded diagnostics, strict `file://` URI validation, no filesystem access beyond its cache. Dataset evidence is fail-closed: `coverage`/`source_kind` are closed vocabularies and an unrecognized marker degrades to incomplete; `unset_known` defaults to unknown so a missing key never claims a property is fixed. Live is opt-in, in-memory only — `LIVE_NEGATIVE_TTL_SECS` 15s, `LIVE_MAX_HOSTS` 4, `LIVE_CUSTOM_RESOURCES_MAX` 8 (`RSC_LS_LIVE_RESOURCES` JSON), SSRF deny (`169.254.169.254`), per-request 5s / blocking 2s (clamped 1..30s).
 8. **Everything persisted is English** — code, comments, docs, commits, PRs.
 9. Apache-2.0 `LICENSE` stays in the repo root.
 10. **`extension.toml` carries only schema-known keys** — validated by `make check-manifest`; unknown keys are silently ignored by Zed and mask typos.
@@ -41,7 +41,8 @@ First clone: `make grammar-clone` (pinned `rev`) + `make install` (`SKIP_SYSTEM=
 | `src/**` (shim) | `make check-wasm-api check-wasm clippy`, then _Install Dev Extension_ in Zed, watch `zed: open log` |
 | `grammars/rsc/grammar.js` | In `grammars/rsc/`: `npx tree-sitter generate && npx test`; bump pointer (see _Release_) |
 | `languages/rsc/highlights.scm` | Copy to `grammars/rsc/queries/highlights.scm` (only mirrored file; gate: `test_highlights_deduped`), then smoke-test in Zed |
-| Extraction / `llms-full.txt` | `make extract`, diff `data/commands.toml`, spot-check vs upstream CLI reference |
+| Extraction / `llms-full.txt` | `make extract EXTRACT_ARGS='--check'`, diff `data/commands.toml`, spot-check vs upstream CLI reference; for provenance changes also `--report` + `--baseline` |
+| `scripts/**` (pipeline) | `make test-python`, `make validate` |
 | `docs/**` | `make docs-check` (hygiene, links, index reachability, volatile-fact ban) |
 
 `brackets`/`indents`/`outline.scm` are Zed-side only; `injections.scm` lives grammar-side only (intentionally empty, wired via `tree-sitter.json`).
@@ -50,6 +51,7 @@ First clone: `make grammar-clone` (pinned `rev`) + `make install` (`SKIP_SYSTEM=
 
 - Completion is relevance-ranked with `textEdit`: deterministic `sortText` tiers (`0!live_` device truth first), `filterText` never filters; ranks stay stable before truncating to `MAX_COMPLETION_ITEMS`.
 - Hover cards share `text_util` caps/dedup; typed validators + `SuggestBudget` bound diagnostic quick-fixes; symbols/navigation/folding are hard-capped — `lsp/src/caps.rs` is the single source of truth. Tests: `lsp/src/tests/<module>_<aspect>.rs`; perf budgets in `perf.yml` (schedule-only).
+- Dataset evidence is closed and fail-closed: `coverage` (`reference`/`partial`/`unknown`) and `source_kind` are validated vocabularies, an unrecognized marker degrades to incomplete, and `unset_known` defaults to unknown so a missing key never claims a property is fixed. Hover/diagnostics messages must match these semantics.
 - Privileged transport settings apply only with `RSC_LS_ALLOW_SETTINGS_TRANSPORT=1` (env always wins; legacy shim off by default). Never log secrets.
 
 ## Comment style (`lsp/` Rust)
@@ -61,10 +63,13 @@ First clone: `make grammar-clone` (pinned `rev`) + `make install` (`SKIP_SYSTEM=
 
 ## Data pipeline
 
-`manual.mikrotik.com ──sync_llms.py──▶ llms-full.txt (untracked) ──extract_commands.py──▶ data/commands.toml (tracked, generated) ──include_str!()──▶ rsc-ls`
+`manual.mikrotik.com ──sync_llms.py──▶ llms.txt + llms-full.txt (untracked) ──extract_commands.py──▶ data/commands.toml (tracked, generated) ──include_str!()──▶ rsc-ls`
 
 - Regenerate: `make sync` then `make extract`. CI gates staleness via a timestamp-agnostic `data/commands.toml` diff; hard-fails only when extraction inputs changed and the upstream fetch failed.
-- `data/commands.toml` header (version, UTC timestamp, source SHA256) + `data/upstream-docs.toml` provenance manifest are generated — never strip or hand-edit either.
+- `llms.txt` is an input, not a nicety: it holds the title→URL index that attributes every table to its page, so extraction aborts when it is missing (`--allow-missing-index` is recovery/tests only). An index-only sync therefore still needs `make extract`.
+- `scripts/extraction_quality.py` owns the shared vocabulary and the report schema: `--report` snapshots per-menu provenance and coverage, `--baseline … --fail-on-regression` rejects removed menus/properties, lost or changed source URLs, coverage downgrades and new unresolved tables. Compare per menu, never by aggregate; baselines from an older schema are rejected.
+- Sync validates before replacing anything (HTML error pages, invalid UTF-8, oversized bodies, halved section counts) and commits both sources plus the manifest as one recoverable batch.
+- `data/commands.toml` header (era hint, UTC timestamp, source + index SHA256) + `data/upstream-docs.toml` provenance manifest are generated — never strip or hand-edit either.
 - Weekly `docs-drift` workflow re-checks upstream, notifies via the `upstream-docs` labeled issue (auto-closed on re-sync). Verify against the CLI reference or `/export` on a real router.
 
 ## Volatile facts — look up, never quote
@@ -74,6 +79,7 @@ First clone: `make grammar-clone` (pinned `rev`) + `make install` (`SKIP_SYSTEM=
 | Pinned grammar revision | `extension.toml` → `[grammars.rsc] rev` |
 | Command/menu coverage + RouterOS era hint | header of `data/commands.toml` (the hint is the highest `RouterOS vX.Y` mention upstream, not the manual's version) |
 | Upstream doc version | header of `llms-full.txt` |
+| Report/baseline schema + dataset vocabularies | `scripts/extraction_quality.py` (Python), `lsp/src/menus.rs` (`Coverage`) |
 | Make targets | `make help` |
 | Test counts / status | run the suite (`lsp/src/tests/`, `tests/`) |
 | MSRV / toolchain / WASM target | `rust-toolchain.toml` |
@@ -85,7 +91,7 @@ First clone: `make grammar-clone` (pinned `rev`) + `make install` (`SKIP_SYSTEM=
 - `languages/rsc/` — Zed queries + `config.toml` + `tasks.json`
 - `lsp/src/` — `rsc-ls`: server (+ `server_proto`/`server_publish`), completion, hover, diagnostics, symbols, navigation, folding, live (`live_config`/`live_net`/`live_cache`/`live_fetch` behind the `live.rs` facade), `caps.rs`, `tests/`
 - `src/lib.rs` — WASM shim; `data/` — `commands.toml` (generated) + `upstream-docs.toml` (provenance)
-- `scripts/` — sync/extract, `publish_grammar.py`, deploy + live-check (`_mikrotik_shared.py`: SSRF/TLS/redaction parity), `check_docs.py` (docs gate)
+- `scripts/` — sync/extract (`extraction_quality.py`: attribution + report schema), `publish_grammar.py`, deploy + live-check (`_mikrotik_shared.py`: SSRF/TLS/redaction parity), `check_docs.py` (docs gate)
 - `tests/` — Python suite; `docs/` — user docs (`index.md` entrypoint), runbook, `adr/`; `.agents/skills/` — deep dives (below)
 
 Untracked locals: `llms.txt`, `llms-full.txt` (`make sync`), `extension.wasm`, build output. Validate Live REST first: `scripts/mikrotik-live-check.py`.

@@ -112,10 +112,13 @@ If `sync` reports `unchanged`, `commands.toml` header timestamp still updates �
 # RouterOS era hint: <highest "RouterOS vX.Y" mention upstream; not the manual version>
 # Generated: 2026-08-22T16:37:40.696074Z
 # Source hash (sha256[:16]): dead70b6f2db093f
+# Index hash (sha256[:16]): a1b2c3d4e5f60011
 
 [[menus]]
 path = "/ip/firewall/filter"
 type = "Directory"
+coverage = "reference"
+source_url = "https://manual.mikrotik.com/docs/cli-reference/ip/firewall/filter.md"
 [[menus.flags]]
 name = "X"
 description = "disabled"
@@ -124,13 +127,42 @@ name = "chain"
 type = "enum (input | forward | output)"
 enum_values = ["input", "forward", "output"]
 required = true
+unset_known = true
 description = "Chain name"
 [[menus.read_only]]
 name = "bytes"
 type = "num"
 ```
 
-Per menu: `path`, `type` (`Directory`|`Command`|`Settings Directory`), `flags[]`, `arguments[]` (`required`/`unset`), `read_only[]`. Built by `generate_toml()`. Embedded in `rsc-ls` at compile time via `include_str!()` — no runtime file read.
+Per menu: `path`, `type` (`Directory`|`Command`|`Settings Directory`), `coverage`
+(`reference`|`partial`|`unknown`), `source_url`, `flags[]`, `arguments[]`
+(`required`/`unset`/`unset_known`), `read_only[]`. Entries may carry
+`source_kind`, `source_url`, `description_source_url` and `values_source_kind`
+when their evidence is not the menu's own CLI-reference page. Built by
+`generate_toml()`. Embedded in `rsc-ls` at compile time via `include_str!()` —
+no runtime file read.
+
+## Source Attribution
+
+`scripts/extraction_quality.py` is the shared home of the vocabularies and the
+report schema; `lsp/src/menus.rs` mirrors the Rust side.
+
+- `llms.txt` supplies the unique title→URL index. Extraction **aborts** when it
+  is missing (`--allow-missing-index` is recovery/tests only), because without
+  it every `source_url` would silently disappear.
+- Property fragments keep the page they were published on. A `---` separator
+  only resets ownership when it leads directly to a heading, and fenced
+  examples never create menus or steal a page.
+- Menus get `coverage = "reference"` (complete table), `"partial"` (at least
+  one table stayed unresolved) or `"unknown"` (hierarchy-only, no page).
+  `reference` means the CLI reference documents this menu; it is not a promise
+  that upstream documentation is complete.
+- Arguments always state `unset_known`; `false` means the capability is
+  unknown, never "known to be non-unsettable". Generics, narrative
+  enrichments and curated rows state their own `source_kind` and usually have
+  no capability (`unset_known = false`).
+- Generator-side guards: a `coverage` or `source_kind` outside the vocabulary
+  aborts the run instead of weakening hover or diagnostics.
 
 ## Extraction Logic
 
@@ -152,8 +184,15 @@ rg 'path = "/ip/firewall/filter"' data/commands.toml
 rg 'path = "/interface/bridge"' data/commands.toml
 rg 'path = "/certificate"' data/commands.toml
 rg 'type = ""' data/commands.toml | wc -l          # minimal empty types
-make extract && git diff --exit-code data/commands.toml  # staleness
+make extract EXTRACT_ARGS='--check'                # staleness, writes nothing
+make extract EXTRACT_ARGS='--report /tmp/before.json'   # provenance snapshot
+make extract EXTRACT_ARGS='--baseline /tmp/before.json --fail-on-regression'
 ```
+
+The baseline gate compares per menu (removed menus/properties, lost or changed
+source URL, coverage downgrade, properties that lost their source, new
+unresolved tables) and refuses to write command data when it fires. Baselines
+from an older report schema are rejected — regenerate instead of editing them.
 
 ## Testing
 
@@ -163,10 +202,12 @@ make extract && git diff --exit-code data/commands.toml  # staleness
 .venv/bin/python -m pytest tests/test_extract_commands.py -v
 .venv/bin/python -m pytest tests/test_extract_commands.py::TestShouldInclude -v
 .venv/bin/python -m pytest tests/test_extract_commands.py::TestParseLlmsFull -v
+.venv/bin/python -m pytest tests/test_extraction_quality.py -v     # attribution + report
+.venv/bin/python -m pytest tests/test_commands_coverage.py -v      # artifact invariants
 make test-python                                    # full suite
 ```
 
-Classes: `TestShouldInclude` (CLI regex), `TestEscapeTomlString`, `TestCleanType`, `TestGenerateToml`, `TestExtractHeadingPath`, `TestParseLlmsFull` (flags/args/readonly, mandatory/unset), `TestRouterosEraHint` (manifest sentinel + `"unknown"` fallback), `TestWriteIfChanged` (artifact mode + write-if-changed). When fixing a missing menu, add a `TestParseLlmsFull` case with a minimal `llms-full.txt` snippet.
+Classes: `TestShouldInclude` (CLI regex), `TestEscapeTomlString`, `TestCleanType`, `TestGenerateToml`, `TestExtractHeadingPath`, `TestParseLlmsFull` (flags/args/readonly, mandatory/unset), `TestRouterosEraHint` (manifest sentinel + `"unknown"` fallback), `TestWriteIfChanged` (artifact mode + write-if-changed). When fixing a missing menu, add a `TestParseLlmsFull` case with a minimal `llms-full.txt` snippet. `tests/test_extraction_quality.py` covers attribution traps, the index requirement, the report/baseline contract and sync validation; `tests/test_commands_coverage.py::TestProvenanceAndCapabilityContract` pins the committed artifact's vocabularies and the audited source pages.
 
 ## Common Pitfalls
 
@@ -180,6 +221,10 @@ Classes: `TestShouldInclude` (CLI regex), `TestEscapeTomlString`, `TestCleanType
 | `sync --check` exit 2 in CI | "updates available" | Run `sync && extract` and commit |
 | Duplicate/unstable diff | Dedup/sort missing | Keep the dedup+sort in `generate_toml()` |
 | Stale `extension.toml` rev | Wrong grammar in Zed | `.venv/bin/python scripts/publish_grammar.py` (grammar skill) |
+| `Error: …/llms.txt not found` | Extraction aborts | `make sync`; `--allow-missing-index` only for local recovery/tests |
+| `unknown source_kind` / `unknown coverage marker` | Generator aborts | Fix the value in `extract_commands.py`; the vocabularies are closed on purpose |
+| Missing `unset_known` in the artifact | LSP treats capability as unknown | Regenerate with `make extract` (never hand-add the key) |
+| `unsupported report schema` on a baseline | Older report | Regenerate the baseline; never edit its schema number |
 
 ## Agent Checklist — Before Committing
 
@@ -188,7 +233,7 @@ Classes: `TestShouldInclude` (CLI regex), `TestEscapeTomlString`, `TestCleanType
 - [ ] `rg -c '^\[\[menus\]\]' data/commands.toml` matches expected
 - [ ] Spot-check: `rg 'path = "/<root>' data/commands.toml`
 - [ ] `.venv/bin/python -m pytest tests/test_extract_commands.py -v` green
-- [ ] `make extract && git diff --exit-code data/commands.toml` clean
+- [ ] `make extract EXTRACT_ARGS='--check'` clean (and `--report`/`--baseline` when provenance changed)
 - [ ] `cargo test -p rsc-ls` if LS embeds `commands.toml`
 - [ ] No manual `commands.toml` edits without `# manual:` comment
 - [ ] Commit `llms-full.txt` + `data/commands.toml` together if synced
