@@ -172,6 +172,8 @@ fn test_enum_members_fallback_empty_on_truncated_type() {
         description: String::new(),
         required: false,
         unset: false,
+        unset_known: true,
+        source: Default::default(),
     };
     assert!(arg.enum_members().is_empty());
 
@@ -271,6 +273,8 @@ fn test_ubit_members_method_delegates_to_parser() {
         description: String::new(),
         required: false,
         unset: true,
+        unset_known: true,
+        source: Default::default(),
     };
     assert_eq!(arg.ubit_members(), vec!["pap", "chap"]);
 }

@@ -30,6 +30,10 @@ pub(crate) struct RawMenuEntry {
     arguments: Vec<RawArgEntry>,
     #[serde(default)]
     read_only: Vec<RawArgEntry>,
+    #[serde(default = "reference_coverage")]
+    coverage: Coverage,
+    #[serde(flatten)]
+    source: SourceInfo,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,8 +50,77 @@ struct RawArgEntry {
     description: String,
     #[serde(default)]
     required: bool,
+    /// Whether the publisher supports removing the property with `unset`.
+    /// Only meaningful when `unset_known` is true.
     #[serde(default)]
     unset: bool,
+    /// States whether `unset` support is known. The generator writes the key
+    /// on every argument it emits, and the default here stays false so a
+    /// missing marker reads as unknown, never as a non-unsettable claim.
+    #[serde(default)]
+    unset_known: bool,
+    #[serde(flatten)]
+    source: SourceInfo,
+}
+
+/// Published evidence for a menu or property; absent metadata stays absent.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SourceInfo {
+    #[serde(default)]
+    pub source_kind: String,
+    #[serde(default)]
+    pub source_url: String,
+    #[serde(default)]
+    pub description_source_url: String,
+    #[serde(default)]
+    pub values_source_kind: String,
+}
+
+/// Published property coverage for a menu.
+///
+/// The generator refuses to emit a marker outside the published vocabulary,
+/// but the loader stays tolerant: an unrecognized value degrades to
+/// [`Coverage::Unrecognized`] and counts as incomplete, so a dataset typo can
+/// never restore claim-making severity by accident.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Coverage {
+    /// Property table came from the published CLI reference in full.
+    Reference,
+    /// At least one source table for this menu stayed unresolved.
+    Partial,
+    /// Hierarchy-only menu: no reference table documents its properties.
+    Unknown,
+    /// Marker outside the published vocabulary; treated as incomplete.
+    Unrecognized(String),
+}
+
+impl Coverage {
+    /// True only for an explicit `reference` marker.
+    pub fn is_complete(&self) -> bool {
+        matches!(self, Coverage::Reference)
+    }
+}
+
+impl<'de> Deserialize<'de> for Coverage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        match raw.as_str() {
+            "reference" => Ok(Coverage::Reference),
+            "partial" => Ok(Coverage::Partial),
+            "unknown" => Ok(Coverage::Unknown),
+            _ => {
+                eprintln!("[rsc-ls] unrecognized menu coverage {raw:?}; treating it as incomplete");
+                Ok(Coverage::Unrecognized(raw))
+            }
+        }
+    }
+}
+
+fn reference_coverage() -> Coverage {
+    Coverage::Reference
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +130,10 @@ pub struct MenuEntry {
     pub flags: Vec<ArgEntry>,
     pub arguments: Vec<ArgEntry>,
     pub read_only: Vec<ArgEntry>,
+    /// Reference coverage for this menu's properties; `partial` marks menus
+    /// with unresolved source tables and `unknown` hierarchy-only entries.
+    pub coverage: Coverage,
+    pub source: SourceInfo,
 }
 
 #[derive(Debug, Clone)]
@@ -67,10 +144,12 @@ pub struct ArgEntry {
     pub description: String,
     pub required: bool,
     /// Upstream docs mark whether the property can be removed again with
-    /// `unset` (991 entries in the generated table carry it). Consumed by
-    /// the diagnostics `non-unsettable-property` Hint, which warns when
-    /// `unset` targets a property whose entry carries `unset=false`.
+    /// `unset`. Meaningful only when `unset_known` is true: an unknown
+    /// capability produces no `non-unsettable-property` Hint at all.
     pub unset: bool,
+    /// Together with `unset`, represents supported, unsupported, or unknown.
+    pub unset_known: bool,
+    pub source: SourceInfo,
 }
 
 impl ArgEntry {
@@ -114,27 +193,31 @@ impl ArgEntry {
 /// Parse enum members out of a display type string such as
 /// `enum (input | forward | output)`.
 ///
-/// Fallback only: the display string may be truncated (trailing `...`) by the
-/// generator, in which case this returns whatever fits or nothing at all.
-/// Complete members come from [`ArgEntry::enum_values`] instead.
+/// Fallback only: a truncated member list (containing `...` or `…`) yields no
+/// members, because its omissions cannot prove a value invalid. The check is
+/// scoped to the members actually captured, mirroring the generator's
+/// `extract_enum_values`. Complete members come from
+/// [`ArgEntry::enum_values`] instead.
 ///
 /// Empty members are dropped: upstream marks user-defined values with a bare
 /// `enum ()` (e.g. `new-connection-mark`, `new-routing-mark`), and treating
 /// that as a one-member list containing `""` would flag every real mark name
 /// as invalid. No members means no validation.
 pub(crate) fn parse_enum_values(type_str: &str) -> Vec<String> {
-    let inner = type_str
+    let Some(body) = type_str
         .strip_prefix("enum")
         .and_then(|s| s.trim().strip_prefix('('))
-        .and_then(|s| s.strip_suffix(')'));
-    match inner {
-        Some(body) => body
-            .split('|')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect(),
-        None => Vec::new(),
+        .and_then(|s| s.strip_suffix(')'))
+    else {
+        return Vec::new();
+    };
+    if body.contains("...") || body.contains('…') {
+        return Vec::new();
     }
+    body.split('|')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 /// Parse ubit members out of a display type string such as
@@ -312,12 +395,29 @@ impl MenuData {
                     eprintln!("[rsc-ls] skipping menu with non-allowlisted path chars: {path:?}");
                     return None;
                 }
+                // CLI-reference rows inherit their menu's URL; only narrative,
+                // generic, and curated exceptions need per-property metadata.
+                let inherited = |raw_arg: RawArgEntry| {
+                    let mut arg: ArgEntry = raw_arg.into();
+                    if arg.source.source_kind.is_empty() {
+                        arg.source.source_kind = "cli-reference".to_string();
+                        if arg.source.source_url.is_empty() {
+                            arg.source.source_url.clone_from(&raw.source.source_url);
+                        }
+                    }
+                    arg
+                };
+                let flags = raw.flags.into_iter().map(inherited).collect();
+                let arguments = raw.arguments.into_iter().map(inherited).collect();
+                let read_only = raw.read_only.into_iter().map(inherited).collect();
                 Some(MenuEntry {
                     path,
                     menu_type: raw.menu_type,
-                    flags: raw.flags.into_iter().map(Into::into).collect(),
-                    arguments: raw.arguments.into_iter().map(Into::into).collect(),
-                    read_only: raw.read_only.into_iter().map(Into::into).collect(),
+                    flags,
+                    arguments,
+                    read_only,
+                    coverage: raw.coverage,
+                    source: raw.source,
                 })
             })
             .collect();
@@ -421,6 +521,8 @@ impl From<RawArgEntry> for ArgEntry {
             description: raw.description,
             required: raw.required,
             unset: raw.unset,
+            unset_known: raw.unset_known,
+            source: raw.source,
         }
     }
 }

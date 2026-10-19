@@ -3162,9 +3162,9 @@ class TestMarkdownSkipLevels:
         finally:
             os.unlink(path)
 
-    def test_fully_covered_duplicate_reports_info_not_warning(self, capsys):
-        # Both menus document alpha/beta, so the pathless table is a total
-        # duplicate with zero coverage loss: skipped at info level.
+    def test_unowned_duplicate_still_reports_ambiguous_coverage(self, capsys):
+        # Neither menu is established as the owner. Matching names on
+        # unrelated menus cannot establish coverage for an unowned table.
         content = (
             "## ip/one \n\n**Type:** Directory\n\n"
             '<ArgTable c1="Argument" c2="Type" c3="Description">\n'
@@ -3184,8 +3184,7 @@ class TestMarkdownSkipLevels:
         self._parse(content)
         err = capsys.readouterr().err
         assert "no unambiguous row-overlap menu" in err
-        assert "info:" in err
-        assert "warning:" not in err
+        assert "warning:" in err
 
     def test_real_delta_keeps_warning(self, capsys):
         # Neither menu documents the new rows, so the skip signals a real
@@ -3220,7 +3219,7 @@ class TestMarkdownSkipLevels:
         table = {"rows": [{"name": "manager"}, {"name": "ssid"}]}
         menu_names = {"/interface/wifi/configuration": {"ssid", "country"}}
         assert _markdown_table_has_real_delta(table, menu_names) is True
-        covered = {"rows": [{"name": "ssid"}, {"name": "country"}]}
+        covered = {"context": ["/interface/wifi/configuration"], "rows": [{"name": "ssid"}, {"name": "country"}]}
         assert _markdown_table_has_real_delta(covered, menu_names) is False
         generic_only = {"rows": [{"name": "disabled"}, {"name": "comment"}]}
         assert _markdown_table_has_real_delta(generic_only, menu_names) is False

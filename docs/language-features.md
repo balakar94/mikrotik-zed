@@ -41,8 +41,11 @@ plain entry for the same label.
 ## Hover
 
 Resolves menu paths, properties, and verbs against the published reference
-(not paraphrase). Every card ends with a source line naming the upstream docs
-era of the dataset: `Source: published reference — upstream docs era <hint>`.
+(not paraphrase). Cards include a source line naming the upstream docs era
+of the dataset: `Source: published reference — upstream docs era <hint>`.
+Menu and property cards link to their official source when available.
+Narrative enrichments, curated values, and generic properties identify their
+evidence separately. Read-only property cards explain their output-column role.
 
 Menu cards list required entries first, then optional ones. The cap
 (`MAX_HOVER_PROPERTIES`) applies **per section** — arguments (required plus
@@ -79,7 +82,12 @@ Semantic findings never escalate to Error; only syntax is Error:
 | Error | unclosed/unmatched brace, unclosed quote (syntax only) |
 | Warning | unknown menu path, unknown property, missing required arg (`add`/`set` on menu-like paths), duplicate property, invalid enum value, unknown verb |
 | Information | read-only column written as `key=`; truncation footer naming dropped findings |
-| Hint | typed-value shapes (bool/num/time/MAC/IP plausibility), non-unsettable `unset` target — never blocking |
+| Hint | typed-value shapes (bool/num/time/MAC/IP plausibility), known non-unsettable `unset` target, unknown property on an incomplete reference — never blocking |
+
+Partial or unknown property coverage lowers unknown-property findings to
+hints and explains why an unlisted property may still be valid. Other rules
+retain their normal severity. Unknown unset support produces no unset hint;
+truncated enum lists cannot reject values missing from the displayed list.
 
 Messages follow `lead verb + target + fix` (for example
 `Missing required 'address=' for 'add' on '/ip/address' — add address=...`).

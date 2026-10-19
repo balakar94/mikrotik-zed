@@ -66,6 +66,9 @@ mod diagnostics_commands;
 mod diagnostics_continuation;
 
 #[cfg(test)]
+mod diagnostics_coverage;
+
+#[cfg(test)]
 mod diagnostics_enums;
 
 #[cfg(test)]
@@ -147,6 +150,9 @@ mod hover_builtin;
 mod hover_edge;
 
 #[cfg(test)]
+mod hover_evidence;
+
+#[cfg(test)]
 mod hover_fixtures;
 
 #[cfg(test)]
@@ -199,6 +205,9 @@ mod logging;
 
 #[cfg(test)]
 mod menus_args;
+
+#[cfg(test)]
+mod menus_coverage;
 
 #[cfg(test)]
 mod menus_lookup;

@@ -140,6 +140,8 @@ fn test_get_insert_text_string() {
         description: "".to_string(),
         required: false,
         unset: false,
+        unset_known: true,
+        source: Default::default(),
     };
     assert_eq!(get_insert_text(&arg), "comment=\"$1\"$0");
 }
@@ -153,6 +155,8 @@ fn test_get_insert_text_non_string() {
         description: "".to_string(),
         required: false,
         unset: false,
+        unset_known: true,
+        source: Default::default(),
     };
     assert_eq!(get_insert_text(&arg), "address=$1$0");
 }
@@ -166,6 +170,8 @@ fn test_get_detail_empty_type() {
         description: "".to_string(),
         required: false,
         unset: false,
+        unset_known: true,
+        source: Default::default(),
     };
     assert_eq!(get_detail(&arg), "property");
 }
@@ -179,6 +185,8 @@ fn test_get_detail_with_type() {
         description: "".to_string(),
         required: false,
         unset: false,
+        unset_known: true,
+        source: Default::default(),
     };
     // The shared type gloss is appended after the capped raw type so the
     // detail explains the type like the hover card does.
@@ -265,6 +273,8 @@ fn test_arg_detail_embeds_capped_type() {
         description: String::new(),
         required: false,
         unset: false,
+        unset_known: true,
+        source: Default::default(),
     };
     let detail = get_detail(&arg);
     assert!(detail.starts_with("type: "));

@@ -19,6 +19,7 @@ Usage:
 Exit codes: 0 ok, 1 extraction error, 2 usage or unsupported interpreter.
 """
 
+import argparse
 import hashlib
 import html
 import os
@@ -28,6 +29,10 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+from extraction_quality import (
+    INLINE_PATH, load_source_index, source_contexts, source_menu_path,
+)
 
 # tomllib is stdlib only from 3.11. Fail with an actionable message instead of
 # a bare ModuleNotFoundError: on macOS a bare `python3` is usually the system
@@ -291,6 +296,8 @@ def extract_enum_values(typ: str) -> list[str]:
     m = _ENUM_VALUES_RE.search(typ)
     if not m:
         return []
+    if "..." in m.group(1) or "…" in m.group(1):
+        return []
     return [part.strip() for part in m.group(1).split("|") if part.strip()]
 
 
@@ -415,14 +422,16 @@ def _h2_page_ordinals(lines: list[str], starts: list[int]) -> list[int]:
     return ordinals
 
 
-def _nearest_explicit_contexts(lines: list[str]) -> list[list[str] | None]:
+def _nearest_explicit_contexts(
+    lines: list[str], sources: list[dict] | None = None
+) -> list[list[str] | None]:
     """Return the nearest preceding explicit menu context for every line.
 
     A `## Properties` fragment is not a page of its own: it documents the
     menu most recently named by a CLI-path heading or a `**Sub-menu:**` line
     in the enclosing page. This tracks that context in document order and
-    expires it once it is more than one H2 page behind, so a stale context
-    from an unrelated page can never be attached. A context may carry several
+    retains it within an identified source page. Without source identity,
+    context expires after one H2 page. A context may carry several
     paths (shared-property `**Sub-menu:**` lists); the caller rejects those as
     ambiguous rather than guessing.
     """
@@ -431,13 +440,20 @@ def _nearest_explicit_contexts(lines: list[str]) -> list[list[str] | None]:
     contexts: list[list[str] | None] = [None] * len(lines)
     current: list[str] | None = None
     current_page: int | None = None
+    source_start = None
     for i, line in enumerate(lines):
-        if current is not None and current_page is not None and ordinals[i] - current_page > 1:
+        source = sources[i] if sources else {}
+        if source.get("start_line") != source_start:
+            current = None
+            current_page = None
+            source_start = source.get("start_line")
+        if (not source.get("url") and current is not None and current_page is not None
+                and ordinals[i] - current_page > 1):
             current = None
             current_page = None
         contexts[i] = list(current) if current is not None else None
         heading_path = _extract_heading_path(line)
-        if heading_path is not None:
+        if heading_path is not None and should_include("/" + heading_path.lstrip("/")):
             current = ["/" + heading_path.lstrip("/")]
             current_page = ordinals[i]
         else:
@@ -445,6 +461,16 @@ def _nearest_explicit_contexts(lines: list[str]) -> list[list[str] | None]:
             if sub_paths:
                 current = sub_paths
                 current_page = ordinals[i]
+            elif current and source.get("url") and re.search(
+                r"\b(?:configuration|settings)\s+(?:is|are)\s+(?:accessible|available|located)\b", line, re.IGNORECASE
+            ):
+                # A different inline menu mention invalidates ownership.
+                # It never assigns a menu: examples and cross-links are not
+                # declarations. Row overlap may still resolve the next table.
+                mentions = INLINE_PATH.findall(line)
+                if any(path not in current for path in mentions):
+                    current = None
+                    current_page = None
     return contexts
 
 
@@ -786,9 +812,9 @@ def _markdown_table_has_real_delta(
     `_merge_markdown_rows` would always skip (generic add-item properties in
     `GENERIC_NAMES`, documented command verbs in `_MD_COMMAND_NAMES`, and
     TitleCase-only labels) cannot be deltas. Any other row name absent from
-    the union of ArgTable-derived names is a real delta (e.g. `manager`)
-    and keeps `warning:`. A fully covered duplicate (or a generic-only
-    delta) has zero coverage loss and reports at `info:` level.
+    at least one candidate menu's ArgTable-derived names is a potential
+    coverage gap. Unknown ownership also keeps `warning:`. Generic-only
+    deltas and duplicates covered on every candidate report at `info:` level.
 
     Conservative: when in doubt, returns True so the caller keeps warning.
     Empty `menu_names` or rows without names count as doubt.
@@ -798,9 +824,10 @@ def _markdown_table_has_real_delta(
         return False
     if not menu_names:
         return True
-    known: set[str] = set()
-    for names in menu_names.values():
-        known.update(names)
+    candidates = _table_candidate_paths(table)
+    # Names occurring on an unrelated menu prove nothing about this table.
+    # For ambiguous ownership, every candidate must already cover each row.
+    known = set.intersection(*(menu_names.get(path, set()) for path in candidates)) if candidates else set()
     for row in rows:
         if row.get("titlecase"):
             continue
@@ -814,6 +841,15 @@ def _markdown_table_has_real_delta(
         if name not in known:
             return True
     return False
+
+
+def _table_candidate_paths(table: dict) -> list[str]:
+    """Only property fragments may inherit the nearest explicit context."""
+    if table.get("paths"):
+        return table["paths"]
+    if _is_property_section_title(table.get("page_title", "")):
+        return table.get("fragment_context") or table.get("context") or []
+    return table.get("context") or []
 
 
 def _resolve_by_row_overlap(
@@ -871,11 +907,13 @@ def _resolve_page_context(
     if _is_property_section_title(title):
         fragment = table.get("fragment_context") or []
         if len(fragment) == 1 and fragment[0] in known_paths:
+            table["resolution"] = "property-fragment-context"
             if stats is not None:
                 stats["property_resolved"] += 1
             return [fragment[0]]
         overlap = _resolve_by_row_overlap(table, menu_names or {})
         if overlap is not None and overlap in known_paths:
+            table["resolution"] = "unique-row-overlap"
             if stats is not None:
                 stats["property_resolved"] += 1
             return [overlap]
@@ -898,11 +936,13 @@ def _resolve_page_context(
         return []
     candidate = _deepest_common_ancestor(context)
     if candidate and candidate.count("/") >= 2 and candidate in known_paths:
+        table["resolution"] = "shared-menu-ancestor"
         if stats is not None:
             stats["property_resolved"] += 1
         return [candidate]
     overlap = _resolve_by_row_overlap(table, menu_names or {})
     if overlap is not None and overlap in known_paths:
+        table["resolution"] = "unique-row-overlap"
         if stats is not None:
             stats["property_resolved"] += 1
         return [overlap]
@@ -948,6 +988,8 @@ def _merge_markdown_rows(menu: dict, rows: list[dict], known_paths: set[str]) ->
                 not entry.get("description") or len(description) > len(entry["description"])
             ):
                 entry["description"] = description
+                if row.get("source_url"):
+                    entry["description_source_url"] = row["source_url"]
             if row.get("type") and not entry.get("type"):
                 entry["type"] = row["type"]
             continue
@@ -969,8 +1011,10 @@ def _merge_markdown_rows(menu: dict, rows: list[dict], known_paths: set[str]) ->
             "name": name,
             "type": row.get("type", ""),
             "required": False,
-            "unset": False,
+            "unset": None,
             "description": row.get("description", ""),
+            "source_kind": "narrative",
+            "source_url": row.get("source_url", ""),
         }
         menu.setdefault(target, []).append(entry)
         existing[name] = (target, entry)
@@ -1003,6 +1047,8 @@ def _append_argtable_row(
         "required": bool(mandatory_match),
         "unset": bool(unset_match),
         "description": description,
+        "source_kind": "cli-reference",
+        "source_url": current_menu.get("source_url", ""),
     }
     enum_values = extract_enum_values(entry["type"])
     if enum_values:
@@ -1015,7 +1061,10 @@ def _append_argtable_row(
         current_menu["read_only"].append(entry)
 
 
-def parse_llms_full(filepath: str, stats: dict[str, int] | None = None) -> list[dict]:
+def parse_llms_full(
+    filepath: str, stats: dict[str, int] | None = None,
+    table_report: list[dict] | None = None,
+) -> list[dict]:
     """Parse llms-full.txt and extract menu entries.
 
     Reads both table shapes upstream ships:
@@ -1058,13 +1107,19 @@ def parse_llms_full(filepath: str, stats: dict[str, int] | None = None) -> list[
     pending_row: list[str] | None = None
 
     lines = content.split("\n")
+    source_index = load_source_index(Path(filepath).with_name("llms.txt"))
+    sources = source_contexts(lines, source_index)
+    # All scans share the fence mask. Code examples must never declare
+    # menus, change table ownership, or supply documentation properties.
+    lines = ["" if source.get("code") else line for line, source in zip(lines, sources)]
+    menu_urls = {path: url for url in source_index.values() if (path := source_menu_path(url))}
     # Per-line H2-page context (sub-menu paths) for tables that have no active
     # `**Sub-menu:**` association of their own. Computed once because a page's
     # sub-menu links often appear *after* the property table they describe.
     page_context = _page_sub_menu_context(lines)
     # Per-line nearest preceding explicit menu for `## Properties` fragments,
     # whose page context is too broad (see _resolve_page_context).
-    fragment_context = _nearest_explicit_contexts(lines)
+    fragment_context = _nearest_explicit_contexts(lines, sources)
 
     for i, line in enumerate(lines):
         # Finish a multi-line <ArgTableRow> before anything else: the buffered
@@ -1107,6 +1162,8 @@ def parse_llms_full(filepath: str, stats: dict[str, int] | None = None) -> list[
                 "flags": [],
                 "arguments": [],
                 "read_only": [],
+                "source_url": menu_urls.get("/" + new_path.lstrip("/"), ""),
+                "coverage": "reference",
             }
             if bare_root is not None:
                 # Bare-root candidate: unconfirmed until a **Type:** line
@@ -1184,6 +1241,14 @@ def parse_llms_full(filepath: str, stats: dict[str, int] | None = None) -> list[
                     fragment_context[i], current_heading,
                     i + 1, md_tables, print_rows, warnings, stats, infos,
                 )
+                if md_tables and md_tables[-1].get("line_no", i + 1) == i + 1:
+                    table = md_tables[-1]
+                    table.setdefault("line_no", i + 1)
+                    table.setdefault("page_title", page_title)
+                    table["heading"] = current_heading
+                    table["source_url"] = sources[i].get("url", "")
+                    for row in table["rows"]:
+                        row["source_url"] = table["source_url"]
             continue
 
     # EOF: flush a dangling multi-line row and the last menu.
@@ -1202,12 +1267,44 @@ def parse_llms_full(filepath: str, stats: dict[str, int] | None = None) -> list[
         merged = 0
         for table in md_tables:
             paths = table["paths"]
-            if not paths:
+            if paths and any(path not in known_paths for path in paths):
+                unknown = sorted(set(paths) - known_paths)
+                warnings.append(f"markdown property table near line {table['line_no']} names unknown menu(s) {', '.join(unknown)}; skipped")
+                table["resolution"] = "unknown-explicit-menu"
+                paths = []
+            elif paths:
+                table["resolution"] = "explicit-menu"
+            else:
                 paths = _resolve_page_context(
                     table, known_paths, warnings, menu_names, stats, infos
                 )
-                if not paths:
-                    continue
+            candidates = _table_candidate_paths(table)
+            if not candidates and table.get("source_url"):
+                # Scope uncertainty to menus explicitly mentioned on this
+                # indexed source page, never to unrelated menus globally.
+                candidates = sorted({
+                    path for line, source in zip(lines, sources)
+                    if source.get("url") == table["source_url"]
+                    for path in (_extract_sub_menu_paths(line) + INLINE_PATH.findall(line))
+                    if path in known_paths
+                })
+            if table_report is not None:
+                table_report.append({
+                    "source_url": table.get("source_url", ""),
+                    "heading": table.get("heading", table.get("page_title", "")),
+                    "line": table["line_no"],
+                    "properties": sorted({row["name"] for row in table["rows"]}),
+                    "candidate_menus": sorted(set(paths or candidates)),
+                    "resolved_menus": sorted(paths),
+                    "status": "resolved" if paths else "unresolved",
+                    "reason": table.get("resolution", "ambiguous-or-missing-menu"),
+                })
+            if not paths:
+                for path in candidates:
+                    for menu in by_path.get(path, []):
+                        if _markdown_table_has_real_delta({**table, "paths": [path]}, menu_names):
+                            menu["coverage"] = "partial"
+                continue
             if stats is not None:
                 stats["rows_processed"] += len(table["rows"])
             for path in paths:
@@ -1411,6 +1508,7 @@ def synthesize_directories(menus: list[dict]) -> list[dict]:
                     "flags": [],
                     "arguments": [],
                     "read_only": [],
+                    "coverage": "unknown",
                 }
     return menus + list(synthesized.values())
 
@@ -1605,7 +1703,7 @@ def _generic_additions_for_menu(menu: dict) -> list[dict]:
     apply universally; `place-before`/`copy-from` additionally require
     _allows_ordered_generics(). A generic is missing when its name appears
     in NONE of arguments/flags/read_only. Returned rows are fresh argument
-    dicts (required/unset False) ready to emit.
+    dicts (required False, unset support unknown) ready to emit.
     """
     if menu.get("type") != "Directory":
         return []
@@ -1623,7 +1721,8 @@ def _generic_additions_for_menu(menu: dict) -> list[dict]:
                 "name": generic["name"],
                 "type": generic["type"],
                 "required": False,
-                "unset": False,
+                "unset": None,
+                "source_kind": "generic",
                 "description": generic["description"],
             })
             existing.add(generic["name"])
@@ -1803,6 +1902,7 @@ def apply_overrides(menus: list[dict], overrides: list[dict]) -> int:
                 )
                 continue
             target["enum_values"] = list(enum_values)
+            target["values_source_kind"] = "curated"
             applied += 1
             continue
         existing = set()
@@ -1820,8 +1920,9 @@ def apply_overrides(menus: list[dict], overrides: list[dict]) -> int:
             "name": o["property"],
             "type": o["type"],
             "required": False,
-            "unset": False,
             "description": o["description"],
+            "source_kind": "curated",
+            "unset": None,
         })
         applied += 1
         if override_fully_subsumed_by_generics(o):
@@ -1837,6 +1938,40 @@ def apply_overrides(menus: list[dict], overrides: list[dict]) -> int:
                 file=sys.stderr,
             )
     return applied
+
+
+# Closed vocabularies published to the LSP. The generator refuses to emit a
+# value outside them: a typo must fail the run, not silently weaken hover
+# or diagnostics (see lsp/src/menus.rs::Coverage for the consumer side).
+_COVERAGE_VALUES = ("reference", "partial", "unknown")
+_SOURCE_KINDS = ("cli-reference", "narrative", "generic", "curated")
+
+
+def _emit_entry_metadata(
+    lines: list[str], entry: dict, menu_url: str = "", capability: bool = False
+) -> None:
+    """Emit provenance, plus the `unset` capability marker for arguments.
+
+    `capability` applies to `arguments` only: they are the one section whose
+    `unset` marker the LSP reads. The marker is always written there, so an
+    absent key can never be read as a claim that the property is known to be
+    non-unsettable. Provenance values outside the published vocabulary abort
+    the run instead of weakening hover or diagnostics silently.
+    """
+    source_kind = entry.get("source_kind", "")
+    if source_kind and source_kind not in _SOURCE_KINDS:
+        raise ValueError(f"unknown source_kind {source_kind!r} for entry {entry.get('name')!r}")
+    for key in ("source_kind", "source_url", "description_source_url", "values_source_kind"):
+        value = entry.get(key)
+        if (key == "source_kind" and value == "cli-reference") or (
+            key == "source_url" and source_kind == "cli-reference" and value == menu_url
+        ):
+            continue
+        if value:
+            lines.append(f'{key} = "{escape_toml_string(value)}"')
+    if capability:
+        known = isinstance(entry.get("unset"), bool)
+        lines.append(f"unset_known = {'true' if known else 'false'}")
 
 
 def generate_toml(
@@ -1886,6 +2021,8 @@ def generate_toml(
     lines.append(f"# Source hash (sha256[:16]): {src_hash}")
     lines.append(f"# overrides_applied = {overrides_applied} (data/{_OVERRIDES_FILENAME})")
     lines.append(f"# generics_applied = {generics_applied} (comment/disabled universal; place-before/copy-from ordered-only)")
+    if llms_path is not None and llms_path.with_name("llms.txt").exists():
+        lines.append(f"# Index hash (sha256[:16]): {_source_hash(llms_path.with_name('llms.txt'))}")
     lines.append("")
 
     # Hygiene counters — track empty descriptions for quality traceability
@@ -1903,6 +2040,12 @@ def generate_toml(
         lines.append("[[menus]]")
         lines.append(f'path = "{escape_toml_string(path)}"')
         lines.append(f'type = "{escape_toml_string(menu_type)}"')
+        coverage = menu.get("coverage", "unknown")
+        if coverage not in _COVERAGE_VALUES:
+            raise ValueError(f"menu {path}: unknown coverage marker {coverage!r}")
+        lines.append(f'coverage = "{escape_toml_string(coverage)}"')
+        if menu.get("source_url"):
+            lines.append(f'source_url = "{escape_toml_string(menu["source_url"])}"')
 
         # Flags — deduplicated (first-wins) to avoid TOML weight bloat
         # Type is emitted as single source of truth (additive, not breaking).
@@ -1915,6 +2058,7 @@ def generate_toml(
                 lines.append("[[menus.flags]]")
                 lines.append(f'name = "{name}"')
                 lines.append(f'type = "{typ}"')
+                _emit_entry_metadata(lines, flag, menu.get("source_url", ""))
                 if desc:
                     lines.append(f'description = "{desc}"')
                 if flag.get("required"):
@@ -1934,6 +2078,7 @@ def generate_toml(
                 lines.append("[[menus.arguments]]")
                 lines.append(f'name = "{name}"')
                 lines.append(f'type = "{typ}"')
+                _emit_entry_metadata(lines, arg, menu.get("source_url", ""), capability=True)
                 # Enum members are emitted ONLY for writable arguments —
                 # flags and read-only values are never user-assigned.
                 enum_values = arg.get("enum_values") or []
@@ -1959,6 +2104,7 @@ def generate_toml(
                 lines.append("[[menus.read_only]]")
                 lines.append(f'name = "{name}"')
                 lines.append(f'type = "{typ}"')
+                _emit_entry_metadata(lines, arg, menu.get("source_url", ""))
                 if desc:
                     lines.append(f'description = "{desc}"')
 
@@ -2077,21 +2223,38 @@ def write_if_changed(output_file: Path, new_content: str) -> bool:
     return True
 
 
-def main():
+def main(argv: list[str] | None = None) -> int:
     script_dir = Path(__file__).parent
     project_root = script_dir.parent if script_dir.name == "scripts" else script_dir
     input_file = project_root / "llms-full.txt"
+    index_file = input_file.with_name("llms.txt")
     output_file = project_root / "data" / "commands.toml"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--allow-missing-index",
+        action="store_true",
+        help="Extract without llms.txt (drops every source URL); recovery and tests only",
+    )
+    args = parser.parse_args(argv)
 
     if not input_file.exists():
         print(f"Error: {input_file} not found", file=sys.stderr)
         print("Fetch RouterOS docs first:  make sync   (or: .venv/bin/python scripts/sync_llms.py)", file=sys.stderr)
         sys.exit(1)
 
+    # The index carries the URL of every source page. Without it the generated
+    # table loses all provenance, so refuse before writing anything unless the
+    # caller explicitly opts into a degraded, recovery-only run.
+    if not index_file.exists() and not args.allow_missing_index:
+        print(f"Error: {index_file} not found — run 'make sync'", file=sys.stderr)
+        print("       (--allow-missing-index extracts without source attribution)", file=sys.stderr)
+        sys.exit(1)
+
     print(f"Parsing {input_file}...")
     # parse_llms_full already applies the should_include() gate to every
     # appended menu, so `menus` contains only CLI-path menus.
-    menus = parse_llms_full(str(input_file))
+    stats = _new_markdown_stats()
+    menus = parse_llms_full(str(input_file), stats)
     print(f"Parsed {len(menus)} CLI-path menus.")
 
     unique = finalize_menus(menus)
@@ -2118,7 +2281,7 @@ def main():
             overrides_applied=applied,
             generics_applied=generics_preview,
         )
-    except MenuPathError as e:
+    except (MenuPathError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -2129,7 +2292,8 @@ def main():
             f"{output_file} unchanged (only the Generated timestamp differs) — left untouched "
             f"({len(unique)} menus)"
         )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -146,9 +146,11 @@ type = ""
 name = "maybe-unset"
 type = "string"
 unset = true
+unset_known = true
 [[menus.arguments]]
 name = "sticky"
 type = "string"
+unset_known = true
 [[menus.read_only]]
 name = "actual"
 type = "string"

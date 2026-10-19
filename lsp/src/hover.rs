@@ -6,7 +6,7 @@
 // 3. Is it a property name for the current menu?
 // 4. Is it a standard RouterOS verb?
 
-use crate::menus::{ArgEntry, LineContext, MenuData, MenuEntry};
+use crate::menus::{ArgEntry, LineContext, MenuData, MenuEntry, SourceInfo};
 // Shared text helpers live in `crate::text_util` (single owner); the
 // re-exports below keep historical `hover::` paths resolving for tests.
 pub(crate) use crate::text_util::{MAX_HOVER_PROPERTIES, sanitize_markdown_for_hover};
@@ -55,6 +55,45 @@ fn hover_source_line() -> String {
     )
 }
 
+/// Bounded links to published evidence; metadata can never inject Markdown.
+fn source_details(source: &SourceInfo) -> String {
+    let mut text = String::new();
+    match source.source_kind.as_str() {
+        "narrative" => text.push_str("\n\nEvidence: narrative documentation"),
+        "curated" => text.push_str("\n\nEvidence: curated override"),
+        "generic" => text.push_str("\n\nEvidence: generic item property"),
+        _ => {}
+    }
+    for (label, url) in [
+        ("MikroTik reference", &source.source_url),
+        ("Description source", &source.description_source_url),
+    ] {
+        if url.len() <= 512
+            && url.starts_with("https://manual.mikrotik.com/docs/")
+            && url
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"/:-_.%#".contains(&b))
+        {
+            // The snapshot index links to downloadable Markdown. Open its
+            // readable documentation page from the editor instead.
+            let (path, fragment) = url.split_once('#').unwrap_or((url, ""));
+            let target = path
+                .strip_suffix(".md")
+                .map_or_else(|| path.to_string(), |path| format!("{path}/"));
+            let anchor = if fragment.is_empty() {
+                String::new()
+            } else {
+                format!("#{fragment}")
+            };
+            text.push_str(&format!("\n\n[{label}]({target}{anchor})"));
+        }
+    }
+    if source.values_source_kind == "curated" {
+        text.push_str("\n\nValue suggestions include curated reference data.");
+    }
+    text
+}
+
 /// Render the menu card for `menu`, headed by `display`.
 ///
 /// Section budgets are applied per section (`arguments`, `flags`,
@@ -72,6 +111,12 @@ fn menu_hover_card(display: &str, menu: &MenuEntry) -> Hover {
             &menu.menu_type
         }
     );
+    if !menu.coverage.is_complete() {
+        md.push_str(
+            "\n\nPublished property coverage is incomplete; unlisted properties may be valid.",
+        );
+    }
+    md.push_str(&source_details(&menu.source));
 
     if !menu.arguments.is_empty() {
         // Required entries render first under their own block, then
@@ -600,6 +645,7 @@ pub fn compute_hover(
                 md.push_str(&format!("\n\n{ex}"));
             }
             md.push_str(&hover_source_line());
+            md.push_str(&source_details(&arg.source));
             return Some(Hover {
                 contents: HoverContents {
                     kind: "markdown".to_string(),
@@ -628,6 +674,7 @@ pub fn compute_hover(
                 )
             };
             md.push_str(&hover_source_line());
+            md.push_str(&source_details(&flag.source));
             return Some(Hover {
                 contents: HoverContents {
                     kind: "markdown".to_string(),
@@ -635,6 +682,35 @@ pub fn compute_hover(
                 },
             });
         }
+    }
+
+    if let Some(menu) = find_menu(data, &context.path)
+        && let Some(arg) = menu
+            .read_only
+            .iter()
+            .find(|a| normalize_key(&a.name) == normalize_key(word))
+    {
+        let mut md = format!(
+            "**{}**\n\nRead-only output column in `{}`",
+            arg.name, menu.path
+        );
+        if !arg.arg_type.is_empty() {
+            md.push_str(&format!("\n\nType: `{}`", arg.arg_type));
+        }
+        if !arg.description.is_empty() {
+            md.push_str(&format!(
+                "\n\n{}",
+                sanitize_markdown_for_hover(&arg.description)
+            ));
+        }
+        md.push_str(&hover_source_line());
+        md.push_str(&source_details(&arg.source));
+        return Some(Hover {
+            contents: HoverContents {
+                kind: "markdown".to_string(),
+                value: md,
+            },
+        });
     }
 
     // Space-separated sub-menu segment (`/interface bridge`): `parse_line`

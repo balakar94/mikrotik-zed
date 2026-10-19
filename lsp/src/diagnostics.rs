@@ -6,6 +6,7 @@
 //     implicit parents)
 //  2. Unknown property: Warning if property key not in menu.arguments/flags/read_only
 //     (except `value-name` on `unset` lines: verb-level pseudo-key owned by Rule 10)
+//     — Hint when the published property coverage is partial or unknown
 //  3. Missing required property: Warning for Directory menus when `add`/`set` missing required args
 //  4. Duplicate property: Warning if same key appears twice
 //  5. Invalid enum value: Warning for enum properties with invalid value
@@ -18,7 +19,7 @@
 //     dynamic values (`$var`, `[find ...]`, `(expr)`), and a lone trailing
 //     comma left by whitespace tokenization (`rates=1Mbps, 2Mbps`).
 // 10. Non-unsettable property: Hint when `unset` targets a property whose
-//     dataset entry carries `unset=false` (`non-unsettable-property`)
+//     dataset entry carries known `unset=false` (`non-unsettable-property`)
 // 11. Read-only write: Information when a read_only column appears as `key=`
 //     on `add`/`set` (`read-only-write`)
 //
@@ -41,9 +42,9 @@
 //
 // Message grammar: every finding reads as lead verb + target + fix
 // (`Missing required 'address=' for 'add' — add address=...`).
-// Severity is fixed: Error is syntax only, Warning is semantic,
+// Error is syntax only, Warning is semantic with sufficient reference coverage,
 // Information is read-only writes plus truncation footers, Hint is
-// advisory shapes and unset targets.
+// advisory shapes, unset targets, and incomplete-reference unknown properties.
 
 use crate::StructureEvent;
 use crate::menus::MenuData;
@@ -859,14 +860,23 @@ pub(crate) fn compute_diagnostics_with_logicals(
                         &mut count_truncated,
                         Diagnostic {
                             range: ll.map_range(s, e),
-                            severity: Some(severity::WARNING),
+                            severity: Some(if menu.coverage.is_complete() {
+                                severity::WARNING
+                            } else {
+                                severity::HINT
+                            }),
                             code: Some("unknown-property".to_string()),
                             source: Some(DIAGNOSTIC_SOURCE.to_string()),
                             message: with_suggestion(
                                 format!(
-                                    "Unknown property '{}=' for '{}'",
+                                    "Unknown property '{}=' for '{}'{}",
                                     bounded_user_text(&line[s..e]),
-                                    bounded_user_text(&ctx.path)
+                                    bounded_user_text(&ctx.path),
+                                    if menu.coverage.is_complete() {
+                                        ""
+                                    } else {
+                                        " — published property coverage is incomplete"
+                                    }
                                 ),
                                 suggestion,
                             ),
@@ -1100,6 +1110,7 @@ pub(crate) fn compute_diagnostics_with_logicals(
                             .arguments
                             .iter()
                             .find(|a| a.name.eq_ignore_ascii_case(text))
+                            && arg.unset_known
                             && !arg.unset
                         {
                             push_semantic(
@@ -1134,6 +1145,7 @@ pub(crate) fn compute_diagnostics_with_logicals(
                             .arguments
                             .iter()
                             .find(|a| a.name.eq_ignore_ascii_case(&target))
+                        && arg.unset_known
                         && !arg.unset
                     {
                         let s = named_span.0 + named_key.len() + 1;

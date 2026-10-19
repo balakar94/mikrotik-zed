@@ -124,9 +124,11 @@ type = "enum (accept | drop)"
 name = "maybe-unset"
 type = "string"
 unset = true
+unset_known = true
 [[menus.arguments]]
 name = "sticky"
 type = "string"
+unset_known = true
 [[menus]]
 path = "/demo/req"
 type = "Directory"

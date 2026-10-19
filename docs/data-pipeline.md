@@ -24,10 +24,29 @@ the check also tolerates shallow clones).
 
 ## Provenance (never hand-edit)
 
-- `data/commands.toml` header: RouterOS era hint, UTC timestamp, source SHA256.
-  Coverage counts live here — link, don't paste.
+- `data/commands.toml` header: RouterOS era hint, UTC timestamp, source SHA256,
+  index SHA256. Coverage counts live here — link, don't paste.
+- `llms.txt` supplies unique page titles and official source URLs, and
+  extraction now requires it: without the index every source link would
+  disappear, so a missing `llms.txt` aborts the run unless
+  `--allow-missing-index` opts into a degraded, recovery-only pass. Source
+  separators in the combined corpus keep property sections on their indexed
+  page; fenced examples cannot create menus or change ownership. When source
+  identity is unavailable, extraction keeps its conservative context fallback.
+- Menus carry source URLs and coverage markers. CLI properties inherit their
+  menu's source; narrative enrichments, curated overrides, and generic item
+  properties retain separate evidence. Every argument states whether `unset`
+  support is known, so unknown support stays unknown instead of reading as
+  non-unsettable.
 - `data/upstream-docs.toml`: sync manifest (SHA256 of both upstream files,
   version, timestamp), regenerated alongside `make sync`.
+
+Unknown-property diagnostics are only downgraded by the coverage marker: a
+marker outside the published vocabulary counts as incomplete, never as
+complete. Known affected menus carry partial coverage; hierarchy-only menus
+carry unknown coverage. Syntax diagnostics retain their normal severity.
+Reference coverage means a CLI reference exists, not that upstream
+documentation is guaranteed complete.
 
 ## Drift workflow
 

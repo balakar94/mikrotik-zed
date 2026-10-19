@@ -42,10 +42,12 @@ required = true
 name = "temp"
 type = "string"
 unset = true
+unset_known = true
 [[menus.arguments]]
 name = "fixed"
 type = "string"
 unset = false
+unset_known = true
 [[menus.read_only]]
 name = "serial"
 type = "string"
