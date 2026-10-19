@@ -11,6 +11,11 @@ the OUTPUT artifact (data/commands.toml), not the extraction code itself:
   syncs can grow properties without breaking the gate. Exact counts and exact
   property lists are NEVER pinned where upstream may grow.
 
+Provenance invariants (coverage markers, source kinds, source URLs and the
+`unset` capability marker) are pinned in TestProvenanceAndCapabilityContract:
+they are the contract the language server consumes, so an off-vocabulary or
+missing value would change hover and diagnostics without any code change.
+
 A failure here means one of two things: either regeneration drifted from a
 guaranteed invariant (hygiene class), or an audited slice of real RouterOS
 CLI surface silently vanished from what ships to users (coverage classes).
@@ -149,6 +154,13 @@ class TestGeneratedTableHygiene:
         assert int(match.group(1)) == len(
             MENUS
         ), "header menu count drifted from parsed [[menus]] payload"
+
+    def test_header_records_both_upstream_snapshot_hashes(self):
+        # The hashes tie the shipped table to the exact bytes it came from;
+        # without them a reviewer cannot tell which snapshot is embedded.
+        header = "\n".join(COMMANDS_TOML_PATH.read_text(encoding="utf-8").splitlines()[:12])
+        assert re.search(r"^# Source hash \(sha256\[:16\]\): [0-9a-f]{16}$", header, re.MULTILINE), header
+        assert re.search(r"^# Index hash \(sha256\[:16\]\): [0-9a-f]{16}$", header, re.MULTILINE), header
 
 
 class TestMainCommandCoverage:
@@ -685,3 +697,116 @@ class TestCmrFamilyCoverage:
     def test_cmr_device_menu_keeps_its_properties(self):
         # Guards against a regeneration that keeps the path but empties it.
         assert _total_properties(BY_PATH["/cmr/device"]) > 0
+
+
+class TestProvenanceAndCapabilityContract:
+    """Every generated row states its evidence and its `unset` capability.
+
+    The language server trusts these fields: `coverage` decides whether an
+    unknown property is a Warning or a Hint, `source_kind`/`source_url` decide
+    what hover claims, and `unset_known` decides whether an `unset` target can
+    be called non-unsettable. A missing or off-vocabulary value would change
+    that behavior silently, so the artifact is pinned here.
+
+    The contract is stated, never inferred: CLI-reference rows omit
+    `source_kind` (that is the documented default) but always carry
+    `unset_known`, so an absent key can never read as "known non-unsettable".
+    """
+
+    _COVERAGE = {"reference", "partial", "unknown"}
+    _SOURCE_KINDS = {"cli-reference", "narrative", "generic", "curated"}
+    _OFFICIAL_PREFIX = "https://manual.mikrotik.com/docs/"
+
+    # Audited menus whose page identity was verified by hand against the
+    # upstream index; suffix-shaped so upstream may still move the docs site.
+    _AUDITED_PAGES = {
+        "/app": "/cli-reference/app.md",
+        "/app/settings": "/cli-reference/app/settings.md",
+        "/certificate": "/cli-reference/certificate.md",
+        "/interface/wifi/configuration": "/cli-reference/interface/wifi/configuration.md",
+        "/ip/settings": "/cli-reference/ip/settings.md",
+        "/port/remote-access": "/cli-reference/port/remote-access.md",
+        "/snmp/community": "/cli-reference/snmp/community.md",
+    }
+
+    def test_every_menu_states_a_published_coverage_marker(self):
+        for menu in MENUS:
+            assert menu.get("coverage") in self._COVERAGE, (
+                f"{menu['path']} coverage is {menu.get('coverage')!r}"
+            )
+
+    def test_hierarchy_only_menus_claim_no_page_and_partial_menus_keep_one(self):
+        # `unknown` marks a menu no reference table documents, so it has no
+        # page to point at; `partial` means tables were found but ownership
+        # stayed unresolved, which requires the page that carried them.
+        for menu in MENUS:
+            coverage = menu["coverage"]
+            if coverage == "unknown":
+                assert not menu.get("source_url"), (
+                    f"{menu['path']} is un-documented upstream yet carries {menu['source_url']!r}"
+                )
+            elif coverage == "partial":
+                assert menu.get("source_url"), f"{menu['path']} is partial without a source page"
+
+    def test_every_argument_states_its_unset_capability(self):
+        for menu in MENUS:
+            for arg in menu.get("arguments", []):
+                assert isinstance(arg.get("unset_known"), bool), (
+                    f"{menu['path']} {arg['name']} must state unset_known"
+                )
+                if arg.get("unset") is True:
+                    assert arg["unset_known"] is True, (
+                        f"{menu['path']} {arg['name']} is unsettable with unknown capability"
+                    )
+
+    def test_capability_marker_stays_an_argument_only_key(self):
+        # Only arguments are read by the unset diagnostic; a stray key on
+        # flags/read-only would suggest evidence that was never collected.
+        for menu in MENUS:
+            for section in ("flags", "read_only"):
+                for entry in menu.get(section, []):
+                    assert "unset_known" not in entry, f"{menu['path']} {entry['name']} ({section})"
+
+    def test_unset_capability_is_unknown_exactly_for_non_cli_evidence(self):
+        for menu in MENUS:
+            for arg in menu.get("arguments", []):
+                kind = arg.get("source_kind", "cli-reference")
+                assert kind in self._SOURCE_KINDS, (
+                    f"{menu['path']} {arg['name']} has source_kind {kind!r}"
+                )
+                assert arg["unset_known"] == (kind == "cli-reference"), (
+                    f"{menu['path']} {arg['name']} ({kind}) states unset_known={arg['unset_known']}"
+                )
+
+    def test_source_kinds_stay_in_the_published_vocabulary(self):
+        for menu in MENUS:
+            for section in _ENTRY_SECTIONS:
+                for entry in menu.get(section, []):
+                    kind = entry.get("source_kind")
+                    if kind is not None:
+                        assert kind in self._SOURCE_KINDS, (
+                            f"{menu['path']} {entry['name']} ({section}) has source_kind {kind!r}"
+                        )
+
+    def test_source_urls_are_official_documentation_links(self):
+        for menu in MENUS:
+            urls = [menu.get("source_url", "")]
+            urls += [entry.get("source_url", "") for section in _ENTRY_SECTIONS for entry in menu.get(section, [])]
+            urls += [entry.get("description_source_url", "") for section in _ENTRY_SECTIONS for entry in menu.get(section, [])]
+            for url in urls:
+                if url:
+                    assert url.startswith(self._OFFICIAL_PREFIX), f"{menu['path']} links to {url!r}"
+
+    def test_audited_menus_keep_their_source_page(self):
+        for path, suffix in self._AUDITED_PAGES.items():
+            url = BY_PATH[path].get("source_url", "")
+            assert url.endswith(suffix), f"{path} source page is {url!r}, expected suffix {suffix!r}"
+
+    def test_narrative_enrichments_keep_their_own_page(self):
+        # /app's read-only columns come from the containers/apps narrative
+        # page, not from its CLI-reference page: hover must keep saying so.
+        app = BY_PATH["/app"]
+        app_size = next(entry for entry in app["read_only"] if entry["name"] == "app-size")
+        assert app_size["source_kind"] == "narrative"
+        assert app_size["source_url"].endswith("/containers/apps.md")
+        assert "unset" not in app_size, "narrative read-only rows state no unset capability"
