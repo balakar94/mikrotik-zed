@@ -2,8 +2,8 @@
 # Auto-generated from llms-full.txt
 # Covers: /app, /beep, /blink, /caps-man, /certificate, /cmr, /console, /container, /disk, /dude, /environment, /file, … (1125 menus)
 # RouterOS era hint: 7.26 (highest feature-gate mention upstream; not the manual version)
-# Generated: 2026-10-12T13:36:53.997836Z
-# Source hash (sha256[:16]): f94c894bd7b8d838
+# Generated: 2026-10-19T16:08:23.087735Z
+# Source hash (sha256[:16]): 48f0dfacbba4b031
 # overrides_applied = 11 (data/overrides.toml)
 # generics_applied = 2002 (comment/disabled universal; place-before/copy-from ordered-only)
 
@@ -10164,15 +10164,15 @@ description = "Interface name."
 [[menus.arguments]]
 name = "mtu"
 type = "num"
-description = "Layer3 maximum transmission unit."
+description = "Layer3 maximum transmission unit. Default: `auto` — the router subtracts the 42-byte EoIP/IPv4 overhead from the path MTU (actual-mtu is 1458 on a 1500-byte path)."
 [[menus.arguments]]
 name = "mac-address"
 type = "macAddr"
-description = "Media Access Control number of an interface. The address numeration authority IANA allows the use of MAC addresses in the range from 00:00:5E:80:00:00 - 00:00:5E:FF:FF:FF freely."
+description = "Media Access Control number of an interface. Any value is accepted; the auto-generated address is a locally administered one. IANA allows free use of the range from 00:00:5E:80:00:00 to 00:00:5E:FF:FF:FF (private unicast)."
 [[menus.arguments]]
 name = "local-address"
 type = "ipAddr"
-description = "Source address of the tunnel packets, local to the router."
+description = "Source address of the tunnel packets, local to the router. Default `0.0.0.0` — the address of the interface used to reach the remote end."
 [[menus.arguments]]
 name = "remote-address"
 type = "address (flags=4Dv)"
@@ -10186,7 +10186,7 @@ required = true
 [[menus.arguments]]
 name = "keepalive"
 type = "super { keepalive-interval: time [1 .. ] , [keepalive-retries] [ ,num [1 .. ]] }"
-description = "The keepalive parameter sets the time interval in which the tunnel running flag remains even if the remote end of the tunnel goes down. If the configured time and retries fail, the interface running flag is removed.   Parameters are written in the following format: `KeepaliveInterval,KeepaliveRetries`    where KeepaliveInterval is the time interval and KeepaliveRetries is the number of retry attempts.   By default keepalive is set to 10 seconds and 10 retries."
+description = "The router removes the interface running flag when the remote end does not answer for `KeepaliveInterval × KeepaliveRetries`.   Parameters are written in the following format: `KeepaliveInterval,KeepaliveRetries`   where KeepaliveInterval is the time interval and KeepaliveRetries is the number of retry attempts.   Keepalive is enabled by default (`10s,10`). Setting it to a disabled value (`0,0`, `off`, `none`) is rejected; unsetting `keepalive` turns it off entirely — the running flag is then no longer removed when the remote end stops answering."
 [[menus.arguments]]
 name = "dscp"
 type = "num"
@@ -10198,11 +10198,11 @@ description = "Controls whether to change MSS size for received TCP SYN packets.
 [[menus.arguments]]
 name = "dont-fragment"
 type = "bool"
-description = "Whether to include the DF bit in related packets. - `no` - fragment if needed. - `inherit` - use the DF flag of the original packet."
+description = "Whether to include the DF bit in related packets. Default: `no`. - `no` - fragment if needed. - `inherit` - use the DF flag of the original packet."
 [[menus.arguments]]
 name = "ipsec-secret"
 type = "string"
-description = "When a secret is specified, the router adds a dynamic IPsec peer to remote-address with a pre-shared key and policy (by default phase2 uses sha1/aes128cbc)."
+description = "When a secret is specified, the router adds a dynamic IPsec peer to remote-address with a pre-shared key and policy (by default phase2 uses sha1/aes128cbc). IPsec and fast path are mutually exclusive — `allow-fast-path` must be set to `no`."
 [[menus.arguments]]
 name = "allow-fast-path"
 type = "bool"
@@ -10257,7 +10257,7 @@ description = "Actual maximum transmission unit of the tunnel."
 [[menus.read_only]]
 name = "l2mtu"
 type = "num"
-description = "[Layer2 maximum transmission unit](../../hardware/mtu-in-routeros.md). Not configurable for EoIP."
+description = "[Layer2 maximum transmission unit](../../hardware/mtu-in-routeros.md). Not configurable for EoIP; reports 65535."
 [[menus.read_only]]
 name = "current-remote-address"
 type = "ipAddr"
@@ -10273,11 +10273,11 @@ type = "Directory"
 [[menus.flags]]
 name = "X"
 type = "disabled"
-description = "disabled"
+description = "Whether an item is disabled."
 [[menus.flags]]
 name = "R"
 type = "running"
-description = "running"
+description = "Whether the interface is running."
 [[menus.arguments]]
 name = "name"
 type = "string"
@@ -10285,19 +10285,19 @@ description = "Name of the tunnel."
 [[menus.arguments]]
 name = "mtu"
 type = "num"
-description = "Layer3 maximum transmission unit."
+description = "Layer3 maximum transmission unit. Default: `auto` — the router subtracts the EoIP/IPv6 overhead from the path MTU (actual-mtu is 1444 on a 1500-byte path)."
 [[menus.arguments]]
 name = "mac-address"
 type = "macAddr"
-description = "Media Access Control number of an interface. The address numeration authority IANA allows the use of MAC addresses in the range from 00:00:5E:80:00:00 - 00:00:5E:FF:FF:FF freely."
+description = "Media Access Control number of an interface. Any value is accepted; the auto-generated address is a locally administered one. IANA allows free use of the range from 00:00:5E:80:00:00 to 00:00:5E:FF:FF:FF (private unicast)."
 [[menus.arguments]]
 name = "local-address"
 type = "ip6Addr"
-description = "Source address of the tunnel packets, local to the router."
+description = "Source address of the tunnel packets, local to the router. Default — the address of the interface used to reach the remote end."
 [[menus.arguments]]
 name = "remote-address"
 type = "address (flags=6Dvi)"
-description = "IPV6 address of the remote end of the EoIP tunnel."
+description = "IPv6 address of the remote end of the EoIP tunnel."
 required = true
 [[menus.arguments]]
 name = "tunnel-id"
@@ -10307,7 +10307,7 @@ required = true
 [[menus.arguments]]
 name = "keepalive"
 type = "super { keepalive-interval: time [1 .. ] , [keepalive-retries] [ ,num [1 .. ]] }"
-description = "The keepalive parameter sets the time interval in which the tunnel running flag remains even if the remote end of the tunnel goes down. If the configured time and retries fail, the interface running flag is removed.   Parameters are written in the following format: `KeepaliveInterval,KeepaliveRetries`    where KeepaliveInterval is the time interval and KeepaliveRetries is the number of retry attempts.   By default keepalive is set to 10 seconds and 10 retries."
+description = "The router removes the interface running flag when the remote end does not answer for `KeepaliveInterval × KeepaliveRetries`.   Parameters are written in the following format: `KeepaliveInterval,KeepaliveRetries`   where KeepaliveInterval is the time interval and KeepaliveRetries is the number of retry attempts.   Keepalive is enabled by default (`10s,10`). Setting it to a disabled value (`0,0`, `off`, `none`) is rejected; unsetting `keepalive` turns it off entirely — the running flag is then no longer removed when the remote end stops answering."
 [[menus.arguments]]
 name = "dscp"
 type = "num"
@@ -10319,11 +10319,11 @@ description = "Controls whether to change MSS size for received TCP SYN packets.
 [[menus.arguments]]
 name = "dont-fragment"
 type = "bool"
-description = "Whether to include the DF bit in related packets. - `no` - fragment if needed. - `inherit` - use the DF flag of the original packet."
+description = "Whether to include the DF bit in related packets. Default: `no`. - `no` - fragment if needed. - `inherit` - use the DF flag of the original packet."
 [[menus.arguments]]
 name = "ipsec-secret"
 type = "string"
-description = "When a secret is specified, the router adds a dynamic IPsec peer to remote-address with a pre-shared key and policy (by default phase2 uses sha1/aes128cbc)."
+description = "When a secret is specified, the router adds a dynamic IPsec peer to remote-address with a pre-shared key and policy (by default phase2 uses sha1/aes128cbc). This menu has no `allow-fast-path` property, so IPsec does not compete with fast path here."
 [[menus.arguments]]
 name = "arp"
 type = "enum (disabled | enabled | proxy-arp | reply-only | local-proxy-arp) { disabled:0, enabled:1, proxy-arp:2, reply-only:3, local-proxy-arp:4 }"
@@ -10374,7 +10374,7 @@ description = "Actual maximum transmission unit of the tunnel."
 [[menus.read_only]]
 name = "l2mtu"
 type = "num"
-description = "[Layer2 maximum transmission unit](../../hardware/mtu-in-routeros.md). Not configurable for EoIP."
+description = "[Layer2 maximum transmission unit](../../hardware/mtu-in-routeros.md). Not configurable for EoIP; reports 65535."
 [[menus.read_only]]
 name = "current-remote-address"
 type = "ip6Addr"
@@ -15620,7 +15620,7 @@ description = "Name of the tunnel."
 [[menus.arguments]]
 name = "mtu"
 type = "num"
-description = "Layer3 maximum transmission unit."
+description = "Layer3 maximum transmission unit of the tunnel. Default: `auto` — the router subtracts the 24-byte GRE/IP overhead from the outgoing interface MTU (actual-mtu is 1476 on a 1500-byte interface)."
 [[menus.arguments]]
 name = "local-address"
 type = "ipAddr"
@@ -15633,7 +15633,7 @@ required = true
 [[menus.arguments]]
 name = "keepalive"
 type = "super { keepalive-interval: time [1 .. ] , [keepalive-retries] [ ,num [1 .. ]] }"
-description = "The keepalive parameter sets the time interval in which the tunnel running flag remains even if the remote end of the tunnel goes down. If the configured time and retries fail, the interface running flag is removed.   Parameters are written in the following format: `KeepaliveInterval,KeepaliveRetries`    where KeepaliveInterval is the time interval and KeepaliveRetries is the number of retry attempts.   By default keepalive is set to 10 seconds and 10 retries."
+description = "The keepalive parameter sets how often the router checks the remote end of the tunnel: the router sends GRE echo probes to the remote end every `KeepaliveInterval` seconds, repeated up to `KeepaliveRetries` times. The minimum interval is 1 second and a 0-second setting is rejected; unsetting `keepalive` turns it off, but on current RouterOS that does not change the running-flag behavior. By default keepalive is set to 10 seconds and 10 retries. On current RouterOS the tunnel keeps the running flag while it is enabled, even when the remote end stops answering; the tunneled traffic is then dropped until the remote end responds again.   Parameters are written in the following format: `KeepaliveInterval,KeepaliveRetries`    where KeepaliveInterval is the time interval and KeepaliveRetries is the number of retry attempts."
 [[menus.arguments]]
 name = "dscp"
 type = "num"
@@ -15645,7 +15645,7 @@ description = "Controls whether to change the MSS size for received TCP SYN pack
 [[menus.arguments]]
 name = "dont-fragment"
 type = "bool"
-description = "Whether to include the DF bit in related packets. - `no` - fragment if needed. - `inherit` - use the DF flag of the original packet."
+description = "Whether to include the DF bit in related packets. Default: `no` — `yes` is rejected on RouterOS 7, only `no` and `inherit` are valid. - `no` - fragment if needed. - `inherit` - use the DF flag of the original packet."
 [[menus.arguments]]
 name = "ipsec-secret"
 type = "string"
@@ -15697,7 +15697,7 @@ description = "Name of the tunnel."
 [[menus.arguments]]
 name = "mtu"
 type = "num"
-description = "Layer3 maximum transmission unit."
+description = "Layer3 maximum transmission unit of the tunnel. Default: `auto` — the router subtracts the 44-byte GRE/IPv6 overhead from the outgoing interface MTU (actual-mtu is 1456 on a 1500-byte interface)."
 [[menus.arguments]]
 name = "local-address"
 type = "ip6Addr"
@@ -15710,7 +15710,7 @@ required = true
 [[menus.arguments]]
 name = "keepalive"
 type = "super { keepalive-interval: time [1 .. ] , [keepalive-retries] [ ,num [1 .. ]] }"
-description = "The keepalive parameter sets the time interval in which the tunnel running flag remains even if the remote end of the tunnel goes down. If the configured time and retries fail, the interface running flag is removed.   Parameters are written in the following format: `KeepaliveInterval,KeepaliveRetries`    where KeepaliveInterval is the time interval and KeepaliveRetries is the number of retry attempts.   By default keepalive is set to 10 seconds and 10 retries."
+description = "The keepalive parameter sets how often the router checks the remote end of the tunnel: the router sends GRE echo probes to the remote end every `KeepaliveInterval` seconds, repeated up to `KeepaliveRetries` times. The minimum interval is 1 second and a 0-second setting is rejected; unsetting `keepalive` turns it off, but on current RouterOS that does not change the running-flag behavior. By default keepalive is set to 10 seconds and 10 retries. On current RouterOS the tunnel keeps the running flag while it is enabled, even when the remote end stops answering; the tunneled traffic is then dropped until the remote end responds again.   Parameters are written in the following format: `KeepaliveInterval,KeepaliveRetries`    where KeepaliveInterval is the time interval and KeepaliveRetries is the number of retry attempts."
 [[menus.arguments]]
 name = "dscp"
 type = "num"
@@ -15722,7 +15722,7 @@ description = "Controls whether to change the MSS size for received TCP SYN pack
 [[menus.arguments]]
 name = "dont-fragment"
 type = "bool"
-description = "Whether to include the DF bit in related packets. - `no` - fragment if needed. - `inherit` - use the DF flag of the original packet."
+description = "Whether to include the DF bit in related packets. Default: `no` — `yes` is rejected on RouterOS 7, only `no` and `inherit` are valid. - `no` - fragment if needed. - `inherit` - use the DF flag of the original packet."
 [[menus.arguments]]
 name = "ipsec-secret"
 type = "string"
@@ -15746,9 +15746,11 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "actual-mtu"
 type = "num"
+description = "Actual maximum transmission unit of the tunnel."
 [[menus.read_only]]
 name = "current-remote-address"
 type = "ip6Addr"
+description = "Current IPv6 address of the remote end."
 
 [[menus]]
 path = "/interface/ipip"
@@ -48533,51 +48535,52 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "enabled"
 type = "bool"
-description = "Used to disable/enable SNMP service"
+description = "Whether the SNMP agent answers queries and sends traps. Default: no."
 [[menus.arguments]]
 name = "contact"
 type = "string"
-description = "Contact information"
+description = "Administrative contact information, readable by any collector. Default: empty."
 [[menus.arguments]]
 name = "location"
 type = "string"
-description = "Location information"
+description = "Administrative location information, readable by any collector. Default: empty."
 [[menus.arguments]]
 name = "engine-id-suffix"
 type = "string"
+description = "Tail of the agent's SNMP engine ID. The router builds the full engine ID from the prefix `80003a8c04` and the given value written as ASCII hex; for example the suffix `1234` produces the engine ID `80003a8c0431323334`. Leave the suffix empty to use the automatically generated engine ID, which is different on each router and stays the same across reboots. Default: empty."
 [[menus.arguments]]
 name = "src-address"
 type = "alt { ip: ipAddr , ip6: ip6Addr }"
-description = "Force the router to always use the same IP source address for all of the SNMP messages"
+description = "Source address for SNMP messages. With a value set, the agent answers only requests addressed to that address, and an IPv4 value stops it answering IPv6 requests. Default: `::` - replies come from the address of the interface that received the request."
 [[menus.arguments]]
 name = "trap-target"
 type = "object { ip-addresses: alt { ipv6: ip6Addr , ip: ipAddr } }"
-description = "IP (IPv4 or IPv6) addresses of SNMP data collectors that have to receive the trap"
+description = "List of collector addresses that receive SNMP traps; traps go to UDP port 162 on each address. Default: empty."
 [[menus.arguments]]
 name = "trap-community"
 type = "enum"
-description = "Which communities are configured in the community menu to use when sending out the trap."
+description = "Community used to send traps. It must exist in the `/snmp/community` menu; its security level decides how the trap is protected. Default: `public`."
 [[menus.arguments]]
 name = "trap-version"
 type = "enum (1 | 2 | 3) { 1:0, 2:1, 3:3 }"
 enum_values = ["1", "2", "3"]
-description = "A version of SNMP protocol to use for trap"
+description = "Version of the trap protocol. - `1` (default) - SNMPv1 trap. - `2` - SNMPv2c trap. - `3` - SNMPv3 trap, using the authentication and encryption of the `trap-community`."
 [[menus.arguments]]
 name = "trap-generators"
 type = "multi { array-id, generator: enum }"
-description = "What action will generate traps:interfaces - interface changes;start-trap - SNMP server starting on the routertemp-exception - send trap when temperature reached 100c (or value configured for cpu-overtemp-threshold at /system/health )"
+description = "Events that generate a trap; several values can be combined. - `interfaces` - A `linkDown`/`linkUp` trap when an interface changes state; narrow this with `trap-interfaces`. - `start-trap` - A trap when the SNMP service starts. - `temp-exception` (default) - A trap when the CPU temperature reaches the `/system/health` threshold."
 [[menus.arguments]]
 name = "trap-interfaces"
 type = "object { interface: iface_enum }"
-description = "List of interfaces that traps are going to be sent out."
+description = "List of interfaces whose state changes generate `interfaces` traps; other interfaces stay quiet. Empty means any interface. Default: empty."
 [[menus.arguments]]
 name = "vrf"
 type = "enum"
-description = "Set VRF on which the service is listening for incoming connections"
+description = "VRF the SNMP agent runs in. Requests that arrive in other VRFs get no reply. Default: `main`."
 [[menus.read_only]]
 name = "engine-id"
 type = "string"
-description = "For SNMP v3, used as part of the identifier. You can configure it manually or a random value will be assigned"
+description = "Full SNMP engine ID of the agent: the prefix `80003a8c04` followed by the `engine-id-suffix` value written as ASCII hex, or the automatically generated ID when the suffix is empty. SNMPv3 clients address the agent by this value and include it in every request."
 
 [[menus]]
 path = "/snmp/community"
@@ -48585,56 +48588,54 @@ type = "Directory"
 [[menus.flags]]
 name = "*"
 type = "default"
-description = "default"
+description = "Default community. The router is created with one community, `public`, with read access from any address, until you change or remove it."
 [[menus.flags]]
 name = "X"
 type = "disabled"
-description = "disabled"
+description = "Disabled community. A disabled community does not answer requests; new communities are created enabled."
 [[menus.arguments]]
 name = "name"
 type = "string"
-description = "Name of the SNMP community."
+description = "Name of the community. For SNMPv1 and v2c it travels in clear text with every packet and works as the password; for SNMPv3 it is the security name. Default: `public`."
 [[menus.arguments]]
 name = "addresses"
 type = "object { address: alt { ipv6: ip6Prefix , ip: ipPrefix } }"
+description = "Source addresses or prefixes allowed to use this community. A request from any other address gets no reply. Default: `::/0` (any address)."
 [[menus.arguments]]
 name = "security"
 type = "enum (none | authorized | private) { none:0, authorized:1, private:2 }"
 enum_values = ["none", "authorized", "private"]
-description = "Security levels: none - no encryption or authentication required (noAuthNoPriv)authorized - no encryption, but authentication is required (authNoPriv)private - both encryption and authentication are required (authPriv)"
+description = "Security level the community requires. - `none` (default) - No authentication and no encryption (noAuthNoPriv); the community name alone grants access. - `authorized` - SNMPv3 authentication required (authNoPriv); v1 and v2c requests are not answered. - `private` - SNMPv3 authentication and encryption required (authPriv); v1 and v2c requests are not answered."
 [[menus.arguments]]
 name = "read-access"
 type = "bool"
-description = "Whether read access is enabled for this community"
+description = "Whether requests may read MIB values. Default: yes."
 [[menus.arguments]]
 name = "write-access"
 type = "bool"
-description = "Whether write access is enabled for this community"
+description = "Whether requests may change the router: set the system identity, run scripts and reboot. A write community is a powerful credential, so keep its name hard to guess and its `addresses` narrow. Default: no."
 [[menus.arguments]]
 name = "denied-oids"
 type = "multi { array-id, oid: string }"
+description = "OIDs or subtrees that this community cannot read. A direct GET of a blacklisted OID returns no-such-object and a walk skips the blocked subtree, so a monitoring tool's poll does not fail. Several OIDs can be given as a comma-separated list. The setting is per community. Default: empty (everything the agent implements is readable)."
 [[menus.arguments]]
 name = "authentication-protocol"
 type = "enum (MD5 | SHA1 | SHA256 | SHA384 | SHA512) { MD5:0, SHA1:1, SHA256:2, SHA384:3, SHA512:4 }"
 enum_values = ["MD5", "SHA1", "SHA256", "SHA384", "SHA512"]
-description = "The protocol used for authentication (SNMPv3)"
+description = "Authentication protocol for SNMPv3 with `security=authorized` or `private`; all clients of the community must use it. - `MD5` (default) - `SHA1` - `SHA256` - `SHA384` - `SHA512`"
 [[menus.arguments]]
 name = "encryption-protocol"
 type = "enum (DES | AES)"
 enum_values = ["DES", "AES"]
-description = "Encryption protocol to be used to encrypt the communication (SNMPv3). AES (see rfc3826) is available since v6.16."
+description = "Encryption protocol for SNMPv3 with `security=private`. - `DES` (default) - `AES` - AES-128, defined in RFC 3826."
 [[menus.arguments]]
 name = "authentication-password"
 type = "string"
-description = "Password used to authenticate the connection to the server (SNMPv3). Password must be at least 8 characters in length."
+description = "Password for SNMPv3 authentication, at least 8 characters. Sensitive; see the [list of menus with sensitive parameters](../../getting-started/configuration-management/list-of-menus-with-sensitive-parameters)."
 [[menus.arguments]]
 name = "encryption-password"
 type = "string"
-description = "The password used for encryption (SNMPv3). Password must be at least 8 characters in length."
-[[menus.arguments]]
-name = "address"
-type = "IP/IPv6 address"
-description = "Addresses from which connections to the SNMP server are allowed"
+description = "Password for SNMPv3 encryption, at least 8 characters. Sensitive; see the [list of menus with sensitive parameters](../../getting-started/configuration-management/list-of-menus-with-sensitive-parameters)."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -48658,13 +48659,16 @@ type = "Command"
 [[menus.arguments]]
 name = "oid"
 type = "string"
+description = "OID of the object the trap reports."
 [[menus.arguments]]
 name = "type"
 type = "enum (integer | string | nullobj | obj-id | ip-address | counter32 | timeticks | unsigned) { integer:0x02, string:0x04, nullobj:0x05, obj-id:0x06,...)"
 enum_values = ["integer", "string", "nullobj", "obj-id", "ip-address", "counter32", "timeticks", "unsigned"]
+description = "SNMP type of the value. Accepted values: - `integer` - A signed integer. - `string` - An octet string. - `nullobj` - A NULL value. - `obj-id` - An object identifier. - `ip-address` - An IP address. - `counter32` - A 32-bit counter. - `timeticks` - A time in hundredths of a second. - `unsigned` - An unsigned integer."
 [[menus.arguments]]
 name = "value"
 type = "string"
+description = "Value to send, in the format the selected `type` expects."
 
 [[menus]]
 path = "/special-login"
@@ -48835,15 +48839,15 @@ type = "Command"
 [[menus.arguments]]
 name = "name"
 type = "file"
-description = "File name for the backup file."
+description = "Name of the backup file, as given to `save` (without the `.backup` extension)."
 [[menus.arguments]]
 name = "password"
 type = "string"
-description = "Password for the encrypted backup file."
+description = "Password used to decrypt the backup file. When omitted, RouterOS asks for it. For an unencrypted backup, any password works."
 [[menus.arguments]]
 name = "force-v6-to-v7-configuration-upgrade"
 type = "bool"
-description = "This setting after loading the config (if backup has the ROSv6 config) is forcing to run configuration conversion to v7."
+description = "Whether to load a backup made on RouterOS v6 and convert its configuration to v7. The flag has no effect on a backup made on v7."
 
 [[menus]]
 path = "/system/backup/save"
@@ -48851,20 +48855,20 @@ type = "Command"
 [[menus.arguments]]
 name = "name"
 type = "file"
-description = "The filename for the backup file."
+description = ".backup` and appears in the `/file` menu."
 [[menus.arguments]]
 name = "password"
 type = "string"
-description = "Password for the encrypted backup file. Since RouterOS v6.43, without a provided password, the backup file is unencrypted."
+description = "Password that encrypts the backup file. Without a password, the backup is saved unencrypted."
 [[menus.arguments]]
 name = "dont-encrypt"
 type = "bool"
-description = "Disable backup file encryption. Since RouterOS v6.43, without a provided password, the backup file is unencrypted."
+description = "Save the backup unencrypted even when `password` is given. Default: no."
 [[menus.arguments]]
 name = "encryption"
 type = "enum (aes-sha256 | rc4) { aes-sha256:0, rc4:1 }"
 enum_values = ["aes-sha256", "rc4"]
-description = "The encryption algorithm to use for encrypting the backup file. `rc4` is not a secure encryption method and is only available for compatibility with older RouterOS versions."
+description = "Encryption algorithm used when `password` is given. - `aes-sha256` (default) - Encryption with AES and SHA-256. - `rc4` - Legacy weak algorithm, kept for compatibility with older RouterOS versions."
 
 [[menus]]
 path = "/system/check-disk"
@@ -49103,27 +49107,27 @@ type = "Settings Directory"
 [[menus.read_only]]
 name = "mode"
 type = "enum"
-description = "Current device mode: basic, home, advanced, or ros."
+description = "Current device mode. - `advanced` - For CCR and 1100 series devices; previously called `enterprise`. - `basic` - For most other devices. - `home` - For home routers. - `rose` - For RDS and similar devices with wide disk use."
 [[menus.read_only]]
 name = "allowed-versions"
 type = "string"
-description = "List of RouterOS versions considered secure. Used to prevent downgrade to vulnerable releases."
+description = "Comma-separated list of RouterOS versions considered secure, used to block downgrades to vulnerable releases (for example `7.13+,6.49.8+`). An upgrade to a release that ships a newer list updates it; a downgrade does not. Ignored when `install-any-version` is enabled."
 [[menus.read_only]]
 name = "flagged"
 type = "bool"
-description = "Whether the device is in flagged state. Set to yes when suspicious configuration is detected."
+description = "Whether the device is in the flagged state: the startup configuration analysis found signs of unauthorized access and disabled the suspicious configuration. Reviewed and cleared with `update flagged=no`."
 [[menus.read_only]]
 name = "flagging-enabled"
 type = "bool"
-description = "Whether configuration analysis for suspicious code is enabled. Default: yes."
+description = "Whether the configuration analysis for signs of unauthorized access runs at startup. Default: yes."
 [[menus.read_only]]
 name = "scheduler"
 type = "bool"
-description = "Whether `/system/scheduler` is allowed."
+description = "Whether `/system/scheduler` is allowed to perform actions."
 [[menus.read_only]]
 name = "socks"
 type = "bool"
-description = "Whether `/ip/socks` is allowed."
+description = "Whether the SOCKS proxy in `/ip/socks` is allowed."
 [[menus.read_only]]
 name = "fetch"
 type = "bool"
@@ -49131,19 +49135,19 @@ description = "Whether `/tool/fetch` is allowed."
 [[menus.read_only]]
 name = "pptp"
 type = "bool"
-description = "Whether PPTP client and server interfaces are allowed."
+description = "Whether `/interface/pptp-client` and `/interface/pptp-server` are allowed."
 [[menus.read_only]]
 name = "l2tp"
 type = "bool"
-description = "Whether L2TP client and server interfaces are allowed."
+description = "Whether `/interface/l2tp-client` and `/interface/l2tp-server` are allowed."
 [[menus.read_only]]
 name = "bandwidth-test"
 type = "bool"
-description = "Whether `/tool/bandwidth-test` and `/tool/bandwidth-server` are allowed."
+description = "Whether `/tool/bandwidth-test`, `/tool/bandwidth-server` and `/tool/speed-test` are allowed."
 [[menus.read_only]]
 name = "traffic-gen"
 type = "bool"
-description = "Whether `/tool/traffic-generator`, `/tool/flood-ping`, and `/tool/ping-speed` are allowed."
+description = "Whether `/tool/traffic-generator`, `/tool/flood-ping` and `/tool/ping-speed` are allowed."
 [[menus.read_only]]
 name = "sniffer"
 type = "bool"
@@ -49159,7 +49163,7 @@ description = "Whether `/tool/romon` is allowed."
 [[menus.read_only]]
 name = "proxy"
 type = "bool"
-description = "Whether `/ip/proxy` is allowed."
+description = "Whether the web proxy in `/ip/proxy` is allowed."
 [[menus.read_only]]
 name = "hotspot"
 type = "bool"
@@ -49179,23 +49183,23 @@ description = "Whether `/zerotier` is allowed."
 [[menus.read_only]]
 name = "container"
 type = "bool"
-description = "Whether container functionality is allowed."
+description = "Whether container functionality (`/container`) is allowed."
 [[menus.read_only]]
 name = "install-any-version"
 type = "bool"
-description = "Whether downgrading to RouterOS versions outside the allowed-versions list is permitted."
+description = "Whether installing RouterOS versions outside the `allowed-versions` list is permitted."
 [[menus.read_only]]
 name = "partitions"
 type = "bool"
-description = "Whether changing partition count is allowed."
+description = "Whether changing the partition count (`/partitions`) is allowed."
 [[menus.read_only]]
 name = "routerboard"
 type = "bool"
-description = "Whether `/system/routerboard/settings` (except auto-upgrade) is allowed, and SwOS/RouterOS transition on dual-boot devices."
+description = "Whether changing `/system/routerboard/settings` options (except auto-upgrade) and the SwOS/RouterOS transition on dual-boot devices is allowed."
 [[menus.read_only]]
 name = "attempt-count"
 type = "num"
-description = "Number of unsuccessful device-mode change attempts."
+description = "Number of unsuccessful device-mode update attempts since the last reset; a request that cancels a pending update does not count. After three, an `update` is refused and a reset window opens for the time set by the last `activation-timeout`; a button press or power cycle inside the window resets the counter. A confirmed update also resets it. Default: 0."
 
 [[menus]]
 path = "/system/device-mode/update"
@@ -49203,15 +49207,15 @@ type = "Command"
 [[menus.arguments]]
 name = "mode"
 type = "enum"
-description = "Device mode to apply: basic, home, advanced, or ros."
+description = "Device mode to apply. Specifying `mode` replaces the entire device-mode configuration except the other parameters given in the same command; omitted features get the new mode's defaults. - `advanced` - Previously called `enterprise`. - `basic` - For most other devices. - `home` - For home routers. - `rose` - For RDS and similar devices with wide disk use."
 [[menus.arguments]]
 name = "flagged"
 type = "bool"
-description = "Set to no to exit the flagged state. Requires physical confirmation."
+description = "Set to `no` to clear the flagged state, after inspecting the configuration for unauthorized changes. Requires physical confirmation."
 [[menus.arguments]]
 name = "flagging-enabled"
 type = "bool"
-description = "Enable or disable configuration analysis for suspicious code. Default: yes."
+description = "Enable or disable the configuration analysis for signs of unauthorized access. Default: yes."
 [[menus.arguments]]
 name = "scheduler"
 type = "bool"
@@ -49235,7 +49239,7 @@ description = "Allow or block L2TP client and server interfaces."
 [[menus.arguments]]
 name = "bandwidth-test"
 type = "bool"
-description = "Allow or block `/tool/bandwidth-test` and `/tool/bandwidth-server`."
+description = "Allow or block `/tool/bandwidth-test`, `/tool/bandwidth-server` and `/tool/speed-test`."
 [[menus.arguments]]
 name = "traffic-gen"
 type = "bool"
@@ -49291,11 +49295,11 @@ description = "Allow or block `/system/routerboard/settings` (except auto-upgrad
 [[menus.arguments]]
 name = "activation-timeout"
 type = "time"
-description = "Time to wait for physical confirmation (reset button press or power cycle) before canceling the update. Range: 00:00:10 to 1d00:00:00. Default: 5m."
+description = "How long to wait for the physical confirmation (button press or power cycle) before the update is canceled. Also sets the length of the `attempt-count` reset window when an update is refused after three unsuccessful attempts. Range: 00:00:10 to 1d00:00:00. Default: 5m."
 [[menus.read_only]]
 name = "update"
 type = "string"
-description = "Status message for a pending device-mode update. Prompts the user to confirm by power off or button press."
+description = "Status of a pending update with the time left to confirm it; empty when no update is pending."
 
 [[menus]]
 path = "/system/gps"
@@ -54620,55 +54624,71 @@ type = "Command"
 [[menus.arguments]]
 name = "oid"
 type = "object { oid: string }"
+description = "The OID to read, for example `1.3.6.1.2.1.1.5.0`."
 [[menus.arguments]]
 name = "next"
 type = "bool"
+description = "When set, fetch the OID that follows the given one in the MIB tree (a GETNEXT instead of a GET)."
 [[menus.arguments]]
 name = "address"
 type = "ipAddr"
+description = "Address of the SNMP agent to query."
 [[menus.arguments]]
 name = "port"
 type = "num"
+description = "UDP port of the agent. Default: `161`."
 [[menus.arguments]]
 name = "tries"
 type = "num"
+description = "Number of attempts before giving up."
 [[menus.arguments]]
 name = "try-timeout"
 type = "time"
+description = "Timeout for each attempt."
 [[menus.arguments]]
 name = "version"
 type = "enum (1 | 2c | 3)"
 enum_values = ["1", "2c", "3"]
+description = "SNMP protocol version: `1`, `2c`, or `3`."
 [[menus.arguments]]
 name = "community"
 type = "string"
+description = "Community name. For v1/v2c the name is the password; for v3 it is the community that carries the matching security level."
 [[menus.arguments]]
 name = "security"
 type = "enum (none | authorized | private) { none:0, authorized:1, private:2 }"
 enum_values = ["none", "authorized", "private"]
+description = "Security level, matching the community: `none`, `authorized`, or `private`."
 [[menus.arguments]]
 name = "authentication-password"
 type = "string"
+description = "SNMPv3 authentication password (at least 8 characters)."
 [[menus.arguments]]
 name = "authentication-protocol"
 type = "enum (MD5 | SHA1 | SHA256 | SHA384 | SHA512)"
 enum_values = ["MD5", "SHA1", "SHA256", "SHA384", "SHA512"]
+description = "SNMPv3 authentication protocol: `MD5`, `SHA1`, `SHA256`, `SHA384`, or `SHA512`."
 [[menus.arguments]]
 name = "encryption-password"
 type = "string"
+description = "SNMPv3 encryption password (at least 8 characters)."
 [[menus.arguments]]
 name = "encryption-protocol"
 type = "enum (DES | AES)"
 enum_values = ["DES", "AES"]
+description = "SNMPv3 encryption protocol: `DES` or `AES`."
 [[menus.read_only]]
 name = "oid"
 type = "string"
+description = "OID of the value the agent returned."
 [[menus.read_only]]
 name = "type"
 type = "enum (null | integer | counter | gauge | timeticks | unsigned-integer | octet-string | opaque | object-id | ip-address | counter-64bit | no-such-o...)"
+description = "Value type as returned by the agent."
 [[menus.read_only]]
 name = "value"
 type = "string"
+description = "Value the agent returned."
 
 [[menus]]
 path = "/tool/snmp-walk"
@@ -54676,52 +54696,67 @@ type = "Command"
 [[menus.arguments]]
 name = "oid"
 type = "string"
+description = "The OID where the walk starts; the agent lists that subtree, for example `1.3.6.1.2.1.2` for the interface table."
 [[menus.arguments]]
 name = "address"
 type = "ipAddr"
+description = "Address of the SNMP agent to query."
 [[menus.arguments]]
 name = "port"
 type = "num"
+description = "UDP port of the agent. Default: `161`."
 [[menus.arguments]]
 name = "tries"
 type = "num"
+description = "Number of attempts before giving up."
 [[menus.arguments]]
 name = "try-timeout"
 type = "time"
+description = "Timeout for each attempt."
 [[menus.arguments]]
 name = "version"
 type = "enum (1 | 2c | 3)"
 enum_values = ["1", "2c", "3"]
+description = "SNMP protocol version: `1`, `2c`, or `3`."
 [[menus.arguments]]
 name = "community"
 type = "string"
+description = "Community name. For v1/v2c the name is the password; for v3 it is the community that carries the matching security level."
 [[menus.arguments]]
 name = "security"
 type = "enum (none | authorized | private) { none:0, authorized:1, private:2 }"
 enum_values = ["none", "authorized", "private"]
+description = "Security level, matching the community: `none`, `authorized`, or `private`."
 [[menus.arguments]]
 name = "authentication-password"
 type = "string"
+description = "SNMPv3 authentication password (at least 8 characters)."
 [[menus.arguments]]
 name = "authentication-protocol"
 type = "enum (MD5 | SHA1 | SHA256 | SHA384 | SHA512)"
 enum_values = ["MD5", "SHA1", "SHA256", "SHA384", "SHA512"]
+description = "SNMPv3 authentication protocol: `MD5`, `SHA1`, `SHA256`, `SHA384`, or `SHA512`."
 [[menus.arguments]]
 name = "encryption-password"
 type = "string"
+description = "SNMPv3 encryption password (at least 8 characters)."
 [[menus.arguments]]
 name = "encryption-protocol"
 type = "enum (DES | AES)"
 enum_values = ["DES", "AES"]
+description = "SNMPv3 encryption protocol: `DES` or `AES`."
 [[menus.read_only]]
 name = "oid"
 type = "string"
+description = "OID of the value the agent returned."
 [[menus.read_only]]
 name = "type"
 type = "enum (null | integer | counter | gauge | timeticks | unsigned-integer | octet-string | opaque | object-id | ip-address | counter-64bit | no-such-o...)"
+description = "Value type as returned by the agent."
 [[menus.read_only]]
 name = "value"
 type = "string"
+description = "Value the agent returned."
 
 [[menus]]
 path = "/tool/speed-test"
@@ -54989,30 +55024,31 @@ type = "Settings Directory"
 [[menus.arguments]]
 name = "test-id"
 type = "num"
+description = "ID of the test session. The `start` and `quick` commands accept `test-id` to override it. Default: 0."
 [[menus.arguments]]
 name = "measure-out-of-order"
 type = "bool"
-description = "Whether to measure Out-of-Order packets. The default value is based on CPU type (multi-core CPU default no; single-core CPU default yes). When the property is enabled on the multi-core device, a single stream will utilize only a single CPU core"
+description = "Whether received packets that arrive out of order are measured and reported. When enabled on a multi-core device, a single stream uses a single CPU core. Default: no on multi-core devices, yes on single-core devices."
 [[menus.arguments]]
 name = "latency-distribution-max"
 type = "time"
-description = "Maximal latency range for latency distribution measurements. Based on this value, RouterOS will decide what latency range to use as the latency-distribution-measure-interval property"
+description = "Maximum latency range for latency-distribution measurements. RouterOS derives the `latency-distribution-measure-interval` range from this value. Default: 100us."
 [[menus.arguments]]
 name = "stats-samples-to-keep"
 type = "num"
-description = "How many data examples to collect"
+description = "How many statistics samples to keep. Default: 100."
 [[menus.read_only]]
 name = "running"
 type = "bool"
-description = "Shows whether the traffic generator tool is started."
+description = "Whether the traffic generator is currently running."
 [[menus.read_only]]
 name = "latency-distribution-samples"
 type = "num"
-description = "Shows how many individual time periods the latency-distribution-measure-interval is divided into"
+description = "Number of individual latency ranges into which latency-distribution-measure-interval is divided."
 [[menus.read_only]]
 name = "latency-distribution-measure-interval"
 type = "string"
-description = "Shows the total latency measurement range"
+description = "The total latency measurement range currently in use, for example 0-2.67us."
 
 [[menus]]
 path = "/tool/traffic-generator/inject"
@@ -55020,12 +55056,15 @@ type = "Command"
 [[menus.arguments]]
 name = "interface"
 type = "iface_enum"
+description = "Interface the raw data is injected to."
 [[menus.arguments]]
 name = "data"
 type = "string"
+description = "Raw data to inject, as a hexadecimal string."
 [[menus.arguments]]
 name = "priority"
 type = "num"
+description = "Priority of the injected packet."
 unset = true
 
 [[menus]]
@@ -55034,24 +55073,31 @@ type = "Command"
 [[menus.arguments]]
 name = "interface"
 type = "iface_enum"
+description = "Interface the captured packets are replayed on."
 [[menus.arguments]]
 name = "pcap-file"
 type = "file"
+description = "Name of a PCAP or PCAPNG file stored on the router."
 [[menus.arguments]]
 name = "speed-multiplier"
 type = "num"
+description = "Replay speed multiplier relative to the capture rate (1 replays in real time)."
 [[menus.arguments]]
 name = "loop"
 type = "bool"
+description = "Whether the capture is replayed in a loop."
 [[menus.read_only]]
 name = "iteration"
 type = "num"
+description = "Current replay iteration number (in loop mode)."
 [[menus.read_only]]
 name = "tx-packets"
 type = "num"
+description = "Packets replayed so far."
 [[menus.read_only]]
 name = "tx-bytes"
 type = "num"
+description = "Bytes replayed so far."
 
 [[menus]]
 path = "/tool/traffic-generator/packet-template"
@@ -55059,135 +55105,178 @@ type = "Directory"
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Descriptive name of the packet template."
 [[menus.arguments]]
 name = "header-stack"
 type = "multi { header: enum (mac | vlan | ip | udp | raw | ipv6 | tcp) { mac:1, vlan:2, ip:3, udp:4, raw:5, ipv6:6, tcp:7 } }"
 enum_values = ["mac", "vlan", "ip", "udp", "raw", "ipv6", "tcp"]
+description = "Sequence of headers in the generated packet: mac (Ethernet, 14 bytes), vlan (802.1Q tag, 4 bytes), ip (IPv4, 20 bytes), udp (UDP, 8 bytes), raw (arbitrary bytes as a hex string), ipv6 (IPv6, 40 bytes), tcp (TCP). Most header types may appear several times; there can be at most two IP headers and one UDP header per packet. Sequence limitations follow protocol rules (for example a VLAN header can follow only a mac header or another VLAN header)."
 [[menus.arguments]]
 name = "port"
 type = "enum"
+description = "Name of the port (from the port menu) the packets are sent out through. Mutually exclusive with interface; the port can also be set in the stream."
 [[menus.arguments]]
 name = "interface"
 type = "iface_enum"
+description = "Interface the packets are sent out through. Mutually exclusive with port; convenient for quick tests since a port entry is then created dynamically."
 [[menus.arguments]]
 name = "mac-src"
 type = "multi { array-id, array-id, mac-mask: composite { mac: macAddr , mask: [ macAddr] } }"
+description = "Source MAC address(es), with optional masks, of the Ethernet header."
 [[menus.arguments]]
 name = "mac-dst"
 type = "multi { array-id, array-id, mac-mask: composite { mac: macAddr , mask: [ macAddr] } }"
+description = "Destination MAC address(es), with optional masks, of the Ethernet header."
 [[menus.arguments]]
 name = "mac-protocol"
 type = "multi { protocol: alt { protocol-name: enum () , protocol-number: num [ .. 65535] } }"
+description = "EtherType of the Ethernet frame, by name or by protocol number (0-65535)."
 [[menus.arguments]]
 name = "vlan-priority"
 type = "multi { priority: num [ .. 7] }"
+description = "VLAN priority (0-7) of the 802.1Q tag."
 [[menus.arguments]]
 name = "vlan-id"
 type = "multi { id: num [ .. 4095] }"
+description = "VLAN ID (0-4095) of the 802.1Q tag."
 [[menus.arguments]]
 name = "vlan-protocol"
 type = "multi { protocol: alt { protocol-name: enum () , protocol-number: num [ .. 65535] } }"
+description = "VLAN protocol, by name or by EtherType number (0-65535)."
 [[menus.arguments]]
 name = "ip-dscp"
 type = "multi { dscp: num [ .. 255] }"
+description = "DS Field value(s) (0-255) of the IPv4 header (DS Field holds the DSCP and ECN values)."
 [[menus.arguments]]
 name = "ip-id"
 type = "multi { id: num [ .. 65535] }"
+description = "IPv4 identification value(s) (0-65535)."
 [[menus.arguments]]
 name = "ip-frag-off"
 type = "multi { frag-off: num [ .. 65535] }"
+description = "IPv4 fragmentation offset(s) (0-65535)."
 [[menus.arguments]]
 name = "ip-ttl"
 type = "multi { ttl: num [ .. 255] }"
+description = "IPv4 time-to-live value(s) (0-255)."
 [[menus.arguments]]
 name = "ip-src"
 type = "multi { array-id, array-id, ip-range: ipRange }"
+description = "Source IPv4 address(es), with optional masks, of the IPv4 header."
 [[menus.arguments]]
 name = "ip-dst"
 type = "multi { array-id, array-id, ip-range: ipRange }"
+description = "Destination IPv4 address(es), with optional masks, of the IPv4 header."
 [[menus.arguments]]
 name = "ip-protocol"
 type = "multi { protocol-name: enum () }"
+description = "IPv4 protocol, for example tcp, udp or icmp."
 [[menus.arguments]]
 name = "ip-gateway"
 type = "ipAddr"
+description = "Next-hop IPv4 address. When the sender and the receiver are the same device the next hop cannot be derived from ip-dst; when ip-gateway is set, the destination MAC is assumed from the resolved gateway."
 [[menus.arguments]]
 name = "udp-src-port"
 type = "multi { array-id, array-id, port-range: range [ .. 65535] }"
+description = "UDP source port(s) or port range(s) (0-65535)."
 [[menus.arguments]]
 name = "udp-dst-port"
 type = "multi { array-id, array-id, port-range: range [ .. 65535] }"
+description = "UDP destination port(s) or port range(s) (0-65535)."
 [[menus.arguments]]
 name = "udp-checksum"
 type = "multi { array-id, checksum: num [ .. 65535] }"
+description = "UDP checksum value(s) (0-65535)."
 [[menus.arguments]]
 name = "raw-header"
 type = "multi { raw-header: string }"
+description = "Raw header bytes as a hexadecimal string."
 [[menus.arguments]]
 name = "ipv6-src"
 type = "multi { array-id, array-id, ipv6-mask: ip6Prefix }"
+description = "Source IPv6 address(es), with optional masks, of the IPv6 header."
 [[menus.arguments]]
 name = "ipv6-dst"
 type = "multi { array-id, array-id, ipv6-mask: ip6Prefix }"
+description = "Destination IPv6 address(es), with optional masks, of the IPv6 header."
 [[menus.arguments]]
 name = "ipv6-next-header"
 type = "multi { protocol: enum () }"
+description = "IPv6 Next Header protocol."
 [[menus.arguments]]
 name = "ipv6-gateway"
 type = "ip6Addr"
+description = "Next-hop IPv6 address; the destination MAC is assumed from the resolved gateway."
 [[menus.arguments]]
 name = "ipv6-traffic-class"
 type = "multi { traffic-class: num [ .. 255] }"
+description = "IPv6 traffic class value(s) (0-255)."
 [[menus.arguments]]
 name = "ipv6-flow-label"
 type = "multi { flow-label: num [ .. 0xfffff] }"
+description = "IPv6 flow label value(s) (0-1048575)."
 [[menus.arguments]]
 name = "ipv6-hop-limit"
 type = "multi { hop-limit: num [ .. 255] }"
+description = "IPv6 hop limit value(s) (0-255)."
 [[menus.arguments]]
 name = "tcp-src-port"
 type = "multi { array-id, array-id, port-range: range [ .. 65535] }"
+description = "TCP source port(s) or port range(s) (0-65535)."
 [[menus.arguments]]
 name = "tcp-dst-port"
 type = "multi { array-id, array-id, port-range: range [ .. 65535] }"
+description = "TCP destination port(s) or port range(s) (0-65535)."
 [[menus.arguments]]
 name = "tcp-syn"
 type = "multi { array-id, array-id, syn-range: range }"
+description = "TCP sequence number value(s), can be a range."
 [[menus.arguments]]
 name = "tcp-ack"
 type = "multi { array-id, array-id, ack-range: range }"
+description = "TCP acknowledgement number value(s), can be a range."
 [[menus.arguments]]
 name = "tcp-data-offset"
 type = "multi { data-offset: num [ .. 15] }"
+description = "TCP data offset (0-15, in 32-bit words)."
 [[menus.arguments]]
 name = "tcp-flags"
 type = "multi { flags: ubit (fin, syn, rst, psh, ack, urg, ece, cwr, ns, res0, res1, res2) }"
+description = "TCP flag bits to set: fin, syn, rst, psh, ack, urg, ece, cwr, ns, res0, res1, res2."
 [[menus.arguments]]
 name = "tcp-window-size"
 type = "multi { window-size: num [ .. 65535] }"
+description = "TCP window size value(s) (0-65535)."
 [[menus.arguments]]
 name = "tcp-urgent-pointer"
 type = "multi { urgent-pointer: num [ .. 65535] }"
+description = "TCP urgent pointer value(s) (0-65535)."
 [[menus.arguments]]
 name = "data"
 type = "enum (uninitialized | random | specific-byte | incrementing) { uninitialized:0, random:1, specific-byte:2, incrementing:3 }"
 enum_values = ["uninitialized", "random", "specific-byte", "incrementing"]
+description = "How the packet payload (after the header) is filled: uninitialized (not zeroed; fastest), specific-byte (with data-byte), incrementing (bytes 00 01 02 ...), random (random bytes; slowest)."
 [[menus.arguments]]
 name = "data-byte"
 type = "num"
+description = "Byte used to fill the payload when data=specific-byte."
 [[menus.arguments]]
 name = "random-byte-offsets-and-masks"
 type = "multi { array-id, array-id, offset-and-mask: composite { offset: num [ .. 256] , mask: num [ .. 255] } }"
+description = "Byte offsets in the packet, each with a bit mask, that are filled with random values."
 [[menus.arguments]]
 name = "random-ranges"
 type = "object { random-range: super { offset: num [ .. 256] , [width] :enum (8 | 16 | 32) { 8:8, 16:16, 32:32 } , [range] :range } }"
 enum_values = ["8", "16", "32"]
+description = "Fields at given byte offsets that are filled with random values: `width` sets the field size (8, 16 or 32 bits) and `range` the range of the values."
 [[menus.arguments]]
 name = "special-footer"
 type = "bool"
+description = "Whether a special footer is appended to the generated packets."
 [[menus.arguments]]
 name = "compute-checksum-from-offset"
 type = "num"
+description = "Byte offset from which the 2-byte checksum is calculated; for example 14 skips the Ethernet header. no-checksum disables the checksum."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -55207,102 +55296,135 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "assumed-port"
 type = "enum (none) { none:0xffffffff }"
+description = "Assumed port the packets are sent out through, derived when only an interface is set."
 [[menus.read_only]]
 name = "assumed-interface"
 type = "iface_enum"
+description = "Assumed interface the packets are sent out through."
 [[menus.read_only]]
 name = "assumed-mac-src"
 type = "multi { mac: macAddr }"
+description = "Assumed source MAC address (the MAC address of the interface)."
 [[menus.read_only]]
 name = "assumed-mac-dst"
 type = "multi { mac: macAddr }"
+description = "Assumed destination MAC address, derived from ip-dst or from resolving ip-gateway."
 [[menus.read_only]]
 name = "assumed-mac-protocol"
 type = "multi { protocol: alt { protocol-name: enum () , protocol-number: num } }"
+description = "Assumed EtherType, derived from the header stack (for example ip)."
 [[menus.read_only]]
 name = "assumed-vlan-priority"
 type = "multi { priority: num }"
+description = "Assumed VLAN priority of the 802.1Q tag."
 [[menus.read_only]]
 name = "assumed-vlan-id"
 type = "multi { priority: num }"
+description = "Assumed VLAN ID of the 802.1Q tag."
 [[menus.read_only]]
 name = "assumed-vlan-protocol"
 type = "multi { protocol: alt { protocol-name: enum () , protocol-number: num } }"
+description = "Assumed VLAN protocol of the 802.1Q tag."
 [[menus.read_only]]
 name = "assumed-ip-dscp"
 type = "multi { dscp: num }"
+description = "Assumed IPv4 DS Field value."
 [[menus.read_only]]
 name = "assumed-ip-id"
 type = "multi { id: num }"
+description = "Assumed IPv4 identification value."
 [[menus.read_only]]
 name = "assumed-ip-frag-off"
 type = "multi { frag-off: num }"
+description = "Assumed IPv4 fragmentation offset."
 [[menus.read_only]]
 name = "assumed-ip-ttl"
 type = "multi { ttl: num }"
+description = "Assumed IPv4 time-to-live value (for example 64)."
 [[menus.read_only]]
 name = "assumed-ip-src"
 type = "multi { assumed-ip-src: ipAddr }"
+description = "Assumed source IPv4 address (an address of the interface)."
 [[menus.read_only]]
 name = "assumed-ip-dst"
 type = "multi { assumed-ip-dst: ipAddr }"
+description = "Assumed destination IPv4 address."
 [[menus.read_only]]
 name = "assumed-ip-protocol"
 type = "multi { ip-protocol: enum () }"
+description = "Assumed IPv4 protocol, derived from the header stack (for example udp)."
 [[menus.read_only]]
 name = "assumed-udp-src-port"
 type = "multi { port: num }"
+description = "Assumed UDP source port."
 [[menus.read_only]]
 name = "assumed-udp-dst-port"
 type = "multi { port: num }"
+description = "Assumed UDP destination port."
 [[menus.read_only]]
 name = "assumed-udp-checksum"
 type = "multi { checksum: num }"
+description = "Assumed UDP checksum value."
 [[menus.read_only]]
 name = "assumed-raw-header"
 type = "multi { assumed-raw-header: string }"
+description = "Assumed raw header bytes, as a hexadecimal string."
 [[menus.read_only]]
 name = "assumed-ipv6-src"
 type = "multi { ip: ip6Addr }"
+description = "Assumed source IPv6 address (an address of the interface)."
 [[menus.read_only]]
 name = "assumed-ipv6-dst"
 type = "multi { ip: ip6Addr }"
+description = "Assumed destination IPv6 address."
 [[menus.read_only]]
 name = "assumed-ipv6-next-header"
 type = "multi { ip-protocol: enum () }"
+description = "Assumed IPv6 Next Header protocol."
 [[menus.read_only]]
 name = "assumed-ipv6-traffic-class"
 type = "multi { traffic-class: num }"
+description = "Assumed IPv6 traffic class value."
 [[menus.read_only]]
 name = "assumed-ipv6-flow-label"
 type = "multi { flow-label: num }"
+description = "Assumed IPv6 flow label value."
 [[menus.read_only]]
 name = "assumed-ipv6-hop-limit"
 type = "multi { hop-limit: num }"
+description = "Assumed IPv6 hop limit value."
 [[menus.read_only]]
 name = "assumed-tcp-src-port"
 type = "multi { port: num }"
+description = "Assumed TCP source port."
 [[menus.read_only]]
 name = "assumed-tcp-dst-port"
 type = "multi { port: num }"
+description = "Assumed TCP destination port."
 [[menus.read_only]]
 name = "assumed-tcp-syn"
 type = "multi { syn: num }"
+description = "Assumed TCP sequence number."
 [[menus.read_only]]
 name = "assumed-tcp-ack"
 type = "multi { ack: num }"
+description = "Assumed TCP acknowledgement number."
 [[menus.read_only]]
 name = "assumed-tcp-data-offset"
 type = "multi { data-offset: num }"
+description = "Assumed TCP data offset."
 [[menus.read_only]]
 name = "assumed-tcp-flags"
 type = "multi { flags: num }"
+description = "Assumed TCP flags."
 [[menus.read_only]]
 name = "assumed-tcp-window-size"
 type = "multi { window-size: num }"
+description = "Assumed TCP window size."
 [[menus.read_only]]
 name = "assumed-tcp-urgent-pointer"
 type = "multi { urgent-pointer: num }"
+description = "Assumed TCP urgent pointer value."
 
 [[menus]]
 path = "/tool/traffic-generator/port"
@@ -55322,9 +55444,11 @@ description = "dynamic"
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Descriptive name of the port."
 [[menus.arguments]]
 name = "interface"
 type = "iface_enum"
+description = "Name of the interface associated with the port. Mandatory."
 required = true
 [[menus.arguments]]
 name = "comment"
@@ -55345,15 +55469,7 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "first-header"
 type = "enum (mac | vlan | ip | udp | raw | ipv6 | tcp) { mac:1, vlan:2, ip:3, udp:4, raw:5, ipv6:6, tcp:7 }"
-description = "Shows the suggested first header for packets to be sent out of the specified interface. This information can be used when creating packet templates."
-[[menus.read_only]]
-name = "dynamic"
-type = "yes | no"
-description = "Whether the port configuration is generated automatically."
-[[menus.read_only]]
-name = "inactive"
-type = "yes | no"
-description = "Whether the port is inactive and can't participate in tx/rx of the packets."
+description = "Suggested first header for packets sent out of this interface. Can be used when creating packet templates."
 
 [[menus]]
 path = "/tool/traffic-generator/quick"
@@ -55361,87 +55477,115 @@ type = "Command"
 [[menus.arguments]]
 name = "entries-to-show"
 type = "num"
+description = "How many status lines to print to the terminal."
 [[menus.arguments]]
 name = "test-id"
 type = "num"
+description = "Test session ID (see the general traffic-generator menu)."
 [[menus.arguments]]
 name = "measure-out-of-order"
 type = "bool"
+description = "Whether out-of-order received packets are measured and reported for this test."
 [[menus.arguments]]
 name = "cpu-core"
 type = "multi { array-id, array-id, cpu-core: range [0 .. 255] }"
+description = "CPU core or range of cores (0-255) the streams are pinned to, for multi-core tests."
 [[menus.arguments]]
 name = "stream"
 type = "multi { stream: enum }"
+description = "Names of the streams to start."
 [[menus.arguments]]
 name = "port"
 type = "multi { port: enum }"
+description = "Ports to start transmitting from."
 [[menus.arguments]]
 name = "interface"
 type = "multi { port: iface_enum }"
+description = "Interfaces to start transmitting from; a port is implied for each."
 [[menus.arguments]]
 name = "id"
 type = "multi { id: num [0 .. 255] }"
+description = "Stream IDs to start."
 [[menus.arguments]]
 name = "packet-size"
 type = "multi { array-id, array-id, packet-size: range [1 .. 65535] }"
+description = "Override the generated packet size (in bytes); a range generates random sizes."
 [[menus.arguments]]
 name = "pps"
 type = "multi { pps: num }"
+description = "Override the packets-per-second rate."
 [[menus.arguments]]
 name = "mbps"
 type = "multi { mbps: num }"
+description = "Override the megabits-per-second rate."
 [[menus.arguments]]
 name = "tx-template"
 type = "multi { tx-template: enum }"
+description = "Override the packet templates used as the packet content source (up to 16)."
 [[menus.arguments]]
 name = "packet-count"
 type = "multi { packet-count: num }"
+description = "Override the number of packets to transmit."
 [[menus.read_only]]
 name = "seq"
 type = "enum (TOT) { TOT:0xffffffff }"
+description = "Measurement sequence number, or TOT for totals."
 [[menus.read_only]]
 name = "id"
 type = "enum (TOT) { TOT:0xffffffff }"
+description = "Stream ID, or TOT for totals across streams."
 [[menus.read_only]]
 name = "tx-packet"
 type = "num"
+description = "Total packets transmitted."
 [[menus.read_only]]
 name = "tx-rate"
 type = "num"
+description = "Current transmit rate in bps."
 [[menus.read_only]]
 name = "rx-packet"
 type = "num"
+description = "Total packets received."
 [[menus.read_only]]
 name = "rx-rate"
 type = "num"
+description = "Current receive rate in bps."
 [[menus.read_only]]
 name = "rx-ooo"
 type = "num"
+description = "Received packets that were out of order."
 [[menus.read_only]]
 name = "rx-bad-csum"
 type = "num"
+description = "Received packets with a bad checksum."
 [[menus.read_only]]
 name = "lost-packet"
 type = "num"
+description = "Total lost packets (transmitted minus received)."
 [[menus.read_only]]
 name = "lost-rate"
 type = "num"
+description = "Current loss rate in bps."
 [[menus.read_only]]
 name = "lost-ratio"
 type = "string"
+description = "Loss as a percentage of transmitted packets."
 [[menus.read_only]]
 name = "lat-min"
 type = "string"
+description = "Minimum measured latency."
 [[menus.read_only]]
 name = "lat-avg"
 type = "string"
+description = "Average measured latency."
 [[menus.read_only]]
 name = "lat-max"
 type = "string"
+description = "Maximum measured latency."
 [[menus.read_only]]
 name = "jitter"
 type = "string"
+description = "Measured latency variation (jitter)."
 
 [[menus]]
 path = "/tool/traffic-generator/raw-packet-template"
@@ -55453,47 +55597,61 @@ description = "dynamic"
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Descriptive name of the RAW packet template."
 [[menus.arguments]]
 name = "port"
 type = "enum"
+description = "Name of the port (from the port menu) the packets are sent out through."
 [[menus.arguments]]
 name = "header"
 type = "string"
+description = "RAW packet header as a hexadecimal string; it fully defines the header stack."
 [[menus.arguments]]
 name = "data"
 type = "enum (uninitialized | random | specific-byte | incrementing) { uninitialized:0, random:1, specific-byte:2, incrementing:3 }"
 enum_values = ["uninitialized", "random", "specific-byte", "incrementing"]
+description = "How the packet payload (after the header) is filled: uninitialized (not zeroed; fastest), specific-byte (with data-byte), incrementing (bytes 00 01 02 ...), random (random bytes; slowest)."
 [[menus.arguments]]
 name = "data-byte"
 type = "num"
+description = "Byte used to fill the payload when data=specific-byte."
 [[menus.arguments]]
 name = "random-byte-offsets-and-masks"
 type = "multi { array-id, array-id, offset-and-mask: composite { offset: num [ .. 256] , mask: num [ .. 255] } }"
+description = "Byte offsets in the packet, each with a bit mask, that are filled with random values."
 [[menus.arguments]]
 name = "random-ranges"
 type = "object { random-range: super { offset: num [ .. 256] , [width] :enum (8 | 16 | 32) { 8:8, 16:16, 32:32 } , [range] :range } }"
 enum_values = ["8", "16", "32"]
+description = "Fields at given byte offsets that are filled with random values: `width` sets the field size (8, 16 or 32 bits) and `range` the range of the values."
 [[menus.arguments]]
 name = "ip-header-offset"
 type = "multi { ip-header-offset: num [ .. 65535] }"
+description = "Byte offset of the IPv4 header within the packet, so the generator can locate and parse it."
 [[menus.arguments]]
 name = "ipv6-header-offset"
 type = "multi { ipv6-header-offset: num [ .. 65535] }"
+description = "Byte offset of the IPv6 header within the packet."
 [[menus.arguments]]
 name = "udp-header-offset"
 type = "multi { udp-header-offset: num [ .. 65535] }"
+description = "Byte offset of the UDP header within the packet."
 [[menus.arguments]]
 name = "udp-compute-checksum"
 type = "multi { udp-compute-checksum: bool }"
+description = "Whether the UDP checksum is computed by the generator."
 [[menus.arguments]]
 name = "tcp-header-offset"
 type = "multi { tcp-header-offset: num [ .. 65535] }"
+description = "Byte offset of the TCP header within the packet."
 [[menus.arguments]]
 name = "special-footer"
 type = "bool"
+description = "Whether a special footer is appended to the generated packets."
 [[menus.arguments]]
 name = "compute-checksum-from-offset"
 type = "num"
+description = "Byte offset from which the 2-byte checksum is calculated; for example 14 skips the Ethernet header. no-checksum disables the checksum."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -55513,6 +55671,7 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "header-length"
 type = "num"
+description = "Total length of the packet header in bytes."
 
 [[menus]]
 path = "/tool/traffic-generator/start"
@@ -55520,39 +55679,51 @@ type = "Command"
 [[menus.arguments]]
 name = "test-id"
 type = "num"
+description = "Test session ID (see the general traffic-generator menu)."
 [[menus.arguments]]
 name = "measure-out-of-order"
 type = "bool"
+description = "Whether out-of-order received packets are measured and reported for this test."
 [[menus.arguments]]
 name = "cpu-core"
 type = "multi { array-id, array-id, cpu-core: range [0 .. 255] }"
+description = "CPU core or range of cores (0-255) the streams are pinned to, for multi-core tests."
 [[menus.arguments]]
 name = "stream"
 type = "multi { stream: enum }"
+description = "Names of the streams to start."
 [[menus.arguments]]
 name = "port"
 type = "multi { port: enum }"
+description = "Ports to start transmitting from."
 [[menus.arguments]]
 name = "interface"
 type = "multi { port: iface_enum }"
+description = "Interfaces to start transmitting from; a port is implied for each."
 [[menus.arguments]]
 name = "id"
 type = "multi { id: num [0 .. 255] }"
+description = "Stream IDs to start."
 [[menus.arguments]]
 name = "packet-size"
 type = "multi { array-id, array-id, packet-size: range [1 .. 65535] }"
+description = "Override the generated packet size (in bytes); a range generates random sizes."
 [[menus.arguments]]
 name = "pps"
 type = "multi { pps: num }"
+description = "Override the packets-per-second rate."
 [[menus.arguments]]
 name = "mbps"
 type = "multi { mbps: num }"
+description = "Override the megabits-per-second rate."
 [[menus.arguments]]
 name = "tx-template"
 type = "multi { tx-template: enum }"
+description = "Override the packet templates used as the packet content source (up to 16)."
 [[menus.arguments]]
 name = "packet-count"
 type = "multi { packet-count: num }"
+description = "Override the number of packets to transmit."
 
 [[menus]]
 path = "/tool/traffic-generator/stats"
@@ -55572,12 +55743,15 @@ type = "Directory"
 [[menus.arguments]]
 name = "stream-id"
 type = "num"
+description = "Filter the output to one stream ID."
 [[menus.arguments]]
 name = "port"
 type = "enum"
+description = "Filter the output to one port."
 [[menus.arguments]]
 name = "seq"
 type = "range"
+description = "Filter the output to one measurement sequence number."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -55597,19 +55771,19 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "latency"
 type = "string"
-description = "latency range"
+description = "Latency range of this bucket, for example 0-15.5us."
 [[menus.read_only]]
 name = "count"
 type = "num"
-description = "Number of packets in the current latency range"
+description = "Number of packets received in this latency range."
 [[menus.read_only]]
 name = "share"
 type = "num"
-description = "Percentage of packets falling in this latency range."
+description = "Share of received packets falling into this latency range, in percent."
 [[menus.read_only]]
 name = "graph"
 type = "meter"
-description = "graphical representation of share"
+description = "Graphical representation of the share."
 
 [[menus]]
 path = "/tool/traffic-generator/stats/port"
@@ -55633,66 +55807,87 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "seq"
 type = "enum (TOT) { TOT:0xffffffff }"
+description = "Measurement sequence number, or TOT for totals."
 [[menus.read_only]]
 name = "port"
 type = "composite { p: enum (TOT) { TOT:0xffffffff } , interface: iface_enum }"
+description = "Transmit/receive port and its interface, or TOT."
 [[menus.read_only]]
 name = "rx-unk-packet"
 type = "num"
+description = "Packets received that do not belong to any known stream (do not match a packet template)."
 [[menus.read_only]]
 name = "rx-unk-byte"
 type = "num"
+description = "Bytes received that do not belong to any known stream."
 [[menus.read_only]]
 name = "rx-unk-rate"
 type = "num"
+description = "Current receive rate of unknown packets in bps."
 [[menus.read_only]]
 name = "tx-packet"
 type = "num"
+description = "Total packets transmitted."
 [[menus.read_only]]
 name = "tx-byte"
 type = "num"
+description = "Total bytes transmitted."
 [[menus.read_only]]
 name = "tx-rate"
 type = "num"
+description = "Current transmit rate in bps."
 [[menus.read_only]]
 name = "rx-packet"
 type = "num"
+description = "Total packets received."
 [[menus.read_only]]
 name = "rx-byte"
 type = "num"
+description = "Total bytes received."
 [[menus.read_only]]
 name = "rx-rate"
 type = "num"
+description = "Current receive rate in bps."
 [[menus.read_only]]
 name = "rx-ooo"
 type = "num"
+description = "Received packets that were out of order."
 [[menus.read_only]]
 name = "rx-bad-csum"
 type = "num"
+description = "Received packets with a bad checksum."
 [[menus.read_only]]
 name = "lost-packet"
 type = "num"
+description = "Total lost packets (transmitted minus received)."
 [[menus.read_only]]
 name = "lost-byte"
 type = "num"
+description = "Total lost bytes."
 [[menus.read_only]]
 name = "lost-rate"
 type = "num"
+description = "Current loss rate in bps."
 [[menus.read_only]]
 name = "lost-ratio"
 type = "string"
+description = "Loss as a percentage of transmitted packets."
 [[menus.read_only]]
 name = "lat-min"
 type = "string"
+description = "Minimum measured latency."
 [[menus.read_only]]
 name = "lat-avg"
 type = "string"
+description = "Average measured latency."
 [[menus.read_only]]
 name = "lat-max"
 type = "string"
+description = "Maximum measured latency."
 [[menus.read_only]]
 name = "jitter"
 type = "string"
+description = "Measured latency variation (jitter)."
 
 [[menus]]
 path = "/tool/traffic-generator/stats/raw"
@@ -55716,60 +55911,79 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "seq"
 type = "enum (TOT) { TOT:0xffffffff }"
+description = "Measurement sequence number, or TOT for totals."
 [[menus.read_only]]
 name = "port"
 type = "composite { p: enum (TOT) { TOT:0xffffffff } , interface: iface_enum }"
+description = "Transmit/receive port and its interface, or TOT."
 [[menus.read_only]]
 name = "id"
 type = "enum (TOT) { TOT:0xffffffff }"
+description = "Stream ID, or TOT for totals across streams."
 [[menus.read_only]]
 name = "tx-packet"
 type = "num"
+description = "Total packets transmitted."
 [[menus.read_only]]
 name = "tx-byte"
 type = "num"
+description = "Total bytes transmitted."
 [[menus.read_only]]
 name = "tx-rate"
 type = "num"
+description = "Current transmit rate in bps."
 [[menus.read_only]]
 name = "rx-packet"
 type = "num"
+description = "Total packets received."
 [[menus.read_only]]
 name = "rx-byte"
 type = "num"
+description = "Total bytes received."
 [[menus.read_only]]
 name = "rx-rate"
 type = "num"
+description = "Current receive rate in bps."
 [[menus.read_only]]
 name = "rx-ooo"
 type = "num"
+description = "Received packets that were out of order."
 [[menus.read_only]]
 name = "rx-bad-csum"
 type = "num"
+description = "Received packets with a bad checksum."
 [[menus.read_only]]
 name = "lost-packet"
 type = "num"
+description = "Total lost packets (transmitted minus received)."
 [[menus.read_only]]
 name = "lost-byte"
 type = "num"
+description = "Total lost bytes."
 [[menus.read_only]]
 name = "lost-rate"
 type = "num"
+description = "Current loss rate in bps."
 [[menus.read_only]]
 name = "lost-ratio"
 type = "string"
+description = "Loss as a percentage of transmitted packets."
 [[menus.read_only]]
 name = "lat-min"
 type = "string"
+description = "Minimum measured latency."
 [[menus.read_only]]
 name = "lat-avg"
 type = "string"
+description = "Average measured latency."
 [[menus.read_only]]
 name = "lat-max"
 type = "string"
+description = "Maximum measured latency."
 [[menus.read_only]]
 name = "jitter"
 type = "string"
+description = "Measured latency variation (jitter)."
 
 [[menus]]
 path = "/tool/traffic-generator/stats/stream"
@@ -55793,57 +56007,75 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "seq"
 type = "enum (TOT) { TOT:0xffffffff }"
+description = "Measurement sequence number, or TOT for totals."
 [[menus.read_only]]
 name = "id"
 type = "enum (TOT) { TOT:0xffffffff }"
+description = "Stream ID, or TOT for totals across streams."
 [[menus.read_only]]
 name = "tx-packet"
 type = "num"
+description = "Total packets transmitted."
 [[menus.read_only]]
 name = "tx-byte"
 type = "num"
+description = "Total bytes transmitted."
 [[menus.read_only]]
 name = "tx-rate"
 type = "num"
+description = "Current transmit rate in bps."
 [[menus.read_only]]
 name = "rx-packet"
 type = "num"
+description = "Total packets received."
 [[menus.read_only]]
 name = "rx-byte"
 type = "num"
+description = "Total bytes received."
 [[menus.read_only]]
 name = "rx-rate"
 type = "num"
+description = "Current receive rate in bps."
 [[menus.read_only]]
 name = "rx-ooo"
 type = "num"
+description = "Received packets that were out of order."
 [[menus.read_only]]
 name = "rx-bad-csum"
 type = "num"
+description = "Received packets with a bad checksum."
 [[menus.read_only]]
 name = "lost-packet"
 type = "num"
+description = "Total lost packets (transmitted minus received)."
 [[menus.read_only]]
 name = "lost-byte"
 type = "num"
+description = "Total lost bytes."
 [[menus.read_only]]
 name = "lost-rate"
 type = "num"
+description = "Current loss rate in bps."
 [[menus.read_only]]
 name = "lost-ratio"
 type = "string"
+description = "Loss as a percentage of transmitted packets."
 [[menus.read_only]]
 name = "lat-min"
 type = "string"
+description = "Minimum measured latency."
 [[menus.read_only]]
 name = "lat-avg"
 type = "string"
+description = "Average measured latency."
 [[menus.read_only]]
 name = "lat-max"
 type = "string"
+description = "Maximum measured latency."
 [[menus.read_only]]
 name = "jitter"
 type = "string"
+description = "Measured latency variation (jitter)."
 
 [[menus]]
 path = "/tool/traffic-generator/stop"
@@ -55863,30 +56095,39 @@ description = "invalid"
 [[menus.arguments]]
 name = "name"
 type = "string"
+description = "Descriptive name of the stream."
 [[menus.arguments]]
 name = "port"
 type = "enum"
+description = "Name of the port (from the port menu) the stream transmits through. Usually taken from the packet template; can be overridden here."
 [[menus.arguments]]
 name = "id"
 type = "num"
+description = "Stream ID used to identify the stream in stats and in the start/quick commands. The value TOT is reserved for totals."
 [[menus.arguments]]
 name = "packet-size"
 type = "range"
+description = "L2 size of the generated packets in bytes; a range (for example 64-1518) generates random packet sizes."
 [[menus.arguments]]
 name = "pps"
 type = "num"
+description = "Packets per second the stream tries to generate."
 [[menus.arguments]]
 name = "mbps"
 type = "num"
+description = "Megabits per second the stream tries to generate."
 [[menus.arguments]]
 name = "packet-count"
 type = "num"
+description = "Number of packets to transmit; `unlimited` transmits until the stream is stopped."
 [[menus.arguments]]
 name = "cpu-core"
 type = "range"
+description = "CPU core (0-255) the stream is pinned to, or a range of cores for multi-core streams."
 [[menus.arguments]]
 name = "tx-template"
 type = "enum"
+description = "Name of the packet template (from packet-template or raw-packet-template) used as the packet content source. Mandatory."
 required = true
 [[menus.arguments]]
 name = "comment"
@@ -55907,6 +56148,7 @@ description = "Copy property values from an existing item (universal add propert
 [[menus.read_only]]
 name = "default-port"
 type = "enum"
+description = "The port this stream transmits on, taken from the packet template."
 
 [[menus]]
 path = "/tool/traffic-monitor"
