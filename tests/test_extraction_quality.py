@@ -132,6 +132,29 @@ def test_truncated_raw_enums_are_never_embedded_as_complete_members():
     assert extract.extract_enum_values("enum (one | two | …)") == []
 
 
+def test_enum_member_cases_mirror_the_rust_fallback():
+    """Shared case table with `lsp/src/menus.rs::parse_enum_values`.
+
+    Only the cases both sides must agree on are pinned. This side reads the RAW
+    type, so it also recovers members from a bit-map suffix or a body the
+    display cap would cut; the Rust fallback reads the capped display type and
+    refuses those, because an incomplete list could reject a valid value.
+    Complete members reach the LSP through `enum_values = [...]` instead.
+    """
+    assert extract.extract_enum_values("enum (none)") == ["none"]
+    assert extract.extract_enum_values("enum (one | two)") == ["one", "two"]
+    assert extract.extract_enum_values("enum (one | two | ...)") == []
+    assert extract.extract_enum_values("enum (one | two | …)") == []
+    assert extract.extract_enum_values("enum ()") == []
+    assert extract.extract_enum_values("enum") == []
+    assert extract.extract_enum_values("ubit (1Mbps, 2Mbps)") == []
+    # Deliberate divergence, safe direction: the raw type still has the members
+    # behind its bit-map suffix; the capped display type cannot be trusted for
+    # a suffix that may in fact be a cut.
+    assert extract.extract_enum_values("enum (a | b) { a:0, b:1 }") == ["a", "b"]
+    assert extract.extract_enum_values("enum (a | b | c") == []
+
+
 def test_report_records_per_menu_provenance_and_coverage(tmp_path):
     source = tmp_path / "llms-full.txt"
     source.write_text("fixture")

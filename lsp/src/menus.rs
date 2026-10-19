@@ -193,11 +193,18 @@ impl ArgEntry {
 /// Parse enum members out of a display type string such as
 /// `enum (input | forward | output)`.
 ///
-/// Fallback only: a truncated member list (containing `...` or `…`) yields no
-/// members, because its omissions cannot prove a value invalid. The check is
-/// scoped to the members actually captured, mirroring the generator's
-/// `extract_enum_values`. Complete members come from
-/// [`ArgEntry::enum_values`] instead.
+/// Fallback only: [`ArgEntry::enum_values`] holds the complete member list the
+/// generator extracted from the raw type before truncation, and is
+/// authoritative whenever it is present. This reads the DISPLAY type, which the
+/// generator caps, so it accepts exactly one parenthesized body and refuses
+/// everything else: a cut body (no closing parenthesis), a bit-map suffix
+/// (`enum (a | b) { a:0 }`) or an upstream ellipsis. Refusing is the safe
+/// direction — an incomplete list would reject values that are actually valid.
+///
+/// The ellipsis check is scoped to the captured body, mirroring the
+/// generator's `extract_enum_values`; the only deliberate difference is that
+/// the generator reads the uncapped raw type, so it may accept a bit-map
+/// suffix. Both sides pin the shared cases in their tests.
 ///
 /// Empty members are dropped: upstream marks user-defined values with a bare
 /// `enum ()` (e.g. `new-connection-mark`, `new-routing-mark`), and treating

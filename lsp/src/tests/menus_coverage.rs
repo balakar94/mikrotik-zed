@@ -1,7 +1,7 @@
 // ── Dataset coverage vocabulary and unset capability ─────────────────────
 
 use crate::diagnostics::{compute_diagnostics, severity};
-use crate::menus::{Coverage, MenuData};
+use crate::menus::{Coverage, MenuData, parse_enum_values};
 
 fn fixture(coverage: &str) -> MenuData {
     MenuData::from_toml_str(&format!(
@@ -111,6 +111,28 @@ fn truncated_enum_cannot_reject_an_unlisted_value() {
         .iter()
         .any(|d| d.code.as_deref() == Some("invalid-enum-value"))
     );
+}
+
+#[test]
+fn enum_member_cases_mirror_the_generator() {
+    // Shared case table with `scripts/extract_commands.py::extract_enum_values`
+    // (also pinned in tests/test_extraction_quality.py). The fallback reads the
+    // capped display type, so it accepts exactly one parenthesized body: a
+    // bit-map suffix or a cut body is left to `enum_values`.
+    assert_eq!(parse_enum_values("enum (none)"), vec!["none".to_string()]);
+    assert_eq!(
+        parse_enum_values("enum (one | two)"),
+        vec!["one".to_string(), "two".to_string()]
+    );
+    assert!(parse_enum_values("enum (one | two | ...)").is_empty());
+    assert!(parse_enum_values("enum (one | two | …)").is_empty());
+    assert!(parse_enum_values("enum ()").is_empty());
+    assert!(parse_enum_values("enum").is_empty());
+    assert!(parse_enum_values("ubit (1Mbps, 2Mbps)").is_empty());
+    // Deliberate divergence, safe direction: raw-type parsing (generator)
+    // recovers the members, display-type parsing (here) refuses.
+    assert!(parse_enum_values("enum (a | b) { a:0, b:1 }").is_empty());
+    assert!(parse_enum_values("enum (a | b | c").is_empty());
 }
 
 #[test]
