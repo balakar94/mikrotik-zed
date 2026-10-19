@@ -41,6 +41,14 @@ the check also tolerates shallow clones).
 - `data/upstream-docs.toml`: sync manifest (SHA256 of both upstream files,
   version, timestamp), regenerated alongside `make sync`.
 
+A sync replaces both documents and the manifest as one recoverable batch, and
+validates before replacing anything: empty bodies, HTML error pages, invalid
+UTF-8, oversized downloads, missing documentation structure, retried
+HTTP-success error pages, and substantial section-count loss are refused, so a
+bad fetch cannot leave mixed provenance. An ordinary rename failure rolls back
+the completed writes; each rename is atomic per file, not across a process
+crash affecting the entire batch.
+
 Unknown-property diagnostics are only downgraded by the coverage marker: a
 marker outside the published vocabulary counts as incomplete, never as
 complete. Known affected menus carry partial coverage; hierarchy-only menus

@@ -395,11 +395,11 @@ class TestSyncResultMessage:
         assert sync_result_message(["llms.txt"]) == (
             "Sync complete: index-only change "
             "(llms.txt updated, llms-full.txt unchanged) "
-            "— extract will be no-op."
+            "— run `make extract` to refresh source attribution."
         )
 
-    def test_index_only_never_suggests_extract(self):
-        assert "extract_commands.py" not in sync_result_message(["llms.txt"])
+    def test_index_only_suggests_source_attribution_refresh(self):
+        assert "make extract" in sync_result_message(["llms.txt"])
 
     def test_full_only_suggests_extract(self):
         assert sync_result_message(["llms-full.txt"]) == (

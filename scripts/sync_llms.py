@@ -19,9 +19,9 @@ Behavior:
   - Extracts RouterOS era hints from llms-full.txt (header, for logging; the
     highest feature-gate mention, recorded in the provenance manifest).
   - If changed, overwrites local files and prints version diff.
-- Final summary distinguishes index-only (llms.txt) from full changes:
-  an index-only sync reports that extract will be a no-op, while any
-  llms-full.txt change keeps suggesting the extract_commands.py rerun.
+  - Final summary distinguishes index-only (llms.txt) from full changes: an
+    index-only sync requests source-attribution regeneration, while any
+    llms-full.txt change keeps suggesting the extract_commands.py rerun.
   - Maintains data/upstream-docs.toml, a provenance manifest recording which
     upstream bytes were synced (per-file SHA256, RouterOS era hint, UTC
     timestamp). Written only on real runs: rewritten whenever anything changed
@@ -72,6 +72,27 @@ MANIFEST_HEADER = (
 
 TIMEOUT = 30  # seconds
 RETRIES = 3
+MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024
+
+
+def validate_payload(filename: str, data: bytes, previous: bytes | None = None) -> str:
+    """Reject unusable HTTP-success bodies before any snapshot is replaced."""
+    if not data or len(data) > MAX_DOWNLOAD_BYTES:
+        raise ValueError(f"{filename}: empty or oversized documentation payload")
+    text = data.decode("utf-8-sig")
+    if "\x00" in text or re.search(r"<!doctype\s+html|<html\b", text[:8192], re.IGNORECASE):
+        raise ValueError(f"{filename}: expected Markdown documentation, received HTML or binary content")
+    if not re.search(r"^#\s+.*(?:MikroTik|RouterOS)", text, re.MULTILINE):
+        raise ValueError(f"{filename}: missing RouterOS documentation heading")
+    pattern = r"^- \[[^\]]+\]\(https://manual\.mikrotik\.com/" if filename == "llms.txt" else r"^##\s+\S"
+    count = len(re.findall(pattern, text, re.MULTILINE))
+    if not count:
+        raise ValueError(f"{filename}: no documentation {'links' if filename == 'llms.txt' else 'sections'}")
+    if previous:
+        old_count = len(re.findall(pattern, previous.decode("utf-8", errors="replace"), re.MULTILINE))
+        if old_count >= 20 and count * 2 < old_count:
+            raise ValueError(f"{filename}: suspicious coverage drop ({old_count} -> {count}); snapshots retained")
+    return text
 
 
 def fetch_url(url: str) -> bytes:
@@ -89,7 +110,9 @@ def fetch_url(url: str) -> bytes:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
                 if resp.status != 200:
                     raise urllib.error.HTTPError(url, resp.status, f"HTTP {resp.status}", resp.headers, None)
-                data = resp.read()
+                data = resp.read(MAX_DOWNLOAD_BYTES + 1)
+                if len(data) > MAX_DOWNLOAD_BYTES:
+                    raise ValueError("documentation exceeds download size limit")
                 # Truncated-read guard: when the server sends Content-Length, a
                 # short body means a cut connection (observed in the wild as an
                 # IncompleteRead surfacing only on some attempts). Fail here so
@@ -102,6 +125,10 @@ def fetch_url(url: str) -> bytes:
                             f"short read for {url}: got {len(data)} bytes, "
                             f"expected {expected_len.strip()}"
                         )
+                # Invalid HTTP-success responses can be transient too. Keep
+                # structure validation inside the retry loop; the caller also
+                # compares coverage against the previous snapshot.
+                validate_payload(url.rsplit("/", 1)[-1], data)
                 return data
         except Exception as e:
             last_exc = e
@@ -116,6 +143,54 @@ def sha256(data: bytes) -> str:
     h = hashlib.sha256()
     h.update(data)
     return h.hexdigest()
+
+
+def replace_snapshots(writes: list[tuple[Path, bytes]]) -> None:
+    """Stage all files first and roll back completed replacements on I/O failure.
+
+    Each rename is atomic. This is not crash-atomic across several paths,
+    but an ordinary write/rename failure cannot leave mixed provenance.
+    """
+    staged: list[tuple[Path, Path]] = []
+    originals: dict[Path, bytes | None] = {}
+    replaced: list[Path] = []
+    try:
+        for path, data in writes:
+            originals[path] = path.read_bytes() if path.exists() else None
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+            temp_path = Path(name)
+            staged.append((path, temp_path))
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temp_path.chmod(0o644)
+        for path, temp_path in staged:
+            os.replace(temp_path, path)
+            replaced.append(path)
+    except OSError:
+        for path in reversed(replaced):
+            original = originals[path]
+            try:
+                if original is None:
+                    path.unlink()
+                else:
+                    fd, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+                    temp_path = Path(name)
+                    staged.append((path, temp_path))
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(original)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    temp_path.chmod(0o644)
+                    os.replace(temp_path, path)
+            except OSError as exc:
+                print(f"ERROR: could not restore {path}: {exc}; rerun make sync", file=sys.stderr)
+        raise
+    finally:
+        for _, temp_path in staged:
+            temp_path.unlink(missing_ok=True)
 
 
 def sha256_file(path: Path) -> str | None:
@@ -243,9 +318,8 @@ def sync_result_message(changed_files: list[str], forced: bool = False) -> str:
     """Final sync summary line for a real (non-check) run.
 
     Pure helper (no I/O): identical inputs always produce identical text.
-    The extraction pipeline reads llms-full.txt only, so an index-only
-    change (llms.txt without llms-full.txt) makes extract a no-op and the
-    message says so instead of suggesting a regeneration run.
+    The extraction pipeline uses llms.txt for source attribution, so even an
+    index-only change requires regeneration.
     `forced` marks a --force rewrite where no byte actually changed: the
     manifest policy still rewrites, but the summary must not claim files
     were updated.
@@ -258,7 +332,7 @@ def sync_result_message(changed_files: list[str], forced: bool = False) -> str:
         return (
             "Sync complete: index-only change "
             "(llms.txt updated, llms-full.txt unchanged) "
-            "— extract will be no-op."
+            "— run `make extract` to refresh source attribution."
         )
     if set(changed_files) == {"llms.txt", "llms-full.txt"}:
         return (
@@ -313,8 +387,8 @@ def main(argv: list[str] | None = None, *, project_root: Path | None = None, fet
     # forced_files so the final summary does not claim content changed.
     # overall_changed stays True for any staged write (changed or forced) to
     # preserve --check exit codes and the manifest rewrite policy. Used only
-    # to pick the final summary line — index-only changes leave llms-full.txt
-    # untouched, so extract would be a no-op and must not be suggested.
+    # to pick the final summary line — an index-only change still requires
+    # `make extract`, because the index supplies the source URLs.
     changed_files: list[str] = []
     forced_files: list[str] = []
     has_error = False
@@ -336,6 +410,7 @@ def main(argv: list[str] | None = None, *, project_root: Path | None = None, fet
         print(f"Fetching {url} ...")
         try:
             data = do_fetch(url)
+            remote_text = validate_payload(filename, data, local_path.read_bytes() if local_path.exists() else None)
         except Exception as e:
             print(f"ERROR: failed to fetch {url}: {e}", file=sys.stderr)
             has_error = True
@@ -343,7 +418,6 @@ def main(argv: list[str] | None = None, *, project_root: Path | None = None, fet
 
         remote_hash = sha256(data)
         local_hash = sha256_file(local_path)
-        remote_text = data.decode("utf-8", errors="ignore")
         remote_version = extract_version(remote_text)
 
         fetched.append(
@@ -418,45 +492,28 @@ def main(argv: list[str] | None = None, *, project_root: Path | None = None, fet
         pending_writes.append((local_path, data))
         print(f"  {filename}: staged {len(data)} bytes (will write after both fetches)")
 
-    # ── Atomic flush of staged upstream files ─────────
-    if args.check:
-        if pending_writes:
-            print(f"staged {len(pending_writes)} file(s) not written (--check)")
-    elif has_error:
-        if pending_writes:
-            print(
-                f"discarding {len(pending_writes)} staged file(s) due to fetch error (atomic guard)",
-                file=sys.stderr,
-            )
-            pending_writes.clear()
-    elif pending_writes:
-        for path, data in pending_writes:
-            try:
-                path.write_bytes(data)
-                print(f"  {path.name}: wrote {len(data)} bytes")
-            except Exception as e:
-                print(f"ERROR: failed to write {path}: {e}", file=sys.stderr)
-                has_error = True
-        pending_writes.clear()
-
-    # ── Provenance manifest policy (data/upstream-docs.toml) ─────────
-    # --check never writes anything. On real runs: rewrite whenever any file
-    # changed (--force counts, fresh timestamp); bootstrap once when missing;
-    # otherwise leave untouched so git-diff gates see zero churn. Skipped on
-    # incomplete fetches — a partial snapshot would be misleading provenance.
+    # Commit the two source files and their manifest as one recoverable batch.
     manifest_path = root / MANIFEST_RELPATH
     if args.check:
         print("manifest: untouched (--check mode never writes)")
     elif has_error or len(fetched) != len(FILES):
+        if pending_writes:
+            print(f"discarding {len(pending_writes)} staged file(s) due to fetch error (atomic guard)", file=sys.stderr)
         print("manifest: skipped (incomplete upstream fetch)")
-    elif overall_changed or args.force:
-        write_manifest(manifest_path, build_manifest_text(era_hint, utc_now_iso(), fetched))
-        print(f"manifest: wrote {MANIFEST_RELPATH.as_posix()} ({len(fetched)} sources)")
-    elif not manifest_path.exists():
-        write_manifest(manifest_path, build_manifest_text(era_hint, utc_now_iso(), fetched))
-        print(f"manifest: created baseline {MANIFEST_RELPATH.as_posix()} ({len(fetched)} sources)")
     else:
-        print(f"manifest: up-to-date, untouched ({MANIFEST_RELPATH.as_posix()})")
+        if overall_changed or args.force or not manifest_path.exists():
+            manifest = build_manifest_text(era_hint, utc_now_iso(), fetched).encode("utf-8")
+            pending_writes.append((manifest_path, manifest))
+        if pending_writes:
+            try:
+                replace_snapshots(pending_writes)
+                for path, data in pending_writes:
+                    print(f"  {path.name}: wrote {len(data)} bytes")
+            except OSError as exc:
+                print(f"ERROR: failed to commit documentation snapshot: {exc}", file=sys.stderr)
+                has_error = True
+        else:
+            print(f"manifest: up-to-date, untouched ({MANIFEST_RELPATH.as_posix()})")
 
     if has_error:
         return 1

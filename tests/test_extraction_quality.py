@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import extract_commands as extract
+import sync_llms as sync
 from extraction_quality import (
     COVERAGE_VALUES, load_report, load_source_index, make_report, report_regressions, source_contexts,
 )
@@ -275,3 +276,71 @@ def test_regression_gate_keeps_command_data_and_baseline_and_check_writes_nothin
     assert output.read_bytes() == original
     assert baseline.read_bytes() == previous_report
     assert extract.main(["--check"]) == 1
+
+
+@pytest.mark.parametrize("data", [b"", b"<html>error</html>", b"# RouterOS\n\xff", b"# RouterOS\nNo sections", b"# RouterOS\n\x00\n## menu"])
+def test_unusable_downloads_leave_both_sources_and_manifest_untouched(tmp_path, data):
+    before = {
+        "llms.txt": b"original index", "llms-full.txt": b"original full",
+        "data/upstream-docs.toml": b"original provenance",
+    }
+    for name, body in before.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+    valid_index = b"# RouterOS\n- [Docs](https://manual.mikrotik.com/docs.md)\n"
+    assert sync.main([], project_root=tmp_path, fetch=lambda url: valid_index if url.endswith("/llms.txt") else data) == 1
+    assert all((tmp_path / name).read_bytes() == body for name, body in before.items())
+
+
+def test_large_document_section_loss_is_rejected():
+    old = ("# RouterOS\n" + "## menu\n" * 40).encode()
+    with pytest.raises(ValueError, match="coverage drop"):
+        sync.validate_payload("llms-full.txt", b"# RouterOS\n## menu\n", old)
+
+
+def test_snapshot_commit_rolls_back_if_later_rename_fails(tmp_path, monkeypatch):
+    first, second = tmp_path / "index", tmp_path / "full"
+    first.write_bytes(b"old index")
+    second.write_bytes(b"old full")
+    replace = sync.os.replace
+
+    def fail_second(src, dst):
+        if dst == second:
+            raise OSError("simulated rename failure")
+        return replace(src, dst)
+
+    monkeypatch.setattr(sync.os, "replace", fail_second)
+    with pytest.raises(OSError):
+        sync.replace_snapshots([(first, b"new index"), (second, b"new full")])
+    assert first.read_bytes() == b"old index"
+    assert second.read_bytes() == b"old full"
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_invalid_http_success_is_retried_before_sync_accepts_it(monkeypatch):
+    valid = b"# RouterOS\n## menu\n"
+    responses = iter([b"<html>temporary error</html>", valid])
+    calls = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self, limit):
+            calls.append(limit)
+            return next(responses)
+
+        def getheader(self, _):
+            return None
+
+    monkeypatch.setattr(sync.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(sync.time, "sleep", lambda _: None)
+    assert sync.fetch_url("https://manual.mikrotik.com/llms-full.txt") == valid
+    assert len(calls) == 2
+    assert all(limit == sync.MAX_DOWNLOAD_BYTES + 1 for limit in calls)
