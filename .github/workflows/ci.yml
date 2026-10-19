@@ -368,7 +368,7 @@ jobs:
           fi
           echo "Changed files:"
           echo "$CHANGED"
-          if echo "$CHANGED" | grep -Eq '^(data/commands\.toml|data/upstream-docs\.toml|scripts/extract_commands\.py)'; then
+          if echo "$CHANGED" | grep -Eq '^(data/commands\.toml|data/upstream-docs\.toml|scripts/(extract_commands|extraction_quality|sync_llms)\.py)'; then
             echo "::error::Extraction inputs changed but upstream llms-full.txt fetch failed — cannot verify staleness"
             exit 1
           fi
@@ -390,7 +390,7 @@ jobs:
             echo "commands.toml structure OK (no upstream docs to diff against)"
             exit 0
           fi
-          python scripts/extract_commands.py
+          make extract
           echo "Checking data/commands.toml drift (timestamp-agnostic)..."
           if [ -f data/commands.toml ]; then
             # Compare against HEAD, but handle history rewrite / shallow clones where HEAD file may be missing.
@@ -411,6 +411,15 @@ jobs:
           echo "commands.toml OK (timestamps ignored)"
           # Restore file to avoid polluting cache/upload — we only cared about the diff.
           git checkout -- data/commands.toml 2>/dev/null || true
+
+      - name: Upload extraction coverage report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: extraction-coverage
+          path: .cache/mikrotik-zed/extraction-report.json
+          include-hidden-files: true
+          if-no-files-found: ignore
 
   # ── Python 3.11: exercise the documented FLOOR (not the ceiling) ──
   # Every other job pins 3.12, so nothing verified the documented minimum
