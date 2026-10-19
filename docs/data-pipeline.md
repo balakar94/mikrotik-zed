@@ -48,6 +48,38 @@ carry unknown coverage. Syntax diagnostics retain their normal severity.
 Reference coverage means a CLI reference exists, not that upstream
 documentation is guaranteed complete.
 
+## Coverage reports and regression checks
+
+`make extract` writes a deterministic JSON report to
+`.cache/mikrotik-zed/extraction-report.json` (untracked). For every menu it
+records the property names, the coverage marker, the source URL and how many
+properties carry no evidence at all; for every parsed property table it
+records the source URL, heading, current line number, candidate and resolved
+menus, property names, unresolved reason and aggregate statistics. CI uploads
+this report for inspection, including when later verification fails.
+
+```bash
+make extract EXTRACT_ARGS='--report /tmp/extraction-before.json'
+# After changing extraction logic or syncing upstream:
+make extract EXTRACT_ARGS='--baseline /tmp/extraction-before.json --fail-on-regression'
+# Verify the generated command table without writing files:
+make extract EXTRACT_ARGS='--check'
+```
+
+The baseline gate compares per menu, never per aggregate: a dataset-wide URL
+total can hold while single menus lose their page. It reports removed menus,
+removed properties, a menu that lost or changed its source URL, a coverage
+downgrade, properties that lost their source, and newly unresolved tables.
+Table identities use source, heading and property names instead of volatile
+line numbers, so shifted lines are not regressions. Baselines are versioned:
+a report written by an older schema is rejected rather than reinterpreted.
+A reviewed upstream removal may require accepting a new baseline, and reports
+can contain unresolved tables even when extraction succeeds — ambiguous data
+is reported instead of assigned to a guessed menu.
+
+An unrelated menu documenting the same property name does not prove that a
+skipped table is covered. Coverage is checked against its candidate menus.
+
 ## Drift workflow
 
 A weekly `docs-drift` workflow (`.github/workflows/docs-drift.yml`)

@@ -9,6 +9,8 @@ WASM_CRATE  ?= mikrotik_zed
 WASM_OUT    ?= target/$(WASM_TARGET)/release/$(WASM_CRATE).wasm
 VENV_DIR    ?= .venv
 PYTHON      ?= $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
+EXTRACT_ARGS ?=
+EXTRACT_ARGS ?=
 SKIP_SYSTEM ?=
 FILE        ?=
 VERSION     ?=
@@ -77,10 +79,10 @@ highlight: ## Highlight a file (usage: make highlight FILE=path/to/file.rsc)
 	@test -f "$(FILE)" || (echo "error: file not found: $(FILE)" && false)
 	cd $(GRAMMAR_DIR) && npx tree-sitter highlight ../../$(FILE)
 # ── Command extraction ───────────────────────────────────────────
-extract: ## Regenerate data/commands.toml from llms-full.txt
+extract: ## Regenerate data/commands.toml from llms-full.txt (pass EXTRACT_ARGS='--check' to verify)
 	@test -f llms-full.txt || (echo "error: llms-full.txt not found — run 'make sync'" && false)
 	@command -v $(PYTHON) >/dev/null || (echo "error: $(PYTHON) not found" && false)
-	$(PYTHON) scripts/extract_commands.py
+	$(PYTHON) scripts/extract_commands.py $(EXTRACT_ARGS) $(EXTRACT_ARGS)
 sync: ## Fetch latest llms.txt and llms-full.txt from upstream
 	@command -v $(PYTHON) >/dev/null || (echo "error: $(PYTHON) not found" && false)
 	$(PYTHON) scripts/sync_llms.py

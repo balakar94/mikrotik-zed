@@ -16,12 +16,20 @@ Output: data/commands.toml (TOML format for the Zed language server)
 Usage:
   make extract   (prefers .venv; same as .venv/bin/python scripts/extract_commands.py)
 
+Inputs: llms-full.txt (corpus, required) and llms.txt (page index, required for
+source attribution — `--allow-missing-index` opts into a degraded run).
+
+Options: `--report PATH` writes the coverage report (default: local cache),
+`--baseline PATH [--fail-on-regression]` compares against an earlier report,
+`--check` verifies the tracked table without writing it.
+
 Exit codes: 0 ok, 1 extraction error, 2 usage or unsupported interpreter.
 """
 
 import argparse
 import hashlib
 import html
+import json
 import os
 import re
 import stat
@@ -31,7 +39,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from extraction_quality import (
-    INLINE_PATH, load_source_index, source_contexts, source_menu_path,
+    INLINE_PATH, load_report, load_source_index, make_report, report_regressions,
+    source_contexts, source_menu_path,
 )
 
 # tomllib is stdlib only from 3.11. Fail with an actionable message instead of
@@ -2230,12 +2239,32 @@ def main(argv: list[str] | None = None) -> int:
     index_file = input_file.with_name("llms.txt")
     output_file = project_root / "data" / "commands.toml"
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--report", type=Path, default=project_root / ".cache/mikrotik-zed/extraction-report.json",
+                        help="Write a JSON coverage report (default: local cache)")
+    parser.add_argument("--baseline", type=Path, help="Compare coverage with an earlier JSON report")
+    parser.add_argument("--fail-on-regression", action="store_true",
+                        help="Reject coverage regressions before writing command data")
+    parser.add_argument("--check", action="store_true", help="Check command data without rewriting it")
     parser.add_argument(
         "--allow-missing-index",
         action="store_true",
         help="Extract without llms.txt (drops every source URL); recovery and tests only",
     )
     args = parser.parse_args(argv)
+
+    if args.report.resolve() in {input_file.resolve(), output_file.resolve(), index_file.resolve(),
+                                 (project_root / "data/upstream-docs.toml").resolve()}:
+        parser.error("report path must differ from source and generated data files")
+    if args.fail_on_regression and args.baseline is None:
+        parser.error("--fail-on-regression requires --baseline")
+    baseline = None
+    if args.baseline:
+        if args.report.resolve() == args.baseline.resolve():
+            parser.error("report path must differ from the baseline to preserve comparison evidence")
+        try:
+            baseline = load_report(args.baseline)
+        except (OSError, ValueError) as exc:
+            parser.error(f"cannot read baseline: {exc}")
 
     if not input_file.exists():
         print(f"Error: {input_file} not found", file=sys.stderr)
@@ -2254,7 +2283,8 @@ def main(argv: list[str] | None = None) -> int:
     # parse_llms_full already applies the should_include() gate to every
     # appended menu, so `menus` contains only CLI-path menus.
     stats = _new_markdown_stats()
-    menus = parse_llms_full(str(input_file), stats)
+    tables: list[dict] = []
+    menus = parse_llms_full(str(input_file), stats, tables)
     print(f"Parsed {len(menus)} CLI-path menus.")
 
     unique = finalize_menus(menus)
@@ -2274,6 +2304,19 @@ def main(argv: list[str] | None = None) -> int:
     if generics_preview:
         print(f"Applied {generics_preview} generic item propertie(s) (universal add-item properties).")
 
+    # Include generated generics in coverage comparison without mutating the
+    # parser's dictionaries or changing override precedence.
+    report_menus = [{**m, "arguments": m.get("arguments", []) + _generic_additions_for_menu(m)} for m in unique]
+    report = make_report(report_menus, tables, stats, input_file)
+    regressions = report_regressions(baseline, report) if baseline else []
+    if not args.check:
+        write_if_changed(args.report, json.dumps(report, indent=2, sort_keys=True) + "\n")
+        print(f"Coverage report: {args.report}")
+    for problem in regressions:
+        print(f"warning: coverage regression: {problem}", file=sys.stderr)
+    if regressions and args.fail_on_regression:
+        return 1
+
     try:
         toml_content = generate_toml(
             unique,
@@ -2285,7 +2328,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    if write_if_changed(output_file, toml_content):
+    if args.check:
+        if not output_file.exists() or _strip_generated_line(output_file.read_text(encoding="utf-8")) != _strip_generated_line(toml_content):
+            print("error: command data is stale; run make extract", file=sys.stderr)
+            return 1
+        print("Command data is up to date.")
+    elif write_if_changed(output_file, toml_content):
         print(f"Wrote {output_file} ({len(unique)} menus)")
     else:
         print(
