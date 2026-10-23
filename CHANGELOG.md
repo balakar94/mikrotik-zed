@@ -117,6 +117,11 @@
 
 ### Fixed
 
+- **RustSec advisories in the TLS stack (`Cargo.lock`)**: `rustls` 0.23.45,
+  `rustls-webpki` 0.103.15 and `webpki-roots` 1.0.9 carried six advisories
+  (RUSTSEC-2026-0346/0347/0348/0349/0381/0382), which turned the CI security
+  job red. All three now resolve to their patched releases; no manifest
+  constraint changed and `cargo audit` is clean.
 - **Python scripts fail fast on an unsupported interpreter (`scripts/`,
   `Makefile`)**: the toolkit needs Python 3.11+ (`tomllib`) and a bare
   `python3` on macOS is Apple's 3.9, so `python3 scripts/extract_commands.py`
