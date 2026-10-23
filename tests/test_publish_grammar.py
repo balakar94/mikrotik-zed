@@ -60,6 +60,12 @@ def test_dry_run_output_mentions_dry_run():
     """--dry-run should announce DRY-RUN and not perform push."""
     if not SCRIPT.exists():
         pytest.skip("scripts/publish_grammar.py absent")
+    # The announcement is emitted after the working-copy preflight, so a
+    # missing `grammars/rsc` turns it into a documented error instead. The
+    # grammar is an untracked working copy (`make grammar-clone`), absent on a
+    # fresh checkout and in CI; skip rather than assert a push-only message.
+    if not _grammar_ready():
+        pytest.skip("grammars/rsc absent (run 'make grammar-clone')")
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "--dry-run"],
         capture_output=True,
