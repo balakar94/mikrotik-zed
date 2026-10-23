@@ -44,6 +44,23 @@
 
 ### Changed
 
+- **Startup banner line (`lsp/src/main.rs`)**: the dataset summary reads
+  `dataset: <n> menus, era hint <hint> (highest upstream RouterOS mention),
+  src <digest>` — one mention of "dataset", the era-hint scope stated once
+  instead of implied, and the source digest last so it lines up with the
+  `# Source hash` header of `data/commands.toml`. Pinned by
+  `lsp/src/tests/banner.rs`, including the degraded (`unknown`) header.
+- **Cached downloads record their release (`src/cache.rs`, `src/lib.rs`,
+  `src/release.rs`)**: a verified download now writes an `.origin` sidecar
+  naming the release tag it came from, removed together with the binary and
+  its `.verified` marker. Because the stored name carries the *extension*
+  version while the asset may come from the latest-stable fallback, a
+  `rsc-ls-0.7.0` file could hold 0.6.1 and serve a months-old dataset with no
+  visible symptom. The shim now logs the tag it installs, and warns on both
+  the download and the reuse path when the recorded origin differs from the
+  tag the extension pins. Advisory, never fatal: entries cached before the
+  record existed still start, with a note naming their `dataset:` banner line
+  as the only remaining provenance.
 - **Property coverage markers (`lsp/src/menus.rs`, `lsp/src/diagnostics.rs`)**:
   `coverage` is now a validated vocabulary (`reference`, `partial`, `unknown`),
   and a marker outside it degrades to `Coverage::Unrecognized` — incomplete,

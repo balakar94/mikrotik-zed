@@ -17,17 +17,60 @@ struct RscExtension {
     cached_binary: Option<String>,
 }
 
-/// Best-effort removal of a cached binary and its integrity marker. Every
-/// caller treats individual removal failures as non-fatal warnings: leftover
-/// files cost disk space, never correctness, because the reuse gate in step 3
-/// re-verifies bytes against the marker before anything is spawned.
+/// Best-effort removal of a cached binary and its sidecars (integrity marker,
+/// release-origin record). A missing file is the common case, not an error:
+/// callers remove these paths defensively before writing or after a failed
+/// download, so only real removal failures are reported. Leftover files cost
+/// disk space, never correctness, because the reuse gate in step 3 re-verifies
+/// bytes against the marker before anything is spawned.
 fn remove_cached_artifacts(stored_name: &str) {
-    if let Err(e) = std::fs::remove_file(stored_name) {
-        eprintln!("[mikrotik-zed] warning: could not remove {stored_name}: {e}");
+    for path in [
+        stored_name.to_string(),
+        cache::marker_path(stored_name),
+        cache::origin_path(stored_name),
+    ] {
+        remove_if_present(&path);
     }
-    let marker = cache::marker_path(stored_name);
-    if let Err(e) = std::fs::remove_file(&marker) {
-        eprintln!("[mikrotik-zed] warning: could not remove {marker}: {e}");
+}
+
+/// `remove_file`, ignoring "not found" and reporting anything else.
+fn remove_if_present(path: &str) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!("[mikrotik-zed] warning: could not remove {path}: {e}"),
+    }
+}
+
+/// Reports where a cached binary came from, relative to the release this
+/// extension version pins.
+///
+/// Never fatal: the pinned release legitimately does not exist yet for a dev
+/// or pre-release extension, so the latest-stable fallback is the only way to
+/// start at all. The report exists because the mismatch is otherwise silent —
+/// a file named `rsc-ls-0.7.0` may hold 0.6.1, serve a months-old dataset and
+/// still pass its integrity gate, since that gate covers bytes, not identity.
+/// Entries cached before the origin record existed get a note instead of
+/// silence, so the missing provenance is stated rather than assumed.
+fn report_origin(stored_name: &str, expected_tag: &str) {
+    match cache::read_origin_tag(stored_name) {
+        Some(origin) => {
+            if release::origin_mismatch(expected_tag, Some(&origin)) {
+                eprintln!(
+                    "[mikrotik-zed] warning: cached {stored_name} came from release {origin}, but \
+                     this extension version pins {expected_tag}; the server may serve an older \
+                     dataset — check its `dataset:` banner line or `rsc-ls --version`, or opt \
+                     into a local build with RSC_LS_ALLOW_PATH=1"
+                );
+            }
+        }
+        None => {
+            eprintln!(
+                "[mikrotik-zed] note: cached {stored_name} has no recorded release origin; its \
+                 `dataset:` banner line is the only provenance — compare it with \
+                 data/commands.toml"
+            );
+        }
     }
 }
 
@@ -56,6 +99,10 @@ impl zed::Extension for RscExtension {
         // cached download — download target, verification, chmod, marker,
         // cleanup, spawn — goes through this variable, never a bare constant.
         let stored_name = platform::stored_binary_name(os, version);
+        // Release tag this extension version pins. Resolved before the reuse
+        // paths so a cached binary's recorded origin can be compared with it;
+        // the name above carries the extension version, never the asset's.
+        let expected_tag = release::tag_for_version(version);
 
         // 1) Fast path: binary in PATH (developer local build or manual
         //    install). PATH execution is OPT-IN since 0.7.0: the default is
@@ -215,6 +262,7 @@ impl zed::Extension for RscExtension {
                     eprintln!(
                         "[mikrotik-zed] found cached {stored_name} in extension dir, reusing"
                     );
+                    report_origin(&stored_name, &expected_tag);
                     self.cached_binary = Some(stored_name.clone());
                     return Ok(zed::Command {
                         command: stored_name.clone(),
@@ -255,8 +303,7 @@ impl zed::Extension for RscExtension {
         // stable release is only a fallback (pinned release absent, or it
         // lacks this platform's asset); the final fallback is a direct URL
         // built from pinned constants. See `release.rs` for the pure rules.
-        let tag = release::tag_for_version(version);
-        let pinned_url = platform::pinned_asset_url(&tag, &asset_name);
+        let pinned_url = platform::pinned_asset_url(&expected_tag, &asset_name);
         let latest_opts = zed::GithubReleaseOptions {
             require_assets: true,
             pre_release: false,
@@ -271,7 +318,7 @@ impl zed::Extension for RscExtension {
         //    this path, so the URL is always built from pinned constants —
         //    API-supplied `download_url` values are never trusted here.
         let mut pinned_has_asset = false;
-        match zed::github_release_by_tag_name(GITHUB_REPO, &tag) {
+        match zed::github_release_by_tag_name(GITHUB_REPO, &expected_tag) {
             Ok(release) => {
                 if release
                     .assets
@@ -280,17 +327,17 @@ impl zed::Extension for RscExtension {
                 {
                     pinned_has_asset = true;
                     eprintln!(
-                        "[mikrotik-zed] found asset {asset_name} in release {tag} (pinned to extension version)"
+                        "[mikrotik-zed] found asset {asset_name} in release {expected_tag} (pinned to extension version)"
                     );
                 } else {
                     eprintln!(
-                        "[mikrotik-zed] release {tag} has no asset {asset_name}, falling back to latest stable"
+                        "[mikrotik-zed] release {expected_tag} has no asset {asset_name}, falling back to latest stable"
                     );
                 }
             }
             Err(e) => {
                 eprintln!(
-                    "[mikrotik-zed] release {tag} not found ({e}), falling back to latest stable"
+                    "[mikrotik-zed] release {expected_tag} not found ({e}), falling back to latest stable"
                 );
             }
         }
@@ -298,12 +345,16 @@ impl zed::Extension for RscExtension {
         // 2) Latest stable release, only when the pinned release was unusable.
         let mut latest_has_asset = false;
         let mut latest_url: Option<String> = None;
+        // Version of the release the asset actually came from, recorded as the
+        // cache entry's origin. `None` until a usable latest release is found.
+        let mut latest_version: Option<String> = None;
         if !pinned_has_asset {
             match zed::latest_github_release(GITHUB_REPO, latest_opts) {
                 Ok(release) => {
                     for asset in &release.assets {
                         if release::asset_matches(&asset.name, &asset_name) {
                             latest_has_asset = true;
+                            latest_version = Some(release.version.clone());
                             eprintln!(
                                 "[mikrotik-zed] found asset in latest release {}: {}",
                                 release.version, asset.name
@@ -335,8 +386,9 @@ impl zed::Extension for RscExtension {
         // 3) Select the source and its URL (pure, unit-tested in `release.rs`).
         let source =
             release::choose_source(pinned_has_asset, latest_has_asset, latest_url.is_some());
-        let direct_url =
-            format!("https://github.com/{GITHUB_REPO}/releases/download/{tag}/{asset_name}");
+        let direct_url = format!(
+            "https://github.com/{GITHUB_REPO}/releases/download/{expected_tag}/{asset_name}"
+        );
         let url = match source {
             release::Source::PinnedTag => pinned_url,
             release::Source::LatestStable => latest_url.unwrap_or_else(|| {
@@ -350,6 +402,26 @@ impl zed::Extension for RscExtension {
             release::Source::DirectUrl => direct_url,
         };
         eprintln!("[mikrotik-zed] download source: {} ({url})", source.label());
+
+        // Which release the bytes really come from. Pinned and direct-URL
+        // downloads use the extension's own tag; the latest-stable fallback
+        // uses the version that release reports, which is exactly the case
+        // worth recording.
+        let resolved_tag = match source {
+            release::Source::LatestStable => latest_version.clone(),
+            release::Source::PinnedTag | release::Source::DirectUrl => None,
+        }
+        .unwrap_or_else(|| expected_tag.clone());
+        eprintln!(
+            "[mikrotik-zed] installing {stored_name} from release {resolved_tag} (extension pins {expected_tag})"
+        );
+        if resolved_tag != expected_tag {
+            eprintln!(
+                "[mikrotik-zed] warning: release {resolved_tag} does not match the pinned tag \
+                 {expected_tag}; the language server may serve a different dataset than this \
+                 extension version documents — compare its `dataset:` banner line with data/commands.toml"
+            );
+        }
 
         eprintln!("[mikrotik-zed] downloading {BINARY_NAME} from {url}");
         zed::set_language_server_installation_status(
@@ -484,6 +556,17 @@ impl zed::Extension for RscExtension {
                 &zed::LanguageServerInstallationStatus::Failed(msg.clone()),
             );
             return Err(msg);
+        }
+
+        // Record which release those verified bytes came from. Advisory only:
+        // the marker above is what gates reuse, so a failure here must not
+        // discard a binary that already passed verification — but it must be
+        // loud, because the record is the only thing that makes a mismatch
+        // between the stored name's version and the asset's version visible.
+        if let Err(e) = cache::write_origin(&stored_name, &resolved_tag) {
+            eprintln!(
+                "[mikrotik-zed] warning: could not record the release origin of {stored_name}: {e}"
+            );
         }
 
         // Re-check the gate immediately before spawn: a swap or truncation

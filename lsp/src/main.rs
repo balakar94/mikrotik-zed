@@ -93,12 +93,7 @@ fn main() {
     // or `zed: open log` action. Setting `RSC_LS_LOG=debug` enables verbose diagnostics.
     let data = std::sync::Arc::new(MenuData::load());
     let prov = menus::dataset_provenance();
-    log_info!(
-        "dataset: upstream docs era hint {}, {} menus (src {})",
-        prov.era_hint,
-        data.menus.len(),
-        prov.src_hash
-    );
+    log_info!("{}", dataset_banner_line(data.menus.len(), &prov));
     log_debug!(
         "limits: MAX_MESSAGE_SIZE={} MAX_HEADER_SIZE={} MAX_DOC_SIZE={} MAX_DOCS={}",
         MAX_MESSAGE_SIZE,
@@ -139,6 +134,20 @@ fn main() {
     let mut server = Server::new_with_live(std::sync::Arc::clone(&data), live_config, live_cache);
     server.run();
     log_info!("language server exiting");
+}
+
+/// One-line dataset summary for the startup banner.
+///
+/// The era hint is the highest upstream `RouterOS vX.Y` mention, not the
+/// manual version and not the release channel, so the line states that once
+/// instead of repeating "dataset"/"upstream docs" across the same sentence.
+/// Menu count plus source digest are the two other facts needed to tell a
+/// stale cached binary from a fresh one at a glance.
+fn dataset_banner_line(menu_count: usize, prov: &menus::DatasetProvenance) -> String {
+    format!(
+        "dataset: {menu_count} menus, era hint {} (highest upstream RouterOS mention), src {}",
+        prov.era_hint, prov.src_hash
+    )
 }
 
 // ── Server core lives in server.rs ───────────────────────────────────────

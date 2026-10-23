@@ -9,6 +9,9 @@
 #![allow(dead_code, unused_imports)]
 
 #[cfg(test)]
+mod banner;
+
+#[cfg(test)]
 mod caps;
 
 #[cfg(test)]

@@ -165,6 +165,95 @@ fn parse_marker_content(raw: &str) -> Option<String> {
     Some(body.to_ascii_lowercase())
 }
 
+/// Suffix appended to the stored binary name to form its release-origin file.
+const ORIGIN_SUFFIX: &str = ".origin";
+
+/// Longest release tag accepted verbatim. GitHub allows longer refs, but a
+/// tag beyond this is outside anything this repository publishes and only
+/// widens what the reader has to sanitize.
+const MAX_ORIGIN_TAG_LEN: usize = 64;
+
+/// Path of the release-origin record for `stored_name`.
+pub(crate) fn origin_path(stored_name: &str) -> String {
+    format!("{stored_name}{ORIGIN_SUFFIX}")
+}
+
+/// Records which release tag `stored_name` was downloaded from.
+///
+/// Advisory, never integrity: the `.verified` marker still certifies the
+/// bytes, so callers must degrade a failure here to a warning. Its single job
+/// is to keep a version mismatch observable — the stored name carries the
+/// *extension* version, while the asset can come from the latest-stable
+/// fallback, so a file named `rsc-ls-0.7.0` may well hold 0.6.1.
+///
+/// The write is atomic (`<path>.tmp-<tag>` then rename, mode 0600 on unix),
+/// mirroring [`write_marker`]: a crash leaves either the old tag or the new
+/// one, never a truncated line.
+pub(crate) fn write_origin(stored_name: &str, tag: &str) -> std::result::Result<(), String> {
+    if tag.is_empty() || tag.len() > MAX_ORIGIN_TAG_LEN {
+        return Err(format!(
+            "release tag is {} bytes, expected 1..={MAX_ORIGIN_TAG_LEN}",
+            tag.len()
+        ));
+    }
+    if !tag.bytes().all(is_origin_tag_byte) {
+        return Err("release tag contains characters outside [A-Za-z0-9._+-]".to_string());
+    }
+    let path = origin_path(stored_name);
+    let tmp = format!("{path}.tmp-{}", unique_tag());
+    // Unlink residue first: `write` would otherwise truncate a symlink target
+    // through a pre-existing link at the temp path.
+    let _ = std::fs::remove_file(&tmp);
+    std::fs::write(&tmp, format!("{tag}\n"))
+        .map_err(|e| format!("could not write release origin for {stored_name}: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("could not secure release origin for {stored_name}"));
+        }
+    }
+    platform::atomic_replace(&tmp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("could not record release origin for {stored_name}: {e}")
+    })
+}
+
+/// Reads the release tag recorded for `stored_name`.
+///
+/// Returns `None` on a missing file, unreadable bytes, or any content the
+/// writer would never produce (empty, oversize, foreign characters). Absence
+/// is not an error: entries cached before this record existed simply have no
+/// origin, and erroring would make every legacy cache entry look tampered.
+pub(crate) fn read_origin_tag(stored_name: &str) -> Option<String> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(origin_path(stored_name)).ok()?;
+    // Read one byte past the cap so trailing junk is detected, not truncated
+    // into a plausible tag.
+    let mut limited = file.take((MAX_ORIGIN_TAG_LEN + 2) as u64);
+    let mut raw = String::new();
+    if limited.read_to_string(&mut raw).is_err() {
+        return None;
+    }
+    let tag = raw.strip_suffix('\n').unwrap_or(&raw);
+    if tag.is_empty() || tag.len() > MAX_ORIGIN_TAG_LEN {
+        return None;
+    }
+    if !tag.bytes().all(is_origin_tag_byte) {
+        return None;
+    }
+    Some(tag.to_string())
+}
+
+/// Byte class accepted in a recorded release tag: what `v0.7.0`,
+/// `v0.7.0-rc.1` and `v0.7.0+build.5` need, nothing that could alter a path or
+/// a log line.
+fn is_origin_tag_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+' | b'_')
+}
+
 /// True when the cached binary still hashes back to the digest recorded when
 /// verification passed, and stays within the verification size cap.
 ///
@@ -250,6 +339,7 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
             let _ = std::fs::remove_file(marker_path(&self.0));
+            let _ = std::fs::remove_file(origin_path(&self.0));
         }
     }
 
@@ -264,6 +354,58 @@ mod tests {
     fn marker_path_appends_verified_suffix() {
         assert_eq!(marker_path("rsc-ls-0.5.0"), "rsc-ls-0.5.0.verified");
         assert_eq!(marker_path("rsc-ls-0.5.0.exe"), "rsc-ls-0.5.0.exe.verified");
+    }
+
+    #[test]
+    fn origin_path_appends_its_own_suffix() {
+        assert_eq!(origin_path("rsc-ls-0.7.0"), "rsc-ls-0.7.0.origin");
+        assert_eq!(origin_path("rsc-ls-0.7.0.exe"), "rsc-ls-0.7.0.exe.origin");
+        // The two sidecars must never collide: the origin is written after the
+        // marker, and a shared path would clobber the digest gate.
+        assert_ne!(origin_path("rsc-ls-0.7.0"), marker_path("rsc-ls-0.7.0"));
+    }
+
+    #[test]
+    fn origin_roundtrip_preserves_prerelease_tags() {
+        let bin = CachedFile(temp_path("origin-roundtrip"));
+        assert_eq!(read_origin_tag(&bin.0), None, "no record before a download");
+        for tag in ["v0.6.1", "v0.7.0-rc.1", "v0.7.0+build.5"] {
+            write_origin(&bin.0, tag).unwrap();
+            assert_eq!(read_origin_tag(&bin.0).as_deref(), Some(tag));
+        }
+    }
+
+    #[test]
+    fn write_origin_rejects_tags_it_cannot_round_trip() {
+        let bin = CachedFile(temp_path("origin-reject"));
+        let long = "v".repeat(MAX_ORIGIN_TAG_LEN + 1);
+        for tag in [
+            "",
+            "v1.0.0 extra",
+            "v1.0.0\nv2.0.0",
+            "v1.0.0;rm",
+            long.as_str(),
+        ] {
+            assert!(write_origin(&bin.0, tag).is_err(), "must reject {tag:?}");
+            assert_eq!(read_origin_tag(&bin.0), None, "rejected {tag:?} was kept");
+        }
+    }
+
+    #[test]
+    fn read_origin_rejects_content_the_writer_never_emits() {
+        let bin = CachedFile(temp_path("origin-foreign"));
+        for body in [
+            "\n".to_string(),
+            "v1.0.0\nv2.0.0\n".to_string(),
+            format!("{}\n", "v".repeat(MAX_ORIGIN_TAG_LEN + 1)),
+            "v1.0.0\t".to_string(),
+        ] {
+            std::fs::write(origin_path(&bin.0), body.as_bytes()).unwrap();
+            assert_eq!(read_origin_tag(&bin.0), None, "accepted {body:?}");
+        }
+        // Non-UTF-8 bytes are unreadable as text and must not become a tag.
+        std::fs::write(origin_path(&bin.0), [0xff, 0xfe]).unwrap();
+        assert_eq!(read_origin_tag(&bin.0), None);
     }
 
     #[test]

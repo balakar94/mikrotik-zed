@@ -81,6 +81,20 @@ pub(crate) fn choose_source(
     }
 }
 
+/// Whether a cached binary's recorded origin contradicts the tag this
+/// extension pins.
+///
+/// `None` (no record) is *not* a mismatch: entries cached before the record
+/// existed must keep starting. A `Some` value is also not a failure — a dev
+/// or pre-release extension legitimately falls back to the latest stable
+/// release before its own tag exists. It is a mismatch, though, so the caller
+/// warns: the stored name carries the extension version while the asset may
+/// come from another release, which is how a `rsc-ls-0.7.0` file ends up
+/// serving 0.6.1's dataset while looking correct.
+pub(crate) fn origin_mismatch(expected_tag: &str, origin: Option<&str>) -> bool {
+    matches!(origin, Some(origin) if origin != expected_tag)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +165,18 @@ mod tests {
         assert_eq!(Source::PinnedTag.label(), "pinned to extension version");
         assert_eq!(Source::LatestStable.label(), "latest stable fallback");
         assert_eq!(Source::DirectUrl.label(), "direct URL fallback");
+    }
+
+    #[test]
+    fn origin_mismatch_flags_a_foreign_release_but_not_an_absent_record() {
+        // No record: legacy cache entry, must keep starting silently.
+        assert!(!origin_mismatch("v0.7.0", None));
+        // Recorded exactly the pinned release.
+        assert!(!origin_mismatch("v0.7.0", Some("v0.7.0")));
+        // The dev-build case: extension 0.7.0, latest stable turned out 0.6.1.
+        assert!(origin_mismatch("v0.7.0", Some("v0.6.1")));
+        // Prerelease tags compare exactly, never by prefix.
+        assert!(origin_mismatch("v0.7.0-rc.1", Some("v0.7.0")));
+        assert!(!origin_mismatch("v0.7.0-rc.1", Some("v0.7.0-rc.1")));
     }
 }

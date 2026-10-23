@@ -40,6 +40,40 @@ GUI process cannot see the PATH entry. Per platform:
 Terminal-launched Zed works but Dock-launched does not ⇒ this is the cause.
 Configuration details: [PATH trust model](configuration.md#path-trust-model).
 
+## Dataset version looks stale
+
+The `rsc-ls` startup banner prints two different things on the same line:
+
+```
+rsc-ls 0.7.0 starting at …
+dataset: 1125 menus, era hint 7.26 (highest upstream RouterOS mention), src 2704a9b0c03ad827
+```
+
+- the **binary version** (`rsc-ls 0.7.0`), and
+- the **provenance of the embedded table**: menu count, era hint and source
+  digest. The digest is the `# Source hash` prefix in `data/commands.toml`, so
+  the two can be compared directly.
+
+The era hint is the highest `RouterOS vX.Y` mention in the upstream corpus —
+not the manual version and not the release channel — so it can legitimately
+disagree with the RouterOS version you run on a device.
+
+Mismatched numbers between the banner and `data/commands.toml` mean the
+running binary is not the one built from this tree. Two causes, both visible in
+`zed: open log`:
+
+1. **A cached download.** The stored name carries the *extension* version
+   (`rsc-ls-0.7.0`), while the asset can come from the latest-stable fallback
+   when this version's own tag does not exist yet. The `.origin` sidecar next
+   to the binary records the release it actually came from, and a `warning:`
+   line names both tags when they differ.
+2. **PATH is disabled.** A local `make install-lsp` build is ignored unless
+   `RSC_LS_ALLOW_PATH=1` is set; the shim keeps using the verified cache.
+
+Fix either by opting into the local build (`RSC_LS_ALLOW_PATH=1`, restart Zed),
+or by publishing the tag that matches the extension version so the pinned
+release wins and the stored name tells the truth again.
+
 ## Settings not applied
 
 - `lsp.rsc-ls.binary.env` is the only surface that reaches the server;
