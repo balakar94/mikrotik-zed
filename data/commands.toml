@@ -2,11 +2,11 @@
 # Auto-generated from llms-full.txt
 # Covers: /app, /beep, /blink, /caps-man, /certificate, /cmr, /console, /container, /disk, /dude, /environment, /file, … (1125 menus)
 # RouterOS era hint: 7.26 (highest feature-gate mention upstream; not the manual version)
-# Generated: 2026-10-19T16:05:46.356790Z
-# Source hash (sha256[:16]): 48f0dfacbba4b031
+# Generated: 2026-10-23T13:47:37.821857Z
+# Source hash (sha256[:16]): 2704a9b0c03ad827
 # overrides_applied = 11 (data/overrides.toml)
 # generics_applied = 2002 (comment/disabled universal; place-before/copy-from ordered-only)
-# Index hash (sha256[:16]): 27fb9ebf5c55f4fd
+# Index hash (sha256[:16]): 510609144b1ca612
 
 [[menus]]
 path = "/app"
@@ -3726,7 +3726,7 @@ unset = true
 name = "rebooted"
 type = "bool"
 unset_known = true
-description = "Event condition that fires when the device unexpectedly reboots.  Default: no."
+description = "Event condition that fires when the device reboots, also when the reboot is part of an upgrade or comes from `/cmr/device/reboot`.  Default: no."
 unset = true
 [[menus.arguments]]
 name = "log-topics"
@@ -3750,7 +3750,7 @@ unset = true
 name = "action.log-topics"
 type = "multi { array-id, topic: enum }"
 unset_known = true
-description = "Log topics to write the message to.  Default: `cmr,info`."
+description = "Log topics to write the message to.  Default: `cmr,info`, and `cmr,warning` for a log-line condition."
 unset = true
 [[menus.arguments]]
 name = "action.log-prefix"
@@ -3925,7 +3925,7 @@ name = "pairing-requirement"
 type = "enum (none | password)"
 unset_known = true
 enum_values = ["none", "password"]
-description = "Defines what the remote device must do before this device accepts the pairing: - **none** - this device accepts pairing automatically, without additional checks - **password** (default) - the remote device may approve pairing by giving the username and password of a RouterOS user on this device; CMR has no separate pairing password"
+description = "Defines what the remote device must do before this device accepts the pairing: - **none** - this device accepts pairing automatically, without additional checks - **password** (default) - the remote device may approve pairing by giving the username and password of a RouterOS user on this device; CMR has no separate pairing password - **confirm** - pairing must be approved locally with [`/cmr/client/pair`](pair) on this device; approval from the remote side is not possible"
 unset = true
 [[menus.arguments]]
 name = "controller-addresses"
@@ -10363,10 +10363,12 @@ description = "This setting controls how often heartbeat messages are sent to ch
 name = "mlag-init-delay"
 type = "time"
 unset_known = true
+description = "After the device reboots, keep the slave interfaces of dual-connected (MLAG) bonds out of the LACP bond for the specified time, or until the MLAG peers synchronize their system IDs, whichever happens first. Set the delay longer than the time the device needs to boot and reconnect to the MLAG peer. This prevents the bond from activating with a locally generated system ID before the MLAG system ID is synchronized, which would otherwise reset the LACP session on the partner.   Default: 1 minute."
 [[menus.arguments]]
 name = "mlag-lacp-fallback"
 type = "bool"
 unset_known = true
+description = "Specify what happens to the LACP system ID of dual-connected (MLAG) bonds when the MLAG peer link is lost. When set to `yes`, the bond reverts to its own LACP system ID. When set to `no`, the bond keeps the MLAG system ID, which prevents the LACP partner from renegotiating the bond when one MLAG node reboots or its peer link fails.   Default: yes."
 [[menus.arguments]]
 name = "comment"
 type = "string"
@@ -20509,7 +20511,7 @@ description = "An optional SM-DP+ supplied by the operator"
 name = "force-confirmation"
 type = "bool"
 unset_known = true
-description = "Will not ask for confirmation"
+description = "Do not wait for user confirmation and automatically accept the profile provision (default: no)"
 [[menus.read_only]]
 name = "iccid"
 type = "string"
