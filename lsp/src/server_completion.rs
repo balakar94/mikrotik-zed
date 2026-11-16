@@ -13,7 +13,7 @@ use crate::diagnostics;
 use crate::encoding::{PositionEncoding, byte_offset_to_utf16_units, lsp_character_to_byte_offset};
 use crate::live::{LiveCache, trigger_enrichment_for_completion};
 use crate::logging::{log_debug, log_warn, uri_for_log};
-use crate::parser::{build_before_cursor_from_lines, parse_line};
+use crate::parser::{build_before_cursor_from_lines, parse_line_in_menu, tokenize_with_spans};
 use crate::server::Server;
 use crate::server_proto::invalid_params_response;
 
@@ -61,19 +61,60 @@ impl Server {
         let current_line = lines.get(line_idx).copied().unwrap_or("");
         let char_byte =
             lsp_character_to_byte_offset(current_line, character as usize, self.position_encoding);
-        let before_cursor = build_before_cursor_from_lines(&lines, line_idx, char_byte);
+        // Continuation-aware logical prefix up to the cursor: the
+        // physical line alone cannot see a path segment split across a
+        // `\` join. Computed once here and reused by the textEdit
+        // injection below, so the completion layer and the physical
+        // range mapping agree on the joined text. The parse-cache
+        // lookup is the single full-document hash for this request.
+        let logicals = self.parse_cache.lookup_or_insert(uri, doc);
+        let covering = diagnostics::covering_logical_line(logicals, line_idx);
+        let cursor_logical_opt =
+            covering.and_then(|ll| ll.logical_offset_from_physical(line_idx, char_byte));
+        let logical_prefix_text: Option<String> = match (covering, cursor_logical_opt) {
+            (Some(ll), Some(cursor_logical)) => {
+                let text = ll.text();
+                let clamped =
+                    crate::encoding::floor_char_boundary(text, cursor_logical.min(text.len()));
+                Some(text[..clamped].to_string())
+            }
+            _ => None,
+        };
+        let logical_prefix = logical_prefix_text.as_deref();
+        let first = logical_prefix
+            .and_then(|prefix| prefix.split_ascii_whitespace().next())
+            .unwrap_or_default();
+        let export_menu = covering
+            .and_then(|ll| ll.export_menu(&self.data, logicals))
+            .filter(|_| {
+                first.is_empty()
+                    || diagnostics::is_relative_verb(first)
+                    || crate::menus::MenuData::STANDARD_VERBS.iter().any(|verb| {
+                        verb.get(..first.len())
+                            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(first))
+                    })
+            });
+        let before_cursor = if export_menu.is_some()
+            || first.starts_with('/')
+            || diagnostics::is_relative_verb(first)
+        {
+            logical_prefix.unwrap_or_default().to_string()
+        } else {
+            build_before_cursor_from_lines(&lines, line_idx, char_byte)
+        };
         // Live enrichment: stale-while-revalidate (non-blocking).
         // Completion only reads fresh cache; misses trigger a background
         // thread that hydrates for the next keystroke. Coalescing and
         // negative TTL prevent retry spam. Never logs pass.
         if self.live_config.is_active() {
-            let context = parse_line(&self.data, &before_cursor);
+            let tokens = tokenize_with_spans(&before_cursor);
+            let context = parse_line_in_menu(&self.data, &tokens, export_menu);
             // Property key of the completion target: the `key` of a
             // trailing `key=value` token, if the cursor is inside a
             // property assignment.
-            let tokens = crate::parser::tokenize(&before_cursor);
             let property = tokens.last().and_then(|tok| {
-                crate::parser::split_key_value(tok).map(|(key, _)| key.trim_start_matches(':'))
+                crate::parser::split_key_value(&tok.text)
+                    .map(|(key, _)| key.trim_start_matches(':'))
             });
             // Menu-declared argument type for the property (empty
             // string when the property is unknown to the menu).
@@ -98,25 +139,6 @@ impl Server {
                 arg_type,
             );
         }
-        // Continuation-aware logical prefix up to the cursor: the
-        // physical line alone cannot see a path segment split across a
-        // `\` join. Computed once here and reused by the textEdit
-        // injection below, so the completion layer and the physical
-        // range mapping agree on the joined text. The parse-cache
-        // lookup is the single full-document hash for this request.
-        let logicals = self.parse_cache.lookup_or_insert(uri, doc);
-        let covering = diagnostics::covering_logical_line(logicals, line_idx);
-        let cursor_logical_opt =
-            covering.and_then(|ll| ll.logical_offset_from_physical(line_idx, char_byte));
-        let logical_prefix_text: Option<String> = match (covering, cursor_logical_opt) {
-            (Some(ll), Some(cursor_logical)) => {
-                let text = ll.text();
-                let clamped =
-                    crate::encoding::floor_char_boundary(text, cursor_logical.min(text.len()));
-                Some(text[..clamped].to_string())
-            }
-            _ => None,
-        };
         let mut items = {
             // Non-blocking live read: `try_lock` never waits for a
             // background fetch holding the cache. `WouldBlock` falls
@@ -129,7 +151,8 @@ impl Server {
                 Ok(live_guard) => completion::compute_completions_with_logical(
                     &self.data,
                     &before_cursor,
-                    logical_prefix_text.as_deref(),
+                    logical_prefix,
+                    export_menu,
                     Some(&*live_guard as &LiveCache),
                 ),
                 Err(std::sync::TryLockError::WouldBlock) => {
@@ -137,7 +160,8 @@ impl Server {
                     completion::compute_completions_with_logical(
                         &self.data,
                         &before_cursor,
-                        logical_prefix_text.as_deref(),
+                        logical_prefix,
+                        export_menu,
                         None,
                     )
                 }
@@ -147,7 +171,8 @@ impl Server {
                     completion::compute_completions_with_logical(
                         &self.data,
                         &before_cursor,
-                        logical_prefix_text.as_deref(),
+                        logical_prefix,
+                        export_menu,
                         Some(&*live_guard as &LiveCache),
                     )
                 }

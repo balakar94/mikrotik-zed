@@ -73,7 +73,7 @@ fn nav_request(id: i64, uri: &str, extra: serde_json::Value) -> serde_json::Valu
     serde_json::json!({"id": id, "params": params})
 }
 
-fn index_of(doc: &str) -> Vec<VariableHit> {
+fn index_of(doc: &str) -> VariableIndex {
     build_variable_index(&crate::diagnostics::logical_lines(doc))
 }
 
@@ -167,12 +167,6 @@ fn test_usage_scan_stops_at_unquoted_comment() {
 }
 
 #[test]
-fn test_non_ascii_identifier_is_indexed_as_ascii_prefix() {
-    // Intentional ASCII-only subset (grammar: [a-zA-Z_][a-zA-Z0-9_@]*):
-    // the multi-byte `é` is not an identifier byte, so `$café` indexes the
-    // ASCII prefix `caf` and every span ends on a char boundary.
-    let hits = index_of(":put $café\n");
-    assert_eq!(summary(&hits), vec!["caf:$@0".to_string()]);
-    assert_eq!((hits[0].start, hits[0].end), (6, 9));
-    assert_eq!(&":put $café"[hits[0].start..hits[0].end], "caf");
+fn test_non_ascii_bare_identifier_is_not_split() {
+    assert!(index_of(":put $café\n").is_empty());
 }

@@ -1281,3 +1281,123 @@ fn did_open_bracket_find_publishes_no_inner_key_diagnostics() {
         "pool-name lives inside [find ...] and must never be reported, got {diags:?}"
     );
 }
+
+#[test]
+fn compact_export_uses_one_menu_for_diagnostics_hover_signature_and_completion() {
+    let mut client = initialized_client();
+    let uri = "file:///e2e-compact-export.rsc";
+    let doc = concat!(
+        "/ip address # compact export header\n",
+        "add address=192.0.2.1/24 interface=ether1 comment=\"first\"\n",
+        "# Another entry from the same directory\n\n",
+        "add address=192.0.2.2/24 interface=ether2 commment=\"second\"\n",
+        "add address=192.0.2.3/24 inter\n",
+        "/ip/address add address=192.0.2.4/24 inter\n",
+    );
+    open_text_document(&mut client, uri, doc);
+    let typo_line = doc.lines().nth(4).unwrap();
+    let column = typo_line.find("commment").unwrap();
+    let diagnostic = match client.request(
+        "textDocument/diagnostic",
+        json!({"textDocument": {"uri": uri}}),
+    ) {
+        Response::Ok(report) => report["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["code"] == "unknown-property")
+            .cloned()
+            .unwrap(),
+        Response::Err(err) => panic!("diagnostic errored: {err}"),
+    };
+    assert_eq!(
+        diagnostic["range"]["start"],
+        json!({"line": 4, "character": column})
+    );
+
+    let params = json!({
+        "textDocument": {"uri": uri},
+        "position": {"line": 4, "character": typo_line.find("interface").unwrap() + 1},
+    });
+    match client.request("textDocument/hover", params.clone()) {
+        Response::Ok(hover) => assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .contains("in `/ip/address add`")
+        ),
+        Response::Err(err) => panic!("hover errored: {err}"),
+    }
+    match client.request("textDocument/signatureHelp", params) {
+        Response::Ok(help) => assert!(
+            help["signatures"][0]["label"]
+                .as_str()
+                .unwrap()
+                .starts_with("/ip/address add ")
+        ),
+        Response::Err(err) => panic!("signatureHelp errored: {err}"),
+    }
+    match client.request(
+        "textDocument/codeAction",
+        json!({
+            "textDocument": {"uri": uri}, "range": diagnostic["range"],
+            "context": {"diagnostics": [diagnostic.clone()]},
+        }),
+    ) {
+        Response::Ok(actions) => {
+            let edit = &actions[0]["edit"]["changes"][uri][0];
+            assert_eq!(edit["range"], diagnostic["range"]);
+            assert_eq!(edit["newText"], "comment");
+        }
+        Response::Err(err) => panic!("codeAction errored: {err}"),
+    }
+    for line in [5, 6] {
+        let col = doc.lines().nth(line).unwrap().len();
+        let result = complete_at_position(&mut client, uri, line, col);
+        let item = item_labelled(&result, "interface");
+        assert_eq!(
+            item["textEdit"]["range"]["start"],
+            json!({"line": line, "character": col - 5})
+        );
+    }
+}
+
+#[test]
+fn prepare_rename_and_rename_share_the_scoped_binding() {
+    let mut client = initialized_client();
+    let uri = "file:///e2e-scoped-rename.rsc";
+    let doc = ":local port \"wan\"\n{ :local port \"lan\"; :put $port }\n:set port \"up\"\n:put \"🔧 $port\"\n:put $external\n";
+    open_text_document(&mut client, uri, doc);
+    let position = json!({"line": 3, "character": 10});
+    let request = json!({"textDocument": {"uri": uri}, "position": position});
+    match client.request("textDocument/prepareRename", request.clone()) {
+        Response::Ok(prepared) => {
+            assert_eq!(prepared["placeholder"], "port");
+            assert_eq!(prepared["range"]["start"], position);
+        }
+        Response::Err(err) => panic!("prepareRename errored: {err}"),
+    }
+    let mut rename = request;
+    rename["newName"] = json!("selectedPort");
+    match client.request("textDocument/rename", rename) {
+        Response::Ok(edit) => {
+            let lines: Vec<_> = edit["changes"][uri]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e["range"]["start"]["line"].as_u64().unwrap())
+                .collect();
+            assert_eq!(lines, [0, 2, 3]);
+        }
+        Response::Err(err) => panic!("rename errored: {err}"),
+    }
+    match client.request(
+        "textDocument/prepareRename",
+        json!({
+            "textDocument": {"uri": uri}, "position": {"line": 4, "character": 7},
+        }),
+    ) {
+        Response::Ok(prepared) => assert!(prepared.is_null()),
+        Response::Err(err) => panic!("prepareRename errored: {err}"),
+    }
+}

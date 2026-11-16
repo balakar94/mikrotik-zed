@@ -90,8 +90,13 @@ fn test_partial_path_segment_across_continuation() {
         ("/ip/route /che", "/ip/route/che", 10, 13),
     ];
     for (before, logical, seg_start, seg_end) in cases {
-        let items =
-            crate::completion::compute_completions_with_logical(&data, before, Some(logical), None);
+        let items = crate::completion::compute_completions_with_logical(
+            &data,
+            before,
+            Some(logical),
+            None,
+            None,
+        );
         let check = items
             .iter()
             .find(|i| i.label == "check")

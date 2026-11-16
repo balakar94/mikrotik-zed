@@ -31,7 +31,8 @@ Policy: bounded framing, bounded documents, bounded diagnostics, strict
 | `MAX_COMPLETION_ITEMS` | 200 | completion items per response |
 | `MAX_CODE_ACTIONS` | 8 | quick-fix actions per response |
 | `MAX_SYMBOLS` / `MAX_FOLDING_RANGES` | 5000 / 5000 | symbols / folds per doc |
-| `MAX_REFERENCES` | 1000 | references per request |
+| `MAX_REFERENCES` | 1000 | references or rename edits per request |
+| `MAX_VARIABLE_OCCURRENCES` | 32 768 | indexed variable occurrences per document |
 
 ## Hover, signature, completion display caps
 

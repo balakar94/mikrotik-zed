@@ -277,7 +277,7 @@ pub(crate) fn compute_document_symbols_with_logicals(
             flush(&mut pending, &mut symbols);
         } else if let Some(sym) = script_command_symbol(line, &tokens, span) {
             // Script rows (Variable landmarks and :verb Functions) never
-            // merge: flush any open run first. The shared
+            // merge: flush any open run first. The
             // `declared_variable` primitive also catches brace-prefixed
             // declarations (`{ :local x }`), which land here even though
             // the logical line does not open with `:`.

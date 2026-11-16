@@ -500,10 +500,6 @@ fn example_for(arg_type: &str) -> Option<&'static str> {
 }
 
 /// Find word start (including /, -, _).
-///
-/// `pub(crate)` so navigation (`word_at`) extracts words with the EXACT
-/// same rules as hover — go-to-definition, find-references, and hover must
-/// never disagree about what "the word at the cursor" is.
 pub(crate) fn find_word_start(line: &str, pos: usize) -> usize {
     let pos = pos.min(line.len());
     // Ensure we are at a valid character boundary (RSC is ASCII, but be safe).
@@ -519,8 +515,7 @@ pub(crate) fn find_word_start(line: &str, pos: usize) -> usize {
     i
 }
 
-/// Find word end (including /, -, _) — shared with navigation, see
-/// [`find_word_start`].
+/// Find word end (including /, -, _).
 pub(crate) fn find_word_end(line: &str, pos: usize) -> usize {
     let pos = pos.min(line.len());
     let pos = crate::floor_char_boundary(line, pos);
@@ -556,14 +551,25 @@ fn colon_builtin_doc(colon_word: &str) -> Option<&'static str> {
     crate::script_globals::lookup(colon_word).map(|g| g.docs)
 }
 
+#[cfg(test)]
 pub fn compute_hover(
     data: &MenuData,
     line: &str,
-    // Byte offset within `line`, already converted from the negotiated wire
-    // encoding by the caller at the protocol boundary.
     character: usize,
     full_doc: &str,
     cursor_line: usize,
+) -> Option<Hover> {
+    let logicals = crate::diagnostics::logical_lines(full_doc);
+    compute_hover_with_logicals(data, line, character, full_doc, cursor_line, &logicals)
+}
+
+pub(crate) fn compute_hover_with_logicals(
+    data: &MenuData,
+    line: &str,
+    character: usize,
+    full_doc: &str,
+    cursor_line: usize,
+    logicals: &[crate::diagnostics::LogicalLine],
 ) -> Option<Hover> {
     let word_start = find_word_start(line, character);
     let word_end = find_word_end(line, character);
@@ -579,12 +585,22 @@ pub fn compute_hover(
             None
         };
 
-    // Rebuild context from the full document at the cursor position so that
-    // multiline commands (properties on next lines) are correctly resolved.
-    // Built before the menu-path branch because value attribution needs it
-    // and a `/`-leading VALUE (`comment=/ip`) must not render as a menu.
-    let before_cursor = crate::build_before_cursor(full_doc, cursor_line, character);
-    let context = crate::parse_line(data, &before_cursor);
+    let context = crate::diagnostics::covering_logical_line(logicals, cursor_line)
+        .map(|ll| {
+            let tokens = crate::parser::tokenize_with_spans(ll.text());
+            ll.command_context(data, logicals, &tokens)
+        })
+        .filter(|ctx| !ctx.path.is_empty())
+        .unwrap_or_else(|| {
+            // Keep tolerant hover on a property-only fragment while editing.
+            let first = line.split_ascii_whitespace().next().unwrap_or_default();
+            if crate::parser::split_key_value(first).is_some() {
+                let prefix = crate::build_before_cursor(full_doc, cursor_line, character);
+                crate::parse_line(data, &prefix)
+            } else {
+                crate::parse_line(data, line)
+            }
+        });
 
     // Value token of a `name=value` property: checked before the key-side
     // branches because a value may spell a menu path or an argument name.

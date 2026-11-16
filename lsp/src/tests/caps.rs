@@ -194,7 +194,7 @@ fn test_caps_table_values_match_consts() {
     // every other table row is asserted below.
     assert_eq!(crate::symbols::MAX_SYMBOLS, 5000);
     assert_eq!(crate::folding::MAX_FOLDING_RANGES, 5000);
-    assert_eq!(crate::navigation::MAX_REFERENCES, 1000);
+    assert_eq!(crate::caps::MAX_REFERENCES, 1000);
     assert_eq!(crate::parser::MAX_BRACE_DEPTH, 4096);
     assert_eq!(crate::signature::MAX_SIGNATURE_PROPERTIES, 40);
     assert_eq!(crate::suggest::MAX_SUGGEST_INPUT_BYTES, 256);

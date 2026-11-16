@@ -73,7 +73,7 @@ fn nav_request(id: i64, uri: &str, extra: serde_json::Value) -> serde_json::Valu
     serde_json::json!({"id": id, "params": params})
 }
 
-fn index_of(doc: &str) -> Vec<VariableHit> {
+fn index_of(doc: &str) -> VariableIndex {
     build_variable_index(&crate::diagnostics::logical_lines(doc))
 }
 

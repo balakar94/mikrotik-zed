@@ -52,7 +52,8 @@
 // | `MAX_DIAG_TEXT_CHARS`             | 120            | diagnostics.rs  | Raw user text embedded in one diagnostic message               |
 // | `MAX_SYMBOLS`                     | 5000           | symbols.rs      | Document symbols per doc                                       |
 // | `MAX_FOLDING_RANGES`              | 5000           | folding.rs      | Folding ranges per doc                                         |
-// | `MAX_REFERENCES`                  | 1000           | navigation.rs   | References per request (incl. declaration)                     |
+// | `MAX_REFERENCES`                  | 1000           | caps.rs         | References and rename edits per request                         |
+// | `MAX_VARIABLE_OCCURRENCES`        | 32768          | caps.rs         | Indexed variable occurrences per document                       |
 // | `MAX_BRACE_DEPTH`                 | 4096           | parser.rs       | Open-brace stack bound (walk_structure + syntax)               |
 // | `MAX_SIGNATURE_PROPERTIES`        | 40             | signature.rs    | Properties per signature label                                 |
 // | `MAX_SUGGEST_INPUT_BYTES`         | 256            | suggest.rs      | Max mistyped token length for quick-fix suggestions            |
@@ -89,6 +90,11 @@ pub(crate) const MAX_DRAIN_SIZE: usize = 2 * MAX_MESSAGE_SIZE;
 
 pub(crate) const MAX_DOC_SIZE: usize = 5 * 1024 * 1024; // 5 MiB per document — prevents single-file OOM
 pub(crate) const MAX_DOCS: usize = 100; // cap number of tracked documents
+
+pub(crate) const MAX_REFERENCES: usize = 1000;
+pub(crate) const MAX_VARIABLE_OCCURRENCES: usize = 32_768;
+/// Accommodate a full menu path with extra whitespace between segments.
+pub(crate) const MAX_EXPORT_HEADER_BYTES: usize = 512;
 
 /// Cap on `contentChanges` entries accepted in one `textDocument/didChange`.
 ///

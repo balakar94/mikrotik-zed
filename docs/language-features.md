@@ -4,6 +4,15 @@ All contextual features are driven by the command database embedded in
 `rsc-ls` (see [data pipeline](data-pipeline.md)). Triggers: `/`, space,
 `=` and `:`.
 
+## Compact exports
+
+In a compact `/export`, a path-only line such as `/ip/address` supplies the
+menu for the relative commands that follow. Completion, hover, signature
+help, diagnostics, and quick fixes use that menu for each command. Each
+command has its own properties, even if the preceding command set the same
+ones. Comments and blank lines preserve the menu. An absolute command or a
+script boundary ends the section.
+
 ## Completion tiers
 
 `sortText` is `<tier><match>_<label>`; tier is the major key
@@ -105,8 +114,12 @@ findings as real: many of them break `/import` on the device.
   (caps: `MAX_SYMBOLS`, `MAX_FOLDING_RANGES`).
 - **Signature help:** required-first parameter hints on menu verbs
   (`MAX_SIGNATURE_PROPERTIES`).
-- **Navigation:** go-to-definition / references / rename between declarations
-  and `$name` usages (`MAX_REFERENCES`).
+- **Navigation:** go-to-definition and references resolve declarations in
+  the open file and respect block scope. References include reads in
+  double-quoted strings and writes with `:set`. Rename edits a resolved
+  local binding. The server declines edits when the proposed name already appears in the file, when a use is
+  ambiguous, or when the document or edit list exceeds the server limits.
+  Globals can be shared with other scripts.
 - **Quickfixes:** `codeAction` offers edit-distance "did you mean …?"
   candidates (`MAX_CODE_ACTIONS`, `MAX_SUGGEST_INPUT_BYTES`).
 

@@ -1,49 +1,12 @@
-// ── Rename provider (textDocument/rename) ────────────────────────────────
+// ── Rename provider ──────────────────────────────────────────────────────
 //
-// Rename the RouterOS script variable under the cursor: the declaration
-// chosen by `navigation::choose_definition`'s deterministic rule plus every
-// `$usage` sharing its name, each replaced by the requested new name.
-//
-// SCOPE SEMANTICS (v1, deliberately narrow and honest):
-// - Only variables tracked by the navigation index participate:
-//   `:local` / `:global` declarations (including brace- or `;`-separated
-//   leading forms via the shared `declared_variable` primitive) and bare
-//   `$name` usages — now INCLUDING `$name` inside `"…"` double-quoted
-//   strings (RouterOS interpolates them), while `'…'` stays literal with
-//   the same `$$`/comment rules as go-to-definition. Interface names, menu
-//   paths, properties, and verbs are NOT rename targets — renaming those
-//   would rewrite device semantics the server cannot verify.
-//   NOTE (scope expansion): because rename reuses the navigation index,
-//   double-quoted usages are now renamed too; a future `${name}` /
-//   `$"my var"` expansion will widen this set again — audit callers then.
-// - No block-scope precision (same documented limitation as navigation): all
-//   same-name declarations and usages in the document are renamed together.
-// - Document-local only (navigation has no cross-file resolution), so the
-//   returned `WorkspaceEdit` carries a single-document `changes` map keyed
-//   by the requesting URI. Multi-document rename is future work once the
-//   index spans open documents.
-// - Identifier spans exclude the `$` sigil (usages) and any inline `=value`
-//   (declarations), so `:local x=1` renames to `:local new=1` and `$x` to
-//   `$new` — the sigil and value survive untouched.
-//
-// Contracts: malformed positions resolve to `Null` (same empty-result shape
-// as definition); an invalid `newName` is also `Null` (nothing honest to
-// apply). The handler maps missing params to `-32602`; this module never
-// panics.
+// Rename the declaration and references of a resolved local variable.
+// Decline a rename when the index cannot account for every occurrence.
 
 use crate::diagnostics;
 use crate::encoding::PositionEncoding;
 use crate::navigation;
-
-/// Bytes permitted in a rename target (v1 bare identifiers).
-///
-/// ASCII-only by design, mirroring the navigation index: the grammar's
-/// identifier rule is ASCII (`[a-zA-Z_][a-zA-Z0-9_@]*`), so a multi-byte
-/// byte can never enter a name or an edit range. `-` is excluded so
-/// arithmetic like `($count-1)` can never donate a name.
-fn is_rename_ident_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
+use crate::server_proto::resolve_cursor_occurrence;
 
 /// Whether `name` is a usable rename replacement.
 ///
@@ -53,7 +16,12 @@ fn is_rename_ident_char(b: u8) -> bool {
 fn cleaned_new_name(name: &str) -> Option<&str> {
     let trimmed = name.trim();
     let bare = trimmed.strip_prefix('$').unwrap_or(trimmed);
-    if bare.is_empty() || !bare.bytes().all(is_rename_ident_char) {
+    if !bare
+        .as_bytes()
+        .first()
+        .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+        || !bare.bytes().all(navigation::is_ident_char)
+    {
         return None;
     }
     Some(bare)
@@ -100,18 +68,12 @@ pub(crate) fn rename_result_with_logicals(
     // cursor resolution — the same pipeline definition/references use, so
     // rename can never disagree with navigation about what is where.
     let index = navigation::build_variable_index(logicals);
-    let Some(occ) =
-        crate::server::resolve_cursor_occurrence(doc, logicals, &index, enc, line, character)
-    else {
+    let Some(occ) = resolve_cursor_occurrence(doc, logicals, &index, enc, line, character) else {
         return serde_json::Value::Null;
     };
-    // All same-name occurrences (every declaration plus every usage):
-    // without block-scope analysis, renaming a subset would leave the
-    // document referring to two different bindings under one spelling.
-    let hits: Vec<&navigation::VariableHit> = index.iter().filter(|h| h.name == occ.name).collect();
-    if hits.is_empty() {
+    let Some(hits) = index.rename_hits(occ, Some(replacement)) else {
         return serde_json::Value::Null;
-    }
+    };
     let lines: Vec<&str> = doc.lines().collect();
     let edits: Vec<serde_json::Value> = hits
         .iter()
@@ -125,4 +87,22 @@ pub(crate) fn rename_result_with_logicals(
     let mut changes = serde_json::Map::new();
     changes.insert(uri.to_string(), serde_json::Value::Array(edits));
     serde_json::json!({ "changes": changes })
+}
+
+/// Report the exact editable span before the client asks for a replacement.
+pub(crate) fn prepare_rename(
+    doc: &str,
+    enc: PositionEncoding,
+    line: usize,
+    character: usize,
+    logicals: &[diagnostics::LogicalLine],
+) -> Option<serde_json::Value> {
+    let index = navigation::build_variable_index(logicals);
+    let hit = resolve_cursor_occurrence(doc, logicals, &index, enc, line, character)?;
+    index.rename_hits(hit, None)?;
+    let lines: Vec<&str> = doc.lines().collect();
+    let mut range = logicals[hit.logical_line].map_range(hit.start, hit.end);
+    crate::convert_position(&mut range.start, &lines, enc);
+    crate::convert_position(&mut range.end, &lines, enc);
+    Some(serde_json::json!({ "range": range, "placeholder": hit.name }))
 }

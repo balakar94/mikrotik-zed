@@ -1,75 +1,29 @@
-// ── Variable navigation (textDocument/definition + references) ───────────
+// ── Variable navigation ────────────────────────────────────────────────────
 //
-// Pure computation module for RouterOS script variable navigation, in the
-// house style of `signature.rs`: no I/O, deterministic output, unit-tested
-// in place.
-//
-// V1 SEMANTICS (deliberately simple, honest about limits):
-//
-// - Declarations are the identifier token immediately following a `:local`
-//   or `:global` COMMAND token on a logical line. The command may be
-//   preceded only by statement separators (`{`, `}`, `;`, or a token ending
-//   in `;` from a `;`-separated tail), so `{ :local x }` and
-//   `:put 1; :local y` still declare (same rule documentSymbol uses, so
-//   the outline and navigation can never disagree). `/` and `..` are
-//   deliberately NOT separators: a `/`-prefixed token opens a menu path,
-//   so `/ :local x` must not declare. Inline values
-//   (`:local x=1`) belong to the identifier only up to the `=`.
-// - Usages are bare `$name` references anywhere else in the document. The
-//   scanner is quote-aware: `$` inside `"…"` IS indexed (RouterOS
-//   interpolates double-quoted strings) while `$` inside `'…'` stays
-//   literal, an unquoted `#` stops the scan (comments), and a doubled `$$`
-//   reads as a literal dollar rather than a reference start. `$()`
-//   expression syntax, `${name}` braces, and quoted identifier names
-//   (`$"my var"`) are out of scope for v1 (deferred to keep this change
-//   small — see follow-up note below).
-// - Definition lookup from any occurrence of a name uses ONE total,
-//   deterministic rule (see [`choose_definition`]).
-// - References are every `$usage` of the name plus — when the client asks
-//   with `includeDeclaration` — the SAME declaration go-to-definition would
-//   choose from the request position. Results cap at [`MAX_REFERENCES`].
-//
-// Documented v1 limitations: no cross-file resolution; no block-scope
-// precision (a `:local` inside `{ … }` is treated as visible to the whole
-// document; the position rule below is what keeps answers stable); hyphenated
-// or otherwise non-`[A-Za-z0-9_]` names are not tracked.
-//
-// All positions handled here are LOGICAL coordinates: byte offsets within a
-// joined logical line's text plus that line's index in the joined vector.
-// Mapping to physical document coordinates is done by the caller through
-// `diagnostics::LogicalLine::map_range`, and wire-encoding conversion stays
-// at the protocol boundary (`encoding.rs`) exactly as everywhere else.
+// Resolve each occurrence once against declarations visible at that point.
+// The index uses offsets in joined logical lines. Callers map spans to the
+// original document and negotiate position encoding at the protocol boundary.
 
+use std::collections::{HashMap, HashSet};
+
+use crate::caps::{MAX_REFERENCES, MAX_VARIABLE_OCCURRENCES};
 use crate::diagnostics::LogicalLine;
-use crate::hover;
-use crate::parser::{SpanToken, tokenize_with_spans};
+use crate::parser::{MAX_BRACE_DEPTH, QuoteAdvance, QuoteState, SpanToken};
 
-/// Cap on one `textDocument/references` result list.
-///
-/// Bounds the response payload for adversarial documents (thousands of
-/// `$x` lines); beyond the cap the tail is silently dropped — same
-/// defensive posture as the diagnostics/symbol caps.
-pub(crate) const MAX_REFERENCES: usize = 1000;
-
-/// Which script command declared a variable.
+/// Which command introduced a binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeclKind {
     Local,
     Global,
 }
 
-/// What kind of variable occurrence a [`VariableHit`] describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HitKind {
     Declaration(DeclKind),
     Usage,
 }
 
-/// One variable occurrence located in LOGICAL coordinates.
-///
-/// `start`/`end` are byte offsets within the joined text of logical line
-/// `logical_line`, covering ONLY the identifier — never the leading `$`,
-/// never an inline `=value`, never the `:local`/`:global` command token.
+/// A name span, excluding the dollar sigil, quotes, and initializer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VariableHit {
     pub name: String,
@@ -77,19 +31,12 @@ pub(crate) struct VariableHit {
     pub logical_line: usize,
     pub start: usize,
     pub end: usize,
+    /// Index of the declaration in document order.
+    binding: Option<usize>,
+    uncertain: bool,
 }
 
-/// Bytes permitted in a bare variable identifier (v1).
-///
-/// ASCII-only by design: the tree-sitter grammar defines identifiers as
-/// `/[a-zA-Z_][a-zA-Z0-9_@]*/`, so non-ASCII names are outside the language
-/// subset. A multi-byte UTF-8 lead byte never satisfies
-/// `is_ascii_alphanumeric`, so every scanned span ends on a char boundary —
-/// `$café` is tracked as the ASCII prefix `caf`, never as a corrupt
-/// multi-byte span. RouterOS identifiers are letters, digits and
-/// underscores; `-` is deliberately excluded so arithmetic like
-/// `($count-1)` cannot glue a fake name onto a real usage.
-fn is_ident_char(b: u8) -> bool {
+pub(crate) fn is_ident_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
@@ -105,10 +52,7 @@ fn is_leading_separator(text: &str) -> bool {
 /// Extract the declaration introduced by a `:local` / `:global` command line.
 ///
 /// Returns `(kind, identifier, ident_start, ident_end)` where the offsets
-/// locate ONLY the identifier inside the tokenized text. Shared primitive
-/// for documentSymbol naming (`symbols.rs`) and the navigation index, so
-/// the outline and go-to-definition can never disagree about what a
-/// declaration is or where its name spans.
+/// locate the bare identifier for the document symbol label.
 ///
 /// The command token is the FIRST `:local` / `:global` token whose
 /// predecessors are all statement separators (see [`is_leading_separator`]
@@ -149,7 +93,7 @@ pub(crate) fn declared_variable(tokens: &[SpanToken]) -> Option<(DeclKind, Strin
     // one "x=1" token and the declaration owns only `x`.
     let end = var.text.bytes().take_while(|&b| is_ident_char(b)).count();
     if end == 0 {
-        return None; // quoted / decorated names are unsupported in v1
+        return None;
     }
     Some((
         kind,
@@ -159,187 +103,395 @@ pub(crate) fn declared_variable(tokens: &[SpanToken]) -> Option<(DeclKind, Strin
     ))
 }
 
-/// Scan ONE logical line's text and push every `$name` usage into `hits`.
-///
-/// Quote state machine mirrors `parser::scan_token` / `walk_structure`:
-/// both quote styles toggle symmetrically, `\` escapes the next byte only
-/// INSIDE quotes, and an unquoted `#` starts a comment running to the end
-/// of the physical line. Because an unquoted `#` always prevents a `\`
-/// continuation (the joiner cuts comment tails first), everything after it
-/// in joined text is comment, so scanning can simply stop there.
-///
-/// Quoting rule (RouterOS interpolation): `$name` inside `"…"` IS a usage
-/// (double-quoted strings interpolate), while `$name` inside `'…'` is
-/// literal text and never surfaces. A usage starts at a `$` outside
-/// single quotes whose next byte begins an identifier AND whose PREVIOUS
-/// byte is not another `$`: a doubled dollar reads as a literal `$`, so
-/// `$$x` and `$$$x` produce nothing (inside or outside double quotes)
-/// while `$x ($y)` produces both names.
-///
-/// Deferred follow-up (kept out to hold this change small): `${name}`
-/// braces and `$"quoted name"` forms never yield usages here. Follow-up:
-/// expand the scanner to `${name}` / `$"my var"` (and audit rename scope
-/// expansion when that lands — rename reuses this index).
-fn push_usages(text: &str, logical_line: usize, hits: &mut Vec<VariableHit>) {
-    let bytes = text.as_bytes();
-    let mut i = 0usize;
-    let mut in_double = false;
-    let mut in_single = false;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' if in_double || in_single => {
-                // Escaped byte inside quotes: skip it entirely. Clamp so a
-                // trailing backslash cannot push past the buffer.
-                i = (i + 2).min(bytes.len());
-                continue;
-            }
-            b'"' if !in_single => in_double = !in_double,
-            b'\'' if !in_double => in_single = !in_single,
-            b'#' if !in_double && !in_single => break, // comment tail
-            b'$' if !in_single => {
-                let name_start = i + 1;
-                let doubled = i > 0 && bytes[i - 1] == b'$';
-                if !doubled && name_start < bytes.len() && is_ident_char(bytes[name_start]) {
-                    let mut end = name_start;
-                    while end < bytes.len() && is_ident_char(bytes[end]) {
-                        end += 1;
-                    }
-                    hits.push(VariableHit {
-                        name: text[name_start..end].to_string(),
-                        kind: HitKind::Usage,
-                        logical_line,
-                        start: name_start,
-                        end,
-                    });
-                    i = end;
-                    continue;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
+/// A bare name or an unescaped quoted name. Escaped names need runtime
+/// decoding, so the index records their presence and disables rename.
+fn name_span(text: &str, start: usize, quoted: bool) -> Option<(usize, usize)> {
+    let tail = text.get(start..)?;
+    if quoted && let Some(inner) = tail.strip_prefix('"') {
+        let first_special = inner.find(['"', '\\'])?;
+        return (first_special > 0 && inner.as_bytes()[first_special] == b'"')
+            .then_some((start + 1, start + 1 + first_special));
     }
-}
-
-/// Index every variable occurrence in the document, in document order.
-///
-/// One pass over the continuation-aware logical lines; each line is
-/// classified once (declaration via its opening tokens, usages via the
-/// quote-aware byte scan). Empty documents yield an empty index.
-pub(crate) fn build_variable_index(logicals: &[LogicalLine]) -> Vec<VariableHit> {
-    let mut hits = Vec::new();
-    for (idx, ll) in logicals.iter().enumerate() {
-        let tokens = tokenize_with_spans(ll.text());
-        if let Some((kind, name, start, end)) = declared_variable(&tokens) {
-            hits.push(VariableHit {
-                name,
-                kind: HitKind::Declaration(kind),
-                logical_line: idx,
-                start,
-                end,
-            });
-        }
-        push_usages(ll.text(), idx, &mut hits);
-    }
-    hits
-}
-
-/// Word under a cursor offset, extracted with hover's own helpers.
-///
-/// Reusing `hover::find_word_start/find_word_end` keeps go-to-definition,
-/// find-references and hover in agreement about what "the word at the
-/// cursor" means (same word-character set, same boundary clamping).
-/// Callers apply it to the JOINED logical-line text; on non-split lines it
-/// is byte-for-byte hover's behavior.
-pub(crate) fn word_at(text: &str, offset: usize) -> &str {
-    let start = hover::find_word_start(text, offset);
-    let end = hover::find_word_end(text, offset);
-    &text[start..end]
-}
-
-/// The indexed occurrence the cursor actually sits on, if any.
-///
-/// The hover-style `word` alone is not trusted: it must ALSO overlap a
-/// real occurrence span of the same name, so a property that merely shares
-/// a spelling with a variable never resolves. Matching tolerates the
-/// cursor parked ON the end boundary of the identifier (hover's backward
-/// extraction behaves the same way after a finished word); when several
-/// occurrences touch at that boundary the first in document order wins.
-/// A defensive leading `$` is stripped because some clients synthesize
-/// positions with the sigil included in the word.
-pub(crate) fn hit_at_cursor<'a>(
-    index: &'a [VariableHit],
-    word: &str,
-    logical_line: usize,
-    offset: usize,
-) -> Option<&'a VariableHit> {
-    let name = word.strip_prefix('$').unwrap_or(word);
-    if name.is_empty() {
+    let end = tail.bytes().take_while(|&b| is_ident_char(b)).count();
+    if tail.as_bytes().get(end).is_some_and(|b| !b.is_ascii()) {
         return None;
     }
-    index.iter().find(|h| {
-        h.name == name && h.logical_line == logical_line && h.start <= offset && offset <= h.end
-    })
+    (end != 0).then_some((start, start + end))
 }
 
-/// THE deterministic definition-choice rule (v1, total over any input).
-///
-/// Among declarations sharing the requested name, ordered by document
-/// position `(logical_line, start)`:
-///
-/// 1. Prefer the LAST declaration whose position is `<=` the requesting
-///    occurrence's position — i.e. the closest preceding declaration, or
-///    the declaration itself when the request originates from one.
-/// 2. If NO declaration precedes the request, take the FIRST declaration
-///    of that name regardless of kind — `:local` and `:global` NEVER break
-///    ties, only document position does.
-///
-/// This models RouterOS's read-the-closest-previous-binding intuition
-/// without block-scope analysis, and is stable because both the index and
-/// the request position derive from the same logical-line join.
-pub(crate) fn choose_definition<'a>(
-    index: &'a [VariableHit],
-    name: &str,
-    request: (usize, usize),
-) -> Option<&'a VariableHit> {
-    let mut last_before: Option<&VariableHit> = None;
-    let mut first_of_name: Option<&VariableHit> = None;
-    for hit in index {
-        if hit.name != name {
-            continue;
-        }
-        let HitKind::Declaration(_) = hit.kind else {
-            continue;
+#[derive(Default)]
+struct Statement {
+    started: bool,
+    loop_bindings: [Option<usize>; 2],
+    initializer: Option<usize>,
+    shadowed_initializer: Option<usize>,
+    where_clause: bool,
+}
+
+#[derive(Default)]
+struct Scope {
+    closer: u8,
+    previous: Vec<(String, Option<usize>)>,
+    statement: Statement,
+    enclosing_initializer: Option<(usize, usize)>,
+    dynamic: bool,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct VariableIndex {
+    hits: Vec<VariableHit>,
+    unsafe_to_rename: bool,
+}
+
+impl std::ops::Deref for VariableIndex {
+    type Target = [VariableHit];
+
+    fn deref(&self) -> &[VariableHit] {
+        &self.hits
+    }
+}
+
+#[derive(Default)]
+struct IndexBuilder {
+    index: VariableIndex,
+    scopes: Vec<Scope>,
+    locals: HashMap<String, usize>,
+    globals: HashMap<String, usize>,
+    uncertain_bindings: HashSet<usize>,
+}
+
+impl IndexBuilder {
+    fn scope(&mut self) -> &mut Scope {
+        self.scopes.last_mut().expect("root scope")
+    }
+
+    fn lookup(&self, name: &str) -> Option<usize> {
+        self.locals
+            .get(name)
+            .or_else(|| self.globals.get(name))
+            .copied()
+    }
+
+    fn activate_local(&mut self, binding: usize) {
+        let name = self.index[binding].name.clone();
+        let previous = self.locals.insert(name.clone(), binding);
+        self.scope().previous.push((name, previous));
+    }
+
+    fn declaration(
+        &mut self,
+        kind: DeclKind,
+        name: &str,
+        line: usize,
+        span: (usize, usize),
+    ) -> usize {
+        let id = self.index.len();
+        let dynamic = self.scope().dynamic;
+        let binding = match kind {
+            DeclKind::Local => id,
+            DeclKind::Global => *self.globals.entry(name.to_string()).or_insert(id),
         };
-        if first_of_name.is_none() {
-            first_of_name = Some(hit);
+        self.index.hits.push(VariableHit {
+            name: name.to_string(),
+            kind: HitKind::Declaration(kind),
+            logical_line: line,
+            start: span.0,
+            end: span.1,
+            binding: Some(binding),
+            uncertain: dynamic,
+        });
+        id
+    }
+
+    fn usage(&mut self, name: &str, line: usize, span: (usize, usize)) {
+        let binding = self.lookup(name);
+        let scope = self.scope();
+        let shadowed = scope
+            .statement
+            .shadowed_initializer
+            .filter(|_| scope.statement.initializer == binding)
+            .or_else(|| {
+                scope
+                    .enclosing_initializer
+                    .filter(|(decl, _)| Some(*decl) == binding)
+                    .map(|(_, previous)| previous)
+            });
+        let uncertain = scope.dynamic || scope.statement.where_clause || shadowed.is_some();
+        if uncertain && let Some(binding) = binding {
+            self.uncertain_bindings.insert(binding);
         }
-        if (hit.logical_line, hit.start) <= request {
-            last_before = Some(hit);
+        if let Some(shadowed) = shadowed {
+            self.uncertain_bindings.insert(shadowed);
+        }
+        self.index.hits.push(VariableHit {
+            name: name.to_string(),
+            kind: HitKind::Usage,
+            logical_line: line,
+            start: span.0,
+            end: span.1,
+            binding,
+            uncertain,
+        });
+    }
+
+    fn open_scope(&mut self, closer: u8, prefix: &str) {
+        let parent = self.scope();
+        let enclosing_initializer = parent
+            .statement
+            .initializer
+            .zip(parent.statement.shadowed_initializer)
+            .or(parent.enclosing_initializer);
+        let is_body = closer == b'}' && prefix.ends_with("do=");
+        let loop_bindings = if is_body {
+            parent.statement.loop_bindings
+        } else {
+            [None; 2]
+        };
+        let dynamic = parent.dynamic
+            || parent.statement.where_clause
+            || (is_body && parent.statement.initializer.is_some())
+            || (closer == b'}'
+                && [
+                    "source=",
+                    "on-event=",
+                    "lease-script=",
+                    "up-script=",
+                    "down-script=",
+                ]
+                .iter()
+                .any(|key| prefix.ends_with(key)));
+        self.scopes.push(Scope {
+            closer,
+            enclosing_initializer,
+            dynamic,
+            ..Scope::default()
+        });
+        for binding in loop_bindings.into_iter().flatten() {
+            self.activate_local(binding);
         }
     }
-    last_before.or(first_of_name)
+
+    fn close_scope(&mut self, closer: u8) {
+        if self.scope().closer != closer {
+            self.index.unsafe_to_rename = true;
+            return;
+        }
+        let scope = self.scopes.pop().expect("matching scope");
+        for (name, previous) in scope.previous.into_iter().rev() {
+            if let Some(binding) = previous {
+                self.locals.insert(name, binding);
+            } else {
+                self.locals.remove(&name);
+            }
+        }
+    }
+
+    fn command_target(&mut self, text: &str, line: usize, i: usize) -> Option<usize> {
+        let bytes = text.as_bytes();
+        let command = text[i..].split_ascii_whitespace().next()?;
+        if ![":local", ":global", ":set", ":for", ":foreach", ":onerror"]
+            .iter()
+            .any(|name| command.eq_ignore_ascii_case(name))
+        {
+            return None;
+        }
+        let mut start = i + command.len();
+        while bytes.get(start).is_some_and(u8::is_ascii_whitespace) {
+            start += 1;
+        }
+        let Some(span) = name_span(text, start, true) else {
+            self.index.unsafe_to_rename |= bytes.get(start) == Some(&b'"');
+            return None;
+        };
+        let quoted = bytes[start] == b'"';
+        let mut end = span.1 + usize::from(quoted);
+        let second = if command.eq_ignore_ascii_case(":foreach") && bytes.get(end) == Some(&b',') {
+            let start = end + 1;
+            let second = name_span(text, start, true)?;
+            end = second.1 + usize::from(bytes[start] == b'"');
+            Some(second)
+        } else {
+            None
+        };
+        if bytes
+            .get(end)
+            .is_some_and(|b| !b.is_ascii_whitespace() && !b"=;}]".contains(b))
+        {
+            return None;
+        }
+        let name = &text[span.0..span.1];
+        if command.eq_ignore_ascii_case(":set") {
+            self.usage(name, line, span);
+        } else if command.eq_ignore_ascii_case(":global") {
+            let id = self.declaration(DeclKind::Global, name, line, span);
+            self.scope().statement.initializer = Some(id);
+            if self.locals.contains_key(name) {
+                self.activate_local(self.index[id].binding.expect("global binding"));
+            }
+        } else {
+            let previous = self.lookup(name);
+            let id = self.declaration(DeclKind::Local, name, line, span);
+            if command.eq_ignore_ascii_case(":local") {
+                self.activate_local(id);
+                self.scope().statement.initializer = Some(id);
+                self.scope().statement.shadowed_initializer = previous;
+            } else {
+                let second = second.map(|span| {
+                    self.declaration(DeclKind::Local, &text[span.0..span.1], line, span)
+                });
+                self.scope().statement.loop_bindings = [Some(id), second];
+            }
+        }
+        Some(end)
+    }
+
+    fn scan_line(&mut self, text: &str, line: usize, quote: &mut QuoteState) -> bool {
+        let bytes = text.as_bytes();
+        self.scope().statement = Statement::default();
+        quote.reset_line();
+        let mut i = 0;
+        while i < bytes.len() {
+            if self.index.len() >= MAX_VARIABLE_OCCURRENCES || self.scopes.len() > MAX_BRACE_DEPTH {
+                return false;
+            }
+            let b = bytes[i];
+            match quote.advance_byte(b) {
+                QuoteAdvance::CommentStart => break,
+                QuoteAdvance::Other(b'$') if quote.allows_interpolation() => {
+                    if bytes.get(i + 1) == Some(&b'$') {
+                        while bytes.get(i) == Some(&b'$') {
+                            i += 1;
+                        }
+                        self.scope().statement.started = true;
+                        continue;
+                    }
+                    if let Some(span) = name_span(text, i + 1, !quote.is_in_quote()) {
+                        self.usage(&text[span.0..span.1], line, span);
+                        let quoted = bytes[i + 1] == b'"';
+                        i = span.1 + usize::from(quoted);
+                        self.scope().statement.started = true;
+                        continue;
+                    }
+                    self.index.unsafe_to_rename |=
+                        !quote.is_in_quote() && bytes.get(i + 1) == Some(&b'"');
+                }
+                QuoteAdvance::Other(_) if !quote.is_in_quote() => match b {
+                    b'{' | b'[' => {
+                        self.scope().statement.started = true;
+                        let closer = if b == b'{' { b'}' } else { b']' };
+                        self.open_scope(closer, text[..i].trim_end());
+                    }
+                    b'}' | b']' => self.close_scope(b),
+                    b';' => self.scope().statement = Statement::default(),
+                    b if b.is_ascii_whitespace() => {}
+                    b':' if !self.scope().statement.started => {
+                        self.scope().statement.started = true;
+                        if let Some(end) = self.command_target(text, line, i) {
+                            i = end;
+                            continue;
+                        }
+                    }
+                    _ => {
+                        let scope = self.scope();
+                        scope.statement.started = true;
+                        if bytes
+                            .get(i..i + 5)
+                            .is_some_and(|word| word.eq_ignore_ascii_case(b"where"))
+                            && i > 0
+                            && bytes[i - 1].is_ascii_whitespace()
+                            && bytes.get(i + 5).is_some_and(u8::is_ascii_whitespace)
+                        {
+                            scope.statement.where_clause = true;
+                        }
+                    }
+                },
+                QuoteAdvance::SingleOpen | QuoteAdvance::DoubleOpen => {
+                    self.scope().statement.started = true;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        true
+    }
 }
 
-/// Collect references for `name`: the chosen declaration first (only when
-/// the caller resolved one, i.e. `includeDeclaration`), then every `$usage`
-/// of the name in document order. Total results capped at
-/// [`MAX_REFERENCES`] — the cap bounds the WHOLE flat list, declaration
-/// included.
-pub(crate) fn collect_references<'a>(
-    index: &'a [VariableHit],
-    name: &str,
-    declaration: Option<&'a VariableHit>,
-) -> Vec<&'a VariableHit> {
-    let mut refs = Vec::new();
-    if let Some(d) = declaration {
-        refs.push(d);
+/// Index lexical bindings and their reads and writes in document order.
+/// Unsupported or incomplete constructs leave ambiguous uses unresolved.
+pub(crate) fn build_variable_index(logicals: &[LogicalLine]) -> VariableIndex {
+    let mut builder = IndexBuilder {
+        scopes: vec![Scope::default()],
+        ..IndexBuilder::default()
+    };
+    let mut quote = QuoteState::new();
+    for (line, ll) in logicals.iter().enumerate() {
+        if !builder.scan_line(ll.text(), line, &mut quote)
+            || builder.index.len() > MAX_VARIABLE_OCCURRENCES
+        {
+            return VariableIndex::default();
+        }
     }
-    refs.extend(
-        index
+    builder.index.unsafe_to_rename |= builder.scopes.len() != 1 || quote.is_in_quote();
+    for id in builder.uncertain_bindings {
+        builder.index.hits[id].uncertain = true;
+    }
+    builder.index
+}
+
+impl VariableIndex {
+    pub(crate) fn hit_at(&self, line: usize, offset: usize) -> Option<&VariableHit> {
+        let start = self.hits.partition_point(|hit| hit.logical_line < line);
+        self.hits[start..]
             .iter()
-            .filter(|h| h.name == name && h.kind == HitKind::Usage),
-    );
-    refs.truncate(MAX_REFERENCES);
-    refs
+            .take_while(|hit| hit.logical_line == line && hit.start <= offset)
+            .find(|hit| offset <= hit.end)
+    }
+
+    pub(crate) fn definition(&self, hit: &VariableHit) -> Option<&VariableHit> {
+        if hit.uncertain && hit.kind == HitKind::Usage {
+            return None;
+        }
+        self.hits.get(hit.binding?)
+    }
+
+    pub(crate) fn references(
+        &self,
+        hit: &VariableHit,
+        include_declaration: bool,
+    ) -> impl Iterator<Item = &VariableHit> {
+        let binding = self.definition(hit).and_then(|decl| decl.binding);
+        self.hits
+            .iter()
+            .filter(move |candidate| {
+                binding.is_some()
+                    && candidate.binding == binding
+                    && (include_declaration || candidate.kind == HitKind::Usage)
+                    && !(candidate.uncertain && candidate.kind == HitKind::Usage)
+            })
+            .take(MAX_REFERENCES)
+    }
+
+    pub(crate) fn rename_hits(
+        &self,
+        hit: &VariableHit,
+        replacement: Option<&str>,
+    ) -> Option<Vec<&VariableHit>> {
+        let declaration = self.definition(hit)?;
+        if self.unsafe_to_rename
+            || declaration.kind != HitKind::Declaration(DeclKind::Local)
+            || declaration.uncertain
+            || replacement.is_some_and(|name| self.hits.iter().any(|other| other.name == name))
+        {
+            return None;
+        }
+        // Discard the whole edit if it exceeds the cap. A partial rename
+        // would leave the script with mismatched names.
+        let hits: Vec<_> = self
+            .hits
+            .iter()
+            .filter(|candidate| candidate.binding == declaration.binding)
+            .take(MAX_REFERENCES + 1)
+            .collect();
+        (hits.len() <= MAX_REFERENCES).then_some(hits)
+    }
 }

@@ -96,32 +96,87 @@ fn test_rename_result_is_single_document_changes_map() {
 }
 
 #[test]
-fn test_rename_usage_without_declaration_still_renames_occurrences() {
-    // No declaration exists, but the cursor resolves to a real usage
-    // occurrence, so the deterministic all-same-name edit set applies.
-    let doc = ":put $lonely\n";
-    let result = rename(doc, 0, 7, "found");
-    let edits = result["changes"][URI].as_array().expect("edits array");
-    assert_eq!(edits.len(), 1);
-    assert_eq!(edits[0]["newText"], "found");
+fn test_rename_declines_unresolved_and_global_variables() {
+    assert!(rename(":put $external\n", 0, 8, "renamed").is_null());
+    assert!(rename(":global x\n:put $x\n", 0, 8, "renamed").is_null());
+    assert!(rename(":local café=1\n:put $café\n", 0, 8, "renamed").is_null());
 }
 
 #[test]
-fn test_rename_non_ascii_identifier_edits_ascii_prefix_only() {
-    // Intentional ASCII-only subset: `café` is tracked as `caf`, so every
-    // edit ends before the `é` lead byte and can never split a code point.
-    let doc = ":local café=1\n:put $café\n";
-    let result = rename(doc, 0, 8, "wan");
-    let edits = result["changes"][URI].as_array().expect("edits array");
-    assert_eq!(edits.len(), 2, "declaration + usage, got {result}");
-    for edit in edits {
-        assert_eq!(edit["newText"], "wan");
-        let start = edit["range"]["start"]["character"].as_u64().unwrap();
-        let end = edit["range"]["end"]["character"].as_u64().unwrap();
-        assert_eq!(
-            end - start,
-            3,
-            "edit must cover only the ASCII prefix `caf`: {edit}"
-        );
+fn test_rename_keeps_shadowed_bindings_and_includes_bare_writes() {
+    let doc = concat!(
+        ":local port \"wan\"\n",
+        "{ :local port \"lan\"; :put $port }\n",
+        ":set port \"uplink\"\n",
+        ":put \"now $port\"\n",
+    );
+    let result = rename(doc, 3, 12, "wan");
+    let edits = result["changes"][URI].as_array().unwrap();
+    let lines: Vec<_> = edits
+        .iter()
+        .map(|edit| edit["range"]["start"]["line"].as_u64().unwrap())
+        .collect();
+    assert_eq!(lines, [0, 2, 3]);
+    assert_eq!(edits[1]["range"]["start"]["character"], 5);
+}
+
+#[test]
+fn test_rename_declines_a_collision_or_ambiguous_use() {
+    let collision = ":local port\n{ :local other; :put $port }\n";
+    assert!(rename(collision, 0, 8, "other").is_null());
+    let filter = ":local type\n/interface print where name=$type\n";
+    assert!(rename(filter, 0, 8, "kind").is_null());
+    for initializer in ["$port", "[:pick $port 0 1]"] {
+        let doc = format!(":local port\n{{ :local port {initializer} }}\n");
+        assert!(rename(&doc, 0, 8, "iface").is_null());
     }
+}
+
+#[test]
+fn test_foreach_body_uses_its_own_loop_bindings() {
+    let doc = ":local v\n:foreach k,v in={1;2} do={ :put \"$k=$v\" }\n:put $v\n";
+    let result = rename(doc, 0, 7, "outer");
+    let edits = result["changes"][URI].as_array().unwrap();
+    assert_eq!(edits.len(), 2);
+    assert_eq!(edits[1]["range"]["start"]["line"], 2);
+}
+
+#[test]
+fn prepare_rename_waits_for_a_complete_document_after_partial_sync() {
+    let mut server = crate::server::Server::new(std::sync::Arc::new(
+        crate::menus::MenuData::from_toml_str(""),
+    ));
+    let position = serde_json::json!({
+        "id": 1, "params": {
+            "textDocument": { "uri": URI },
+            "position": { "line": 0, "character": 7 },
+        },
+    });
+    let mut change = serde_json::json!({
+        "params": {
+            "textDocument": { "uri": URI },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 2, "character": 0 },
+                    "end": { "line": 2, "character": 0 },
+                },
+                "text": ":local x\n:put \"$x ends with $\"\n",
+            }],
+        },
+    });
+    server.handle_message("textDocument/didChange", &change);
+    let prepared = server
+        .handle_message("textDocument/prepareRename", &position)
+        .unwrap();
+    assert!(prepared["result"].is_null());
+
+    change["params"]["contentChanges"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("range");
+    server.handle_message("textDocument/didChange", &change);
+    let prepared = server
+        .handle_message("textDocument/prepareRename", &position)
+        .unwrap();
+    assert_eq!(prepared["result"]["placeholder"], "x");
 }

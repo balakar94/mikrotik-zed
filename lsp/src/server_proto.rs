@@ -342,58 +342,23 @@ pub(crate) fn navigation_location_value(
     serde_json::json!({ "uri": uri, "range": range })
 }
 
-/// Everything both navigation requests need after resolving a position.
-///
-/// `logical_line`/`cursor` locate the request inside the caller's joined
-/// logical lines; `name` is the variable identifier under the cursor
-/// (usage or declaration — never a mere same-spelling property).
-pub(crate) struct CursorOccurrence {
-    pub(crate) logical_line: usize,
-    pub(crate) cursor: usize,
-    pub(crate) name: String,
-}
-
-/// Shared resolution step of both navigation requests.
-///
-/// `logicals` is the ONE continuation-aware join per request (owned by the
-/// caller) and `index` was built from that same join, so cursor mapping and
-/// occurrence lookup can never disagree about document coordinates.
-/// Wire character → byte offset via [`lsp_character_to_byte_offset`];
-/// cursor mapped into logical coordinates via
-/// [`diagnostics::LogicalLine::logical_offset_from_physical`]; word
-/// extracted with hover's helpers ([`navigation::word_at`]); the word must
-/// overlap a real indexed occurrence of itself or resolution fails.
-///
-/// Returns `None` when no variable sits under this position — callers
-/// answer with their shape's empty result (definition → null result,
-/// references → empty list).
-pub(crate) fn resolve_cursor_occurrence(
+/// Convert the request position and find the indexed identifier span.
+pub(crate) fn resolve_cursor_occurrence<'a>(
     doc: &str,
     logicals: &[diagnostics::LogicalLine],
-    index: &[navigation::VariableHit],
+    index: &'a navigation::VariableIndex,
     enc: PositionEncoding,
     line: usize,
     character: usize,
-) -> Option<CursorOccurrence> {
+) -> Option<&'a navigation::VariableHit> {
     let ll_idx = diagnostics::covering_logical_line_index(logicals, line)?;
-    let ll = &logicals[ll_idx];
     let phys_text = doc.lines().nth(line).unwrap_or("");
     let char_byte = lsp_character_to_byte_offset(phys_text, character, enc);
-    let cursor = ll.logical_offset_from_physical(line, char_byte)?;
-    let word = navigation::word_at(ll.text(), cursor);
-    let hit = navigation::hit_at_cursor(index, word, ll_idx, cursor)?;
-    Some(CursorOccurrence {
-        logical_line: ll_idx,
-        cursor,
-        name: hit.name.clone(),
-    })
+    let cursor = logicals[ll_idx].logical_offset_from_physical(line, char_byte)?;
+    index.hit_at(ll_idx, cursor)
 }
 
-/// Compute the `textDocument/definition` RESULT for an already-validated
-/// request: `null`, or one `Location` at the exact name-token span of the
-/// declaration chosen by `navigation::choose_definition`'s deterministic
-/// rule (closest preceding same-name declaration; first one if none
-/// precedes).
+/// Return the declaration visible at the requested variable occurrence.
 pub(crate) fn goto_definition_result(
     doc: &str,
     enc: PositionEncoding,
@@ -402,27 +367,17 @@ pub(crate) fn goto_definition_result(
     character: usize,
     logicals: &[diagnostics::LogicalLine],
 ) -> serde_json::Value {
-    // ONE continuation-aware join per request (owned by the caller, usually
-    // the shared parse cache), feeding both the index and the cursor
-    // resolution below.
     let index = navigation::build_variable_index(logicals);
-    let Some(occ) = resolve_cursor_occurrence(doc, logicals, &index, enc, line, character) else {
-        return serde_json::Value::Null;
-    };
-    let Some(decl) =
-        navigation::choose_definition(&index, &occ.name, (occ.logical_line, occ.cursor))
+    let Some(decl) = resolve_cursor_occurrence(doc, logicals, &index, enc, line, character)
+        .and_then(|hit| index.definition(hit))
     else {
-        // A usage exists but no declaration shares its name — nothing
-        // honest to point at.
         return serde_json::Value::Null;
     };
     let lines: Vec<&str> = doc.lines().collect();
     navigation_location_value(uri, &lines, logicals, decl, enc)
 }
 
-/// Compute the `textDocument/references` RESULT: the chosen declaration
-/// first when `include_declaration` is set, then every `$usage` of the
-/// name in document order, capped at `navigation::MAX_REFERENCES` total.
+/// Return the indexed reads and writes of the binding under the cursor.
 pub(crate) fn references_result(
     doc: &str,
     enc: PositionEncoding,
@@ -432,20 +387,13 @@ pub(crate) fn references_result(
     include_declaration: bool,
     logicals: &[diagnostics::LogicalLine],
 ) -> Vec<serde_json::Value> {
-    // ONE continuation-aware join per request (owned by the caller), feeding
-    // both the index and the cursor resolution below.
     let index = navigation::build_variable_index(logicals);
-    let Some(occ) = resolve_cursor_occurrence(doc, logicals, &index, enc, line, character) else {
+    let Some(hit) = resolve_cursor_occurrence(doc, logicals, &index, enc, line, character) else {
         return Vec::new();
     };
-    let declaration = if include_declaration {
-        navigation::choose_definition(&index, &occ.name, (occ.logical_line, occ.cursor))
-    } else {
-        None
-    };
-    let refs = navigation::collect_references(&index, &occ.name, declaration);
     let lines: Vec<&str> = doc.lines().collect();
-    refs.iter()
+    index
+        .references(hit, include_declaration)
         .map(|h| navigation_location_value(uri, &lines, logicals, h, enc))
         .collect()
 }

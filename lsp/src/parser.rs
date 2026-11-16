@@ -75,6 +75,10 @@ impl QuoteState {
         self.in_double || self.in_single
     }
 
+    pub(crate) fn allows_interpolation(&self) -> bool {
+        !self.in_single
+    }
+
     /// Reset per-line transient state (`escaped`) while preserving quote
     /// continuity across physical lines (see module contract).
     pub(crate) fn reset_line(&mut self) {
@@ -680,7 +684,21 @@ pub fn parse_line(data: &MenuData, before_cursor: &str) -> LineContext {
 /// tokenization and passes the tokens here), so one line is tokenized once
 /// per publish instead of twice.
 pub(crate) fn parse_line_from_tokens(data: &MenuData, tokens: &[SpanToken]) -> LineContext {
-    let mut path_parts: Vec<String> = Vec::new();
+    parse_line_in_menu(data, tokens, None)
+}
+
+/// Parse a command with an optional menu inherited from an export header.
+pub(crate) fn parse_line_in_menu(
+    data: &MenuData,
+    tokens: &[SpanToken],
+    menu: Option<&str>,
+) -> LineContext {
+    let mut path_parts: Vec<String> = menu
+        .unwrap_or_default()
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect();
     let mut command: Option<String> = None;
     let mut properties: HashMap<String, String> = HashMap::new();
     // Depth of unquoted `[...]` nesting: tokens inside a bracket region or

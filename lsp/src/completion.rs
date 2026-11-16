@@ -312,7 +312,7 @@ pub fn compute_completions_with_live(
     before_cursor: &str,
     live_cache: Option<&LiveCache>,
 ) -> Vec<CompletionItem> {
-    compute_completions_with_logical(data, before_cursor, None, live_cache)
+    compute_completions_with_logical(data, before_cursor, None, None, live_cache)
 }
 
 /// Live-aware completion with an explicit continuation-aware logical prefix.
@@ -329,13 +329,20 @@ pub fn compute_completions_with_logical(
     data: &MenuData,
     before_cursor: &str,
     logical_prefix: Option<&str>,
+    export_menu: Option<&str>,
     live_cache: Option<&LiveCache>,
 ) -> Vec<CompletionItem> {
     // One tokenization per request: `parse_line_from_tokens` and the
     // colon/statement helpers below share this span-carrying stream instead
     // of each re-tokenizing the same prefix.
     let tokens = crate::parser::tokenize_with_spans(before_cursor);
-    let context = crate::parser::parse_line_from_tokens(data, &tokens);
+    let mut context = crate::parser::parse_line_in_menu(data, &tokens, export_menu);
+    if export_menu.is_some()
+        && tokens.len() == 1
+        && !crate::diagnostics::is_relative_verb(&tokens[0].text)
+    {
+        context.command = None;
+    }
 
     let mut items = match_context_with_live(
         data,

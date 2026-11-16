@@ -617,7 +617,7 @@ pub(crate) fn compute_diagnostics_with_logicals(
         // consumes the same span-carrying stream the rules below use for
         // exact occurrence ranges, instead of each tokenizing independently.
         let tokens = crate::tokenize_with_spans(line);
-        let ctx = crate::parser::parse_line_from_tokens(data, &tokens);
+        let ctx = ll.command_context(data, logical_lines, &tokens);
 
         // If path is empty and command is None and no properties, skip
         if ctx.path.is_empty() && ctx.command.is_none() && ctx.properties.is_empty() {
@@ -1592,12 +1592,39 @@ pub(crate) struct Segment {
 pub(crate) struct LogicalLine {
     pub(crate) text: String,
     pub(crate) segments: Vec<Segment>,
+    export_header: Option<(usize, usize)>,
 }
 
 impl LogicalLine {
     /// Joined logical text (all physical chunks concatenated).
     pub(crate) fn text(&self) -> &str {
         &self.text
+    }
+
+    /// Resolve the preceding path-only header in a compact export.
+    pub(crate) fn export_menu<'a>(&self, data: &'a MenuData, lines: &[Self]) -> Option<&'a str> {
+        let (index, end) = self.export_header?;
+        let tokens = crate::parser::tokenize_with_spans(&lines.get(index)?.text()[..end]);
+        let ctx = crate::parser::parse_line_from_tokens(data, &tokens);
+        if ctx.command.is_some() {
+            return None;
+        }
+        let menu = data.menu_by_path.get(&normalize_path(&ctx.path))?;
+        matches!(menu.menu_type.as_str(), "Directory" | "Settings Directory")
+            .then_some(menu.path.as_str())
+    }
+
+    pub(crate) fn command_context(
+        &self,
+        data: &MenuData,
+        lines: &[Self],
+        tokens: &[crate::parser::SpanToken],
+    ) -> crate::menus::LineContext {
+        let inherited = tokens
+            .first()
+            .filter(|token| is_relative_verb(&token.text))
+            .and_then(|_| self.export_menu(data, lines));
+        crate::parser::parse_line_in_menu(data, tokens, inherited)
     }
 
     /// Physical line index of the first contributing chunk.
@@ -1770,7 +1797,46 @@ pub(crate) fn build_logical_lines(raw_lines: &[&str]) -> Vec<LogicalLine> {
         logicals.push(current);
     }
 
+    index_export_sections(&mut logicals);
     logicals
+}
+
+/// Track the nearest top-level path line. A command on that line, another
+/// path, or a script boundary prevents an older header from leaking forward.
+fn index_export_sections(logicals: &mut [LogicalLine]) {
+    let mut header = None;
+    let mut depth = 0usize;
+    for (index, line) in logicals.iter_mut().enumerate() {
+        if depth == 0 {
+            match line.text.trim_start().as_bytes().first() {
+                Some(b'/') => {
+                    let end = crate::parser::effective_content_end(line.text());
+                    let path = line.text()[..end].trim_end();
+                    header = (path.len() <= crate::caps::MAX_EXPORT_HEADER_BYTES
+                        && path
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"/_- \t".contains(&b)))
+                    .then_some((index, path.len()));
+                }
+                Some(b':' | b'.' | b'{' | b'}' | b'[') => header = None,
+                _ => line.export_header = header,
+            }
+        }
+        if line.text.contains(['{', '}']) {
+            crate::parser::walk_structure(&line.text, |event| match event {
+                crate::parser::StructureEvent::OpenBrace { .. } => depth += 1,
+                crate::parser::StructureEvent::CloseBrace { .. } => depth = depth.saturating_sub(1),
+                _ => {}
+            });
+        }
+    }
+}
+
+pub(crate) fn is_relative_verb(word: &str) -> bool {
+    MenuData::STANDARD_VERBS
+        .iter()
+        .any(|verb| verb.eq_ignore_ascii_case(word))
+        || word.eq_ignore_ascii_case("unset")
 }
 
 /// Crate-visible wrapper so sibling modules (symbols, folding) can join
@@ -1837,7 +1903,8 @@ pub(crate) fn resolve_menu_for_line<'a>(
     phys_line: usize,
 ) -> Option<&'a crate::menus::MenuEntry> {
     let line = covering_logical_line(logicals, phys_line)?;
-    let ctx = crate::parse_line(data, line.text());
+    let tokens = crate::parser::tokenize_with_spans(line.text());
+    let ctx = line.command_context(data, logicals, &tokens);
     data.menu_by_path.get(&normalize_path(&ctx.path))
 }
 

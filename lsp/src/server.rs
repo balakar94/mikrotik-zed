@@ -33,11 +33,11 @@ use crate::logging::{
     uri_for_log,
 };
 use crate::menus::MenuData;
-use crate::parser::{ParseCache, parse_line, tokenize_with_spans};
+use crate::parser::{ParseCache, tokenize_with_spans};
 use crate::rename;
 use crate::signature;
 use crate::symbols;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -48,13 +48,16 @@ use std::time::Instant;
 // `rename.rs`) keep resolving unchanged.
 pub(crate) use crate::server_proto::{
     exit_code, extract_id_for_parse_error, invalid_params_response, invalid_request_response,
-    is_valid_file_uri, live_connection_changed, parse_error_response, resolve_cursor_occurrence,
+    is_valid_file_uri, live_connection_changed, parse_error_response,
 };
 use crate::server_proto::{goto_definition_result, references_result};
 
 pub(crate) struct Server {
     pub(crate) data: Arc<MenuData>,
     pub(crate) docs: HashMap<String, String>, // URI → document text
+    /// A clipped or partial copy can still serve read requests, but cannot
+    /// account for every occurrence in a rename.
+    incomplete_docs: HashSet<String>,
     /// Memoized logical-line joins per open document (see `parser::ParseCache`).
     pub(crate) parse_cache: ParseCache,
     /// Position encoding negotiated during `initialize`; defaults to UTF-16
@@ -119,6 +122,7 @@ impl Server {
         Server {
             data: Arc::clone(&data),
             docs: HashMap::new(),
+            incomplete_docs: HashSet::new(),
             parse_cache: ParseCache::new(),
             position_encoding: PositionEncoding::default(),
             shutdown_received: false,
@@ -133,6 +137,7 @@ impl Server {
         Server {
             data: Arc::clone(&data),
             docs: HashMap::new(),
+            incomplete_docs: HashSet::new(),
             parse_cache: ParseCache::new(),
             position_encoding: PositionEncoding::default(),
             shutdown_received: false,
@@ -157,6 +162,7 @@ impl Server {
             Server {
                 data: Arc::clone(&data),
                 docs: HashMap::new(),
+                incomplete_docs: HashSet::new(),
                 parse_cache: ParseCache::new(),
                 position_encoding: PositionEncoding::default(),
                 shutdown_received: false,
@@ -312,7 +318,7 @@ impl Server {
                             // Rename for `:local`/`:global` variables vs
                             // `$name` usages — pure logic lives in rename.rs
                             // (document-local, single-document WorkspaceEdit).
-                            "renameProvider": true,
+                            "renameProvider": { "prepareProvider": true },
                             // Quick-fixes ("Did you mean …?") for
                             // unknown-property / unknown-menu /
                             // invalid-enum-value diagnostics.
@@ -419,8 +425,10 @@ impl Server {
                     let trunc_idx = floor_char_boundary(text, MAX_DOC_SIZE);
                     self.docs
                         .insert(uri_owned.clone(), text[..trunc_idx].to_string());
+                    self.incomplete_docs.insert(uri_owned.clone());
                 } else {
                     self.docs.insert(uri_owned.clone(), text.to_string());
+                    self.incomplete_docs.remove(uri);
                 }
                 // The stored text changed: drop any cached parse for this URI
                 // (a re-open must never serve pre-close logical lines).
@@ -491,6 +499,7 @@ impl Server {
                     };
                     // Reject or truncate oversize incremental payloads early
                     if text.len() > MAX_DOC_SIZE {
+                        self.incomplete_docs.insert(uri.to_string());
                         log_warn!(
                             "change text too large ({} > {MAX_DOC_SIZE}), truncating",
                             text.len()
@@ -557,6 +566,7 @@ impl Server {
                             }
                         }
                         if let Some(s) = fallback_insert {
+                            self.incomplete_docs.insert(uri.to_string());
                             self.docs.insert(uri.to_string(), s);
                             // Check resulting doc size after fallback insert
                             if let Some(d) = self.docs.get_mut(uri)
@@ -568,10 +578,12 @@ impl Server {
                         } else if truncate_doc && let Some(doc) = self.docs.get_mut(uri) {
                             let ti = floor_char_boundary(doc, MAX_DOC_SIZE);
                             doc.truncate(ti);
+                            self.incomplete_docs.insert(uri.to_string());
                         }
                     } else {
                         // Full sync — last change wins.
                         self.docs.insert(uri.to_string(), text.to_string());
+                        self.incomplete_docs.remove(uri);
                     }
                 }
                 // Publish diagnostics after changes (incremental or full) —
@@ -602,6 +614,7 @@ impl Server {
             "textDocument/didClose" => {
                 if let Some(uri) = params["params"]["textDocument"]["uri"].as_str() {
                     self.docs.remove(uri);
+                    self.incomplete_docs.remove(uri);
                     // Cache entries die with the document — a later re-open
                     // must reparse, never resurrect pre-close logical lines.
                     self.parse_cache.invalidate(uri);
@@ -661,7 +674,15 @@ impl Server {
                     self.position_encoding,
                 );
 
-                let hover = hover::compute_hover(&self.data, current_line, char_byte, doc, line);
+                let logicals = self.parse_cache.lookup_or_insert(uri, doc);
+                let hover = hover::compute_hover_with_logicals(
+                    &self.data,
+                    current_line,
+                    char_byte,
+                    doc,
+                    line,
+                    logicals,
+                );
 
                 let result = match hover {
                     Some(h) => match serde_json::to_value(h) {
@@ -726,12 +747,12 @@ impl Server {
                 // parse cache shares that join with sibling requests.
                 let logicals = self.parse_cache.lookup_or_insert(uri, doc);
                 let help = diagnostics::covering_logical_line(logicals, line_idx).and_then(|ll| {
-                    let ctx = parse_line(&self.data, ll.text());
+                    let tokens = tokenize_with_spans(ll.text());
+                    let ctx = ll.command_context(&self.data, logicals, &tokens);
                     let menu = self
                         .data
                         .menu_by_path
                         .get(&crate::text_util::normalize_path(&ctx.path))?;
-                    let tokens = tokenize_with_spans(ll.text());
                     let verb_idx = signature::resolve_verb_token(&self.data, &tokens)?;
                     let cursor_logical = ll.logical_offset_from_physical(line_idx, char_byte)?;
                     signature::compute_signature_help(menu, &tokens, verb_idx, cursor_logical)
@@ -914,13 +935,7 @@ impl Server {
                 }))
             }
 
-            "textDocument/rename" => {
-                // Variable rename (`:local`/`:global` vs `$name` usages).
-                // Same response guarantees as the navigation siblings:
-                // -32602 for malformed params, null result for untracked
-                // URIs, variable-less cursors, and unusable new names. The
-                // pure computation lives in rename.rs; this arm only
-                // marshals params/results around it.
+            "textDocument/prepareRename" | "textDocument/rename" => {
                 let Some(uri) = params["params"]["textDocument"]["uri"].as_str() else {
                     return Some(invalid_params_response(&id, "missing textDocument.uri"));
                 };
@@ -931,14 +946,16 @@ impl Server {
                 let Some(character) = pos["character"].as_u64() else {
                     return Some(invalid_params_response(&id, "missing position.character"));
                 };
-                let Some(new_name) = params["params"]["newName"].as_str() else {
+                let new_name = params["params"]["newName"].as_str();
+                if method == "textDocument/rename" && new_name.is_none() {
                     return Some(invalid_params_response(&id, "missing newName"));
-                };
-                let Some(doc) = self.docs.get(uri) else {
-                    log_debug!(
-                        "rename for untracked URI, returning null result: {}",
-                        uri_for_log(uri)
-                    );
+                }
+                let Some(doc) = self
+                    .docs
+                    .get(uri)
+                    .filter(|_| !self.incomplete_docs.contains(uri))
+                else {
+                    log_debug!("rename requires a complete document: {}", uri_for_log(uri));
                     return Some(serde_json::json!({
                         "jsonrpc": "2.0",
                         "id": id,
@@ -947,15 +964,26 @@ impl Server {
                 };
 
                 let logicals = self.parse_cache.lookup_or_insert(uri, doc);
-                let result = rename::rename_result_with_logicals(
-                    doc,
-                    self.position_encoding,
-                    uri,
-                    line as usize,
-                    character as usize,
-                    new_name,
-                    logicals,
-                );
+                let result = if method == "textDocument/prepareRename" {
+                    rename::prepare_rename(
+                        doc,
+                        self.position_encoding,
+                        line as usize,
+                        character as usize,
+                        logicals,
+                    )
+                    .unwrap_or(serde_json::Value::Null)
+                } else {
+                    rename::rename_result_with_logicals(
+                        doc,
+                        self.position_encoding,
+                        uri,
+                        line as usize,
+                        character as usize,
+                        new_name.unwrap_or_default(),
+                        logicals,
+                    )
+                };
 
                 Some(serde_json::json!({
                     "jsonrpc": "2.0",
