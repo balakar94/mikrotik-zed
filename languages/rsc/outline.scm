@@ -40,7 +40,7 @@
 ; The outline label is the declared identifier, mirroring symbols.rs.
 ((global_command
    (global_command_name (identifier) @_cmd)
-   (identifier) @name) @item
+   . (identifier) @name) @item
  (#match? @_cmd "^(local|global|set)$"))
 
 ; All other script commands (:put, :if, :foreach, …) → Function (12).

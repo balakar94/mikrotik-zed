@@ -111,13 +111,13 @@
 ; ── Variable declarations (:local/:global/:set name …) ──────────
 ((global_command
    (global_command_name (identifier) @_cmd)
-   (identifier) @variable.parameter)
+   . (identifier) @variable.parameter)
   (#match? @_cmd "^(local|global|set)$"))
 
 ; ── Loop variables (:foreach i, :for i, :onerror e) ─────────────
 ((global_command
    (global_command_name (identifier) @_cmd)
-   (identifier) @variable.parameter)
+   . (identifier) @variable.parameter)
   (#match? @_cmd "^(foreach|for|onerror)$"))
 
 ; ── :return true / :return false ────────────────────────────────
@@ -163,9 +163,8 @@
 ; their own ranges.
 (variable_reference) @variable
 
-(variable_reference
-  "$" @punctuation.special
-  (identifier) @variable @variable.parameter)
+(variable_reference "$" @punctuation.special)
+(variable_reference (identifier) @variable @variable.parameter)
 
 ; ── Function calls ──────────────────────────────────────────────
 ; Must come AFTER the variable captures so `$func` in `$func arg`
@@ -200,6 +199,9 @@
    name: (identifier) @_regex_prop
    value: (literal (string) @string @string.regex))
   (#match? @_regex_prop "^(regexp|regex)$"))
+
+; Interpolated names inside double quotes override the enclosing string style.
+(string_interpolation) @variable @variable.parameter
 
 ; ── Mixed scalars (time, classifier, client-id, account) ───────
 (mixed_value) @number

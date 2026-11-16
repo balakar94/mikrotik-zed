@@ -23,6 +23,10 @@ test` runs). Equality enforced by
 `outline.scm` are Zed-side only; `injections.scm` lives grammar-side only
 (intentionally empty, wired via `tree-sitter.json`).
 
+Double-quoted strings highlight bare variable interpolation such as `$name`.
+An escaped dollar sign (`\$name`) keeps the enclosing string style, including
+in strings that span a physical line continuation.
+
 ## Corpus workflow
 
 Grammar is the **only** place Node.js enters this project (`tree-sitter-cli`
